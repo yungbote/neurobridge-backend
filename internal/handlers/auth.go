@@ -52,11 +52,7 @@ func (ah *AuthHandler) Login(c *gin.Context) {
     c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
     return
   }
-  user := types.User{
-    Email:      req.Email,
-    Password:   req.Password
-  }
-  accessToken, refreshToken, err := ah.authService.LoginUser(c.Request.Context(), &user)
+  accessToken, refreshToken, err := ah.authService.LoginUser(c.Request.Context(), req.Email, req.Password)
   if err != nil {
     c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
     return

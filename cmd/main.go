@@ -12,6 +12,7 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/handlers"
   "github.com/yungbote/neurobridge-backend/internal/middleware"
   "github.com/yungbote/neurobridge-backend/internal/server"
+  "github.com/yungbote/neurobridge-backend/internal/sse"
 )
 
 func main() {
@@ -48,6 +49,10 @@ func main() {
   userRepo := repos.NewUserRepo(thePG, log)
   userTokenRepo := repos.NewUserTokenRepo(thePG, log)
 
+  // SSE
+  log.Info("Setting up SSE hub now...")
+  sseHub := sse.NewSSEHub(log)
+
   // Services
   log.Info("Setting up Services from main...")
   bucketService, err := services.NewBucketService(log)
@@ -66,6 +71,7 @@ func main() {
   log.Info("Setting up handlers from main...")
   authHandler := handlers.NewAuthHandler(authService)
   userHandler := handlers.NewUserHandler(userService)
+  sseHandler := handlers.NewSSEHandler(log, sseHub)
 
   // Middleware
   log.Info("Setting up middleware from main...")
@@ -76,7 +82,8 @@ func main() {
   router := server.NewRouter(server.RouterConfig{
     AuthHandler:          authHandler,
     AuthMiddleware:       authMiddleware,
-    UserHandler:          userHandler
+    UserHandler:          userHandler,
+    SSEHandler:           sseHandler
   })
 
   port := utils.GetEnv("PORT", "8080", log)
