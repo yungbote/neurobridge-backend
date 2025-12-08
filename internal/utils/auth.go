@@ -4,9 +4,13 @@ import (
   "context"
   "fmt"
   "golang.org/x/crypto/bcrypt"
+  "github.com/yungbote/neurobridge-backend/internal/normalization"
+  "github.com/yungbote/neurobridge-backend/internal/logger"
+  "github.com/yungbote/neurobridge-backend/internal/types"
+  "github.com/yungbote/neurobridge-backend/internal/repos"
 )
 
-func InputValidation(ctx context.Context, ffor string, userRepo repos.UserRepo, log *logger.Logger, user *types.User) error {
+func InputValidation(ctx context.Context, ffor string, userRepo repos.UserRepo, log *logger.Logger, user *types.User, email, password string) error {
   validatedFor := normalization.ParseInputString(ffor)
   if validatedFor == "" {
     return fmt.Errorf("For string is nil, needs to be login or registration")
@@ -17,8 +21,11 @@ func InputValidation(ctx context.Context, ffor string, userRepo repos.UserRepo, 
       return err
     }
   case "login":
-    if err := handleLoginInputValidation(ctx, log, user.Email, user.Password)
+    if err := handleLoginInputValidation(ctx, log, email, password); err != nil {
+      return err
+    }
   }
+  return nil
 }
 
 func handleRegisterInputValidation(ctx context.Context, userRepo repos.UserRepo, log *logger.Logger, user *types.User) error {
@@ -58,7 +65,7 @@ func handleLoginInputValidation(ctx context.Context, log *logger.Logger, email, 
 }
 
 func HashPassword(ctx context.Context, log *logger.Logger, user *types.User) error {
-  hashedPassword, err := bcyrpt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+  hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
   if err != nil {
     return fmt.Errorf("Failed to hash password")
   }

@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"time"
-
+	"strings"
 	"golang.org/x/crypto/bcrypt"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/normalization"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
@@ -38,12 +36,10 @@ type authService struct {
 	log           *logger.Logger
 	userRepo      repos.UserRepo
 	avatarService AvatarService
-
 	userTokenRepo repos.UserTokenRepo
-
-	jwtSecretKey string
-	accessTTL    time.Duration
-	refreshTTL   time.Duration
+	jwtSecretKey	string
+	accessTTL			time.Duration
+	refreshTTL		time.Duration
 }
 
 func NewAuthService(
@@ -71,7 +67,7 @@ func NewAuthService(
 
 func (as *authService) RegisterUser(ctx context.Context, user *types.User) error {
 	utils.NormalizeUserFields(ctx, user)
-	if vErr := utils.InputValidation(ctx, "registration", as.userRepo, as.log, user); vErr != nil {
+	if vErr := utils.InputValidation(ctx, "registration", as.userRepo, as.log, user, "", ""); vErr != nil {
 		return vErr
 	}
 	if hErr := utils.HashPassword(ctx, as.log, user); hErr != nil {

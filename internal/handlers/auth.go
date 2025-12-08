@@ -3,11 +3,10 @@ package handlers
 import (
   "net/http"
   "github.com/gin-gonic/gin"
-  "github.com/google/uuid"
-  "github.com/yungbote/neurobridge-backend/internal/logger"
-  "github.com/yungbote/neurobridge-backend/internal/requestdata"
-  "github.com/yungbote/neurobridge-backend/internal/repos"
+  "github.com/yungbote/neurobridge-backend/internal/types"
   "github.com/yungbote/neurobridge-backend/internal/services"
+//  "github.com/yungbote/neurobridge-backend/internal/sse"
+//  "github.com/yungbote/neurobridge-backend/internal/ssedata"
 )
 
 type AuthHandler struct {
@@ -33,7 +32,7 @@ func (ah *AuthHandler) Register(c *gin.Context) {
     Email:      req.Email,
     FirstName:  req.FirstName,
     LastName:   req.LastName,
-    Password:   req.Password
+    Password:   req.Password,
   }
   err := ah.authService.RegisterUser(c.Request.Context(), &user)
   if err != nil {

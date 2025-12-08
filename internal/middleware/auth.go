@@ -9,7 +9,6 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/requestdata"
   "github.com/yungbote/neurobridge-backend/internal/ssedata"
-  "github.com/yungbote/neurobridge-backend/internal/repos"
   "github.com/yungbote/neurobridge-backend/internal/services"
 )
 

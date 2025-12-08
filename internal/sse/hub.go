@@ -28,7 +28,7 @@ type SSEClient struct {
   ID          uuid.UUID
   UserID      uuid.UUID
   Channels    map[string]bool
-  Outbound    chan SSEMesage
+  Outbound    chan SSEMessage
   done        chan struct{}
   Logger      *logger.Logger
 }
@@ -53,7 +53,7 @@ func (hub *SSEHub) NewSSEClient(userID uuid.UUID) *SSEClient {
     Channels: make(map[string]bool),
     Outbound: make(chan SSEMessage, 10),
     done:     make(chan struct{}),
-    Logger:   hub.logger.With("clientID", nil)
+    Logger:   hub.logger.With("clientID", nil),
   }
 }
 

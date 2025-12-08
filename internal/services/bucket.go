@@ -52,7 +52,7 @@ func NewBucketService(log *logger.Logger) (BucketService, error) {
     log:            serviceLog,
     storageClient:  stClient,
     bucketName:     bucket,
-    cdnDomain:      cdnDomain
+    cdnDomain:      cdnDomain,
   }, nil
 }
 

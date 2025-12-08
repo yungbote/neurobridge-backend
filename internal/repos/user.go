@@ -2,11 +2,9 @@ package repos
 
 import (
   "context"
-  "fmt"
   "github.com/google/uuid"
   "gorm.io/gorm"
   "github.com/yungbote/neurobridge-backend/internal/logger"
-  "github.com/yungbote/neurobridge-backend/internal/requestdata"
   "github.com/yungbote/neurobridge-backend/internal/types"
 )
 

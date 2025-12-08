@@ -33,7 +33,7 @@ func NewUserTokenRepo(db *gorm.DB, baseLog *logger.Logger) UserTokenRepo {
   return &userTokenRepo{db: db, log: repoLog}
 }
 
-func (utr *userTokenRepo) Create(ctx context.Context, tx *gorm.DB, userToken []*types.UserToken) ([]*types.UserToken, error) {
+func (utr *userTokenRepo) Create(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) ([]*types.UserToken, error) {
   transaction := tx
   if transaction == nil {
     transaction = utr.db
@@ -111,7 +111,7 @@ func (utr *userTokenRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs
 }
 
 func (utr *userTokenRepo) GetByAccessTokens(ctx context.Context, tx *gorm.DB, accessTokens []string) ([]*types.UserToken, error) {
-  transaction = tx
+  transaction := tx
   if transaction == nil {
     transaction = utr.db
   }
@@ -137,7 +137,7 @@ func (utr *userTokenRepo) GetByRefreshTokens(ctx context.Context, tx *gorm.DB, r
     transaction = utr.db
   }
 
-  var result []*types.UserToken
+  var results []*types.UserToken
   
   if len(refreshTokens) == 0 {
     return results, nil
@@ -173,7 +173,7 @@ func (utr *userTokenRepo) SoftDeleteByTokens(ctx context.Context, tx *gorm.DB, u
 func (utr *userTokenRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) error {
   transaction := tx
   if transaction == nil {
-    transaction == utr.db
+    transaction = utr.db
   }
 
   if len(tokenIDs) == 0 {
@@ -208,7 +208,7 @@ func (utr *userTokenRepo) SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, 
   return nil
 }
 
-func (utr *userTokenRepo) FullDeleteByTokens(ctx context.Context, tx *gorm.DB, userToken []*types.UserToken) error {
+func (utr *userTokenRepo) FullDeleteByTokens(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) error {
   transaction := tx
   if transaction == nil {
     transaction = utr.db

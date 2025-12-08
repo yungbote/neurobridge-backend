@@ -4,17 +4,17 @@ import (
   "context"
   "bytes"
   "fmt"
-  "image"
+//  "image"
   "image/color"
   "encoding/json"
   "io/ioutil"
-  "math"
+//  "math"
   "math/rand"
   "os"
-  "path/filepath"
+//  "path/filepath"
   "strings"
   "time"
-  "github.com/disintegration/imaging"
+//  "github.com/disintegration/imaging"
   "github.com/fogleman/gg"
   "github.com/golang/freetype/truetype"
   "golang.org/x/image/font"
@@ -24,7 +24,7 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/repos"
 )
 
-type AvatarServicen interface {
+type AvatarService interface {
   CreateAndUploadUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) error
   GenerateUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) (bytes.Buffer, error)
 }
@@ -69,7 +69,7 @@ func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, 
     userRepo:       userRepo,
     bucketService:  bucketService,
     bgColors:       bgColors,
-    fontFace:       face
+    fontFace:       face,
   }
   return service, nil
 }
@@ -80,7 +80,7 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
     return err
   }
   bucketKey := fmt.Sprintf("user_avatar/%s.png", user.ID.String())
-  if err := as.bucketService.UploadFile(ctx, tx, bucketKey, bytes.NewReader(bug.Bytes())); err != nil {
+  if err := as.bucketService.UploadFile(ctx, tx, bucketKey, bytes.NewReader(buf.Bytes())); err != nil {
     return fmt.Errorf("Failed to upload user avatar: %w", err)
   }
   if user.AvatarBucketKey != bucketKey {
@@ -159,7 +159,7 @@ func loadFontFace(fontPath string, size float64) (font.Face, error) {
   face := truetype.NewFace(parsedFont, &truetype.Options{
     Size:       size,
     DPI:        72,
-    Hinting:    font.HintingNone
+    Hinting:    font.HintingNone,
   })
   return face, nil
 }

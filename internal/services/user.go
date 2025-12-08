@@ -24,13 +24,13 @@ type userService struct {
 func NewUserService(
   db        *gorm.DB,
   log       *logger.Logger,
-  userRepo  repos.userRepo
+  userRepo  repos.UserRepo,
 ) UserService {
   serviceLog := log.With("service", "UserService")
   return &userService{
     db:       db,
     log:      serviceLog,
-    userRepo: userRepo
+    userRepo: userRepo,
   }
 }
 

@@ -49,7 +49,7 @@ func (s *PostgresService) AutoMigrateAll() error {
   s.log.Info("Auto migrating postgres tables...")
   err := s.db.AutoMigrate(
     &types.User{},
-    &types.UserToken{}
+    &types.UserToken{},
   )
   if err != nil {
     s.log.Error("Auto migration failed for postgres tables", "error", err)

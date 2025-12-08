@@ -22,12 +22,13 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
     AllowOrigins: []string{
       "http://localhost:80",
       "http://localhost:3000",
-      "http://localhost:5174"
+      "http://localhost:5174",
     },
-    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+    AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
     AllowHeaders:     []string{"Authorization", "Content-Type", "X-Requested-With"},
     AllowCredentials: true,
   }))
+
 
 
 // ===============
@@ -36,14 +37,14 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
   router.GET("/healthcheck", handlers.HealthCheck)
   api := router.Group("/api")
   {
-    router.POST("/register", cfg.AuthHandler.Register)
-    router.POST("/login", cfg.AuthHandler.Login)
+    api.POST("/register", cfg.AuthHandler.Register)
+    api.POST("/login", cfg.AuthHandler.Login)
   }
 
 // ===============
 // || Protected ||
 // ===============
-  protected := router.Group("/")
+  protected := api.Group("/")
   protected.Use(cfg.AuthMiddleware.RequireAuth())
   // Auth
   protected.POST("/refresh", cfg.AuthHandler.Refresh)

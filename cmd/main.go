@@ -17,7 +17,7 @@ import (
 
 func main() {
   // Logger
-  logMode := os.GetEnv("LOG_MODE")
+  logMode := os.Getenv("LOG_MODE")
   if logMode == "" {
     logMode = "development"
   }
@@ -83,7 +83,7 @@ func main() {
     AuthHandler:          authHandler,
     AuthMiddleware:       authMiddleware,
     UserHandler:          userHandler,
-    SSEHandler:           sseHandler
+    SSEHandler:           sseHandler,
   })
 
   port := utils.GetEnv("PORT", "8080", log)
