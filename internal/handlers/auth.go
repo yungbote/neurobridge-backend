@@ -81,3 +81,12 @@ func (ah *AuthHandler) Logout(c *gin.Context) {
   c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
 }
 
+
+
+
+
+
+
+
+
+

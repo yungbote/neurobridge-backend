@@ -15,6 +15,7 @@ type User struct {
   LastName          string          `gorm:"not null;column:last_name" json:"last_name"`
   AvatarBucketKey   string          `gorm:"column:avatar_bucket_key" json:"avatar_bucket_key"`
   AvatarURL         string          `gorm:"column:avatar_url" json:"avatar_url"`
+  PreferredTheme    string          `gorm:"column:preffered_theme" json:"preferred_theme"`
   CreatedAt         time.Time       `gorm:"not null;default:now()" json:"created_at"`
   UpdatedAt         time.Time       `gorm:"not null;default:now()" json:"updated_at"`
 }
@@ -22,3 +23,13 @@ type User struct {
 func (User) TableName() string {
   return "user"
 }
+
+
+
+
+
+
+
+
+
+

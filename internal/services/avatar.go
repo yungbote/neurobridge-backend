@@ -163,3 +163,13 @@ func loadFontFace(fontPath string, size float64) (font.Face, error) {
   })
   return face, nil
 }
+
+
+
+
+
+
+
+
+
+

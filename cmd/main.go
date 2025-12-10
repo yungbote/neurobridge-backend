@@ -48,6 +48,33 @@ func main() {
   log.Info("Setting up Repos from main...")
   userRepo := repos.NewUserRepo(thePG, log)
   userTokenRepo := repos.NewUserTokenRepo(thePG, log)
+  materialSetRepo := repos.NewMaterialSetRepo(thePG, log)
+  materialFileRepo := repo.NewMaterialFileRepo(thePG, log)
+  courseRepo := repos.NewCourseRepo(thePG, log)
+  courseModuleRepo := repos.NewCourseModuleRepo(thePG, log)
+  lessonRepo := repos.NewLessonRepo(thePG, log)
+  quizQuestionRepo := repos.NewQuizQuestionRepo(thePG, log)
+  courseBlueprintRepo := repos.NewCourseBlueprintRepo(thePG, log)
+  lessonAssetRepo := repos.NewLessonAssetRepo(thePG, log)
+  learningProfileRepo := repos.NewLearningProfileRepo(thePG, log)
+  topicMasteryRepo := repos.NewTopicMasteryRepo(thePG, log)
+  lessonProgressRepo := repos.NewLessonTopicRepo(thePG, log)
+  quizAttemptRepo := repos.NewQuizAttemptRepo(thePG, log)
+  userEventRepo := repos.NewUserEventRepo(thePG, log)
+
+  _ = materialSetRepo
+  _ = materialFileRepo
+  _ = courseRepo
+  _ = courseModuleRepo
+  _ = lessonRepo
+  _ = quizQuestionRepo
+  _ = courseBlueprintRepo
+  _ = lessonAssetRepo
+  _ = learningProfileRepo
+  _ = topicMasteryRepo
+  _ = lessonProgressRepo
+  _ = quizAttemptRepo
+  _ = userEventRepo
 
   // SSE
   log.Info("Setting up SSE hub now...")
@@ -92,3 +119,13 @@ func main() {
     log.Warn("Server failed: %v", err)
   }
 }
+
+
+
+
+
+
+
+
+
+

@@ -32,3 +32,13 @@ func GetSSEData(ctx context.Context) *SSEData {
 func (d *SSEData) AppendMessage(msg sse.SSEMessage) {
   d.Messages = append(d.Messages, msg)
 }
+
+
+
+
+
+
+
+
+
+

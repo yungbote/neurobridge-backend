@@ -100,3 +100,11 @@ func (ur *userRepo) EmailExists(ctx context.Context, tx *gorm.DB, userEmail stri
 }
 
 
+
+
+
+
+
+
+
+

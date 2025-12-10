@@ -50,6 +50,19 @@ func (s *PostgresService) AutoMigrateAll() error {
   err := s.db.AutoMigrate(
     &types.User{},
     &types.UserToken{},
+    &types.MaterialSet{},
+    &types.MaterialFile{},
+    &types.Course{},
+    &types.CourseModule{},
+    &types.Lesson{},
+    &types.QuizQuestion{},
+    &types.CourseBlueprint{},
+    &types.LessonAsset{},
+    &types.LearningProfile{},
+    &types.TopicMastery{},
+    &types.LessonProgress{},
+    &types.QuizAttempt{},
+    &types.UserEvent{},
   )
   if err != nil {
     s.log.Error("Auto migration failed for postgres tables", "error", err)
@@ -71,5 +84,13 @@ func (s *PostgresService) AutoMigrateAll() error {
 func (s *PostgresService) DB() *gorm.DB {
   return s.db
 }
+
+
+
+
+
+
+
+
 
 
