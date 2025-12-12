@@ -36,6 +36,7 @@ func (h *SSEHandler) SSEStream(c *gin.Context) {
 	}
 	userID := rd.UserID
 	sessionID := rd.SessionID
+	h.Log.Info("SSEStream open", "user_id", userID.String(), "session_id", sessionID.String())
 	if sessionID == uuid.Nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing session id"})
 		return

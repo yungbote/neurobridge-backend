@@ -57,6 +57,7 @@ type Course struct {
   Level         string          `gorm:"column:level" json:"level"`
   Subject       string          `gorm:"column:subject" json:"subject"`
   Metadata      datatypes.JSON  `gorm:"column:metadata;type:jsonb" json:"metadata"`
+  Progress      int             `gorm:"column:progress;not null;default:0" json:"progress"`
   CreatedAt     time.Time       `gorm:"not null;default:now()" json:"created_at"`
   UpdatedAt     time.Time       `gorm:"not null;default:now()" json:"updated_at"`
 }
@@ -88,7 +89,10 @@ type Lesson struct {
   ModuleID          uuid.UUID       `gorm:"type:uuid;not null;index" json:"module_id"`
   Module            *CourseModule   `gorm:"constraint:OnDelete:CASCADE;foreignKey:ModuleID;references:ID" json:"module,omitempty"`
   Index             int             `gorm:"column:index;not null" json:"index"`
-  Title             string          `gorm:"column:kind;not null;default: 'reading'" json:"kind"`
+
+  Title             string          `gorm:"column:title;not null" json:"title"`
+  Kind              string          `gorm:"column:kind;not null;default:'reading'" json:"kind"`
+
   ContentMD         string          `gorm:"column:content_md" json:"content_md"`
   ContentJSON       datatypes.JSON  `gorm:"column:content_json;type:jsonb" json:"content_json"`
   EstimatedMinutes  int             `gorm:"column:estimated_minutes" json:"estimated_minutes"`
@@ -152,6 +156,35 @@ type LessonAsset struct {
 
 func (LessonAsset) TableName() string {
   return "lesson_asset"
+}
+
+type CourseGenerationRun struct {
+  ID            uuid.UUID      `gorm:"type:uuid;primaryKey" json:"id"`
+  UserID        uuid.UUID      `gorm:"type:uuid;not null;index" json:"user_id"`
+  MaterialSetID uuid.UUID      `gorm:"type:uuid;not null;index" json:"material_set_id"`
+  CourseID      uuid.UUID      `gorm:"type:uuid;not null;index" json:"course_id"`
+
+  Status   string `gorm:"column:status;not null;index" json:"status"` // queued|running|succeeded|failed
+  Stage    string `gorm:"column:stage;not null;index" json:"stage"`   // ingest|embed|metadata|blueprint|lessons|quizzes|done
+  Progress int    `gorm:"column:progress;not null;default:0" json:"progress"`
+
+  Attempts    int        `gorm:"column:attempts;not null;default:0" json:"attempts"`
+  Error       string     `gorm:"column:error" json:"error"`
+  LastErrorAt *time.Time `gorm:"column:last_error_at" json:"last_error_at,omitempty"`
+
+  // Locking/health for workers (optional but recommended)
+  LockedAt    *time.Time `gorm:"column:locked_at;index" json:"locked_at,omitempty"`
+  HeartbeatAt *time.Time `gorm:"column:heartbeat_at;index" json:"heartbeat_at,omitempty"`
+
+  Metadata datatypes.JSON `gorm:"type:jsonb;column:metadata" json:"metadata"`
+
+  CreatedAt time.Time  `gorm:"not null;default:now();index" json:"created_at"`
+  UpdatedAt time.Time  `gorm:"not null;default:now();index" json:"updated_at"`
+  DeletedAt *time.Time `gorm:"index" json:"deleted_at,omitempty"`
+}
+
+func (CourseGenerationRun) TableName() string {
+  return "course_generation_run"
 }
 
 

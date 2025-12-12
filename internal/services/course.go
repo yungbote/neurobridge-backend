@@ -13,12 +13,15 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/repos"
   "github.com/yungbote/neurobridge-backend/internal/types"
+  "github.com/yungbote/neurobridge-backend/internal/requestdata"
   "github.com/yungbote/neurobridge-backend/internal/ssedata"
   "github.com/yungbote/neurobridge-backend/internal/sse"
 )
 
 type CourseService interface {
   CreateCourseFromMaterialSet(ctx context.Context, tx *gorm.DB, userID, materialSetID uuid.UUID) (*types.Course, error)
+  // GET
+  GetUserCourses(ctx context.Context, tx *gorm.DB) ([]*types.Course, error)
 }
 
 type courseService struct {
@@ -118,6 +121,28 @@ func randomCourseDescription() string {
     "A course scaffold that will be refined as you add more context.",
   }
   return templates[rand.Intn(len(templates))]
+}
+
+func (cs *courseService) GetUserCourses(ctx context.Context, tx *gorm.DB) ([]*types.Course, error) {
+  rd := requestdata.GetRequestData(ctx)
+  if rd == nil {
+    cs.log.Warn("Request data not set in context")
+    return nil, fmt.Errorf("Request data not set in context")
+  }
+  if rd.UserID == uuid.Nil {
+    cs.log.Warn("User id not set in request data")
+    return nil, fmt.Errorf("User id not set in request data")
+  }
+  transaction := tx
+  if transaction == nil {
+    transaction = cs.db
+  }
+  courses, err := cs.courseRepo.GetByUserIDs(ctx, transaction, []uuid.UUID{rd.UserID})
+  if err != nil {
+    cs.log.Error("GetUserCourses failed", "error", err, "user_id", rd.UserID)
+    return nil, fmt.Errorf("get user courses: %w", err)
+  }
+  return courses, nil
 }
 
 

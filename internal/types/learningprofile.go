@@ -102,6 +102,21 @@ func (UserEvent) TableName() string {
   return "user_event"
 }
 
+type TopicStylePreference struct {
+  gorm.Model
+  ID        uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+  UserID    uuid.UUID `gorm:"type:uuid;not null;index:idx_user_topic_style,unique" json:"user_id"`
+  Topic     string    `gorm:"not null;index:idx_user_topic_style,unique" json:"topic"`
+  Style     string    `gorm:"not null;index:idx_user_topic_style,unique" json:"style"` // "diagram_first" | "step_by_step" | "concise" | "formal" | "analogy"
+  Score     float64   `gorm:"not null;default:0" json:"score"` // can be -1..+1
+  N         int       `gorm:"not null;default:0" json:"n"`
+  UpdatedAt time.Time `gorm:"not null;default:now()" json:"updated_at"`
+}
+
+func (TopicStylePreference) TableName() string {
+  return "topic_style_preference"
+}
+
 
 
 

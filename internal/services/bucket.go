@@ -30,6 +30,7 @@ type BucketService interface {
   UploadFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, file io.Reader) error
   DeleteFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string) error
   ReplaceFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, newFile io.Reader) error
+  DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error)
   GetPublicURL(category BucketCategory, key string) string
 }
 
@@ -149,6 +150,43 @@ func (bs *bucketService) GetPublicURL(category BucketCategory, key string) strin
     return fmt.Sprintf("https://%s/%s", cfg.cdnDomain, key)
   }
   return fmt.Sprintf("https://storage.googleapis.com/%s/%s", cfg.name, key)
+}
+
+
+// IMPORTANT FIX:
+// Do NOT `defer cancel()` before returning the reader.
+// If you do, the context is canceled immediately and callers read 0 bytes.
+// We attach the cancel to the reader's Close().
+type readCloserWithCancel struct {
+  io.ReadCloser
+  cancel context.CancelFunc
+}
+
+func (r *readCloserWithCancel) Close() error {
+  err := r.ReadCloser.Close()
+  if r.cancel != nil {
+    r.cancel()
+  }
+  return err
+}
+
+func (bs *bucketService) DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error) {
+  cfg, err := bs.getBucketConfig(category)
+  if err != nil {
+    return nil, err
+  }
+
+  // Create a context that stays alive for the life of the reader.
+  // Cancel only after the reader is closed.
+  ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
+
+  r, err := bs.storageClient.Bucket(cfg.name).Object(key).NewReader(ctx2)
+  if err != nil {
+    cancel()
+    return nil, fmt.Errorf("failed to open GCS reader: %w", err)
+  }
+
+  return &readCloserWithCancel{ReadCloser: r, cancel: cancel}, nil
 }
 
 

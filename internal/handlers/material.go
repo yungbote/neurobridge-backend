@@ -6,7 +6,8 @@ import (
 
   "github.com/gin-gonic/gin"
   "github.com/google/uuid"
-
+  
+  "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/requestdata"
   "github.com/yungbote/neurobridge-backend/internal/services"
   "github.com/yungbote/neurobridge-backend/internal/ssedata"
@@ -14,15 +15,17 @@ import (
 )
 
 type MaterialHandler struct {
+  log             *logger.Logger
   materialService services.MaterialService
-  courseService   services.CourseService
+  courseGen       services.CourseGenerationService
   sseHub          *sse.SSEHub
 }
 
-func NewMaterialHandler(msvc services.MaterialService, csvc services.CourseService, sseHub *sse.SSEHub) *MaterialHandler {
+func NewMaterialHandler(log *logger.Logger, msvc services.MaterialService, cgen services.CourseGenerationService, sseHub *sse.SSEHub) *MaterialHandler {
   return &MaterialHandler{
+    log:             log,
     materialService: msvc,
-    courseService:   csvc,
+    courseGen:       cgen,
     sseHub:          sseHub,
   }
 }
@@ -62,7 +65,7 @@ func (mh *MaterialHandler) UploadMaterials(c *gin.Context) {
     // sniff
     sniffFile, err := fh.Open()
     if err != nil {
-      c.Logger().Error("cannot open file for sniffing: " + err.Error())
+      mh.log.Error("cannot open file for sniffing: " + err.Error())
       continue
     }
     buf := make([]byte, 512)
@@ -77,7 +80,7 @@ func (mh *MaterialHandler) UploadMaterials(c *gin.Context) {
 
     r, err := fh.Open()
     if err != nil {
-      c.Logger().Error("cannot open file for reading: " + err.Error())
+      mh.log.Error("cannot open file for reading: " + err.Error())
       continue
     }
 
@@ -102,9 +105,9 @@ func (mh *MaterialHandler) UploadMaterials(c *gin.Context) {
   }
 
   // 2) Create course (random title/desc) linked to this material set
-  _, err = mh.courseService.CreateCourseFromMaterialSet(c.Request.Context(), nil, userID, set.ID)
+  course, run, err := mh.courseGen.EnqueueFromMaterialSet(c.Request.Context(), userID, set.ID)
   if err != nil {
-    c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create course from material set"})
+    c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue course generation"})
     return
   }
 
@@ -117,7 +120,12 @@ func (mh *MaterialHandler) UploadMaterials(c *gin.Context) {
     ssd.Messages = nil
   }
 
-  c.JSON(http.StatusOK, gin.H{"ok": true})
+  c.JSON(http.StatusOK, gin.H{
+    "ok": true,
+    "material_set_id": set.ID,
+    "course_id": course.ID,
+    "generation_run_id": run.ID,
+  })
 }
 
 

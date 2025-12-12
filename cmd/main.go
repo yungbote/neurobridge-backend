@@ -1,6 +1,7 @@
 package main
 
 import (
+  "context"
   "fmt"
   "os"
   "time"
@@ -58,18 +59,16 @@ func main() {
   lessonAssetRepo := repos.NewLessonAssetRepo(thePG, log)
   learningProfileRepo := repos.NewLearningProfileRepo(thePG, log)
   topicMasteryRepo := repos.NewTopicMasteryRepo(thePG, log)
-  lessonProgressRepo := repos.NewLessonTopicRepo(thePG, log)
+  lessonProgressRepo := repos.NewLessonProgressRepo(thePG, log)
   quizAttemptRepo := repos.NewQuizAttemptRepo(thePG, log)
   userEventRepo := repos.NewUserEventRepo(thePG, log)
+  materialChunkRepo := repos.NewMaterialChunkRepo(thePG, log)
+  courseGenRunRepo := repos.NewCourseGenerationRunRepo(thePG, log)
 
-  _ = courseModuleRepo
-  _ = lessonRepo
-  _ = quizQuestionRepo
-  _ = courseBlueprintRepo
   _ = lessonAssetRepo
+  _ = lessonProgressRepo
   _ = learningProfileRepo
   _ = topicMasteryRepo
-  _ = lessonProgressRepo
   _ = quizAttemptRepo
   _ = userEventRepo
 
@@ -83,28 +82,52 @@ func main() {
   if err != nil {
     log.Warn("Could not init BucketService", "error", err)
   }
+  openaiClient, err := services.NewOpenAIClient(log)
+  if err != nil {
+    log.Error("Could not init OpenAIClient", "error", err)
+    os.Exit(1)
+  }
   avatarService, err := services.NewAvatarService(thePG, log, userRepo, bucketService)
   if err != nil {
     log.Error("Could not init AvatarService", "error", err)
     os.Exit(1)
   }
-  fileService, err := services.NewFileService(thePG, log, bucketService, materialFileRepo)
-  if err != nil {
-    log.Error("Could not init FileService", "error", err)
-    os.Exit(1)
-  }
+  fileService := services.NewFileService(thePG, log, bucketService, materialFileRepo)
   authService := services.NewAuthService(thePG, log, userRepo, avatarService, userTokenRepo, jwtSecretKey, time.Duration(accessTokenTTL)*time.Second, time.Duration(refreshTokenTTL)*time.Second)
   userService := services.NewUserService(thePG, log, userRepo)
   materialService := services.NewMaterialService(thePG, log, materialSetRepo, materialFileRepo, fileService)
   courseService := services.NewCourseService(thePG, log, courseRepo, materialSetRepo)
+  courseGenService := services.NewCourseGenerationService(
+    thePG,
+    log,
+    sseHub,
+    courseRepo,
+    materialSetRepo,
+    materialFileRepo,
+    courseModuleRepo,
+    lessonRepo,
+    quizQuestionRepo,
+    courseBlueprintRepo,
+    materialChunkRepo,
+    courseGenRunRepo,
+    bucketService,
+    openaiClient,
+  )
+  courseGenService.StartWorker(context.Background())
+  courseGenStatusService := services.NewCourseGenStatusService(thePG, courseGenRunRepo, courseRepo)
+  moduleService := services.NewModuleService(thePG, log, courseRepo, courseModuleRepo)
+  lessonService := services.NewLessonService(thePG, log, courseRepo, courseModuleRepo, lessonRepo)
+  courseGenHandler := handlers.NewCourseGenHandler(courseGenStatusService)
 
   // Handlers
   log.Info("Setting up handlers from main...")
   authHandler := handlers.NewAuthHandler(authService)
   userHandler := handlers.NewUserHandler(userService)
   sseHandler := handlers.NewSSEHandler(log, sseHub)
-  materialHandler := handlers.NewMaterialHandler(materialService, courseService, sseHub)
-
+  materialHandler := handlers.NewMaterialHandler(log, materialService, courseGenService, sseHub)
+  courseHandler := handlers.NewCourseHandler(log, courseService)
+  moduleHandler := handlers.NewModuleHandler(moduleService)
+  lessonHandler := handlers.NewLessonHandler(lessonService)
   // Middleware
   log.Info("Setting up middleware from main...")
   authMiddleware := middleware.NewAuthMiddleware(log, authService)
@@ -117,6 +140,10 @@ func main() {
     UserHandler:          userHandler,
     SSEHandler:           sseHandler,
     MaterialHandler:      materialHandler,
+    CourseHandler:        courseHandler,
+    CourseGenHandler:     courseGenHandler,
+    ModuleHandler:        moduleHandler,
+    LessonHandler:        lessonHandler,
   })
 
   port := utils.GetEnv("PORT", "8080", log)

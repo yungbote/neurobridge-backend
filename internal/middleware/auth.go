@@ -1,7 +1,7 @@
 package middleware
 
 import (
-  "encoding/json"
+ // "encoding/json"
   "net/http"
   "strings"
   "github.com/gin-gonic/gin"
@@ -53,14 +53,6 @@ func extractTokenFromAll(c *gin.Context) string {
   authHeader := c.GetHeader("Authorization")
   if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
     return authHeader[7:]
-  }
-  var body struct {
-    Token         string        `json:"token"`
-  }
-  if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-    if body.Token != "" {
-      return body.Token
-    }
   }
   return ""
 }

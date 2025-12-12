@@ -14,6 +14,10 @@ type RouterConfig struct {
   SSEHandler            *handlers.SSEHandler
 //  UserProfileHandler    *handlers.UserProfileHandler
   MaterialHandler       *handlers.MaterialHandler
+  CourseHandler         *handlers.CourseHandler
+  CourseGenHandler      *handlers.CourseGenHandler
+  ModuleHandler         *handlers.ModuleHandler
+  LessonHandler         *handlers.LessonHandler
 //  PipelineHandler       *handlers.PipelineHandler
 //  CourseHandler         *handlers.CourseHandler
 //  LessonHandler         *handlers.LessonHandler
@@ -96,27 +100,36 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
     admin.POST("/courses/:id/generate-lesson/:lessonId", cfg.PipelineHandler.RegenerateLesson)
   }*/
   // Courses
-/*  if cfg.CourseHandler != nil {
-    protected.GET("/courses", cfg.CourseHandler.ListCourses)
-    protected.GET("/courses/:id", cfg.CourseHandler.GetCourse)
-    protected.GET("/courses/:id/outline", cfg.CourseHandler.GetCourseOutline)
-    protected.PATCH("/courses/:id", cfg.CourseHandler.UpdateCourse)
-    protected.POST("/courses/:id/publish", cfg.CourseHandler.PublishCourse)
-    protected.POST("/courses/:id/unpublish", cfg.CourseHandler.UnpublishCourse)
-    protected.POST("/courses/:id/duplicate", cfg.CourseHandler.DuplicateCourse)
-    protected.DELETE("/courses/:id", cfg.CourseHandler.DeleteCourse)
-    protected.GET("/courses/:id/versions", cfg.CourseHandler.ListCourseVersions)
-    protected.GET("/courses/:id/versions/:versionId", cfg.CourseHandler.GetCourseVersion)
-  }*/
+  if cfg.CourseHandler != nil {
+    protected.GET("/courses", cfg.CourseHandler.ListUserCourses)
+//    protected.GET("/courses/:id", cfg.CourseHandler.GetCourse)
+//    protected.GET("/courses/:id/outline", cfg.CourseHandler.GetCourseOutline)
+//    protected.PATCH("/courses/:id", cfg.CourseHandler.UpdateCourse)
+//    protected.POST("/courses/:id/publish", cfg.CourseHandler.PublishCourse)
+//    protected.POST("/courses/:id/unpublish", cfg.CourseHandler.UnpublishCourse)
+//    protected.POST("/courses/:id/duplicate", cfg.CourseHandler.DuplicateCourse)
+//    protected.DELETE("/courses/:id", cfg.CourseHandler.DeleteCourse)
+//    protected.GET("/courses/:id/versions", cfg.CourseHandler.ListCourseVersions)
+//    protected.GET("/courses/:id/versions/:versionId", cfg.CourseHandler.GetCourseVersion)
+  }
+  // CourseGen
+  if cfg.CourseGenHandler != nil {
+    protected.GET("/courses/:id/generation", cfg.CourseGenHandler.GetLatestForCourse)
+    protected.GET("/course-generation-runs/:id", cfg.CourseGenHandler.GetRunByID)
+  }
+  if cfg.ModuleHandler != nil {
+    protected.GET("/courses/:id/modules", cfg.ModuleHandler.ListModulesForCourse)
+  }
   // Lessons
-/*  if cfg.LessonHandler != nil {
-    protected.GET("/lessons/:id", cfg.LessonHandler.GetLesson)
-    protected.GET("/courses/:id/lessons", cfg.LessonHandler.ListCourseLessons)
-    protected.PATCH("/lessons/:id", cfg.LessonHandler.UpdateLesson)
-    protected.GET("/lessons/:id/history", cfg.LessonHandler.GetLessonHistory)
-    protected.POST("/lessons/:id/events", cfg.LessonHandler.RecordLessonEvent)
-    protected.POST("/lessons/:id/reorder", cfg.LessonHandler.ReorderLessons)
-  }*/
+  if cfg.LessonHandler != nil {
+    protected.GET("/modules/:id/lessons", cfg.LessonHandler.ListLessonsForModule)
+//    protected.GET("/lessons/:id", cfg.LessonHandler.GetLesson)
+//    protected.GET("/courses/:id/lessons", cfg.LessonHandler.ListCourseLessons)
+//    protected.PATCH("/lessons/:id", cfg.LessonHandler.UpdateLesson)
+//    protected.GET("/lessons/:id/history", cfg.LessonHandler.GetLessonHistory)
+//    protected.POST("/lessons/:id/events", cfg.LessonHandler.RecordLessonEvent)
+//    protected.POST("/lessons/:id/reorder", cfg.LessonHandler.ReorderLessons)
+  }
   // Quiz
 /*  if cfg.QuizHandler != nil {
     protected.GET("/lessons/:id/quiz", cfg.QuizHandler.GetLessonQuiz)
