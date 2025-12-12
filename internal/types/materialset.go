@@ -32,6 +32,7 @@ type MaterialFile struct {
   MimeType      string          `gorm:"column:mime_type" json:"mime_type"`
   SizeBytes     int64           `gorm:"column:size_bytes" json:"size_bytes"`
   StorageKey    string          `gorm:"column:storage_key;not null" json:"storage_key"`
+  FileURL       string          `gorm:"column:file_url" json:"file_url"`
   Status        string          `gorm:"column:status;not null;default: 'uploaded'" json:"status"`
   AIType        string          `gorm:"column:ai_type" json:"ai_type"`
   AITopics      datatypes.JSON  `gorm:"column:ai_topics;type:jsonb" json:"ai_topics"`

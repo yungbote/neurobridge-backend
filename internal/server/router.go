@@ -12,15 +12,15 @@ type RouterConfig struct {
   AuthMiddleware        *middleware.AuthMiddleware
   UserHandler           *handlers.UserHandler
   SSEHandler            *handlers.SSEHandler
-  UserProfileHandler    *handlers.UserProfileHandler
+//  UserProfileHandler    *handlers.UserProfileHandler
   MaterialHandler       *handlers.MaterialHandler
-  PipelineHandler       *handlers.PipelineHandler
-  CourseHandler         *handlers.CourseHandler
-  LessonHandler         *handlers.LessonHandler
-  QuizHandler           *handlers.QuizHandler
-  TelemetryHandler      *handlers.TelemetryHandler
-  RuntimeHandler        *handlers.RuntimeHandler
-  RecommendationHandler *handlers.RecommendationHandler
+//  PipelineHandler       *handlers.PipelineHandler
+//  CourseHandler         *handlers.CourseHandler
+//  LessonHandler         *handlers.LessonHandler
+//  QuizHandler           *handlers.QuizHandler
+//  TelemetryHandler      *handlers.TelemetryHandler
+//  RuntimeHandler        *handlers.RuntimeHandler
+//  RecommendationHandler *handlers.RecommendationHandler
 }
 
 func NewRouter(cfg RouterConfig) *gin.Engine {
@@ -65,26 +65,26 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
   // User
   protected.GET("/me", cfg.UserHandler.GetMe)
   // User learning profile & mastery
-  if cfg.UserProfileHandler != nil {
+/*  if cfg.UserProfileHandler != nil {
     protected.GET("/user/learning-profile", cfg.UserProfileHandler.GetLearningProfile)
     protected.PATCH("/user/learning-profile", cfg.UserProfileHandler.UpdateLearningProfile)
     protected.POST("/user/learning-profile/infer", cfg.UserProfileHandler.InferLearningProfile)
     protected.POST("/user/learning-profile/suggest", cfg.UserProfileHandler.SuggestLearningProfileAdjustments)
     protected.GET("/user/topic-mastery", cfg.UserProfileHandler.GetTopicMastery)
-  }
+  }*/
   // Materials (user-facing)
   if cfg.MaterialHandler != nil {
-    protected.POST("/material-sets/upload-and-generate", cfg.MaterialHandler.UploadAndGenerateCourse)
+//    protected.POST("/material-sets/upload-and-generate", cfg.MaterialHandler.UploadAndGenerateCourse)
     protected.POST("/material-sets/upload", cfg.MaterialHandler.UploadMaterials)
-    protected.GET("/material-sets", cfg.MaterialHandler.ListMaterialSets)
-    protected.GET("/material-sets/:id", cfg.MaterialHandler.GetMaterialSet)
-    protected.DELETE("/material-sets/:id", cfg.MaterialHandler.DeleteMaterialSet)
-    protected.GET("/material-sets/:id/files", cfg.MaterialHandler.ListMaterialFiles)
-    protected.GET("/material-files/:id", cfg.MaterialHandler.GetMaterialFile)
-    protected.DELETE("/material-files/:id", cfg.MaterialHandler.DeleteMaterialFile)
+//    protected.GET("/material-sets", cfg.MaterialHandler.ListMaterialSets)
+//    protected.GET("/material-sets/:id", cfg.MaterialHandler.GetMaterialSet)
+//    protected.DELETE("/material-sets/:id", cfg.MaterialHandler.DeleteMaterialSet)
+//    protected.GET("/material-sets/:id/files", cfg.MaterialHandler.ListMaterialFiles)
+//    protected.GET("/material-files/:id", cfg.MaterialHandler.GetMaterialFile)
+//    protected.DELETE("/material-files/:id", cfg.MaterialHandler.DeleteMaterialFile)
   }
   // Pipeline (admin-like control plane; you can mount under /admin)
-  if cfg.PipelineHandler != nil {
+/*  if cfg.PipelineHandler != nil {
     admin := protected.Group("/admin")
     admin.POST("/material-sets/:id/analyze", cfg.PipelineHandler.AnalyzeMaterialSet)
     admin.POST("/material-sets/:id/plan-course", cfg.PipelineHandler.PlanCourse)
@@ -94,9 +94,9 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
     admin.POST("/material-sets/:id/cancel", cfg.PipelineHandler.CancelPipeline)
     admin.POST("/courses/:id/generate-lessons", cfg.PipelineHandler.GenerateLessonsForCourse)
     admin.POST("/courses/:id/generate-lesson/:lessonId", cfg.PipelineHandler.RegenerateLesson)
-  }
+  }*/
   // Courses
-  if cfg.CourseHandler != nil {
+/*  if cfg.CourseHandler != nil {
     protected.GET("/courses", cfg.CourseHandler.ListCourses)
     protected.GET("/courses/:id", cfg.CourseHandler.GetCourse)
     protected.GET("/courses/:id/outline", cfg.CourseHandler.GetCourseOutline)
@@ -107,44 +107,44 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
     protected.DELETE("/courses/:id", cfg.CourseHandler.DeleteCourse)
     protected.GET("/courses/:id/versions", cfg.CourseHandler.ListCourseVersions)
     protected.GET("/courses/:id/versions/:versionId", cfg.CourseHandler.GetCourseVersion)
-  }
+  }*/
   // Lessons
-  if cfg.LessonHandler != nil {
+/*  if cfg.LessonHandler != nil {
     protected.GET("/lessons/:id", cfg.LessonHandler.GetLesson)
     protected.GET("/courses/:id/lessons", cfg.LessonHandler.ListCourseLessons)
     protected.PATCH("/lessons/:id", cfg.LessonHandler.UpdateLesson)
     protected.GET("/lessons/:id/history", cfg.LessonHandler.GetLessonHistory)
     protected.POST("/lessons/:id/events", cfg.LessonHandler.RecordLessonEvent)
     protected.POST("/lessons/:id/reorder", cfg.LessonHandler.ReorderLessons)
-  }
+  }*/
   // Quiz
-  if cfg.QuizHandler != nil {
+/*  if cfg.QuizHandler != nil {
     protected.GET("/lessons/:id/quiz", cfg.QuizHandler.GetLessonQuiz)
     protected.POST("/quiz-attempts", cfg.QuizHandler.SubmitQuizAttempt)
     protected.POST("/lessons/:id/quiz/regenerate", cfg.QuizHandler.RegenerateLessonQuiz)
     protected.GET("/lessons/:id/quiz/history", cfg.QuizHandler.GetLessonQuizHistory)
-  }
+  }*/
   // Telemetry
-  if cfg.TelemetryHandler != nil {
+/*  if cfg.TelemetryHandler != nil {
     protected.POST("/telemetry/lesson-event", cfg.TelemetryHandler.RecordLessonEvent)
     protected.POST("/telemetry/quiz-attempt", cfg.TelemetryHandler.RecordQuizAttempt)
     protected.POST("/telemetry/feedback", cfg.TelemetryHandler.RecordFeedback)
     protected.POST("/telemetry/batch", cfg.TelemetryHandler.RecordBatch)
-  }
+  }*/
   // Adaptive runtime
-  if cfg.RuntimeHandler != nil {
+/*  if cfg.RuntimeHandler != nil {
     protected.GET("/runtime/next-lesson", cfg.RuntimeHandler.GetNextLesson)
     protected.POST("/runtime/lesson-view", cfg.RuntimeHandler.GetAdaptedLessonView)
     protected.GET("/runtime/practice-set", cfg.RuntimeHandler.GetPracticeSet)
     protected.GET("/runtime/review-plan", cfg.RuntimeHandler.GetReviewPlan)
     protected.POST("/runtime/preview-adaptation", cfg.RuntimeHandler.PreviewAdaptation)
-  }
+  }*/
   // Recommendations
-  if cfg.RecommendationHandler != nil {
+/*  if cfg.RecommendationHandler != nil {
     protected.GET("/recommendations/next-steps", cfg.RecommendationHandler.GetNextSteps)
     protected.GET("/recommendations/review", cfg.RecommendationHandler.GetReviewItems)
     protected.GET("/recommendations/resources", cfg.RecommendationHandler.GetRecommendedResources)
-  }
+  }*/
   return router
 }
 

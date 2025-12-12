@@ -49,32 +49,29 @@ func main() {
   userRepo := repos.NewUserRepo(thePG, log)
   userTokenRepo := repos.NewUserTokenRepo(thePG, log)
   materialSetRepo := repos.NewMaterialSetRepo(thePG, log)
-  materialFileRepo := repo.NewMaterialFileRepo(thePG, log)
+  materialFileRepo := repos.NewMaterialFileRepo(thePG, log)
   courseRepo := repos.NewCourseRepo(thePG, log)
-  courseModuleRepo := repos.NewCourseModuleRepo(thePG, log)
-  lessonRepo := repos.NewLessonRepo(thePG, log)
-  quizQuestionRepo := repos.NewQuizQuestionRepo(thePG, log)
-  courseBlueprintRepo := repos.NewCourseBlueprintRepo(thePG, log)
-  lessonAssetRepo := repos.NewLessonAssetRepo(thePG, log)
-  learningProfileRepo := repos.NewLearningProfileRepo(thePG, log)
-  topicMasteryRepo := repos.NewTopicMasteryRepo(thePG, log)
-  lessonProgressRepo := repos.NewLessonTopicRepo(thePG, log)
-  quizAttemptRepo := repos.NewQuizAttemptRepo(thePG, log)
-  userEventRepo := repos.NewUserEventRepo(thePG, log)
+//  courseModuleRepo := repos.NewCourseModuleRepo(thePG, log)
+//  lessonRepo := repos.NewLessonRepo(thePG, log)
+//  quizQuestionRepo := repos.NewQuizQuestionRepo(thePG, log)
+//  courseBlueprintRepo := repos.NewCourseBlueprintRepo(thePG, log)
+//  lessonAssetRepo := repos.NewLessonAssetRepo(thePG, log)
+//  learningProfileRepo := repos.NewLearningProfileRepo(thePG, log)
+//  topicMasteryRepo := repos.NewTopicMasteryRepo(thePG, log)
+//  lessonProgressRepo := repos.NewLessonTopicRepo(thePG, log)
+//  quizAttemptRepo := repos.NewQuizAttemptRepo(thePG, log)
+//  userEventRepo := repos.NewUserEventRepo(thePG, log)
 
-  _ = materialSetRepo
-  _ = materialFileRepo
-  _ = courseRepo
-  _ = courseModuleRepo
-  _ = lessonRepo
-  _ = quizQuestionRepo
-  _ = courseBlueprintRepo
-  _ = lessonAssetRepo
-  _ = learningProfileRepo
-  _ = topicMasteryRepo
-  _ = lessonProgressRepo
-  _ = quizAttemptRepo
-  _ = userEventRepo
+//  _ = courseModuleRepo
+//  _ = lessonRepo
+//  _ = quizQuestionRepo
+//  _ = courseBlueprintRepo
+//  _ = lessonAssetRepo
+//  _ = learningProfileRepo
+//  _ = topicMasteryRepo
+//  _ = lessonProgressRepo
+//  _ = quizAttemptRepo
+//  _ = userEventRepo
 
   // SSE
   log.Info("Setting up SSE hub now...")
@@ -91,14 +88,22 @@ func main() {
     log.Error("Could not init AvatarService", "error", err)
     os.Exit(1)
   }
+  fileService, err := services.NewFileService(thePG, log, bucketService, materialFileRepo)
+  if err != nil {
+    log.Error("Could not init FileService", "error", err)
+    os.Exit(1)
+  }
   authService := services.NewAuthService(thePG, log, userRepo, avatarService, userTokenRepo, jwtSecretKey, time.Duration(accessTokenTTL)*time.Second, time.Duration(refreshTokenTTL)*time.Second)
   userService := services.NewUserService(thePG, log, userRepo)
+  materialService := services.NewMaterialService(thePG, log, materialSetRepo, materialFileRepo, fileService)
+  courseService := services.NewCourseService(thePG, log, courseRepo, materialSetRepo)
 
   // Handlers
   log.Info("Setting up handlers from main...")
   authHandler := handlers.NewAuthHandler(authService)
   userHandler := handlers.NewUserHandler(userService)
   sseHandler := handlers.NewSSEHandler(log, sseHub)
+  materialHandler := handlers.NewMaterialHandler(materialService, courseService, sseHub)
 
   // Middleware
   log.Info("Setting up middleware from main...")
@@ -111,6 +116,7 @@ func main() {
     AuthMiddleware:       authMiddleware,
     UserHandler:          userHandler,
     SSEHandler:           sseHandler,
+    MaterialHandler:      materialHandler,
   })
 
   port := utils.GetEnv("PORT", "8080", log)

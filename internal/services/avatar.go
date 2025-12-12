@@ -80,13 +80,13 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
     return err
   }
   bucketKey := fmt.Sprintf("user_avatar/%s.png", user.ID.String())
-  if err := as.bucketService.UploadFile(ctx, tx, bucketKey, bytes.NewReader(buf.Bytes())); err != nil {
+  if err := as.bucketService.UploadFile(ctx, tx, BucketCategoryAvatar, bucketKey, bytes.NewReader(buf.Bytes())); err != nil {
     return fmt.Errorf("Failed to upload user avatar: %w", err)
   }
   if user.AvatarBucketKey != bucketKey {
     user.AvatarBucketKey = bucketKey
   }
-  finalURL := as.bucketService.GetPublicURL(bucketKey)
+  finalURL := as.bucketService.GetPublicURL(BucketCategoryAvatar, bucketKey)
   if user.AvatarURL != finalURL {
     user.AvatarURL = finalURL
   }
