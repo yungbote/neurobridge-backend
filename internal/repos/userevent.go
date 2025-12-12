@@ -8,16 +8,6 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/types"
 )
 
-package repos
-
-import (
-  "context"
-  "github.com/google/uuid"
-  "gorm.io/gorm"
-  "github.com/yungbote/neurobridge-backend/internal/logger"
-  "github.com/yungbote/neurobridge-backend/internal/types"
-)
-
 type UserEventRepo interface {
   Create(ctx context.Context, tx *gorm.DB, events []*types.UserEvent) ([]*types.UserEvent, error)
   GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserEvent, error)

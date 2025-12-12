@@ -63,6 +63,8 @@ func (s *PostgresService) AutoMigrateAll() error {
     &types.LessonProgress{},
     &types.QuizAttempt{},
     &types.UserEvent{},
+    &types.AICallLog{},
+    &types.MaterialChunk{},
   )
   if err != nil {
     s.log.Error("Auto migration failed for postgres tables", "error", err)

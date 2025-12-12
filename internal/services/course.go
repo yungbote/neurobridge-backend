@@ -88,7 +88,7 @@ func (cs *courseService) CreateCourseFromMaterialSet(
   if ssd := ssedata.GetSSEData(ctx); ssd != nil {
     ssd.AppendMessage(sse.SSEMessage{
       Channel: userID.String(),           // user-specific channel
-      Event:   sse.SSEEventCourseCreated, // the new event type
+      Event:   sse.SSEEventUserCourseCreated, // the new event type
       Data: map[string]interface{}{
         "course": course,
       },
