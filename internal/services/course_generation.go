@@ -352,22 +352,42 @@ func (cgs *courseGenerationService) processRun(ctx context.Context, run *types.C
   isPlaceholder := strings.TrimSpace(course.Title) == "" || strings.Contains(course.Title, "Generating course")
 
   if isPlaceholder {
+    // ---- CHANGED: schema now includes short/long variants; tags are enforced single-word ----
     metaSchema := map[string]any{
       "type": "object",
       "properties": map[string]any{
-        "title":       map[string]any{"type": "string"},
-        "description": map[string]any{"type": "string"},
-        "subject":     map[string]any{"type": "string"},
-        "level":       map[string]any{"type": "string"},
-        "tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+        "short_title":       map[string]any{"type": "string"},
+        "short_description": map[string]any{"type": "string"},
+        "title":             map[string]any{"type": "string"},
+        "description":       map[string]any{"type": "string"},
+        "subject":           map[string]any{"type": "string"},
+        "level":             map[string]any{"type": "string"},
+        "tags":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
       },
-      "required":             []string{"title", "description", "subject", "level", "tags"},
+      "required": []string{
+        "short_title",
+        "short_description",
+        "title",
+        "description",
+        "subject",
+        "level",
+        "tags",
+      },
       "additionalProperties": false,
     }
 
     metaObj, err := cgs.ai.GenerateJSON(ctx,
       "You generate concise, high-quality course metadata from user-provided learning materials.",
-      fmt.Sprintf("Materials (truncated):\n%s\n\nReturn course metadata.", combined),
+      fmt.Sprintf(
+        "Materials (truncated):\n%s\n\nReturn course metadata.\n\nRules:\n"+
+          "- tags MUST be single words only (no spaces).\n"+
+          "- tags must be lowercase and contain only letters/numbers.\n"+
+          "- short_title: <= 64 chars.\n"+
+          "- short_description: <= 140 chars.\n"+
+          "- title: <= 120 chars.\n"+
+          "- description: 2-4 sentences.\n",
+        combined,
+      ),
       "course_metadata",
       metaSchema,
     )
@@ -376,22 +396,30 @@ func (cgs *courseGenerationService) processRun(ctx context.Context, run *types.C
       return
     }
 
-    title := fmt.Sprint(metaObj["title"])
-    desc := fmt.Sprint(metaObj["description"])
-    subject := fmt.Sprint(metaObj["subject"])
-    level := fmt.Sprint(metaObj["level"])
-    tags := metaObj["tags"]
+    // ---- CHANGED: store short fields in columns, long fields + tags in metadata ----
+    shortTitle := clampString(fmt.Sprint(metaObj["short_title"]), 64)
+    shortDesc := clampString(fmt.Sprint(metaObj["short_description"]), 140)
+
+    longTitle := clampString(fmt.Sprint(metaObj["title"]), 120)
+    longDesc := strings.TrimSpace(fmt.Sprint(metaObj["description"]))
+
+    subject := strings.TrimSpace(fmt.Sprint(metaObj["subject"]))
+    level := strings.TrimSpace(fmt.Sprint(metaObj["level"]))
+
+    tags := normalizeTags(metaObj["tags"], 12)
 
     meta := map[string]any{
-      "status": "generating",
-      "tags":   tags,
+      "status":           "generating",
+      "tags":             tags,
+      "long_title":       longTitle,
+      "long_description": longDesc,
     }
 
     if err := cgs.db.WithContext(ctx).Model(&types.Course{}).
       Where("id = ?", run.CourseID).
       Updates(map[string]any{
-        "title":       title,
-        "description": desc,
+        "title":       shortTitle,
+        "description": shortDesc,
         "subject":     subject,
         "level":       level,
         "metadata":    datatypes.JSON(mustJSON(meta)),
@@ -401,13 +429,13 @@ func (cgs *courseGenerationService) processRun(ctx context.Context, run *types.C
       return
     }
 
-    course.Title = title
-    course.Description = desc
+    course.Title = shortTitle
+    course.Description = shortDesc
     course.Subject = subject
     course.Level = level
     course.Metadata = datatypes.JSON(mustJSON(meta))
 
-    // NEW: push updated course to frontend immediately (title/subject/level change)
+    // NEW: push updated course to frontend immediately (card should update)
     cgs.broadcast(userID, sse.SSEEventUserCourseCreated, map[string]any{
       "course": course,
       "run":    run,
@@ -634,10 +662,10 @@ func (cgs *courseGenerationService) processRun(ctx context.Context, run *types.C
     lessonSchema := map[string]any{
       "type": "object",
       "properties": map[string]any{
-        "concise_md":         map[string]any{"type": "string"},
-        "step_by_step_md":    map[string]any{"type": "string"},
-        "citations":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-        "estimated_minutes":  map[string]any{"type": "integer"},
+        "concise_md":        map[string]any{"type": "string"},
+        "step_by_step_md":   map[string]any{"type": "string"},
+        "citations":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+        "estimated_minutes": map[string]any{"type": "integer"},
       },
       "required":             []string{"concise_md", "step_by_step_md", "citations", "estimated_minutes"},
       "additionalProperties": false,
@@ -830,6 +858,55 @@ func buildCombinedFromChunks(chunks []*types.MaterialChunk, maxLen int) string {
     b.WriteString("\n\n")
   }
   return strings.TrimSpace(b.String())
+}
+
+// ---- CHANGED: enforce single-word tags + short/long string limits ----
+
+func normalizeOneWordTag(s string) string {
+  s = strings.ToLower(strings.TrimSpace(s))
+  if s == "" {
+    return ""
+  }
+  s = strings.ReplaceAll(s, " ", "")
+  s = strings.ReplaceAll(s, "-", "")
+  s = strings.ReplaceAll(s, "_", "")
+
+  out := make([]rune, 0, len(s))
+  for _, r := range s {
+    if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+      out = append(out, r)
+    }
+  }
+  return string(out)
+}
+
+func normalizeTags(v any, maxN int) []string {
+  raw := toStringSlice(v)
+  seen := map[string]bool{}
+  out := make([]string, 0, len(raw))
+  for _, t := range raw {
+    tt := normalizeOneWordTag(t)
+    if tt == "" {
+      continue
+    }
+    if seen[tt] {
+      continue
+    }
+    seen[tt] = true
+    out = append(out, tt)
+    if maxN > 0 && len(out) >= maxN {
+      break
+    }
+  }
+  return out
+}
+
+func clampString(s string, maxLen int) string {
+  s = strings.TrimSpace(s)
+  if maxLen <= 0 || len(s) <= maxLen {
+    return s
+  }
+  return strings.TrimSpace(s[:maxLen])
 }
 
 func extractTopicsFromLessonMetadata(js datatypes.JSON) []string {
