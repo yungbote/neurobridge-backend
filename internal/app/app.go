@@ -4,26 +4,28 @@ import (
 	"context"
 	"fmt"
 	"os"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/db"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/sse"
 )
 
 type App struct {
-	Log					*logger.Logger
-	DB					*gorm.DB
-	Router			*gin.Engine
-	Cfg					Config
-	Repos				Repos
-	Services		Services
-	SSEHub			*sse.SSEHub
-	cancel			context.CancelFunc
+	Log    *logger.Logger
+	DB     *gorm.DB
+	Router *gin.Engine
+	Cfg    Config
+	Repos  Repos
+	Services Services
+	SSEHub *sse.SSEHub
+
+	cancel context.CancelFunc
 }
 
 func New() (*App, error) {
-	// Logger
 	logMode := os.Getenv("LOG_MODE")
 	if logMode == "" {
 		logMode = "development"
@@ -33,11 +35,9 @@ func New() (*App, error) {
 		return nil, fmt.Errorf("init logger: %w", err)
 	}
 
-	// Config
 	log.Info("Loading environment variables...")
 	cfg := LoadConfig(log)
-	
-	// Postgres
+
 	pg, err := db.NewPostgresService(log)
 	if err != nil {
 		log.Sync()
@@ -49,32 +49,28 @@ func New() (*App, error) {
 	}
 	theDB := pg.DB()
 
-	// SSEHub
 	ssehub := sse.NewSSEHub(log)
-	// Repos
+
 	reposet := wireRepos(theDB, log)
-	// Services
+
 	serviceset, err := wireServices(theDB, log, cfg, reposet, ssehub)
-	if err != nil { 
+	if err != nil {
 		log.Sync()
-		return nil, err 
+		return nil, err
 	}
-	// Handlers
+
 	handlerset := wireHandlers(log, serviceset, ssehub)
-	// Middleware
 	middleware := wireMiddleware(log, serviceset)
-	// Router
 	router := wireRouter(handlerset, middleware)
-	
-	// App
+
 	return &App{
-		Log:			log,
-		DB:				theDB,
-		Router:		router,
-		Cfg:			cfg,
-		Repos:		reposet,
-		Services:	serviceset,
-		SSEHub:		ssehub,
+		Log:      log,
+		DB:       theDB,
+		Router:   router,
+		Cfg:      cfg,
+		Repos:    reposet,
+		Services: serviceset,
+		SSEHub:   ssehub,
 	}, nil
 }
 
@@ -84,8 +80,10 @@ func (a *App) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
-	if a.Services.CourseGeneration != nil {
-		a.Services.CourseGeneration.StartWorker(ctx)
+
+	// Start generic job worker
+	if a.Services.JobWorker != nil {
+		a.Services.JobWorker.Start(ctx)
 	}
 }
 

@@ -18,9 +18,10 @@ const (
   SSEEventUserAvatarUpdated     SSEEvent = "UserAvatarChanged"
   SSEEventUserCourseCreated     SSEEvent = "UserCourseCreated"
 
-  CourseGenerationProgress      SSEEvent = "CourseGenerationProgress"
-  CourseGenerationFailed        SSEEvent = "CourseGenerationFailed"
-  CourseGenerationDone          SSEEvent = "CourseGenerationDone"
+  SSEEventJobCreated            SSEEvent = "JobCreated"
+	SSEEventJobProgress           SSEEvent = "JobProgress"
+	SSEEventJobFailed             SSEEvent = "JobFailed"
+	SSEEventJobDone               SSEEvent = "JobDone"
 )
 
 type SSEMessage struct {

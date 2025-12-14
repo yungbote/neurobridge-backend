@@ -1,14 +1,12 @@
 package middleware
 
 import (
- // "encoding/json"
   "net/http"
   "strings"
   "github.com/gin-gonic/gin"
   "github.com/google/uuid"
   "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/requestdata"
-  "github.com/yungbote/neurobridge-backend/internal/ssedata"
   "github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -25,21 +23,27 @@ func NewAuthMiddleware(log *logger.Logger, authService services.AuthService) *Au
 func (am *AuthMiddleware) RequireAuth() gin.HandlerFunc {
   return func(c *gin.Context) {
     tokenString := extractTokenFromAll(c)
-    am.log.Debug("TokenString:", "tokenstring", tokenString)
+    am.log.Debug("TokenString", "token", tokenString)
     if tokenString == "" {
-      c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid token"})
+      c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+        "error": gin.H{"message": "missing or invalid token", "code": "unauthorized"},
+      })
       return
     }
     ctx, err := am.authService.SetContextFromToken(c.Request.Context(), tokenString)
     if err != nil {
-      c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+      c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+        "error": gin.H{"messages": err.Error(), "code": "unauthorized"},
+      })
       return
     }
-    ctx = ssedata.WithSSEData(ctx)
+    // NOTE: SSEData is attached by middleware.AttachRequestContext() globally
     c.Request = c.Request.WithContext(ctx)
     rd := requestdata.GetRequestData(ctx)
     if rd == nil || rd.UserID == uuid.Nil {
-      c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+      c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+        "error": gin.H{"message": "forbidden", "code": "forbidden"},
+      })
       return
     }
     c.Next()

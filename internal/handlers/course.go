@@ -1,4 +1,4 @@
-package handlers
+package handlers 
 
 import (
 	"net/http"
@@ -21,22 +21,19 @@ func NewCourseHandler(log *logger.Logger, courseService services.CourseService) 
 	}
 }
 
-// GET /api/courses
-// Returns all courses for the authenticated user.
 func (h *CourseHandler) ListUserCourses(c *gin.Context) {
-  rd := requestdata.GetRequestData(c.Request.Context())
-  if rd == nil || rd.UserID == uuid.Nil {
-    c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
-    return
-  }
-
-  courses, err := h.courseService.GetUserCourses(c.Request.Context(), nil)
-  if err != nil {
-    h.log.Error("ListUserCourses failed", "error", err, "user_id", rd.UserID)
-    c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load courses"})
-    return
-  }
-  c.JSON(http.StatusOK, gin.H{"courses": courses})
+	rd := requestdata.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+	courses, err := h.courseService.GetUserCourses(c.Request.Context(), nil)
+	if err != nil {
+		h.log.Error("ListUserCourses failed", "error", err, "user_id", rd.UserID)
+		RespondError(c, http.StatusInternalServerError, "load_courses_failed", err)
+		return
+	}
+	RespondOK(c, gin.H{"courses": courses})
 }
 
 

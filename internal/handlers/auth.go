@@ -5,8 +5,6 @@ import (
   "github.com/gin-gonic/gin"
   "github.com/yungbote/neurobridge-backend/internal/types"
   "github.com/yungbote/neurobridge-backend/internal/services"
-//  "github.com/yungbote/neurobridge-backend/internal/sse"
-//  "github.com/yungbote/neurobridge-backend/internal/ssedata"
 )
 
 type AuthHandler struct {
@@ -25,7 +23,7 @@ func (ah *AuthHandler) Register(c *gin.Context) {
     Password    string      `json:"password"`
   }
   if err := c.ShouldBindJSON(&req); err != nil {
-    c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+    RespondError(c, http.StatusBadRequest, "invalid_request", err)
     return
   }
   user := types.User{
@@ -34,51 +32,55 @@ func (ah *AuthHandler) Register(c *gin.Context) {
     LastName:   req.LastName,
     Password:   req.Password,
   }
-  err := ah.authService.RegisterUser(c.Request.Context(), &user)
-  if err != nil {
-    c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+  if err := ah.authService.RegisterUser(c.Request.Context(), &user); err != nil {
+    RespondError(c, http.StatusBadRequest, "registration_failed", err)
     return
   }
-  c.JSON(http.StatusOK, gin.H{"success": "true"})
+  RespondOK(c, gin.H{"ok": true})
 }
 
 func (ah *AuthHandler) Login(c *gin.Context) {
   var req struct {
-    Email         string      `json:"email"`
-    Password      string      `json:"password"`
+    Email       string      `json:"email"`
+    Password    string      `json:"password"`
   }
   if err := c.ShouldBindJSON(&req); err != nil {
-    c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+    RespondError(c, http.StatusBadRequest, "invalid_request", err)
     return
   }
   accessToken, refreshToken, err := ah.authService.LoginUser(c.Request.Context(), req.Email, req.Password)
   if err != nil {
-    c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+    RespondError(c, http.StatusUnauthorized, "invalid_credentials", err)
     return
   }
-  accessTTL := ah.authService.GetAccessTTL()
-  expiresIn := int(accessTTL.Seconds())
-  c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": refreshToken, "expires_in": expiresIn})
+  expiresIn := int(ah.authService.GetAccessTTL().Seconds())
+  RespondOK(c, gin.H{
+    "access_token":   accessToken,
+    "refresh_token":  refreshToken,
+    "expires_in":     expiresIn,
+  })
 }
 
 func (ah *AuthHandler) Refresh(c *gin.Context) {
   accessToken, refreshToken, err := ah.authService.RefreshUser(c.Request.Context())
   if err != nil {
-    c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+    RespondError(c, http.StatusUnauthorized, "refresh_failed", err)
     return
   }
-  accessTTL := ah.authService.GetAccessTTL()
-  expiresIn := int(accessTTL.Seconds())
-  c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": refreshToken, "expires_in": expiresIn})
+  expiresIn := int(ah.authService.GetAccessTTL().Seconds())
+  RespondOK(c, gin.H{
+    "access_token":   accessToken,
+    "refresh_token":  refreshToken,
+    "expires_in":     expiresIn,
+  })
 }
 
 func (ah *AuthHandler) Logout(c *gin.Context) {
-  err := ah.authService.LogoutUser(c.Request.Context())
-  if err != nil {
-    c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+  if err := ah.authService.LogoutUser(c.Request.Context()); err != nil {
+    RespondError(c, http.StatusBadRequest, "logout_failed", err)
     return
   }
-  c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
+  RespondOK(c, gin.H{"ok": true})
 }
 
 

@@ -1,0 +1,148 @@
+package jobs
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
+	"github.com/yungbote/neurobridge-backend/internal/repos"
+	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/types"
+)
+
+type Context struct {
+	Ctx						context.Context
+	DB						*gorm.DB
+	Job						*types.JobRun
+	Repo					repos.JobRunRepo
+	Notify				services.JobNotifier
+	LastMessage		string			// Convenience: pipeline can write human messages without deciding event type
+	payload				map[string]any
+}
+
+func NewContext(ctx context.Context, db *gorm.DB, job *types.JobRun, repo repos.JobRunRepo, notify services.JobNotifier) *Context {
+	c := &Context{
+		Ctx:			ctx,
+		DB:				db,
+		Job:			job,
+		Repo:			repo,
+		Notify:		notify,
+	}
+	_ = c.decodePayload()
+	return c
+}
+
+func (c *Context) decodePayload() error {
+	if c.Job == nil {
+		return nil
+	}
+	if len(c.Job.Payload) == 0 {
+		c.payload = map[string]any{}
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(c.Job.Payload, &m); err != nil {
+		c.payload = map[string]any{}
+		return err
+	}
+	c.payload = m
+	return nil
+}
+
+func (c *Context) Payload() map[string]any {
+	if c.payload == nil {
+		c.payload = map[string]any{}
+	}
+	return c.payload
+}
+
+func (c *Context) PayloadUUID(key string) (uuid.UUID, bool) {
+	v, ok := c.Payload()[key]
+	if !ok || v == nil {
+		return uuid.Nil, false
+	}
+	s := fmt.Sprint(v)
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func (c *Context) Update(updates map[string]any) error {
+	if c.Job == nil || c.Job.ID == uuid.Nil {
+		return nil
+	}
+	return c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, toIfaceMap(updates))
+}
+
+func (c *Context) Progress(stage string, pct int, msg string) {
+	now := time.Now()
+	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
+		"stage":        stage,
+		"progress":     pct,
+		"heartbeat_at": now,
+		"updated_at":   now,
+	})
+	c.Notify.JobProgress(c.Job.OwnerUserID, c.Job, stage, pct, msg)
+}
+
+func (c *Context) Fail(stage string, err error) {
+	now := time.Now()
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
+		"status":       "failed",
+		"stage":        stage,
+		"error":        msg,
+		"last_error_at": now,
+		"locked_at":    nil,
+		"updated_at":   now,
+	})
+	c.Notify.JobFailed(c.Job.OwnerUserID, c.Job, stage, msg)
+}
+
+func (c *Context) Succeed(finalStage string, result any) {
+	now := time.Now()
+	var res datatypes.JSON
+	if result != nil {
+		b, _ := json.Marshal(result)
+		res = datatypes.JSON(b)
+	}
+	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
+		"status":       "succeeded",
+		"stage":        finalStage,
+		"progress":     100,
+		"error":        "",
+		"result":       res,
+		"locked_at":    nil,
+		"heartbeat_at": now,
+		"updated_at":   now,
+	})
+	c.Notify.JobDone(c.Job.OwnerUserID, c.Job)
+}
+
+func toIfaceMap(in map[string]any) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+
+
+
+
+
+
+
+
+
