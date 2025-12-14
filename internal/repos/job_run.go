@@ -49,7 +49,7 @@ func (r *jobRunRepo) Create(ctx context.Context, tx *gorm.DB, jobs []*types.JobR
 func (r *jobRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.JobRun, error) {
   transaction := tx
   if transaction == nil {
-    transactiojn = r.db
+    transaction = r.db
   }
   var out []*types.JobRun
   if len(ids) == 0 {

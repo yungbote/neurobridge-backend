@@ -1,7 +1,6 @@
 package pipelines
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"

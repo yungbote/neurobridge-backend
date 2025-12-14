@@ -3,7 +3,9 @@ package jobs
 import (
 	"context"
 	"time"
+
 	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -31,9 +33,11 @@ func (w *Worker) Start(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+
 		const maxAttempts = 5
 		retryDelay := 30 * time.Second
 		staleRunning := 2 * time.Minute
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -47,17 +51,16 @@ func (w *Worker) Start(ctx context.Context) {
 				if job == nil {
 					continue
 				}
+
 				h, ok := w.registry.Get(job.JobType)
+				jc := NewContext(ctx, w.db, job, w.repo, w.notify)
+
 				if !ok {
 					w.log.Warn("No handler registered for job_type", "job_type", job.JobType, "job_id", job.ID)
-					jc := NewContext(ctx, w.db, job, w.repo, w.notify)
-					jc.Fail("dispatch", 	// stage
-						&missingHandlerError{JobType: job.JobType},
-					)
+					jc.Fail("dispatch", &missingHandlerError{JobType: job.JobType})
 					continue
 				}
-				jc := NewContext(ctx, w.db, job, w.repo, w.notify)
-				// If handler panics, we want to mark failed.
+
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -66,7 +69,10 @@ func (w *Worker) Start(ctx context.Context) {
 						}
 					}()
 
-					h.Run(jc)
+					if runErr := h.Run(jc); runErr != nil {
+						// Most pipelines call jc.Fail themselves; this is a safety net.
+						jc.Fail("run", runErr)
+					}
 				}()
 			}
 		}
@@ -77,9 +83,7 @@ type missingHandlerError struct{ JobType string }
 
 func (e *missingHandlerError) Error() string { return "no handler registered for job_type=" + e.JobType }
 
-func errFromRecover(v any) error {
-	return &panicError{Val: v}
-}
+func errFromRecover(v any) error { return &panicError{Val: v} }
 
 type panicError struct{ Val any }
 

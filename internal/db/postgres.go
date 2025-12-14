@@ -89,7 +89,6 @@ func (s *PostgresService) AutoMigrateAll() error {
     &types.QuizAttempt{},
     &types.UserEvent{},
     &types.MaterialChunk{},
-    &types.CourseGenerationRun{},
     &types.TopicStylePreference{},
     &types.JobRun{},
   )

@@ -6,17 +6,17 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/jobs"
-	"github.com/yungbote/neurobridge-backend/internal/jobs/pipelines"
+	pipelines "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/sse"
 )
 
 type Services struct {
-	Bucket   services.BucketService
-	OpenAI   services.OpenAIClient
-	Avatar   services.AvatarService
-	File     services.FileService
+	Bucket services.BucketService
+	OpenAI services.OpenAIClient
+	Avatar services.AvatarService
+	File   services.FileService
 
 	Auth     services.AuthService
 	User     services.UserService
