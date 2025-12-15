@@ -21,7 +21,6 @@ type App struct {
 	Repos  Repos
 	Services Services
 	SSEHub *sse.SSEHub
-
 	cancel context.CancelFunc
 }
 

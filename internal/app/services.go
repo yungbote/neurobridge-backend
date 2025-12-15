@@ -13,11 +13,13 @@ import (
 )
 
 type Services struct {
+	// Core
 	Bucket services.BucketService
 	OpenAI services.OpenAIClient
 	Avatar services.AvatarService
 	File   services.FileService
 
+	// Auth + domain
 	Auth     services.AuthService
 	User     services.UserService
 	Material services.MaterialService
@@ -25,10 +27,26 @@ type Services struct {
 	Module   services.ModuleService
 	Lesson   services.LessonService
 
-	JobNotifier services.JobNotifier
-	JobService  services.JobService
-	Workflow    services.WorkflowService
+	// Jobs + notifications
+	JobNotifier    services.JobNotifier
+	JobService     services.JobService
+	Workflow       services.WorkflowService
+	CourseNotifier services.CourseNotifier
 
+	// Providers (hard way)
+	Vision   services.VisionProviderService
+	DocAI    services.DocumentProviderService
+	Speech   services.SpeechProviderService
+	VideoAI  services.VideoIntelligenceProviderService
+
+	// Local tooling + captioning
+	MediaTools services.MediaToolsService
+	Caption    services.CaptionProviderService
+
+	// Orchestrator
+	ContentExtractor services.ContentExtractionService
+
+	// Job infra
 	JobRegistry *jobs.Registry
 	JobWorker   *jobs.Worker
 }
@@ -59,14 +77,60 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)
 	lessonService := services.NewLessonService(db, log, repos.Course, repos.CourseModule, repos.Lesson)
 
-	// Generic job infra
+	// Job infra
 	jobNotifier := services.NewJobNotifier(sseHub)
 	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier)
 	workflow := services.NewWorkflowService(db, log, materialService, repos.Course, jobService)
 
+	// Course-domain notifier
+	courseNotifier := services.NewCourseNotifier(sseHub)
+
+	// ---------- Provider services ----------
+	visionProvider, err := services.NewVisionProviderService(log)
+	if err != nil {
+		return Services{}, fmt.Errorf("init vision provider: %w", err)
+	}
+
+	docProvider, err := services.NewDocumentProviderService(log)
+	if err != nil {
+		return Services{}, fmt.Errorf("init document provider: %w", err)
+	}
+
+	speechProvider, err := services.NewSpeechProviderService(log)
+	if err != nil {
+		return Services{}, fmt.Errorf("init speech provider: %w", err)
+	}
+
+	videoProvider, err := services.NewVideoIntelligenceProviderService(log)
+	if err != nil {
+		return Services{}, fmt.Errorf("init video intelligence provider: %w", err)
+	}
+
+	mediaTools := services.NewMediaToolsService(log)
+
+	captionProvider, err := services.NewCaptionProviderService(log, openaiClient)
+	if err != nil {
+		return Services{}, fmt.Errorf("init caption provider: %w", err)
+	}
+
+	// Orchestrator: full extraction pipeline
+	extractor := services.NewContentExtractionService(
+		db,
+		log,
+		repos.MaterialChunk,
+		repos.MaterialFile,
+		bucketService,
+		mediaTools,
+		docProvider,
+		visionProvider,
+		speechProvider,
+		videoProvider,
+		captionProvider,
+	)
+
+	// ---------- Job registry ----------
 	reg := jobs.NewRegistry()
 
-	// Register pipelines
 	courseBuild := pipelines.NewCourseBuildPipeline(
 		db,
 		log,
@@ -79,6 +143,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialChunk,
 		bucketService,
 		openaiClient,
+		courseNotifier,
+		extractor, // <-- NEW: pass the orchestrator into the pipeline
 	)
 	if err := reg.Register(courseBuild); err != nil {
 		return Services{}, err
@@ -99,9 +165,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Module:   moduleService,
 		Lesson:   lessonService,
 
-		JobNotifier: jobNotifier,
-		JobService:  jobService,
-		Workflow:    workflow,
+		JobNotifier:    jobNotifier,
+		JobService:     jobService,
+		Workflow:       workflow,
+		CourseNotifier: courseNotifier,
+
+		Vision:  visionProvider,
+		DocAI:   docProvider,
+		Speech:  speechProvider,
+		VideoAI: videoProvider,
+
+		MediaTools: mediaTools,
+		Caption:    captionProvider,
+
+		ContentExtractor: extractor,
 
 		JobRegistry: reg,
 		JobWorker:   worker,

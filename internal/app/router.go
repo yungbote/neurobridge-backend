@@ -11,12 +11,10 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		AuthMiddleware:    middleware.Auth,
 		UserHandler:       handlers.User,
 		SSEHandler:        handlers.SSE,
-
 		MaterialHandler:   handlers.Material,
 		CourseHandler:     handlers.Course,
 		ModuleHandler:     handlers.Module,
 		LessonHandler:     handlers.Lesson,
-
 		JobsHandler:       handlers.Jobs,
 	})
 }

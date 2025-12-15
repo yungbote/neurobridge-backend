@@ -13,12 +13,10 @@ type RouterConfig struct {
 	AuthMiddleware *middleware.AuthMiddleware
 	UserHandler    *handlers.UserHandler
 	SSEHandler     *handlers.SSEHandler
-
 	MaterialHandler *handlers.MaterialHandler
 	CourseHandler   *handlers.CourseHandler
 	ModuleHandler   *handlers.ModuleHandler
 	LessonHandler   *handlers.LessonHandler
-
 	JobsHandler     *handlers.JobsHandler
 }
 
@@ -70,13 +68,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	}
 	if cfg.LessonHandler != nil {
 		protected.GET("/modules/:id/lessons", cfg.LessonHandler.ListLessonsForModule)
+		protected.GET("/lessons/:id", cfg.LessonHandler.GetLesson)
 	}
-
 	// Generic job APIs
 	if cfg.JobsHandler != nil {
 		protected.GET("/jobs/:id", cfg.JobsHandler.GetJobByID)
 	}
-
 	return router
 }
 

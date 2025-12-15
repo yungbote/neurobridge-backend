@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -30,53 +32,74 @@ func NewWorker(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, regis
 }
 
 func (w *Worker) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
+	concurrency := getEnvInt("WORKER_CONCURRENCY", 4)
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	w.log.Info("Starting job worker pool", "concurrency", concurrency)
 
-		const maxAttempts = 5
-		retryDelay := 30 * time.Second
-		staleRunning := 2 * time.Minute
+	for i := 0; i < concurrency; i++ {
+		workerID := i + 1
+		go w.runLoop(ctx, workerID)
+	}
+}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				job, err := w.repo.ClaimNextRunnable(ctx, w.db, maxAttempts, retryDelay, staleRunning)
-				if err != nil {
-					w.log.Warn("ClaimNextRunnable failed", "error", err)
-					continue
-				}
-				if job == nil {
-					continue
-				}
+func (w *Worker) runLoop(ctx context.Context, workerID int) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-				h, ok := w.registry.Get(job.JobType)
-				jc := NewContext(ctx, w.db, job, w.repo, w.notify)
+	const maxAttempts = 5
+	retryDelay := 30 * time.Second
+	staleRunning := 2 * time.Minute
 
-				if !ok {
-					w.log.Warn("No handler registered for job_type", "job_type", job.JobType, "job_id", job.ID)
-					jc.Fail("dispatch", &missingHandlerError{JobType: job.JobType})
-					continue
-				}
+	for {
+		select {
+		case <-ctx.Done():
+			w.log.Info("Worker loop stopped", "worker_id", workerID)
+			return
+		case <-ticker.C:
+			job, err := w.repo.ClaimNextRunnable(ctx, w.db, maxAttempts, retryDelay, staleRunning)
+			if err != nil {
+				w.log.Warn("ClaimNextRunnable failed", "worker_id", workerID, "error", err)
+				continue
+			}
+			if job == nil {
+				continue
+			}
 
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							w.log.Error("Job handler panic", "job_id", job.ID, "job_type", job.JobType, "panic", r)
-							jc.Fail("panic", errFromRecover(r))
-						}
-					}()
+			h, ok := w.registry.Get(job.JobType)
+			jc := NewContext(ctx, w.db, job, w.repo, w.notify)
 
-					if runErr := h.Run(jc); runErr != nil {
-						// Most pipelines call jc.Fail themselves; this is a safety net.
-						jc.Fail("run", runErr)
+			if !ok {
+				w.log.Warn("No handler registered for job_type",
+					"worker_id", workerID,
+					"job_type", job.JobType,
+					"job_id", job.ID,
+				)
+				jc.Fail("dispatch", &missingHandlerError{JobType: job.JobType})
+				continue
+			}
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						w.log.Error("Job handler panic",
+							"worker_id", workerID,
+							"job_id", job.ID,
+							"job_type", job.JobType,
+							"panic", r,
+						)
+						jc.Fail("panic", errFromRecover(r))
 					}
 				}()
-			}
+
+				if runErr := h.Run(jc); runErr != nil {
+					// Most pipelines call jc.Fail themselves; this is a safety net.
+					jc.Fail("run", runErr)
+				}
+			}()
 		}
-	}()
+	}
 }
 
 type missingHandlerError struct{ JobType string }
@@ -88,6 +111,18 @@ func errFromRecover(v any) error { return &panicError{Val: v} }
 type panicError struct{ Val any }
 
 func (e *panicError) Error() string { return "panic: unexpected error" }
+
+func getEnvInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
+}
 
 
 

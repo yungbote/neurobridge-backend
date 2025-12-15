@@ -19,9 +19,15 @@ const (
   SSEEventUserCourseCreated     SSEEvent = "UserCourseCreated"
 
   SSEEventJobCreated            SSEEvent = "JobCreated"
-	SSEEventJobProgress           SSEEvent = "JobProgress"
-	SSEEventJobFailed             SSEEvent = "JobFailed"
-	SSEEventJobDone               SSEEvent = "JobDone"
+  SSEEventJobProgress           SSEEvent = "JobProgress"
+  SSEEventJobFailed             SSEEvent = "JobFailed"
+  SSEEventJobDone               SSEEvent = "JobDone"
+
+  CourseGenerationProgress      SSEEvent = "CourseGenerationProgress"
+  CourseGenerationFailed        SSEEvent = "CourseGenerationFailed"
+  CourseGenerationDone          SSEEvent = "CourseGenerationDone"
+
+  SSEEventLessonUpdated         SSEEvent = "LessonUpdated"
 )
 
 type SSEMessage struct {
@@ -185,4 +191,13 @@ func (hub *SSEHub) CloseClient(client *SSEClient) {
   hub.RemoveClient(client)
   close(client.Outbound)
 }
+
+
+
+
+
+
+
+
+
 

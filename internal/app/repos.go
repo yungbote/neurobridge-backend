@@ -18,6 +18,10 @@ type Repos struct {
 	QuizQuestion						repos.QuizQuestionRepo
 	CourseBlueprint					repos.CourseBlueprintRepo
 	JobRun									repos.JobRunRepo
+	LessonProgress					repos.LessonProgressRepo
+	QuizAttempt							repos.QuizAttemptRepo
+	TopicMastery						repos.TopicMasteryRepo
+	UserEvent								repos.UserEventRepo
 }
 
 func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
@@ -34,6 +38,10 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		QuizQuestion:					repos.NewQuizQuestionRepo(db, log),
 		CourseBlueprint:			repos.NewCourseBlueprintRepo(db, log),
 		JobRun:								repos.NewJobRunRepo(db, log),
+		LessonProgress:				repos.NewLessonProgressRepo(db, log),
+		QuizAttempt:					repos.NewQuizAttemptRepo(db, log),
+		TopicMastery:					repos.NewTopicMasteryRepo(db, log),
+		UserEvent:						repos.NewUserEventRepo(db, log),
 	}
 }
 

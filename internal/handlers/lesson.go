@@ -10,11 +10,12 @@ import (
 )
 
 type LessonHandler struct {
-  svc services.LessonService
+  svc   services.LessonService
+  jobs  services.JobService
 }
 
-func NewLessonHandler(svc services.LessonService) *LessonHandler {
-  return &LessonHandler{svc: svc}
+func NewLessonHandler(svc services.LessonService, jobs services.JobService) *LessonHandler {
+  return &LessonHandler{svc: svc, jobs: jobs}
 }
 
 // GET /api/modules/:id/lessons
@@ -32,6 +33,24 @@ func (h *LessonHandler) ListLessonsForModule(c *gin.Context) {
   }
 
   c.JSON(http.StatusOK, gin.H{"lessons": lessons})
+}
+
+// GET /api/lessons/:id
+func (h *LessonHandler) GetLesson(c *gin.Context) {
+  lessonID, err := uuid.Parse(c.Param("id"))
+  if err != nil {
+    c.JSON(http.StatusBadRequest, gin.H{"error": "invalid lesson id"})
+    return
+  }
+  lesson, module, err := h.svc.GetLessonByID(c.Request.Context(), nil, lessonID)
+  if err != nil {
+    c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+    return
+  }
+  c.JSON(http.StatusOK, gin.H{
+    "lesson": lesson,
+    "module": module,
+  })
 }
 
 

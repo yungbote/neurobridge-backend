@@ -25,3 +25,12 @@ COPY --from=build /src/json /app/json
 EXPOSE 8080
 ENTRYPOINT ["/app/backend"]
 
+
+
+
+
+
+
+
+
+

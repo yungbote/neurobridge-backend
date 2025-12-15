@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"time"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
+	"github.com/yungbote/neurobridge-backend/internal/ssedata"
+	"github.com/yungbote/neurobridge-backend/internal/sse"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
@@ -17,11 +21,11 @@ type WorkflowService interface {
 }
 
 type workflowService struct {
-	db *gorm.DB
-	log *logger.Logger
+	db        *gorm.DB
+	log       *logger.Logger
 	materials MaterialService
 	courseRepo repos.CourseRepo
-	jobs JobService
+	jobs      JobService
 }
 
 func NewWorkflowService(
@@ -32,11 +36,11 @@ func NewWorkflowService(
 	jobs JobService,
 ) WorkflowService {
 	return &workflowService{
-		db: db,
-		log: baseLog.With("service", "WorkflowService"),
-		materials: materials,
+		db:         db,
+		log:        baseLog.With("service", "WorkflowService"),
+		materials:  materials,
 		courseRepo: courseRepo,
-		jobs: jobs,
+		jobs:       jobs,
 	}
 }
 
@@ -52,15 +56,18 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 	if len(uploaded) == 0 {
 		return nil, nil, nil, fmt.Errorf("no files")
 	}
+
 	transaction := tx
 	if transaction == nil {
 		transaction = w.db
 	}
+
 	var (
-		set *types.MaterialSet
+		set    *types.MaterialSet
 		course *types.Course
-		job *types.JobRun
+		job    *types.JobRun
 	)
+
 	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
 		// 1) Persist materials (set + file rows + upload blobs)
 		createdSet, _, err := w.materials.UploadMaterialFiles(ctx, txx, userID, uploaded)
@@ -68,6 +75,7 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 			return err
 		}
 		set = createdSet
+
 		// 2) Create placeholder course row (domain object)
 		now := time.Now()
 		course = &types.Course{
@@ -77,12 +85,14 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 			Title:         "Generating course…",
 			Description:   "We’re analyzing your files and building your course.",
 			Metadata:      datatypes.JSON([]byte(`{"status":"generating"}`)),
+			Progress:      0,
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
 		if _, err := w.courseRepo.Create(ctx, txx, []*types.Course{course}); err != nil {
 			return fmt.Errorf("create course: %w", err)
 		}
+
 		// 3) Enqueue generic job pointing at this course
 		payload := map[string]any{
 			"material_set_id": set.ID.String(),
@@ -94,11 +104,25 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 			return err
 		}
 		job = createdJob
+
+		// 4) Emit initial course snapshot immediately (request-scoped batch)
+		if ssd := ssedata.GetSSEData(ctx); ssd != nil {
+			ssd.AppendMessage(sse.SSEMessage{
+				Channel: userID.String(),
+				Event:   sse.SSEEventUserCourseCreated,
+				Data: map[string]any{
+					"course": course,
+					"job":    job,
+				},
+			})
+		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
+
 	return set, course, job, nil
 }
 

@@ -96,18 +96,6 @@ func (s *PostgresService) AutoMigrateAll() error {
     s.log.Error("Auto migration failed for postgres tables", "error", err)
     return err
   }
-
-  s.log.Info("Configuring foreign key relationships for postgres tables...")
-  if err := s.db.Exec(`
-    ALTER TABLE "user_token"
-    ADD CONSTRAINT "fk_user_token_user_id"
-    FOREIGN KEY ("user_id")
-    REFERENCES "user"("id")
-    ON DELETE CASCADE
-  `).Error; err != nil {
-    return fmt.Errorf("failed to add fk_user_token_user_id: %w", err)
-  }
-
   return nil
 }
 

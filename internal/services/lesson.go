@@ -15,6 +15,7 @@ import (
 
 type LessonService interface {
   ListLessonsForModule(ctx context.Context, tx *gorm.DB, moduleID uuid.UUID) ([]*types.Lesson, error)
+  GetLessonByID(ctx context.Context, tx *gorm.DB, lessonID uuid.UUID) (*types.Lesson, *types.CourseModule, error)
 }
 
 type lessonService struct {
@@ -82,6 +83,42 @@ func (s *lessonService) ListLessonsForModule(ctx context.Context, tx *gorm.DB, m
     return nil, err
   }
   return lessons, nil
+}
+
+func (s *lessonService) GetLessonByID(ctx context.Context, tx *gorm.DB, lessonID uuid.UUID) (*types.Lesson, *types.CourseModule, error) {
+  rd := requestdata.GetRequestData(ctx)
+  if rd == nil || rd.UserID == uuid.Nil {
+    return nil, nil, fmt.Errorf("not authenticated")
+  }
+  if lessonID == uuid.Nil {
+    return nil, nil, fmt.Errorf("missing lesson id")
+  }
+  transaction := tx
+  if transaction == nil {
+    transaction = s.db
+  }
+
+  lessons, err := s.lessonRepo.GetByIDs(ctx, transaction, []uuid.UUID{lessonID})
+  if err != nil || len(lessons) == 0 || lessons[0] == nil {
+    return nil, nil, fmt.Errorf("lesson not found")
+  }
+  lesson := lessons[0]
+
+  mods, err := s.moduleRepo.GetByIDs(ctx, transaction, []uuid.UUID{lesson.ModuleID})
+  if err != nil || len(mods) == 0 || mods[0] == nil {
+    return nil, nil, fmt.Errorf("lesson not found")
+  }
+  mod := mods[0]
+
+  courses, err := s.courseRepo.GetByIDs(ctx, transaction, []uuid.UUID{mod.CourseID})
+  if err != nil || len(courses) == 0 || courses[0] == nil || courses[0].UserID != rd.UserID {
+    return nil, nil, fmt.Errorf("lesson not found")
+  }
+
+  // attach module so frontend can display Module N and compute context if needed
+  lesson.Module = mod
+
+  return lesson, mod, nil
 }
 
 
