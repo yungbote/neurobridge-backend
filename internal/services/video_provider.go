@@ -9,14 +9,16 @@ import (
 	"time"
 
 	videointelligence "cloud.google.com/go/videointelligence/apiv1"
+	vipb "cloud.google.com/go/videointelligence/apiv1/videointelligencepb"
+
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	vipb "google.golang.org/genproto/googleapis/cloud/videointelligence/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
+
 
 type VideoIntelligenceProviderService interface {
 	AnnotateVideoGCS(ctx context.Context, gcsURI string, cfg VideoAIConfig) (*VideoAIResult, error)
@@ -391,7 +393,7 @@ func parseShots(shots []*vipb.VideoSegment) []Segment {
 	return out
 }
 
-func durToSecVI(d *vipb.Duration) float64 {
+func durToSecVI(d *durationpb.Duration) float64 {
 	if d == nil {
 		return 0
 	}
@@ -425,15 +427,6 @@ func (s *videoIntelligenceProviderService) retryAnnotate(ctx context.Context, fn
 		}
 	}
 	return nil, last
-}
-
-// defaultCtx + ptrFloat reused from other services (define if not already)
-func ptrFloat(v float64) *float64 { return &v }
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
 }
 
 

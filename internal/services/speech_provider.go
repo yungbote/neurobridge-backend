@@ -8,14 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	speech "cloud.google.com/go/speech/apiv1"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	speechpb "google.golang.org/genproto/googleapis/cloud/speech/v1"
-
+	  speech "cloud.google.com/go/speech/apiv1"
+	speechpb "cloud.google.com/go/speech/apiv1/speechpb"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
@@ -453,7 +451,7 @@ func groupByTime(words []struct {
 	return segs
 }
 
-func durToSec(d *speechpb.Duration) float64 {
+func durToSec(d *durationpb.Duration) float64 {
 	if d == nil {
 		return 0
 	}

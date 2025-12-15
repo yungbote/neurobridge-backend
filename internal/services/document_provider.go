@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/documentai/apiv1"
-	documentaipb "cloud.google.com/go/documentai/apiv1/documentaipb"
+  documentaipb "cloud.google.com/go/documentai/apiv1/documentaipb"
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
