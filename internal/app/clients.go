@@ -4,36 +4,37 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
 type Clients struct {
 	// Redis
-	SSEBus									redis.SSEBus
+	SSEBus redis.SSEBus
 
 	// OpenAI
-	OpenaiClient						openai.Client
-	OpenaiCaption						openai.Caption
+	OpenaiClient  openai.Client
+	OpenaiCaption openai.Caption
 
 	// Pinecone
-	PineconeClient					pinecone.Client
-	PineconeVectorStore			pinecone.VectorStore
+	PineconeClient      pinecone.Client
+	PineconeVectorStore pinecone.VectorStore
 
 	// GCP
-	GcpBucket								gcp.BucketService
-	GcpDocument							gcp.Document
-	GcpSpeech								gcp.Speech
-	GcpVideo								gcp.Video
-	GcpVision								gcp.Vision
+	GcpBucket   gcp.BucketService
+	GcpDocument gcp.Document
+	GcpSpeech   gcp.Speech
+	GcpVideo    gcp.Video
+	GcpVision   gcp.Vision
 
 	// Local Media
-	LMTools									localmedia.MediaToolsService
+	LMTools localmedia.MediaToolsService
 }
 
 func wireClients(log *logger.Logger) (Clients, error) {
@@ -53,10 +54,7 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	// ---------------- GCP Bucket ----------------
 	bucket, err := gcp.NewBucketService(log)
 	if err != nil {
-		// close anything we already opened
-		if out.SSEBus != nil {
-			_ = out.SSEBus.Close()
-		}
+		out.Close()
 		return Clients{}, fmt.Errorf("init gcp bucket client: %w", err)
 	}
 	out.GcpBucket = bucket
@@ -69,33 +67,33 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	}
 	out.OpenaiClient = oa
 
-	cap, err := openai.NewCaptionProviderService(log, oa)
+	cap, err := openai.NewCaption(log, oa)
 	if err != nil {
 		out.Close()
-		return Clients{}, fmt.Errorf("init openai caption client: %w", err)
+		return Clients{}, fmt.Errorf("init openai caption: %w", err)
 	}
 	out.OpenaiCaption = cap
 
 	// ---------------- Pinecone ---------------------
 	if strings.TrimSpace(os.Getenv("PINECONE_API_KEY")) != "" {
 		pc, err := pinecone.New(log, pinecone.Config{
-			APIKey:			strings.TrimSpace(os.Getenv("PINECONE_API_KEY")),
-			APIVersion:	strings.TrimSpace(os.Getenv("PINECONE_API_VERSION")),
-			BaseURL:		strings.TrimSpace(os.Getenv("PINECONE_BASE_URL")),
-			Timeout:		30 * time.Second,
+			APIKey:     strings.TrimSpace(os.Getenv("PINECONE_API_KEY")),
+			APIVersion: strings.TrimSpace(os.Getenv("PINECONE_API_VERSION")),
+			BaseURL:    strings.TrimSpace(os.Getenv("PINECONE_BASE_URL")),
+			Timeout:    30 * time.Second,
 		})
 		if err != nil {
 			out.Close()
 			return Clients{}, fmt.Errorf("init pinecone client: %w", err)
 		}
-		out.PineconeClient = pineconeClient
-		
+		out.PineconeClient = pc
+
 		vs, err := pinecone.NewVectorStore(log, pc)
 		if err != nil {
 			out.Close()
 			return Clients{}, fmt.Errorf("init pinecone vector store: %w", err)
 		}
-		out.PineconeVectorStore = pineconeVectorStore
+		out.PineconeVectorStore = vs
 	} else {
 		log.Warn("PINECONE_API_KEY not set; vector search disabled")
 	}
@@ -130,8 +128,7 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	out.GcpVideo = video
 
 	// ---------------- Local Media Tools ----------------
-	lmtools := localmedia.NewMediaToolsService(log)
-	out.LMTools = lmtools
+	out.LMTools = localmedia.New(log)
 
 	return out, nil
 }
@@ -160,8 +157,11 @@ func (c *Clients) Close() {
 		_ = c.GcpVision.Close()
 		c.GcpVision = nil
 	}
+
 	c.PineconeClient = nil
 	c.PineconeVectorStore = nil
+	c.OpenaiClient = nil
+	c.OpenaiCaption = nil
 }
 
 
