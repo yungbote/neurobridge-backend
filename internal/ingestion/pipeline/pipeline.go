@@ -35,7 +35,7 @@ func NewContentExtractionService(
 	log *logger.Logger,
 	materialChunkRepo repos.MaterialChunkRepo,
 	materialFileRepo repos.MaterialFileRepo,
-	bucket gcp.Bucket,
+	bucket gcp.BucketService,
 	media services.MediaToolsService,
 	docai gcp.Document,
 	vision gcp.Vision,

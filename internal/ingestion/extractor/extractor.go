@@ -33,7 +33,7 @@ type Extractor struct {
 	MaterialChunkRepo repos.MaterialChunkRepo
 	MaterialFileRepo  repos.MaterialFileRepo
 
-	Bucket gcp.Bucket
+	Bucket gcp.BucketService
 	Media  services.MediaToolsService
 
 	DocAI   gcp.Document
@@ -71,7 +71,7 @@ func New(
 	log *logger.Logger,
 	materialChunkRepo repos.MaterialChunkRepo,
 	materialFileRepo repos.MaterialFileRepo,
-	bucket gcp.Bucket,
+	bucket gcp.BucketService,
 	media services.MediaToolsService,
 	docai gcp.Document,
 	vision gcp.Vision,
