@@ -11,11 +11,11 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/types"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Segment = extractor.Segment
@@ -36,7 +36,7 @@ func NewContentExtractionService(
 	materialChunkRepo repos.MaterialChunkRepo,
 	materialFileRepo repos.MaterialFileRepo,
 	bucket gcp.BucketService,
-	media services.MediaToolsService,
+	media localmedia.MediaToolsService,
 	docai gcp.Document,
 	vision gcp.Vision,
 	speech gcp.Speech,

@@ -9,8 +9,8 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 )
 
 func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, videoPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -53,7 +53,7 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	defer os.RemoveAll(tmpDir)
 
 	audioPath := filepath.Join(tmpDir, "audio.wav")
-	_, err = s.ex.Media.ExtractAudioFromVideo(ctx, videoPath, audioPath, services.AudioExtractOptions{
+	_, err = s.ex.Media.ExtractAudioFromVideo(ctx, videoPath, audioPath, localmedia.AudioExtractOptions{
 		SampleRateHz: 16000,
 		Channels:     1,
 		Format:       "wav",
@@ -69,7 +69,7 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	}
 
 	framesDir := filepath.Join(tmpDir, "frames")
-	frames, err := s.ex.Media.ExtractKeyframes(ctx, videoPath, framesDir, services.KeyframeOptions{
+	frames, err := s.ex.Media.ExtractKeyframes(ctx, videoPath, framesDir, localmedia.KeyframeOptions{
 		IntervalSeconds: s.ex.VideoFrameIntervalSec,
 		SceneThreshold:  s.ex.VideoSceneThreshold,
 		Width:           1280,

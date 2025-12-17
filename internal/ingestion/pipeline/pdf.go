@@ -8,7 +8,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
-	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
@@ -94,7 +94,7 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 	}
 	defer os.RemoveAll(tmpDir)
 
-	paths, err := s.ex.Media.RenderPDFToImages(ctx, pdfPath, tmpDir, services.PDFRenderOptions{
+	paths, err := s.ex.Media.RenderPDFToImages(ctx, pdfPath, tmpDir, localmedia.PDFRenderOptions{
 		DPI:       200,
 		Format:    "png",
 		FirstPage: 0,

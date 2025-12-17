@@ -24,7 +24,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/types"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Extractor struct {

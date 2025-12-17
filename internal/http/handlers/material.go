@@ -10,6 +10,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/ssedata"
 	"github.com/yungbote/neurobridge-backend/internal/sse"
+	"github.com/yungbote/neurobridge-backend/internal/http/response"
 )
 
 type MaterialHandler struct {
@@ -29,18 +30,18 @@ func NewMaterialHandler(log *logger.Logger, workflow services.WorkflowService, s
 func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 	rd := requestdata.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
-		RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 	userID := rd.UserID
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
-		RespondError(c, http.StatusBadRequest, "invalid_multipart_form", err)
+		response.RespondError(c, http.StatusBadRequest, "invalid_multipart_form", err)
 		return
 	}
 	form := c.Request.MultipartForm
 	fileHeaders := form.File["files"]
 	if len(fileHeaders) == 0 {
-		RespondError(c, http.StatusBadRequest, "no_files", nil)
+		response.RespondError(c, http.StatusBadRequest, "no_files", nil)
 		return
 	}
 	uploaded := make([]services.UploadedFileInfo, 0, len(fileHeaders))
@@ -80,12 +81,12 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		})
 	}
 	if len(uploaded) == 0 {
-		RespondError(c, http.StatusBadRequest, "could_not_read_files", nil)
+		response.RespondError(c, http.StatusBadRequest, "could_not_read_files", nil)
 		return
 	}
 	set, course, job, err := h.workflow.UploadMaterialsAndStartCourseBuild(c.Request.Context(), nil, userID, uploaded)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, "workflow_failed", err)
+		response.RespondError(c, http.StatusInternalServerError, "workflow_failed", err)
 		return
 	}
 	// Flush request-scoped SSE messages if any (we still keep this pattern).
@@ -97,7 +98,7 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		ssd.Messages = nil
 	}
 
-	RespondOK(c, gin.H{
+	response.RespondOK(c, gin.H{
 		"ok":              true,
 		"material_set_id": set.ID,
 		"course_id":       course.ID,

@@ -7,6 +7,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/requestdata"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/http/response"
 )
 
 type CourseHandler struct {
@@ -24,16 +25,16 @@ func NewCourseHandler(log *logger.Logger, courseService services.CourseService) 
 func (h *CourseHandler) ListUserCourses(c *gin.Context) {
 	rd := requestdata.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
-		RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 	courses, err := h.courseService.GetUserCourses(c.Request.Context(), nil)
 	if err != nil {
 		h.log.Error("ListUserCourses failed", "error", err, "user_id", rd.UserID)
-		RespondError(c, http.StatusInternalServerError, "load_courses_failed", err)
+		response.RespondError(c, http.StatusInternalServerError, "load_courses_failed", err)
 		return
 	}
-	RespondOK(c, gin.H{"courses": courses})
+	response.RespondOK(c, gin.H{"courses": courses})
 }
 
 

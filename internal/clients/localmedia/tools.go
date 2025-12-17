@@ -1,4 +1,4 @@
-package media
+package localmedia
 
 import (
 	"context"

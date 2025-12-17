@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 )
 
 type buildContext struct {
@@ -146,7 +147,7 @@ func (p *CourseBuildPipeline) snapshot(buildCtx *buildContext) {
 }
 
 func (p *CourseBuildPipeline) downloadMaterialFile(ctx context.Context, key string) ([]byte, error) {
-	rc, err := p.bucket.DownloadFile(ctx, services.BucketCategoryMaterial, key)
+	rc, err := p.bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, key)
 	if err != nil {
 		return nil, err
 	}
