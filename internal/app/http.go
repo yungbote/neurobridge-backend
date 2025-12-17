@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/gin-gonic/gin"
 	"github.com/yungbote/neurobridge-backend/internal/http"
 	httpH "github.com/yungbote/neurobridge-backend/internal/http/handlers"
 	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
@@ -13,6 +14,7 @@ type Middleware struct {
 }
 
 type Handlers struct {
+	Health	 *httpH.HealthHandler
 	Auth		 *httpH.AuthHandler
 	User		 *httpH.UserHandler
 	Realtime *httpH.RealtimeHandler
@@ -20,12 +22,13 @@ type Handlers struct {
 	Course   *httpH.CourseHandler
 	Module   *httpH.ModuleHandler
 	Lesson   *httpH.LessonHandler
-	Jobs		 *httpH.JobsHandler
+	Job			 *httpH.JobHandler
 }
 
 func wireHandlers(log *logger.Logger, services Services, sseHub *sse.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
 	return Handlers{
+		Health:		httpH.NewHealthHandler(),
 		Auth:     httpH.NewAuthHandler(services.Auth),
 		User:     httpH.NewUserHandler(services.User),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
@@ -39,6 +42,7 @@ func wireHandlers(log *logger.Logger, services Services, sseHub *sse.SSEHub) Han
 
 func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 	return http.NewRouter(http.RouterConfig{
+		HealthHandler:		 handlers.Health,
 		AuthHandler:       handlers.Auth,
 		AuthMiddleware:    middleware.Auth,
 		UserHandler:       handlers.User,

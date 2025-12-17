@@ -29,8 +29,6 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	// Health
 	if cfg.HealthHandler != nil {
 		r.GET("/healthcheck", cfg.HealthHandler.HealthCheck)
-	} else {
-		r.GET("/healthcheck", httpH.HealthCheck)
 	}
 
 	api := r.Group("/api")

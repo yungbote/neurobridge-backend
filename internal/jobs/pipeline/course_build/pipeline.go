@@ -1,18 +1,17 @@
-package pipelines
+package course_build
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/jobs"
-	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 )
 
 type buildContext struct {
-	jobCtx         *jobs.Context
+	jobCtx         *runtime.Context
 	ctx            context.Context
 	userID         uuid.UUID
 	materialSetID  uuid.UUID
@@ -29,7 +28,7 @@ type buildContext struct {
 
 func (p *CourseBuildPipeline) Type() string { return "course_build" }
 
-func (p *CourseBuildPipeline) Run(jobContext *jobs.Context) error {
+func (p *CourseBuildPipeline) Run(jobContext *runtime.Context) error {
 	if jobContext == nil || jobContext.Job == nil {
 		return nil
 	}

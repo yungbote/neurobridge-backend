@@ -8,16 +8,16 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 )
 
-type JobsHandler struct {
+type JobHandler struct {
 	jobs services.JobService
 }
 
-func NewJobsHandler(jobs services.JobService) *JobsHandler {
-	return &JobsHandler{jobs: jobs}
+func NewJobHandler(jobs services.JobService) *JobHandler {
+	return &JobHandler{jobs: jobs}
 }
 
 // GET /api/jobs/:id
-func (h *JobsHandler) GetJobByID(c *gin.Context) {
+func (h *JobHandler) GetJob(c *gin.Context) {
 	jobID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "invalid_job_id", err)

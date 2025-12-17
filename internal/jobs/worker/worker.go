@@ -1,4 +1,4 @@
-package jobs
+package worker
 
 import (
 	"context"
@@ -11,17 +11,18 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 )
 
 type Worker struct {
 	db       *gorm.DB
 	log      *logger.Logger
 	repo     repos.JobRunRepo
-	registry *Registry
+	registry *runtime.Registry
 	notify   services.JobNotifier
 }
 
-func NewWorker(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, registry *Registry, notify services.JobNotifier) *Worker {
+func NewWorker(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, registry *runtime.Registry, notify services.JobNotifier) *Worker {
 	return &Worker{
 		db:       db,
 		log:      baseLog.With("component", "JobWorker"),
@@ -68,7 +69,7 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			}
 
 			h, ok := w.registry.Get(job.JobType)
-			jc := NewContext(ctx, w.db, job, w.repo, w.notify)
+			jc := runtime.NewContext(ctx, w.db, job, w.repo, w.notify)
 
 			if !ok {
 				w.log.Warn("No handler registered for job_type",

@@ -7,8 +7,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs"
-	pipelines "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline"
+ "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/course_build"
+	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	jobworker "github.com/yungbote/neurobridge-backend/internal/jobs/worker"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/sse"
@@ -39,8 +40,8 @@ type Services struct {
 	ContentExtractor ingestion.ContentExtractionService
 
 	// Job infra
-	JobRegistry *jobs.Registry
-	JobWorker   *jobs.Worker
+	JobRegistry *jobruntime.Registry
+	JobWorker   *jobworker.Worker
 
 	// Keep bus here for convenience/compat
 	SSEBus redis.SSEBus
@@ -92,8 +93,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	workflow := services.NewWorkflowService(db, log, materialService, repos.Course, jobService)
 	courseNotifier := services.NewCourseNotifier(emitter)
 
-	mediaTools := services.NewMediaToolsService(log)
-
 	extractor := ingestion.NewContentExtractionService(
 		db,
 		log,
@@ -108,10 +107,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiCaption,
 	)
 
-	// Job registry + worker
-	reg := jobs.NewRegistry()
+	// Job registry
+	jobRegistry := jobruntime.NewRegistry()
 
-	courseBuild := pipelines.NewCourseBuildPipeline(
+	courseBuild := course_build.NewCourseBuildPipeline(
 		db,
 		log,
 		repos.Course,
@@ -126,13 +125,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		courseNotifier,
 		extractor,
 	)
-	if err := reg.Register(courseBuild); err != nil {
+	if err := jobRegistry.Register(courseBuild); err != nil {
 		return Services{}, err
 	}
 
-	var worker *jobs.Worker
+	var worker *jobworker.Worker
 	if runWorker {
-		worker = jobs.NewWorker(db, log, repos.JobRun, reg, jobNotifier)
+		worker = jobworker.NewWorker(db, log, repos.JobRun, jobRegistry, jobNotifier)
 	}
 
 	return Services{
@@ -149,7 +148,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Workflow:        workflow,
 		CourseNotifier:  courseNotifier,
 		ContentExtractor: extractor,
-		JobRegistry:     reg,
+		JobRegistry:     jobRegistry,
 		JobWorker:       worker,
 		SSEBus:          clients.SSEBus,
 	}, nil

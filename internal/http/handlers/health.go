@@ -5,7 +5,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func HealthCheck(c *gin.Context) {
+type HealthHandler struct {}
+
+func NewHealthHandler() *HealthHandler { return &HealthHandler{} }
+
+func (h *HealthHandler) HealthCheck(c *gin.Context) {
 	c.String(http.StatusOK, "ok")
 }
 

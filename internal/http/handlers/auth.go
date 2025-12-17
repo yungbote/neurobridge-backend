@@ -24,7 +24,7 @@ func (ah *AuthHandler) Register(c *gin.Context) {
     Password    string      `json:"password"`
   }
   if err := c.ShouldBindJSON(&req); err != nil {
-    RespondError(c, http.StatusBadRequest, "invalid_request", err)
+    response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
     return
   }
   user := types.User{

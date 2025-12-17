@@ -1,4 +1,4 @@
-package pipelines
+package course_build
 
 import (
 	"encoding/json"

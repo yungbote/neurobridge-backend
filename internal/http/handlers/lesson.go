@@ -19,7 +19,7 @@ func NewLessonHandler(svc services.LessonService, jobs services.JobService) *Les
 }
 
 // GET /api/modules/:id/lessons
-func (h *LessonHandler) ListLessonsForModule(c *gin.Context) {
+func (h *LessonHandler) ListModuleLessons(c *gin.Context) {
   moduleID, err := uuid.Parse(c.Param("id"))
   if err != nil {
     c.JSON(http.StatusBadRequest, gin.H{"error": "invalid module id"})

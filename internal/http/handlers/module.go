@@ -16,7 +16,7 @@ func NewModuleHandler(svc services.ModuleService) *ModuleHandler {
 }
 
 // GET /api/courses/:id/modules
-func (h *ModuleHandler) ListModulesForCourse(c *gin.Context) {
+func (h *ModuleHandler) ListCourseModules(c *gin.Context) {
   courseID, err := uuid.Parse(c.Param("id"))
   if err != nil {
     c.JSON(http.StatusBadRequest, gin.H{"error": "invalid course id"})
