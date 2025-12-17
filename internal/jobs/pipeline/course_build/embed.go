@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/datatypes"
 
+	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
@@ -45,6 +46,8 @@ func (p *CourseBuildPipeline) stageEmbed(buildCtx *buildContext) error {
 	const batchSize = 64
 	totalMissing := max(1, len(missing))
 
+	ns := fmt.Sprintf("chunks:material_set:%s", buildCtx.materialSetID.String())
+
 	for start := 0; start < len(missing); start += batchSize {
 		end := start + batchSize
 		if end > len(missing) {
@@ -62,6 +65,8 @@ func (p *CourseBuildPipeline) stageEmbed(buildCtx *buildContext) error {
 			return fmt.Errorf("embed: %w", err)
 		}
 
+		upsert := make([]pinecone.Vector, 0, len(batch))
+
 		for i, ch := range batch {
 			b, _ := json.Marshal(vecs[i])
 
@@ -73,8 +78,31 @@ func (p *CourseBuildPipeline) stageEmbed(buildCtx *buildContext) error {
 				}).Error; err != nil {
 				return fmt.Errorf("update chunk embedding: %w", err)
 			}
-
 			ch.Embedding = datatypes.JSON(b)
+
+			upsert = append(upsert, pinecone.Vector{
+				ID:     ch.ID.String(),
+				Values: vecs[i],
+				Metadata: map[string]any{
+					"type":            "chunk",
+					"material_set_id": buildCtx.materialSetID.String(),
+					"material_file_id": func() string {
+						// safe even if zero
+						return ch.MaterialFileID.String()
+					}(),
+					"chunk_index": ch.Index,
+				},
+			})
+		}
+
+		if p.vectorStore != nil && len(upsert) > 0 {
+			if err := p.vectorStore.Upsert(buildCtx.ctx, ns, upsert); err != nil {
+				p.log.Warn("pinecone upsert failed (continuing)",
+					"err", err.Error(),
+					"namespace", ns,
+					"count", len(upsert),
+				)
+			}
 		}
 
 		// mimic old embed progress slip: 30 -> 45

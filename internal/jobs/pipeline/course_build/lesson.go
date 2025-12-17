@@ -34,22 +34,6 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 		return fmt.Errorf("no lessons found")
 	}
 
-	// Build Vector Index From Chunks
-	chunkVectors := make([]chunkWithVec, 0, len(bc.chunks))
-	for _, ch := range bc.chunks {
-		if ch == nil {
-			continue
-		}
-		vec, ok := parseEmbedding(ch.Embedding)
-		if !ok {
-			continue
-		}
-		chunkVectors = append(chunkVectors, chunkWithVec{Chunk: ch, Vec: vec})
-	}
-	if len(chunkVectors) == 0 {
-		return fmt.Errorf("no embeddings available for retrieval")
-	}
-
 	lessonIDs := make([]uuid.UUID, 0, len(lessons))
 	for _, l := range lessons {
 		if l != nil {
@@ -84,6 +68,9 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 
 	total := len(lessons)
 	done := 0
+
+	// Pinecone namespace
+	ns := fmt.Sprintf("chunks:material_set:%s", bc.materialSetID.String())
 
 	for _, l := range lessons {
 		if l == nil {
@@ -122,13 +109,87 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 		if err != nil {
 			return fmt.Errorf("embed query: %w", err)
 		}
+		qVec := qVecs[0]
 
-		top := topKChunks(chunkVectors, qVecs[0], 12)
+		// Retrieve top chunks (pinecone first, fallback local cosine)
+		var topChunks []*types.MaterialChunk
+
+		if p.vectorStore != nil {
+			ids, qErr := p.vectorStore.QueryIDs(bc.ctx, ns, qVec, 12, map[string]any{
+				"type": "chunk",
+			})
+			if qErr != nil {
+				p.log.Warn("pinecone query failed; falling back to local retrieval", "err", qErr.Error())
+			} else if len(ids) > 0 {
+				uids := make([]uuid.UUID, 0, len(ids))
+				for _, s := range ids {
+					id, err := uuid.Parse(strings.TrimSpace(s))
+					if err == nil && id != uuid.Nil {
+						uids = append(uids, id)
+					}
+				}
+
+				rows, err := p.chunkRepo.GetByIDs(bc.ctx, nil, uids)
+				if err == nil && len(rows) > 0 {
+					byID := map[uuid.UUID]*types.MaterialChunk{}
+					for _, r := range rows {
+						if r != nil {
+							byID[r.ID] = r
+						}
+					}
+					// preserve pinecone rank order
+					for _, s := range ids {
+						id, err := uuid.Parse(strings.TrimSpace(s))
+						if err != nil {
+							continue
+						}
+						if ch := byID[id]; ch != nil {
+							topChunks = append(topChunks, ch)
+						}
+					}
+				}
+			}
+		}
+
+		if len(topChunks) == 0 {
+			chunkVectors := make([]chunkWithVec, 0, len(bc.chunks))
+			for _, ch := range bc.chunks {
+				if ch == nil {
+					continue
+				}
+				vec, ok := parseEmbedding(ch.Embedding)
+				if !ok {
+					continue
+				}
+				chunkVectors = append(chunkVectors, chunkWithVec{Chunk: ch, Vec: vec})
+			}
+			if len(chunkVectors) == 0 {
+				return fmt.Errorf("no embeddings available for retrieval (pinecone empty and local missing)")
+			}
+
+			top := topKChunks(chunkVectors, qVec, 12)
+			for _, t := range top {
+				if t.Chunk != nil {
+					topChunks = append(topChunks, t.Chunk)
+				}
+			}
+		}
+
+		if len(topChunks) == 0 {
+			return fmt.Errorf("retrieval returned 0 chunks")
+		}
 
 		var ctxBuilder strings.Builder
 		ctxBuilder.WriteString("You MUST ground the lesson in the provided excerpts.\nExcerpts:\n")
-		for _, t := range top {
-			ctxBuilder.WriteString(fmt.Sprintf("[chunk_id=%s] %s\n", t.Chunk.ID.String(), truncate(t.Chunk.Text, 900)))
+		for _, ch := range topChunks {
+			if ch == nil {
+				continue
+			}
+			ctxBuilder.WriteString(fmt.Sprintf(
+				"[chunk_id=%s] %s\n",
+				ch.ID.String(),
+				truncate(ch.Text, 900),
+			))
 		}
 
 		lessonSchema := lessonContentSchemaOld()
@@ -167,8 +228,8 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 			"topics":      topics,
 			"concept_ids": conceptIDs,
 			"variants": map[string]any{
-				"concise_md":        summary,
-				"step_by_step_md":   step,
+				"concise_md":      summary,
+				"step_by_step_md": step,
 			},
 			"citations": citations,
 		}
@@ -205,6 +266,8 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 			if !ok {
 				return fmt.Errorf("quiz questions missing or wrong type")
 			}
+
+			now := time.Now()
 			qs := make([]*types.QuizQuestion, 0, len(qsAny))
 			for qi, qraw := range qsAny {
 				qm := qraw.(map[string]any)
@@ -212,18 +275,19 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 				correct := intFromAny(qm["correct_index"], 0)
 				optsJSON, _ := json.Marshal(opts)
 				correctJSON, _ := json.Marshal(map[string]any{"index": correct})
+
 				qs = append(qs, &types.QuizQuestion{
-					ID:            uuid.New(),
-					LessonID:       l.ID,
-					Index:          qi,
-					Type:           "mcq",
-					PromptMD:       fmt.Sprint(qm["prompt_md"]),
-					Options:        datatypes.JSON(optsJSON),
-					CorrectAnswer:  datatypes.JSON(correctJSON),
-					ExplanationMD:  fmt.Sprint(qm["explanation_md"]),
-					Metadata:       datatypes.JSON(mustJSON(map[string]any{"topics": topics, "citations": citations})),
-					CreatedAt:      time.Now(),
-					UpdatedAt:      time.Now(),
+					ID:           uuid.New(),
+					LessonID:      l.ID,
+					Index:         qi,
+					Type:          "mcq",
+					PromptMD:      fmt.Sprint(qm["prompt_md"]),
+					Options:       datatypes.JSON(optsJSON),
+					CorrectAnswer: datatypes.JSON(correctJSON),
+					ExplanationMD: fmt.Sprint(qm["explanation_md"]),
+					Metadata:      datatypes.JSON(mustJSON(map[string]any{"topics": topics, "citations": citations})),
+					CreatedAt:     now,
+					UpdatedAt:     now,
 				})
 			}
 			if _, err := p.quizRepo.Create(bc.ctx, nil, qs); err != nil {

@@ -8,27 +8,32 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
+	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
 type Clients struct {
 	// Redis
-	SSEBus redis.SSEBus
+	SSEBus									redis.SSEBus
 
 	// OpenAI
-	OpenaiClient  openai.Client
-	OpenaiCaption openai.Caption
+	OpenaiClient						openai.Client
+	OpenaiCaption						openai.Caption
+
+	// Pinecone
+	PineconeClient					pinecone.Client
+	PineconeVectorStore			pinecone.VectorStore
 
 	// GCP
-	GcpBucket   gcp.BucketService
-	GcpDocument gcp.Document
-	GcpSpeech   gcp.Speech
-	GcpVideo    gcp.Video
-	GcpVision   gcp.Vision
+	GcpBucket								gcp.BucketService
+	GcpDocument							gcp.Document
+	GcpSpeech								gcp.Speech
+	GcpVideo								gcp.Video
+	GcpVision								gcp.Vision
 
 	// Local Media
-	LMTools			localmedia.MediaToolsService
+	LMTools									localmedia.MediaToolsService
 }
 
 func wireClients(log *logger.Logger) (Clients, error) {
@@ -70,6 +75,30 @@ func wireClients(log *logger.Logger) (Clients, error) {
 		return Clients{}, fmt.Errorf("init openai caption client: %w", err)
 	}
 	out.OpenaiCaption = cap
+
+	// ---------------- Pinecone ---------------------
+	if strings.TrimSpace(os.Getenv("PINECONE_API_KEY")) != "" {
+		pc, err := pinecone.New(log, pinecone.Config{
+			APIKey:			strings.TrimSpace(os.Getenv("PINECONE_API_KEY")),
+			APIVersion:	strings.TrimSpace(os.Getenv("PINECONE_API_VERSION")),
+			BaseURL:		strings.TrimSpace(os.Getenv("PINECONE_BASE_URL")),
+			Timeout:		30 * time.Second,
+		})
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init pinecone client: %w", err)
+		}
+		out.PineconeClient = pineconeClient
+		
+		vs, err := pinecone.NewVectorStore(log, pc)
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init pinecone vector store: %w", err)
+		}
+		out.PineconeVectorStore = pineconeVectorStore
+	} else {
+		log.Warn("PINECONE_API_KEY not set; vector search disabled")
+	}
 
 	// ---------------- GCP Providers ----------------
 	vision, err := gcp.NewVision(log)
@@ -131,6 +160,8 @@ func (c *Clients) Close() {
 		_ = c.GcpVision.Close()
 		c.GcpVision = nil
 	}
+	c.PineconeClient = nil
+	c.PineconeVectorStore = nil
 }
 
 

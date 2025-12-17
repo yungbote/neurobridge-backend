@@ -18,6 +18,8 @@ type JobRunRepo interface {
   ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error)
   UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
   Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) error
+  HasRunnableForEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error)
+  ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error)
 }
 
 type jobRunRepo struct {
@@ -179,6 +181,54 @@ func (r *jobRunRepo) Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) e
 			"heartbeat_at": now,
 			"updated_at":   now,
 		}).Error
+}
+
+
+func (r *jobRunRepo) HasRunnableForEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error) {
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	if ownerUserID == uuid.Nil || entityID == uuid.Nil || entityType == "" || jobType == "" {
+		return false, nil
+	}
+	var count int64
+	err := transaction.WithContext(ctx).
+		Model(&types.JobRun{}).
+		Where("owner_user_id = ? AND entity_type = ? AND entity_id = ? AND job_type = ? AND status IN ?",
+			ownerUserID, entityType, entityID, jobType, []string{"queued", "running"},
+		).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (r *jobRunRepo) ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error) {
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	if ownerUserID == uuid.Nil || jobType == "" {
+		return false, nil
+	}
+
+	q := transaction.WithContext(ctx).Model(&types.JobRun{}).
+		Where("owner_user_id = ? AND job_type = ? AND status IN ?", ownerUserID, jobType, []string{"queued", "running"})
+
+	if entityType != "" {
+		q = q.Where("entity_type = ?", entityType)
+	}
+	if entityID != nil && *entityID != uuid.Nil {
+		q = q.Where("entity_id = ?", *entityID)
+	}
+
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 

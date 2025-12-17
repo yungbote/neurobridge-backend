@@ -16,7 +16,8 @@ import (
 
 type JobService interface {
 	Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
-
+	EnqueueDebouncedUserModelUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.JobRun, bool, error)
+	EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
 	GetLatestForEntityForRequestUser(ctx context.Context, tx *gorm.DB, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
 }
@@ -77,6 +78,62 @@ func (s *jobService) Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.
 	// Notify immediately (request-time)
 	s.notify.JobCreated(ownerUserID, job)
 	return job, nil
+}
+
+func (s *jobService) EnqueueDebouncedUserModelUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.JobRun, bool, error) {
+	if userID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing user_id")
+	}
+	transaction := tx
+	if transaction == nil {
+		transaction = s.db
+	}
+	// If a user_model_update job is already queued/running for this user, do nothing.
+	has, err := s.repo.HasRunnableForEntity(ctx, transaction, userID, "user", userID, "user_model_update")
+	if err != nil {
+		return nil, false, err
+	}
+	if has {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"user_id": userID.String(),
+	}
+	entityID := userID
+	job, err := s.Enqueue(ctx, transaction, userID, "user_model_update", "user", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	transaction := tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityID := ownerUserID
+	exists, err := s.repo.ExistsRunnable(ctx, transaction, ownerUserID, "user_model_update", "user", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger": trigger,
+	}
+	job, err := s.Enqueue(ctx, transaction, ownerUserID, "user_model_update", "user", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
 }
 
 func (s *jobService) GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {

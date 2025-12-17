@@ -1,4 +1,14 @@
 # .gitignore
 
 
-json/gcs/serviceaccount/*.json
+json/serviceaccounts/*.json
+
+
+
+
+
+
+
+
+
+

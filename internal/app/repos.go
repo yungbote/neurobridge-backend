@@ -22,6 +22,9 @@ type Repos struct {
 	QuizAttempt							repos.QuizAttemptRepo
 	TopicMastery						repos.TopicMasteryRepo
 	UserEvent								repos.UserEventRepo
+	UserEventCursor					repos.UserEventCursorRepo
+	UserConceptState				repos.UserConceptStateRepo
+	UserStylePreference			repos.UserStylePreferenceRepo
 }
 
 func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
@@ -42,6 +45,9 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		QuizAttempt:					repos.NewQuizAttemptRepo(db, log),
 		TopicMastery:					repos.NewTopicMasteryRepo(db, log),
 		UserEvent:						repos.NewUserEventRepo(db, log),
+		UserEventCursor:			repos.NewUserEventCursorRepo(db, log),
+		UserConceptState:			repos.NewUserConceptStateRepo(db, log),
+		UserStylePreference:  repos.NewUserStylePreferenceRepo(db, log),
 	}
 }
 

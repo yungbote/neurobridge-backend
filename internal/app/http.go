@@ -22,6 +22,7 @@ type Handlers struct {
 	Course   *httpH.CourseHandler
 	Module   *httpH.ModuleHandler
 	Lesson   *httpH.LessonHandler
+	Event		 *httpH.EventHandler
 	Job			 *httpH.JobHandler
 }
 
@@ -36,6 +37,7 @@ func wireHandlers(log *logger.Logger, services Services, sseHub *sse.SSEHub) Han
 		Course:   httpH.NewCourseHandler(log, services.Course),
 		Module:   httpH.NewModuleHandler(services.Module),
 		Lesson:		httpH.NewLessonHandler(services.Lesson, services.JobService),
+		Event:		httpH.NewEventHandler(services.Event, services.JobService),
 		Job:      httpH.NewJobHandler(services.JobService),
 	}
 }
@@ -51,6 +53,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		CourseHandler:     handlers.Course,
 		ModuleHandler:     handlers.Module,
 		LessonHandler:     handlers.Lesson,
+		EventHandler:			 handlers.Event,
 		JobHandler:				 handlers.Job,
 	})
 }

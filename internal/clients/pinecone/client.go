@@ -1,216 +1,167 @@
-package pinecone
+package app
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
-type Client interface {
-	// DescibeIndex calls control-plane describe_index to fetch host (and other info).
-	// Useful for bootstrapping locally; in production, prefer setting PINECONE_INDEX_HOST and caching it.
-	DescribeIndex(ctx context.Context, indexName string) (*IndexDescription, error)
+type Clients struct {
+	// Redis
+	SSEBus redis.SSEBus
 
-	// Data plane
-	UpsertVectors(ctx context.Context, host string, req UpsertRequest) (*UpsertRespnse, error)
-	Query(ctx context.Context, host string, req QueryRequest) (*QueryResponse, error)
+	// OpenAI
+	OpenaiClient  openai.Client
+	OpenaiCaption openai.Caption
+
+	// Pinecone
+	PineconeClient      pinecone.Client
+	PineconeVectorStore pinecone.VectorStore
+
+	// GCP
+	GcpBucket   gcp.BucketService
+	GcpDocument gcp.Document
+	GcpSpeech   gcp.Speech
+	GcpVideo    gcp.Video
+	GcpVision   gcp.Vision
+
+	// Local Media
+	LMTools localmedia.MediaToolsService
 }
 
-type Config struct {
-	APIKey			string
-	APIVersion	string
-	BaseURL			string
-	Timeout			time.Duration
-}
+func wireClients(log *logger.Logger) (Clients, error) {
+	log.Info("Wiring clients...")
 
-type client struct {
-	log					*logger.Logger
-	cfg					Config
-	http				*http.Client
-}
+	var out Clients
 
-func New(log *logger.Logger, cfg Config) (Client, error) {
-	if log == nil {
-		return nil, fmt.Errorf("logger required")
-	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("missing Pinecone API key")
-	}
-	if strings.TrimSpace(cfg.APIVersion) == "" {
-		cfg.APIVersion = "2025-10"
-	}
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		cfg.BaseURL = "https://api.pinecone.io"
-	}
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = 30 * time.Second
-	}
-	return &client{
-		log:		log.With("service", "PineconeCLient"),
-		cfg:		cfg,
-		http:		&http.Client{
-			Timeout: cfg.Timeout,
-		},
-	}, nil
-}
-
-// -------------------- Control plane --------------------
-type IndexDescription struct {
-	Name					string				`json:"name"`
-	Host					string				`json:"host"`
-	Dimension			int						`json:"dimension"`
-	Metric				string				`json:"metric"`
-	Status				struct {
-		Ready			bool		`json:"ready"`
-		State			string	`json:"state"`
-	} `json:"status"`
-}
-
-func (c *client) DescribeIndex(ctx context.Context, indexName string) (*IndexDescription, error) {
-	indexName = strings.TrimSpace(indexName)
-	if indexName == "" {
-		return nil, fmt.Errorf("indexName required")
-	}
-	u := strings.TrimRight(c.cfg.BaseURL, "/") + "/indexes/" + indexName
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), "GET", u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Api-Key", c.cfg.APIKey)
-	req.Header.Set("X-Pinecone-Api-Version", c.cfg.APIVersion)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("pinecone describe_index http %d: %s", resp.StatusCode, string(raw))
-	}
-	var out IndexDescription
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("pinecone describe_index decode: %w", err)
-	}
-	if strings.TrimSpace(out.Host) == "" {
-		return nil, fmt.Errorf("pinecone describe_index returned empty host")
-	}
-	return &out, nil
-}
-
-// -------------------- Data plane --------------------
-type Vector struct {
-	ID							string					`json:"id"`
-	Values					[]float32				`json:"values"`
-	Metadata				map[string]any	`json:"metadata,omitempty"`
-}
-
-type UpsertRequest struct {
-	Vectors					[]Vector 				`json:"vectors"`
-	Namespace				string					`json:"namespace,omitempty"`
-}
-
-type UpsertResponse struct {
-	UpsertCount			int64						`json:"upsertedCount"`
-}
-
-func (c *client) UpsertVectors(ctx context.Context, host string, req UpsertRequest) (*UpsertResponse, error) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return nil, fmt.Errorf("host required")
-	}
-	if len(req.Vectors) == 0 {
-		return &UpsertResponse{UpsertedCount: 0}, nil
-	}
-
-	// POST https://$INDEX_HOST/vectors/upsert :contentReference[oaicite:4]{index=4}
-	u := "https://" + host + "/vectors/upsert"
-	return doJSON[UpsertResponse](c, ctx, "POST", u, req)
-}
-
-type QueryRequest struct {
-	Namespace       string         `json:"namespace,omitempty"`
-	Vector          []float32      `json:"vector,omitempty"`
-	TopK            int            `json:"topK"`
-	Filter          map[string]any `json:"filter,omitempty"`
-	IncludeValues   bool           `json:"includeValues,omitempty"`
-	IncludeMetadata bool           `json:"includeMetadata,omitempty"`
-}
-
-type QueryMatch struct {
-	ID       string         `json:"id"`
-	Score    float64        `json:"score"`
-	Values   []float32      `json:"values,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-}
-
-type QueryResponse struct {
-	Matches   []QueryMatch `json:"matches"`
-	Namespace string       `json:"namespace"`
-}
-
-func (c *client) Query(ctx context.Context, host string, req QueryRequest) (*QueryResponse, error) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return nil, fmt.Errorf("host required")
-	}
-	if req.TopK <= 0 {
-		req.TopK = 10
-	}
-	if len(req.Vector) == 0 {
-		return nil, fmt.Errorf("query vector required")
-	}
-
-	// POST https://$INDEX_HOST/query :contentReference[oaicite:5]{index=5}
-	u := "https://" + host + "/query"
-	return doJSON[QueryResponse](c, ctx, "POST", u, req)
-}
-
-// -------------------- helpers --------------------
-
-func doJSON[T any](c *client, ctx context.Context, method, url string, body any) (*T, error) {
-	var buf bytes.Buffer
-	if body != nil {
-		if err := json.NewEncoder(&buf).Encode(body); err != nil {
-			return nil, err
+	// ---------------- Redis (optional on API; required on worker) ----------------
+	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) != "" {
+		b, err := redis.NewSSEBus(log)
+		if err != nil {
+			return Clients{}, fmt.Errorf("init redis SSE bus: %w", err)
 		}
+		out.SSEBus = b
 	}
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), method, url, &buf)
+
+	// ---------------- GCP Bucket ----------------
+	bucket, err := gcp.NewBucketService(log)
 	if err != nil {
-		return nil, err
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp bucket client: %w", err)
 	}
-	req.Header.Set("Api-Key", c.cfg.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Pinecone-Api-Version", c.cfg.APIVersion)
+	out.GcpBucket = bucket
 
-	resp, err := c.http.Do(req)
+	// ---------------- OpenAI ----------------
+	oa, err := openai.NewClient(log)
 	if err != nil {
-		return nil, err
+		out.Close()
+		return Clients{}, fmt.Errorf("init openai client: %w", err)
 	}
-	defer resp.Body.Close()
+	out.OpenaiClient = oa
 
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("pinecone http %d: %s", resp.StatusCode, string(raw))
+	cap, err := openai.NewCaption(log, oa)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init openai caption: %w", err)
+	}
+	out.OpenaiCaption = cap
+
+	// ---------------- Pinecone ---------------------
+	if strings.TrimSpace(os.Getenv("PINECONE_API_KEY")) != "" {
+		pc, err := pinecone.New(log, pinecone.Config{
+			APIKey:     strings.TrimSpace(os.Getenv("PINECONE_API_KEY")),
+			APIVersion: strings.TrimSpace(os.Getenv("PINECONE_API_VERSION")),
+			BaseURL:    strings.TrimSpace(os.Getenv("PINECONE_BASE_URL")),
+			Timeout:    30 * time.Second,
+		})
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init pinecone client: %w", err)
+		}
+		out.PineconeClient = pc
+
+		vs, err := pinecone.NewVectorStore(log, pc)
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init pinecone vector store: %w", err)
+		}
+		out.PineconeVectorStore = vs
+	} else {
+		log.Warn("PINECONE_API_KEY not set; vector search disabled")
 	}
 
-	var out T
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("pinecone decode error: %w; raw=%s", err, string(raw))
+	// ---------------- GCP Providers ----------------
+	vision, err := gcp.NewVision(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp vision: %w", err)
 	}
-	return &out, nil
+	out.GcpVision = vision
+
+	doc, err := gcp.NewDocument(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp document: %w", err)
+	}
+	out.GcpDocument = doc
+
+	speech, err := gcp.NewSpeech(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp speech: %w", err)
+	}
+	out.GcpSpeech = speech
+
+	video, err := gcp.NewVideo(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp video: %w", err)
+	}
+	out.GcpVideo = video
+
+	// ---------------- Local Media Tools ----------------
+	out.LMTools = localmedia.New(log)
+
+	return out, nil
 }
 
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
+func (c *Clients) Close() {
+	if c == nil {
+		return
 	}
-	return ctx
+	if c.SSEBus != nil {
+		_ = c.SSEBus.Close()
+		c.SSEBus = nil
+	}
+	if c.GcpVideo != nil {
+		_ = c.GcpVideo.Close()
+		c.GcpVideo = nil
+	}
+	if c.GcpSpeech != nil {
+		_ = c.GcpSpeech.Close()
+		c.GcpSpeech = nil
+	}
+	if c.GcpDocument != nil {
+		_ = c.GcpDocument.Close()
+		c.GcpDocument = nil
+	}
+	if c.GcpVision != nil {
+		_ = c.GcpVision.Close()
+		c.GcpVision = nil
+	}
+
+	c.PineconeClient = nil
+	c.PineconeVectorStore = nil
+	c.OpenaiClient = nil
+	c.OpenaiCaption = nil
 }
 
 

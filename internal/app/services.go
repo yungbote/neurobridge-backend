@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
  "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/course_build"
+ "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	jobworker "github.com/yungbote/neurobridge-backend/internal/jobs/worker"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
@@ -29,6 +30,9 @@ type Services struct {
 	Course   services.CourseService
 	Module   services.ModuleService
 	Lesson   services.LessonService
+
+	// User Event Ingestion (raw user_event log)
+	Events	services.EventService
 
 	// Jobs + notifications
 	JobNotifier    services.JobNotifier
@@ -72,6 +76,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	courseService := services.NewCourseService(db, log, repos.Course, repos.MaterialSet)
 	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)
 	lessonService := services.NewLessonService(db, log, repos.Course, repos.CourseModule, repos.Lesson)
+	eventService := services.NewEventService(db, log, repos.UserEvent)
 
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
 	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
@@ -124,8 +129,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiClient,
 		courseNotifier,
 		extractor,
+		clients.VectorStore,
 	)
 	if err := jobRegistry.Register(courseBuild); err != nil {
+		return Services{}, err
+	}
+
+	userModel := user_model_update.New(
+		db,
+		log,
+		repos.UserEvent,
+		repos.UserEventCursor,
+		repos.UserConceptState,
+		repos.UserStylePreference,
+		repos.JobRun,
+	)
+	if err := jobRegistry.Register(userModel); err != nil {
 		return Services{}, err
 	}
 
@@ -143,6 +162,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Course:          courseService,
 		Module:          moduleService,
 		Lesson:          lessonService,
+		Events:					 eventService,
 		JobNotifier:     jobNotifier,
 		JobService:      jobService,
 		Workflow:        workflow,
