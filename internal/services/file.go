@@ -12,6 +12,7 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/repos"
   "github.com/yungbote/neurobridge-backend/internal/types"
+  "github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 )
 
 type FileService interface {
@@ -24,14 +25,14 @@ type FileService interface {
 type fileService struct {
   db               *gorm.DB
   log              *logger.Logger
-  bucketService    BucketService
+  bucketService    gcp.BucketService
   materialFileRepo repos.MaterialFileRepo
 }
 
 func NewFileService(
   db *gorm.DB,
   baseLog *logger.Logger,
-  bucketService BucketService,
+  bucketService gcp.BucketService,
   materialFileRepo repos.MaterialFileRepo,
 ) FileService {
   serviceLog := baseLog.With("service", "FileService")

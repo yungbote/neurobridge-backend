@@ -1,7 +1,6 @@
 package services
 
 import (
-	"unicode/utf8"
 	"bufio"
 	"bytes"
 	"context"
@@ -16,15 +15,51 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
+
+// -------------------- Client aliases (post-migration) --------------------
+// Keep this file’s surface area stable while implementations moved to internal/clients.
+
+type BucketService = gcp.BucketService
+type BucketCategory = gcp.BucketCategory
+
+const (
+	BucketCategoryAvatar   BucketCategory = gcp.BucketCategoryAvatar
+	BucketCategoryMaterial BucketCategory = gcp.BucketCategoryMaterial
+)
+
+type DocumentProviderService = gcp.Document
+type DocAIProcessGCSRequest = gcp.DocAIProcessGCSRequest
+type DocAIResult = gcp.DocAIResult
+
+type VisionProviderService = gcp.Vision
+type VisionOCRResult = gcp.VisionOCRResult
+
+type SpeechProviderService = gcp.Speech
+type SpeechConfig = gcp.SpeechConfig
+type SpeechResult = gcp.SpeechResult
+
+type VideoIntelligenceProviderService = gcp.Video
+type VideoAIConfig = gcp.VideoAIConfig
+type VideoAIResult = gcp.VideoAIResult
+
+type CaptionProviderService = openai.Caption
+type CaptionRequest = openai.CaptionRequest
+type CaptionResult = openai.CaptionResult
+
+// Segment now lives in internal/types (and gcp/openai clients use it).
+type Segment = types.Segment
 
 // ContentExtractionService is the orchestration layer that guarantees:
 // - Multi-modal coverage (docs+tables+diagrams, images, audio/video speech+onscreen)
@@ -37,28 +72,28 @@ type ContentExtractionService interface {
 }
 
 type ExtractionSummary struct {
-	MaterialFileID uuid.UUID          `json:"material_file_id"`
-	StorageKey     string             `json:"storage_key"`
-	Kind           string             `json:"kind"` // pdf|docx|pptx|image|video|audio|unknown
-	PrimaryTextLen int                `json:"primary_text_len"`
-	Segments       []Segment          `json:"segments,omitempty"`
-	Assets         []AssetRef         `json:"assets,omitempty"`
-	Warnings       []string           `json:"warnings,omitempty"`
-	Diagnostics    map[string]any     `json:"diagnostics,omitempty"`
-	StartedAt      time.Time          `json:"started_at"`
-	FinishedAt     time.Time          `json:"finished_at"`
+	MaterialFileID  uuid.UUID      `json:"material_file_id"`
+	StorageKey      string         `json:"storage_key"`
+	Kind            string         `json:"kind"` // pdf|docx|pptx|image|video|audio|unknown
+	PrimaryTextLen  int            `json:"primary_text_len"`
+	Segments        []Segment      `json:"segments,omitempty"`
+	Assets          []AssetRef     `json:"assets,omitempty"`
+	Warnings        []string       `json:"warnings,omitempty"`
+	Diagnostics     map[string]any `json:"diagnostics,omitempty"`
+	StartedAt       time.Time      `json:"started_at"`
+	FinishedAt      time.Time      `json:"finished_at"`
 }
 
 // AssetRef describes derived assets stored in GCS.
 type AssetRef struct {
-	Kind     string         `json:"kind"`     // original|pdf_page|ppt_slide|frame|audio
-	Key      string         `json:"key"`      // GCS object key (bucket relative)
-	URL      string         `json:"url"`      // public url (or CDN url)
+	Kind     string         `json:"kind"` // original|pdf_page|ppt_slide|frame|audio
+	Key      string         `json:"key"`  // GCS object key (bucket relative)
+	URL      string         `json:"url"`  // public url (or CDN url)
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type contentExtractionService struct {
-	db *gorm.DB
+	db  *gorm.DB
 	log *logger.Logger
 
 	materialChunkRepo repos.MaterialChunkRepo
@@ -82,15 +117,15 @@ type contentExtractionService struct {
 	docaiProcessorVer  string
 
 	// hard caps
-	maxBytesDownload         int64
-	maxPDFPagesRender        int
-	maxPDFPagesCaption       int
-	maxFramesVideo           int
-	maxFramesCaption         int
+	maxBytesDownload          int64
+	maxPDFPagesRender         int
+	maxPDFPagesCaption        int
+	maxFramesVideo            int
+	maxFramesCaption          int
 	maxSecondsAudioTranscribe int
-	maxImageBytesDataURL     int64
+	maxImageBytesDataURL      int64
 
-	chunkSize int
+	chunkSize    int
 	chunkOverlap int
 
 	// video frame extraction
@@ -112,7 +147,7 @@ func NewContentExtractionService(
 	caption CaptionProviderService,
 ) ContentExtractionService {
 	s := &contentExtractionService{
-		db: db,
+		db:  db,
 		log: log.With("service", "ContentExtractionService"),
 
 		materialChunkRepo: materialChunkRepo,
@@ -134,13 +169,13 @@ func NewContentExtractionService(
 		docaiProcessorID:   osGet("DOCUMENTAI_PROCESSOR_ID", ""),
 		docaiProcessorVer:  osGet("DOCUMENTAI_PROCESSOR_VERSION", ""),
 
-		maxBytesDownload:         1024 * 1024 * 1024, // 1GB (streamed to disk)
-		maxPDFPagesRender:        200,
-		maxPDFPagesCaption:       60,
-		maxFramesVideo:           200,
-		maxFramesCaption:         60,
+		maxBytesDownload:          1024 * 1024 * 1024, // 1GB (streamed to disk)
+		maxPDFPagesRender:         200,
+		maxPDFPagesCaption:        60,
+		maxFramesVideo:            200,
+		maxFramesCaption:          60,
 		maxSecondsAudioTranscribe: 4 * 60 * 60, // 4 hours cap
-		maxImageBytesDataURL:     3 * 1024 * 1024, // 3MB data URL cap; else use public URL
+		maxImageBytesDataURL:      3 * 1024 * 1024, // 3MB data URL cap; else use public URL
 
 		chunkSize:    1200,
 		chunkOverlap: 200,
@@ -195,15 +230,15 @@ func (s *contentExtractionService) ExtractAndPersist(ctx context.Context, tx *go
 		Key:  mf.StorageKey,
 		URL:  s.bucket.GetPublicURL(BucketCategoryMaterial, mf.StorageKey),
 		Metadata: map[string]any{
-			"mime": mf.MimeType,
-			"name": mf.OriginalName,
+			"mime":       mf.MimeType,
+			"name":       mf.OriginalName,
 			"size_bytes": mf.SizeBytes,
 		},
 	}}
 
 	var (
 		allSegments []Segment
-		warnings []string
+		warnings    []string
 	)
 
 	// -------------- ROUTING --------------
@@ -372,7 +407,6 @@ func (s *contentExtractionService) handlePDF(ctx context.Context, mf *types.Mate
 	mergeDiag(diag, renderDiag)
 
 	// (4) Caption pages into figure_notes (no missed diagrams)
-	// Hard way: caption pages up to maxPDFPagesCaption (or all rendered if smaller)
 	if s.caption != nil && len(pageImages) > 0 {
 		capN := minInt(len(pageImages), s.maxPDFPagesCaption)
 		for i := 0; i < capN; i++ {
@@ -410,8 +444,8 @@ func (s *contentExtractionService) renderPDFPagesToGCS(ctx context.Context, mf *
 	defer os.RemoveAll(tmpDir)
 
 	paths, err := s.media.RenderPDFToImages(ctx, pdfPath, tmpDir, PDFRenderOptions{
-		DPI:    200,
-		Format: "png",
+		DPI:       200,
+		Format:    "png",
 		FirstPage: 0,
 		LastPage:  0,
 	})
@@ -424,7 +458,6 @@ func (s *contentExtractionService) renderPDFPagesToGCS(ctx context.Context, mf *
 		paths = paths[:s.maxPDFPagesRender]
 	}
 
-	// Upload each page image to GCS
 	pageAssets := make([]AssetRef, 0, len(paths))
 	for i, pth := range paths {
 		pageNum := i + 1
@@ -438,7 +471,7 @@ func (s *contentExtractionService) renderPDFPagesToGCS(ctx context.Context, mf *
 			Key:  key,
 			URL:  s.bucket.GetPublicURL(BucketCategoryMaterial, key),
 			Metadata: map[string]any{
-				"page": pageNum,
+				"page":   pageNum,
 				"format": "png",
 			},
 		})
@@ -456,7 +489,7 @@ func (s *contentExtractionService) handleOffice(ctx context.Context, mf *types.M
 	var assets []AssetRef
 	var segs []Segment
 
-	// (1) Native extraction for text (doesn’t capture diagrams, but captures notes)
+	// (1) Native extraction for text
 	text, warn, nd := s.bestEffortNativeText(mf.OriginalName, mf.MimeType, nil)
 	mergeDiag(diag, nd)
 	if warn != "" {
@@ -466,13 +499,13 @@ func (s *contentExtractionService) handleOffice(ctx context.Context, mf *types.M
 		segs = append(segs, Segment{
 			Text: text,
 			Metadata: map[string]any{
-				"kind": "native_text",
+				"kind":   "native_text",
 				"source": kind,
 			},
 		})
 	}
 
-	// (2) Convert Office -> PDF (captures slide visuals)
+	// (2) Convert Office -> PDF
 	if s.media == nil {
 		return segs, assets, append(warnings, "media tools missing: cannot convert office to pdf"), diag, nil
 	}
@@ -488,7 +521,7 @@ func (s *contentExtractionService) handleOffice(ctx context.Context, mf *types.M
 		return segs, assets, append(warnings, "office->pdf failed: "+err.Error()), diag, nil
 	}
 
-	// Treat PDF as primary: DocAI + Vision OCR fallback + render pages + caption pages.
+	// Treat PDF as primary
 	pdfSegs, pdfAssets, pdfWarn, pdfDiag, _ := s.handlePDF(ctx, mf, pdfPath)
 	segs = append(segs, pdfSegs...)
 	assets = append(assets, pdfAssets...)
@@ -506,7 +539,6 @@ func (s *contentExtractionService) handleImage(ctx context.Context, mf *types.Ma
 	var assets []AssetRef
 	var segs []Segment
 
-	// Ensure we have bytes (downloadMaterialToTemp may drop bytes if large; images usually small, but be safe)
 	if len(imgBytes) == 0 && strings.TrimSpace(imgPath) != "" {
 		if b, err := os.ReadFile(imgPath); err == nil {
 			imgBytes = b
@@ -535,19 +567,18 @@ func (s *contentExtractionService) handleImage(ctx context.Context, mf *types.Ma
 		warnings = append(warnings, "vision provider unavailable; image OCR skipped")
 	}
 
-	// Caption image (meaning) — IMPORTANT: use ImageBytes so OpenAI never has to fetch your CDN URL.
+	// Caption image
 	if s.caption != nil && len(imgBytes) > 0 {
 		res, err := s.caption.DescribeImage(ctx, CaptionRequest{
-			Task:      "image_notes",
+			Task:       "image_notes",
 			ImageBytes: imgBytes,
-			ImageMime:  mf.MimeType, // e.g. image/jpeg
+			ImageMime:  mf.MimeType,
 			Detail:     "high",
 			MaxTokens:  1200,
 		})
 		if err != nil {
 			warnings = append(warnings, "caption image failed: "+err.Error())
 		} else {
-			// Convert CaptionResult into one segment (same formatting as your captionAssetToSegments)
 			var b strings.Builder
 			b.WriteString(res.Summary)
 			if len(res.KeyTakeaways) > 0 {
@@ -568,9 +599,9 @@ func (s *contentExtractionService) handleImage(ctx context.Context, mf *types.Ma
 				segs = append(segs, Segment{
 					Text: txt,
 					Metadata: map[string]any{
-						"kind":     "image_notes",
-						"provider": "openai_caption",
-						"asset_key": mf.StorageKey,
+						"kind":      "image_notes",
+						"provider":   "openai_caption",
+						"asset_key":  mf.StorageKey,
 					},
 				})
 			} else {
@@ -586,7 +617,6 @@ func (s *contentExtractionService) handleImage(ctx context.Context, mf *types.Ma
 	return segs, assets, warnings, diag, nil
 }
 
-
 // -------------------- Audio --------------------
 
 func (s *contentExtractionService) handleAudio(ctx context.Context, mf *types.MaterialFile, audioPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -599,7 +629,7 @@ func (s *contentExtractionService) handleAudio(ctx context.Context, mf *types.Ma
 		return nil, assets, []string{"speech provider unavailable"}, diag, nil
 	}
 
-	// Upload audio to GCS and transcribe via GCS (more scalable)
+	// Upload audio to GCS and transcribe via GCS
 	key := fmt.Sprintf("%s/derived/audio/audio.wav", mf.StorageKey)
 	if err := s.uploadLocalToGCS(ctx, nil, key, audioPath); err != nil {
 		warnings = append(warnings, "upload audio failed: "+err.Error())
@@ -617,31 +647,36 @@ func (s *contentExtractionService) handleAudio(ctx context.Context, mf *types.Ma
 	}
 
 	cfg := SpeechConfig{
-		LanguageCode: "en-US",
+		LanguageCode:               "en-US",
 		EnableAutomaticPunctuation: true,
-		EnableWordTimeOffsets: true,
-		EnableSpeakerDiarization: true,
-		MinSpeakerCount: 1,
-		MaxSpeakerCount: 6,
+		EnableWordTimeOffsets:      true,
+		EnableSpeakerDiarization:   true,
+		MinSpeakerCount:            1,
+		MaxSpeakerCount:            6,
 	}
 
 	var res *SpeechResult
-	var err error
 	if gcsURI != "" {
-		res, err = s.speech.TranscribeAudioGCS(ctx, gcsURI, cfg)
+		r, err := s.speech.TranscribeAudioGCS(ctx, gcsURI, cfg)
+		res = r
+		if err != nil {
+			warnings = append(warnings, "speech transcription failed: "+err.Error())
+			diag["speech_error"] = err.Error()
+		}
 	} else {
-		// fallback: bytes
 		b, readErr := os.ReadFile(audioPath)
 		if readErr != nil {
 			return nil, assets, append(warnings, "read audio bytes failed: "+readErr.Error()), diag, nil
 		}
-		res, err = s.speech.TranscribeAudioBytes(ctx, b, "audio/wav", cfg)
+		r, err := s.speech.TranscribeAudioBytes(ctx, b, "audio/wav", cfg)
+		res = r
+		if err != nil {
+			warnings = append(warnings, "speech transcription failed: "+err.Error())
+			diag["speech_error"] = err.Error()
+		}
 	}
 
-	if err != nil {
-		warnings = append(warnings, "speech transcription failed: "+err.Error())
-		diag["speech_error"] = err.Error()
-	} else {
+	if res != nil {
 		diag["speech_primary_text_len"] = len(res.PrimaryText)
 		for _, sg := range res.Segments {
 			if sg.Metadata == nil {
@@ -664,24 +699,23 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 	var assets []AssetRef
 	var segs []Segment
 
-	// Optionally run Video Intelligence directly on the original video in GCS (extra signals)
+	// Optional: Video Intelligence directly on original video in GCS
 	if s.videoAI != nil && s.materialBucketName != "" {
 		gcsURI := fmt.Sprintf("gs://%s/%s", s.materialBucketName, mf.StorageKey)
 		vres, err := s.videoAI.AnnotateVideoGCS(ctx, gcsURI, VideoAIConfig{
-			LanguageCode: "en-US",
-			Model: "video",
+			LanguageCode:               "en-US",
+			Model:                      "video",
 			EnableAutomaticPunctuation: true,
-			EnableSpeakerDiarization: true,
-			EnableSpeechTranscription: true,
-			EnableTextDetection: true,
-			EnableShotChangeDetection: true,
+			EnableSpeakerDiarization:   true,
+			EnableSpeechTranscription:  true,
+			EnableTextDetection:        true,
+			EnableShotChangeDetection:  true,
 		})
 		if err != nil {
 			warnings = append(warnings, "video intelligence failed: "+err.Error())
 			diag["videoai_error"] = err.Error()
 		} else {
 			diag["videoai_primary_text_len"] = len(vres.PrimaryText)
-			// include as additional segments (do not replace our own pipeline)
 			segs = append(segs, vres.TranscriptSegments...)
 			segs = append(segs, vres.TextSegments...)
 		}
@@ -689,7 +723,7 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 		warnings = append(warnings, "video intelligence unavailable or missing MATERIAL_GCS_BUCKET_NAME; skipping")
 	}
 
-	// (1) Extract audio with ffmpeg -> WAV/FLAC
+	// Extract audio + frames via media tools
 	if s.media == nil {
 		return segs, assets, append(warnings, "media tools missing: cannot extract audio/frames"), diag, nil
 	}
@@ -703,13 +737,12 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 	audioPath := filepath.Join(tmpDir, "audio.wav")
 	_, err = s.media.ExtractAudioFromVideo(ctx, videoPath, audioPath, AudioExtractOptions{
 		SampleRateHz: 16000,
-		Channels: 1,
-		Format: "wav",
+		Channels:     1,
+		Format:       "wav",
 	})
 	if err != nil {
 		warnings = append(warnings, "extract audio failed: "+err.Error())
 	} else {
-		// transcribe audio (Speech)
 		aSegs, aAssets, aWarn, aDiag, _ := s.handleAudio(ctx, mf, audioPath)
 		segs = append(segs, aSegs...)
 		assets = append(assets, aAssets...)
@@ -717,15 +750,14 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 		mergeDiag(diag, aDiag)
 	}
 
-	// (2) Extract keyframes
 	framesDir := filepath.Join(tmpDir, "frames")
 	frames, err := s.media.ExtractKeyframes(ctx, videoPath, framesDir, KeyframeOptions{
 		IntervalSeconds: s.videoFrameIntervalSec,
 		SceneThreshold:  s.videoSceneThreshold,
-		Width: 1280,
-		MaxFrames: s.maxFramesVideo,
-		Format: "jpg",
-		JPEGQuality: 3,
+		Width:           1280,
+		MaxFrames:       s.maxFramesVideo,
+		Format:          "jpg",
+		JPEGQuality:     3,
 	})
 	if err != nil {
 		warnings = append(warnings, "extract keyframes failed: "+err.Error())
@@ -737,7 +769,6 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 		frames = frames[:s.maxFramesVideo]
 	}
 
-	// Upload frames + OCR + caption
 	frameAssets := make([]AssetRef, 0, len(frames))
 	for i, fp := range frames {
 		frameIdx := i + 1
@@ -757,12 +788,10 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 	}
 	assets = append(assets, frameAssets...)
 
-	// OCR frames (Vision) + caption frames (CaptionProvider)
+	// OCR frames + caption frames
 	if s.vision != nil {
 		for i, a := range frameAssets {
-			// Read frame bytes for OCR and (if small enough) caption
-			localPath := frames[i] // aligned by index if uploads succeeded for that frame; but uploads might fail.
-			// safer: read from disk if exists, else skip OCR.
+			localPath := frames[i]
 			b, readErr := os.ReadFile(localPath)
 			if readErr != nil {
 				continue
@@ -772,21 +801,18 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("frame ocr failed (%s): %v", a.Key, err))
 			} else if strings.TrimSpace(ocr.PrimaryText) != "" {
-				// no timestamps yet (we’d need frame time mapping); store as frame index metadata
 				segs = append(segs, Segment{
 					Text: ocr.PrimaryText,
 					Metadata: map[string]any{
-						"kind": "frame_ocr",
-						"asset_key": a.Key,
+						"kind":        "frame_ocr",
+						"asset_key":   a.Key,
 						"frame_index": a.Metadata["frame_index"],
-						"provider": "gcp_vision",
+						"provider":    "gcp_vision",
 					},
 				})
 			}
 
-			// Caption frames (frame_notes)
 			if s.caption != nil {
-				// We do not know timestamp per frame without ffprobe; still valuable as notes.
 				noteSegs, warn, err := s.captionAssetToSegments(ctx, "frame_notes", a, 0, nil, nil)
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("frame caption failed (%s): %v", a.Key, err))
@@ -797,6 +823,7 @@ func (s *contentExtractionService) handleVideo(ctx context.Context, mf *types.Ma
 					segs = append(segs, noteSegs...)
 				}
 			}
+
 			if i+1 >= s.maxFramesCaption {
 				warnings = append(warnings, fmt.Sprintf("frame caption capped at %d frames", s.maxFramesCaption))
 				break
@@ -823,17 +850,14 @@ func (s *contentExtractionService) captionAssetToSegments(
 		return nil, "caption provider unavailable", nil
 	}
 
-	// Use URL if available; else try data URL fallback (download bytes)
 	req := CaptionRequest{
-		Task: task,
-		Prompt: "",
-		ImageURL: asset.URL,
-		Detail: "high",
+		Task:      task,
+		Prompt:    "",
+		ImageURL:   asset.URL,
+		Detail:    "high",
 		MaxTokens: 1200,
 	}
-	// If URL empty or we want deterministic access, use bytes (data URL) if small enough
 	if strings.TrimSpace(req.ImageURL) == "" {
-		// cannot caption
 		return nil, "caption skipped: missing asset url", nil
 	}
 
@@ -842,7 +866,6 @@ func (s *contentExtractionService) captionAssetToSegments(
 		return nil, "", err
 	}
 
-	// Convert CaptionResult into one or more segments
 	var b strings.Builder
 	b.WriteString(res.Summary)
 	if len(res.KeyTakeaways) > 0 {
@@ -864,9 +887,9 @@ func (s *contentExtractionService) captionAssetToSegments(
 	}
 
 	md := map[string]any{
-		"kind": task,
+		"kind":      task,
 		"asset_key": asset.Key,
-		"provider": "openai_caption",
+		"provider":  "openai_caption",
 	}
 	if page > 0 {
 		md["page"] = page
@@ -879,7 +902,7 @@ func (s *contentExtractionService) captionAssetToSegments(
 	}
 
 	seg := Segment{
-		Text: txt,
+		Text:     txt,
 		Metadata: md,
 	}
 	if page > 0 {
@@ -906,28 +929,23 @@ func (s *contentExtractionService) tryDocAI(ctx context.Context, mf *types.Mater
 		return nil, fmt.Errorf("missing docai env (GCP_PROJECT_ID, DOCUMENTAI_LOCATION, DOCUMENTAI_PROCESSOR_ID)")
 	}
 
-	// Use gs:// URI (robust + avoids request size limits)
 	if s.materialBucketName == "" {
 		return nil, fmt.Errorf("missing MATERIAL_GCS_BUCKET_NAME for docai gs:// calls")
 	}
 	gcsURI := fmt.Sprintf("gs://%s/%s", s.materialBucketName, storageKey)
 
 	return s.docai.ProcessGCSOnline(ctx, DocAIProcessGCSRequest{
-		ProjectID:         s.docaiProjectID,
-		Location:          s.docaiLocation,
-		ProcessorID:       s.docaiProcessorID,
-		ProcessorVersion:  s.docaiProcessorVer,
-		MimeType:          mimeType,
-		GCSURI:            gcsURI,
-		FieldMask:         nil,
+		ProjectID:        s.docaiProjectID,
+		Location:         s.docaiLocation,
+		ProcessorID:      s.docaiProcessorID,
+		ProcessorVersion: s.docaiProcessorVer,
+		MimeType:         mimeType,
+		GCSURI:           gcsURI,
+		FieldMask:        nil,
 	})
 }
 
-// safeOriginalTempPath is a placeholder; we avoid it by using gs:// in tryDocAI.
-// Kept to avoid compilation warnings if you adapt later.
-func (s *contentExtractionService) safeOriginalTempPath(mf *types.MaterialFile) string {
-	return ""
-}
+func (s *contentExtractionService) safeOriginalTempPath(mf *types.MaterialFile) string { return "" }
 
 // -------------------- Native extraction fallback --------------------
 
@@ -976,7 +994,6 @@ func (s *contentExtractionService) downloadMaterialToTemp(ctx context.Context, m
 	}
 	defer f.Close()
 
-	// Stream with limit
 	var buf bytes.Buffer
 	bw := bufio.NewWriterSize(f, 1024*1024)
 	tee := io.TeeReader(io.LimitReader(rc, s.maxBytesDownload), &buf)
@@ -991,14 +1008,12 @@ func (s *contentExtractionService) downloadMaterialToTemp(ctx context.Context, m
 
 	cleanup := func() { _ = os.RemoveAll(tmpDir) }
 
-	// Keep bytes for “small enough” files to avoid re-reading.
 	b := buf.Bytes()
-	if int64(len(b)) > 10*1024*1024 { // >10MB, don't keep in memory
+	if int64(len(b)) > 10*1024*1024 {
 		b = nil
 	}
 	return path, cleanup, b, nil
 }
-
 
 // -------------------- Persist segments as chunks --------------------
 
@@ -1008,7 +1023,6 @@ func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, 
 		transaction = s.db
 	}
 
-	// Convert segments into chunk rows (chunk long texts while preserving provenance)
 	now := time.Now()
 	chunks := make([]*types.MaterialChunk, 0, len(segs)*2)
 
@@ -1062,7 +1076,6 @@ func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, 
 	}
 
 	if len(chunks) == 0 {
-		// Always persist at least one explicit chunk so the job doesn't break downstream.
 		chunks = append(chunks, &types.MaterialChunk{
 			ID:             uuid.New(),
 			MaterialFileID: mf.ID,
@@ -1075,7 +1088,6 @@ func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, 
 		})
 	}
 
-	// Insert. We do not delete existing chunks here; caller should ensure idempotency by checking before calling.
 	if _, err := s.materialChunkRepo.Create(ctx, transaction, chunks); err != nil {
 		return fmt.Errorf("create material chunks: %w", err)
 	}
@@ -1089,17 +1101,17 @@ func (s *contentExtractionService) updateMaterialFileExtractionStatus(ctx contex
 	}
 
 	payload := map[string]any{
-		"kind": kind,
-		"warnings": warnings,
-		"diagnostics": diag,
+		"kind":         kind,
+		"warnings":     warnings,
+		"diagnostics":  diag,
 		"extracted_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(payload)
 
 	updates := map[string]any{
-		"ai_type":     kind,
-		"ai_topics":   datatypes.JSON(b),
-		"updated_at":  time.Now(),
+		"ai_type":    kind,
+		"ai_topics":  datatypes.JSON(b),
+		"updated_at": time.Now(),
 	}
 	if err := transaction.WithContext(ctx).Model(&types.MaterialFile{}).
 		Where("id = ?", mf.ID).
@@ -1132,7 +1144,6 @@ func normalizeSegments(in []Segment) []Segment {
 		if t == "" {
 			continue
 		}
-		// simple de-dupe by hash of text + key provenance (page/start/end/kind)
 		key := segmentKey(s)
 		if seen[key] {
 			continue
@@ -1199,7 +1210,6 @@ func tagSegments(in []Segment, extra map[string]any) []Segment {
 }
 
 func textSignalWeak(segs []Segment) bool {
-	// If we have less than ~500 chars of doc text, treat as weak.
 	total := 0
 	for _, s := range segs {
 		k := ""
@@ -1221,7 +1231,6 @@ func splitIntoChunks(text string, chunkSize int, overlap int) []string {
 		return nil
 	}
 
-	// Work in runes so we never cut a UTF-8 sequence in half
 	r := []rune(text)
 
 	if chunkSize < 200 {
@@ -1246,15 +1255,12 @@ func splitIntoChunks(text string, chunkSize int, overlap int) []string {
 		if p != "" {
 			out = append(out, p)
 		}
-
 		if end == len(r) {
 			break
 		}
 	}
-
 	return out
 }
-
 
 func mergeDiag(dst map[string]any, src map[string]any) {
 	if dst == nil || src == nil {
@@ -1335,19 +1341,20 @@ func defaultCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
-
 func mustJSON(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
-		// Do not panic inside worker pipelines; return empty object.
 		return []byte(`{}`)
 	}
 	return b
 }
 
+func collapseWhitespace(s string) string {
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // ExtractTextStrict is a small "native text" fallback for already-in-memory bytes.
-// Your primary pipelines are DocAI/Vision/Speech/Video/Caption; this just prevents
-// compile errors and provides best-effort for text-like inputs.
 func ExtractTextStrict(name, mime string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", fmt.Errorf("no data")
@@ -1356,13 +1363,11 @@ func ExtractTextStrict(name, mime string, data []byte) (string, error) {
 	m := strings.ToLower(strings.TrimSpace(mime))
 	ext := strings.ToLower(filepath.Ext(name))
 
-	// If explicitly text-ish, return as UTF-8 string best effort.
 	if strings.HasPrefix(m, "text/") || m == "application/json" || m == "application/xml" ||
 		ext == ".txt" || ext == ".md" || ext == ".csv" || ext == ".log" || ext == ".json" ||
 		ext == ".yaml" || ext == ".yml" || ext == ".xml" || ext == ".html" || ext == ".htm" {
 
 		s := string(data)
-		// crude HTML stripping if needed
 		if m == "text/html" || ext == ".html" || ext == ".htm" {
 			re := regexp.MustCompile(`(?s)<[^>]*>`)
 			s = re.ReplaceAllString(s, " ")
@@ -1370,7 +1375,6 @@ func ExtractTextStrict(name, mime string, data []byte) (string, error) {
 		return s, nil
 	}
 
-	// Heuristic: if it "looks like text", return it rather than erroring.
 	printable := 0
 	total := 0
 	for _, r := range string(data) {
@@ -1379,7 +1383,6 @@ func ExtractTextStrict(name, mime string, data []byte) (string, error) {
 			printable++
 			continue
 		}
-		// basic printable range
 		if r >= 32 && r != 127 {
 			printable++
 		}
@@ -1411,19 +1414,17 @@ func (w *limitedBufferWriter) Write(p []byte) (int, error) {
 			w.n += remain
 		}
 	}
-	// IMPORTANT: claim we wrote everything so MultiWriter doesn't fail
 	return len(p), nil
 }
 
 func sanitizeUTF8(s string) string {
-    if s == "" {
-        return s
-    }
-    if utf8.ValidString(s) {
-        return s
-    }
-    // Replace invalid byte sequences with a space (keeps words separated)
-    return strings.ToValidUTF8(s, " ")
+	if s == "" {
+		return s
+	}
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, " ")
 }
 
 func (s *contentExtractionService) captionBytesToSegments(
@@ -1458,7 +1459,6 @@ func (s *contentExtractionService) captionBytesToSegments(
 		return nil, "", err
 	}
 
-	// Convert CaptionResult into one segment (same formatting as captionAssetToSegments)
 	var b strings.Builder
 	b.WriteString(res.Summary)
 	if len(res.KeyTakeaways) > 0 {

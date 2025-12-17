@@ -22,6 +22,7 @@ import (
   "github.com/yungbote/neurobridge-backend/internal/logger"
   "github.com/yungbote/neurobridge-backend/internal/types"
   "github.com/yungbote/neurobridge-backend/internal/repos"
+  "github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 )
 
 type AvatarService interface {
@@ -33,12 +34,12 @@ type avatarService struct {
   db              *gorm.DB
   log             *logger.Logger
   userRepo        repos.UserRepo
-  bucketService   BucketService
+  bucketService   gcp.BucketService
   bgColors        []color.NRGBA
   fontFace        font.Face
 }
 
-func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, bucketService BucketService) (AvatarService, error) {
+func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, bucketService gcp.BucketService) (AvatarService, error) {
   serviceLog := log.With("service", "AvatarService")
 
   rand.Seed(time.Now().UnixNano())

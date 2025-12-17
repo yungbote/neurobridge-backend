@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"context"
 	"os"
 	"strings"
 	"google.golang.org/api/option"
@@ -21,6 +22,25 @@ func ClientOptionsFromEnv() []option.ClientOption {
 		opts = append(opts, option.WithCredentialsFile(creds))
 	}
 	return opts
+}
+
+// ---------- shared helpers (package-wide) ----------
+func defaultCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+func ptrFloat(v float64) *float64 { return &v }
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func collapseWhitespace(s string) string {
+	// cheap, fast: Fields collapses all whitespace sequences to single spaces
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\u00a0", " ")), " ")
 }
 
 

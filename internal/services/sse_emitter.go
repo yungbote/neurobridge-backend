@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/yungbote/neurobridge-backend/internal/sse"
+	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
 )
 
 type SSEEmitter interface {
@@ -16,7 +17,7 @@ func (e *HubEmitter) Emit(ctx context.Context, msg sse.SSEMessage) {
 	e.Hub.Broadcast(msg)
 }
 
-type RedisEmitter struct{ Bus SSEBus }
+type RedisEmitter struct{ Bus redis.SSEBus }
 
 func (e *RedisEmitter) Emit(ctx context.Context, msg sse.SSEMessage) {
 	_ = e.Bus.Publish(ctx, msg)

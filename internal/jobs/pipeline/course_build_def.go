@@ -6,11 +6,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 )
 
 type CourseBuildPipeline struct {
-	db  *gorm.DB
-	log *logger.Logger
+	db							 *gorm.DB
+	log							 *logger.Logger
 	courseRepo       repos.CourseRepo
 	materialFileRepo repos.MaterialFileRepo
 	moduleRepo       repos.CourseModuleRepo
@@ -18,10 +20,10 @@ type CourseBuildPipeline struct {
 	quizRepo         repos.QuizQuestionRepo
 	blueprintRepo    repos.CourseBlueprintRepo
 	chunkRepo        repos.MaterialChunkRepo
-	bucket services.BucketService
-	ai     services.OpenAIClient
-	courseNotify services.CourseNotifier
-	extractor		 services.ContentExtractionService
+	bucket					 gcp.BucketService
+	ai							 openai.Client
+	courseNotify		 services.CourseNotifier
+	extractor				 services.ContentExtractionService
 }
 
 func NewCourseBuildPipeline(
@@ -34,8 +36,8 @@ func NewCourseBuildPipeline(
 	quizRepo repos.QuizQuestionRepo,
 	blueprintRepo repos.CourseBlueprintRepo,
 	chunkRepo repos.MaterialChunkRepo,
-	bucket services.BucketService,
-	ai services.OpenAIClient,
+	bucket gcp.BucketService,
+	ai openai.Client,
 	courseNotify services.CourseNotifier,
 	extractor			services.ContentExtractionService,
 ) *CourseBuildPipeline {

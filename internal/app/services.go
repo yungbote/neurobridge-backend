@@ -16,8 +16,6 @@ import (
 
 type Services struct {
 	// Core
-	Bucket services.BucketService
-	OpenAI services.OpenAIClient
 	Avatar services.AvatarService
 	File   services.FileService
 
@@ -35,15 +33,8 @@ type Services struct {
 	Workflow       services.WorkflowService
 	CourseNotifier services.CourseNotifier
 
-	// Providers (hard way)
-	Vision  services.VisionProviderService
-	DocAI   services.DocumentProviderService
-	Speech  services.SpeechProviderService
-	VideoAI services.VideoIntelligenceProviderService
-
 	// Local tooling + captioning
 	MediaTools services.MediaToolsService
-	Caption    services.CaptionProviderService
 
 	// Orchestrator
 	ContentExtractor services.ContentExtractionService
@@ -51,30 +42,17 @@ type Services struct {
 	// Job infra
 	JobRegistry *jobs.Registry
 	JobWorker   *jobs.Worker
-
-	// Redis-backed SSE bus (optional)
-	SSEBus services.SSEBus
 }
 
-func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub) (Services, error) {
+func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub, clients Clients) (Services, error) {
 	log.Info("Wiring services...")
 
-	bucketService, err := services.NewBucketService(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init bucket service: %w", err)
-	}
-
-	openaiClient, err := services.NewOpenAIClient(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init openai client: %w", err)
-	}
-
-	avatarService, err := services.NewAvatarService(db, log, repos.User, bucketService)
+	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket)
 	if err != nil {
 		return Services{}, fmt.Errorf("init avatar service: %w", err)
 	}
 
-	fileService := services.NewFileService(db, log, bucketService, repos.MaterialFile)
+	fileService := services.NewFileService(db, log, clients.GcpBucket, repos.MaterialFile)
 
 	authService := services.NewAuthService(
 		db, log,
@@ -92,16 +70,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)
 	lessonService := services.NewLessonService(db, log, repos.Course, repos.CourseModule, repos.Lesson)
 
-	// ---------------- SSE routing (API hub vs worker -> redis) ----------------
-	var bus services.SSEBus
-	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) != "" {
-		b, err := services.NewRedisSSEBus(log)
-		if err != nil {
-			return Services{}, err
-		}
-		bus = b
-	}
-
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
 	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
 
@@ -114,7 +82,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		if bus == nil {
 			return Services{}, fmt.Errorf("worker requires REDIS_ADDR to publish SSE events")
 		}
-		emitter = &services.RedisEmitter{Bus: bus}
+		emitter = &services.RedisEmitter{Bus: clients.SSEBus}
 	}
 
 	// Notifiers now use the emitter (hub or redis)
@@ -124,33 +92,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	courseNotifier := services.NewCourseNotifier(emitter)
 
-	// ---------------- Provider services ----------------
-	visionProvider, err := services.NewVisionProviderService(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init vision provider: %w", err)
-	}
-
-	docProvider, err := services.NewDocumentProviderService(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init document provider: %w", err)
-	}
-
-	speechProvider, err := services.NewSpeechProviderService(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init speech provider: %w", err)
-	}
-
-	videoProvider, err := services.NewVideoIntelligenceProviderService(log)
-	if err != nil {
-		return Services{}, fmt.Errorf("init video intelligence provider: %w", err)
-	}
-
 	mediaTools := services.NewMediaToolsService(log)
-
-	captionProvider, err := services.NewCaptionProviderService(log, openaiClient)
-	if err != nil {
-		return Services{}, fmt.Errorf("init caption provider: %w", err)
-	}
 
 	// Orchestrator: full extraction pipeline
 	extractor := services.NewContentExtractionService(
@@ -158,13 +100,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		repos.MaterialChunk,
 		repos.MaterialFile,
-		bucketService,
+		clients.GcpBucket,
 		mediaTools,
-		docProvider,
-		visionProvider,
-		speechProvider,
-		videoProvider,
-		captionProvider,
+		clients.GcpDocument,
+		clients.GcpVision,
+		clients.GcpSpeech,
+		clients.GcpVideo,
+		clients.OpenaiCaption,
 	)
 
 	// ---------------- Job registry + worker ----------------
@@ -181,8 +123,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.QuizQuestion,
 		repos.CourseBlueprint,
 		repos.MaterialChunk,
-		bucketService,
-		openaiClient,
+		clients.GcpBucket,
+		clients.OpenaiClient,
 		courseNotifier,
 		extractor,
 	)
@@ -196,8 +138,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	return Services{
-		Bucket: bucketService,
-		OpenAI: openaiClient,
 		Avatar: avatarService,
 		File:   fileService,
 
@@ -207,26 +147,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Course:   courseService,
 		Module:   moduleService,
 		Lesson:   lessonService,
-
 		JobNotifier:    jobNotifier,
 		JobService:     jobService,
 		Workflow:       workflow,
 		CourseNotifier: courseNotifier,
-
-		Vision:  visionProvider,
-		DocAI:   docProvider,
-		Speech:  speechProvider,
-		VideoAI: videoProvider,
-
 		MediaTools: mediaTools,
-		Caption:    captionProvider,
-
 		ContentExtractor: extractor,
-
 		JobRegistry: reg,
 		JobWorker:   worker,
-
-		SSEBus: bus,
 	}, nil
 }
 

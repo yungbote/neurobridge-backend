@@ -18,8 +18,9 @@ type App struct {
 	Log    *logger.Logger
 	DB     *gorm.DB
 	Router *gin.Engine
-	Cfg    Config
-	Repos  Repos
+	Cfg			Config
+	Repos		Repos
+	Clients	Clients
 	Services Services
 	SSEHub *sse.SSEHub
 	cancel context.CancelFunc
@@ -61,7 +62,13 @@ func New() (*App, error) {
 
 	reposet := wireRepos(theDB, log)
 
-	serviceset, err := wireServices(theDB, log, cfg, reposet, ssehub)
+	clientSet, err := wireClients(log)
+	if err != nil {
+		log.Sync()
+		return nil, err
+	}
+
+	serviceset, err := wireServices(theDB, log, cfg, reposet, clients, ssehub)
 	if err != nil {
 		log.Sync()
 		return nil, err
@@ -77,6 +84,7 @@ func New() (*App, error) {
 		Router:   router,
 		Cfg:      cfg,
 		Repos:    reposet,
+		Clients:  clientSet,
 		Services: serviceset,
 		SSEHub:   ssehub,
 	}, nil
@@ -124,6 +132,7 @@ func (a *App) Close() {
 	if a.Services.SSEBus != nil {
 		_ = a.Services.SSEBus.Close()
 	}
+	a.Clients.Close()
 	if a.Log != nil {
 		a.Log.Sync()
 	}
