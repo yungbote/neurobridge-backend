@@ -35,9 +35,6 @@ type Services struct {
 	Workflow       services.WorkflowService
 	CourseNotifier services.CourseNotifier
 
-	// Local tooling + captioning
-	MediaTools services.MediaToolsService
-
 	// Orchestrator
 	ContentExtractor ingestion.ContentExtractionService
 
@@ -103,7 +100,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialChunk,
 		repos.MaterialFile,
 		clients.GcpBucket,
-		mediaTools,
+		clients.LMTools,
 		clients.GcpDocument,
 		clients.GcpVision,
 		clients.GcpSpeech,
@@ -151,7 +148,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		JobService:      jobService,
 		Workflow:        workflow,
 		CourseNotifier:  courseNotifier,
-		MediaTools:      mediaTools,
 		ContentExtractor: extractor,
 		JobRegistry:     reg,
 		JobWorker:       worker,

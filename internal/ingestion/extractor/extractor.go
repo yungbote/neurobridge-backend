@@ -20,6 +20,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 	"github.com/yungbote/neurobridge-backend/internal/types"
@@ -34,7 +35,7 @@ type Extractor struct {
 	MaterialFileRepo  repos.MaterialFileRepo
 
 	Bucket gcp.BucketService
-	Media  services.MediaToolsService
+	Media  localmedia.MediaToolsService
 
 	DocAI   gcp.Document
 	Vision  gcp.Vision
@@ -72,7 +73,7 @@ func New(
 	materialChunkRepo repos.MaterialChunkRepo,
 	materialFileRepo repos.MaterialFileRepo,
 	bucket gcp.BucketService,
-	media services.MediaToolsService,
+	media localmedia.MediaToolsService,
 	docai gcp.Document,
 	vision gcp.Vision,
 	speech gcp.Speech,

@@ -86,7 +86,7 @@ func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, fil
       "storage_key", key,
     )
 
-    if err := fs.bucketService.UploadFile(ctx, tx, BucketCategoryMaterial, key, reader); err != nil {
+    if err := fs.bucketService.UploadFile(ctx, tx, gcp.BucketCategoryMaterial, key, reader); err != nil {
       fs.log.Error("UploadFile failed",
         "error", err,
         "material_file_id", mf.ID,
@@ -103,7 +103,7 @@ func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, fil
       return fmt.Errorf("UploadMaterialFiles: upload failed for material_file_id=%s: %w", mf.ID, err)
     }
 
-    fileURL := fs.bucketService.GetPublicURL(BucketCategoryMaterial, key)
+    fileURL := fs.bucketService.GetPublicURL(gcp.BucketCategoryMaterial, key)
     updates := map[string]interface{}{
       "storage_key": mf.StorageKey,
       "status":      "uploaded",
@@ -151,7 +151,7 @@ func (fs *fileService) DeleteMaterialFiles(ctx context.Context, tx *gorm.DB, fil
         "material_file_id", mf.ID,
         "storage_key", mf.StorageKey,
       )
-      if err := fs.bucketService.DeleteFile(ctx, tx, BucketCategoryMaterial, mf.StorageKey); err != nil {
+      if err := fs.bucketService.DeleteFile(ctx, tx, gcp.BucketCategoryMaterial, mf.StorageKey); err != nil {
         fs.log.Error("DeleteFile failed",
           "error", err,
           "material_file_id", mf.ID,

@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
+	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
@@ -25,6 +26,9 @@ type Clients struct {
 	GcpSpeech   gcp.Speech
 	GcpVideo    gcp.Video
 	GcpVision   gcp.Vision
+
+	// Local Media
+	LMTools			localmedia.MediaToolsService
 }
 
 func wireClients(log *logger.Logger) (Clients, error) {
@@ -95,6 +99,10 @@ func wireClients(log *logger.Logger) (Clients, error) {
 		return Clients{}, fmt.Errorf("init gcp video: %w", err)
 	}
 	out.GcpVideo = video
+
+	// ---------------- Local Media Tools ----------------
+	lmtools := localmedia.NewMediaToolsService(log)
+	out.LMTools = lmtools
 
 	return out, nil
 }
