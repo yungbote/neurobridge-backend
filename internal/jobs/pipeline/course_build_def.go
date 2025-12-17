@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
 )
 
 type CourseBuildPipeline struct {
@@ -23,7 +24,7 @@ type CourseBuildPipeline struct {
 	bucket					 gcp.BucketService
 	ai							 openai.Client
 	courseNotify		 services.CourseNotifier
-	extractor				 services.ContentExtractionService
+	extractor				 ingestion.ContentExtractionService
 }
 
 func NewCourseBuildPipeline(
@@ -39,7 +40,7 @@ func NewCourseBuildPipeline(
 	bucket gcp.BucketService,
 	ai openai.Client,
 	courseNotify services.CourseNotifier,
-	extractor			services.ContentExtractionService,
+	extractor			ingestion.ContentExtractionService,
 ) *CourseBuildPipeline {
 	return &CourseBuildPipeline{
 		db:               db,

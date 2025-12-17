@@ -12,6 +12,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/sse"
+	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
 )
 
 type Services struct {
@@ -37,14 +39,14 @@ type Services struct {
 	MediaTools services.MediaToolsService
 
 	// Orchestrator
-	ContentExtractor services.ContentExtractionService
+	ContentExtractor ingestion.ContentExtractionService
 
 	// Job infra
 	JobRegistry *jobs.Registry
 	JobWorker   *jobs.Worker
 
 	// Keep bus here for convenience/compat
-	SSEBus services.SSEBus
+	SSEBus redis.SSEBus
 }
 
 func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub, clients Clients) (Services, error) {
@@ -95,7 +97,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	mediaTools := services.NewMediaToolsService(log)
 
-	extractor := services.NewContentExtractionService(
+	extractor := ingestion.NewContentExtractionService(
 		db,
 		log,
 		repos.MaterialChunk,
