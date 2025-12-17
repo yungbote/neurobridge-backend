@@ -83,14 +83,25 @@ func (c *Context) Update(updates map[string]any) error {
 
 func (c *Context) Progress(stage string, pct int, msg string) {
 	now := time.Now()
+
 	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
 		"stage":        stage,
 		"progress":     pct,
 		"heartbeat_at": now,
 		"updated_at":   now,
 	})
+
+	if c.Job != nil {
+		c.Job.Stage = stage
+		c.Job.Progress = pct
+		c.Job.HeartbeatAt = &now
+		c.Job.UpdatedAt = now
+		// status remains whatever it is in DB ("running" after claim)
+	}
+
 	c.Notify.JobProgress(c.Job.OwnerUserID, c.Job, stage, pct, msg)
 }
+
 
 func (c *Context) Fail(stage string, err error) {
 	now := time.Now()
@@ -98,14 +109,25 @@ func (c *Context) Fail(stage string, err error) {
 	if err != nil {
 		msg = err.Error()
 	}
+
 	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
-		"status":       "failed",
-		"stage":        stage,
-		"error":        msg,
+		"status":        "failed",
+		"stage":         stage,
+		"error":         msg,
 		"last_error_at": now,
-		"locked_at":    nil,
-		"updated_at":   now,
+		"locked_at":     nil,
+		"updated_at":    now,
 	})
+
+	if c.Job != nil {
+		c.Job.Status = "failed"
+		c.Job.Stage = stage
+		c.Job.Error = msg
+		c.Job.LastErrorAt = &now
+		c.Job.LockedAt = nil
+		c.Job.UpdatedAt = now
+	}
+
 	c.Notify.JobFailed(c.Job.OwnerUserID, c.Job, stage, msg)
 }
 
@@ -116,6 +138,7 @@ func (c *Context) Succeed(finalStage string, result any) {
 		b, _ := json.Marshal(result)
 		res = datatypes.JSON(b)
 	}
+
 	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
 		"status":       "succeeded",
 		"stage":        finalStage,
@@ -126,8 +149,21 @@ func (c *Context) Succeed(finalStage string, result any) {
 		"heartbeat_at": now,
 		"updated_at":   now,
 	})
+
+	if c.Job != nil {
+		c.Job.Status = "succeeded"
+		c.Job.Stage = finalStage
+		c.Job.Progress = 100
+		c.Job.Error = ""
+		c.Job.Result = res
+		c.Job.LockedAt = nil
+		c.Job.HeartbeatAt = &now
+		c.Job.UpdatedAt = now
+	}
+
 	c.Notify.JobDone(c.Job.OwnerUserID, c.Job)
 }
+
 
 func toIfaceMap(in map[string]any) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))

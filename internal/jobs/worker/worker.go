@@ -51,7 +51,7 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 
 	const maxAttempts = 5
 	retryDelay := 30 * time.Second
-	staleRunning := 2 * time.Minute
+	staleRunning := 30 * time.Minute
 
 	for {
 		select {

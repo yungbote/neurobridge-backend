@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"io"
+	"path/filepath"
 	"fmt"
 	"strings"
 	"time"
@@ -212,7 +214,6 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 }
 
 // ---- Caption helpers (identical behavior to old file) ----
-
 func (s *service) captionAssetToSegments(
 	ctx context.Context,
 	task string,
@@ -225,22 +226,60 @@ func (s *service) captionAssetToSegments(
 		return nil, "caption provider unavailable", nil
 	}
 
-	req := openai.CaptionRequest{
-		Task:      task,
-		Prompt:    "",
-		ImageURL:   asset.URL,
-		Detail:    "high",
-		MaxTokens: 1200,
-	}
-	if strings.TrimSpace(req.ImageURL) == "" {
-		return nil, "caption skipped: missing asset url", nil
+	// 1) Try URL first (fast path)
+	var (
+		res *openai.CaptionResult
+		err error
+	)
+
+	if strings.TrimSpace(asset.URL) != "" {
+		res, err = s.ex.Caption.DescribeImage(ctx, openai.CaptionRequest{
+			Task:      task,
+			Prompt:    "",
+			ImageURL:   asset.URL,
+			Detail:    "high",
+			MaxTokens: 1200,
+		})
 	}
 
-	res, err := s.ex.Caption.DescribeImage(ctx, req)
+	// 2) If URL path failed (or URL missing), fall back to downloading bytes from GCS and send bytes to OpenAI.
+	if err != nil || res == nil {
+		if s.ex.Bucket != nil && strings.TrimSpace(asset.Key) != "" {
+			rc, derr := s.ex.Bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, asset.Key)
+			if derr != nil {
+				// keep original error if it exists, otherwise return download error
+				if err == nil {
+					err = fmt.Errorf("download asset from bucket: %w", derr)
+				}
+			} else if rc != nil {
+				b, rerr := io.ReadAll(rc)
+				_ = rc.Close()
+				if rerr != nil {
+					if err == nil {
+						err = fmt.Errorf("read downloaded asset bytes: %w", rerr)
+					}
+				} else if len(b) > 0 {
+					res, err = s.ex.Caption.DescribeImage(ctx, openai.CaptionRequest{
+						Task:       task,
+						Prompt:     "",
+						ImageBytes: b,
+						ImageMime:  mimeFromKey(asset.Key),
+						Detail:     "high",
+						MaxTokens:  1200,
+					})
+				}
+			}
+		}
+	}
+
 	if err != nil {
 		return nil, "", err
 	}
+	if res == nil {
+		return nil, "caption produced no result", nil
+	}
 
+	// Build text from result (same style as your existing code)
 	var b strings.Builder
 	b.WriteString(res.Summary)
 	if len(res.KeyTakeaways) > 0 {
@@ -290,6 +329,21 @@ func (s *service) captionAssetToSegments(
 
 	return []Segment{seg}, "", nil
 }
+
+func mimeFromKey(key string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(key)))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "image/png"
+	}
+}
+
 
 func (s *service) captionBytesToSegments(
 	ctx context.Context,
