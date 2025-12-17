@@ -37,7 +37,7 @@ func wireHandlers(log *logger.Logger, services Services, sseHub *sse.SSEHub) Han
 		Course:   httpH.NewCourseHandler(log, services.Course),
 		Module:   httpH.NewModuleHandler(services.Module),
 		Lesson:		httpH.NewLessonHandler(services.Lesson, services.JobService),
-		Event:		httpH.NewEventHandler(services.Event, services.JobService),
+		Event:		httpH.NewEventHandler(services.Events, services.JobService),
 		Job:      httpH.NewJobHandler(services.JobService),
 	}
 }

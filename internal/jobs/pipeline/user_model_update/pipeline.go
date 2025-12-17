@@ -1,152 +1,132 @@
 package user_model_update
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
-func (p *UserModelUpdatePipeline) Run(jobCtx *runtime.Context) error {
-	if jobCtx == nil || jobCtx.Job == nil {
+func (p *Pipeline) Run(ctx *jobrt.Context) error {
+	if ctx == nil || ctx.Job == nil {
 		return nil
 	}
 
-	userID, err := p.resolveUserID(jobCtx)
-	if err != nil {
-		jobCtx.Fail("validate", err)
+	userID := ctx.Job.OwnerUserID
+	if userID == uuid.Nil {
+		ctx.Fail("validate", fmt.Errorf("missing owner_user_id"))
 		return nil
 	}
 
-	const consumer = "user_model_update"
-	const batchSize = 500
+	consumer := "user_model_update"
 
-	jobCtx.Progress("process", 5, "Loading cursor")
+	// Load cursor (if missing, start from beginning)
+	var afterAt *time.Time
+	var afterID *uuid.UUID
 
-	var processed int
-	var hasMore bool
+	cur, err := p.cursors.Get(ctx.Ctx, nil, userID, consumer)
+	if err == nil && cur != nil {
+		afterAt = cur.LastCreatedAt
+		afterID = cur.LastEventID
+	}
 
-	err = p.db.WithContext(jobCtx.Ctx).Transaction(func(tx *gorm.DB) error {
-		cur, cErr := p.cursorRepo.Get(jobCtx.Ctx, tx, userID, consumer)
-		if cErr != nil && cErr != gorm.ErrRecordNotFound {
-			return cErr
+	const pageSize = 500
+	processed := 0
+	start := time.Now()
+
+	ctx.Progress("scan", 1, "Scanning user events")
+
+	for {
+		events, err := p.events.ListAfterCursor(ctx.Ctx, nil, userID, afterAt, afterID, pageSize)
+		if err != nil {
+			ctx.Fail("scan", err)
+			return nil
 		}
-		if cur == nil || cur.ID == uuid.Nil {
-			cur = &types.UserEventCursor{
-				ID:       uuid.New(),
-				UserID:   userID,
-				Consumer: consumer,
-				UpdatedAt: time.Now().UTC(),
+		if len(events) == 0 {
+			break
+		}
+
+		for _, ev := range events {
+			if ev == nil {
+				continue
+			}
+			processed++
+
+			// Parse event data once
+			var d map[string]any
+			if len(ev.Data) > 0 {
+				_ = json.Unmarshal(ev.Data, &d)
+			}
+
+			// ---- Concept mastery updates (question_answered) ----
+			if strings.TrimSpace(ev.Type) == types.EventQuestionAnswered {
+				_ = p.applyQuestionAnswered(ctx.Ctx, nil, userID, ev, d)
+			}
+
+			// ---- Style preference updates (EMA) ----
+			// Expect frontend event:
+			// type="style_feedback"
+			// data: { "modality":"diagram", "variant":"flowchart", "reward":0.7, "binary":true|false, "concept_id":"..." }
+			if strings.TrimSpace(ev.Type) == "style_feedback" && p.stylePrefs != nil {
+				modality := strings.TrimSpace(fmt.Sprint(d["modality"]))
+				variant := strings.TrimSpace(fmt.Sprint(d["variant"]))
+				reward := floatFromAny(d["reward"], 0)
+
+				var conceptID *uuid.UUID
+				if s := strings.TrimSpace(fmt.Sprint(d["concept_id"])); s != "" {
+					if id, e := uuid.Parse(s); e == nil && id != uuid.Nil {
+						conceptID = &id
+					}
+				}
+
+				var binary *bool
+				if bv, ok := d["binary"].(bool); ok {
+					binary = &bv
+				}
+
+				if modality != "" && variant != "" {
+					_ = p.stylePrefs.UpsertEMA(ctx.Ctx, nil, userID, conceptID, modality, variant, reward, binary)
+				}
+			}
+
+			// Cursor advance (tie-safe cursor = created_at + id)
+			t := ev.CreatedAt
+			id := ev.ID
+			afterAt = &t
+			afterID = &id
+
+			// Lightweight progress updates
+			if processed%500 == 0 {
+				ctx.Progress("scan", 25, fmt.Sprintf("Processed %d events", processed))
 			}
 		}
 
-		events, eErr := p.userEventRepo.ListAfterCursor(jobCtx.Ctx, tx, userID, cur.LastCreatedAt, cur.LastEventID, batchSize+1)
-		if eErr != nil {
-			return eErr
+		// Budget guard: don’t monopolize worker for huge backlogs
+		if time.Since(start) > 20*time.Second || processed >= 4000 {
+			break
 		}
-
-		if len(events) == 0 {
-			cur.UpdatedAt = time.Now().UTC()
-			return p.cursorRepo.Upsert(jobCtx.Ctx, tx, cur)
-		}
-
-		if len(events) > batchSize {
-			hasMore = true
-			events = events[:batchSize]
-		}
-
-		jobCtx.Progress("process", 25, fmt.Sprintf("Processing %d events", len(events)))
-
-		if err := p.applyEvents(jobCtx.Ctx, tx, userID, events); err != nil {
-			return err
-		}
-
-		last := events[len(events)-1]
-		tm := last.CreatedAt.UTC()
-		id := last.ID
-		cur.LastCreatedAt = &tm
-		cur.LastEventID = &id
-		cur.UpdatedAt = time.Now().UTC()
-
-		if err := p.cursorRepo.Upsert(jobCtx.Ctx, tx, cur); err != nil {
-			return err
-		}
-
-		processed = len(events)
-		return nil
-	})
-
-	if err != nil {
-		jobCtx.Fail("process", err)
-		return nil
 	}
 
-	if processed == 0 {
-		jobCtx.Succeed("noop", map[string]any{"processed": 0})
-		return nil
+	// Persist cursor
+	if afterAt != nil && afterID != nil {
+		curRow := &types.UserEventCursor{
+			ID:           uuid.New(),
+			UserID:        userID,
+			Consumer:      consumer,
+			LastCreatedAt: afterAt,
+			LastEventID:   afterID,
+			UpdatedAt:     time.Now(),
+		}
+		_ = p.cursors.Upsert(ctx.Ctx, nil, curRow)
 	}
 
-	jobCtx.Progress("process", 90, "Done")
-	jobCtx.Succeed("done", map[string]any{
-		"user_id":   userID.String(),
-		"processed": processed,
-		"has_more":  hasMore,
-	})
-
-	if hasMore {
-		_ = p.enqueueFollowup(jobCtx.Ctx, userID)
-	}
-
+	ctx.Succeed("done", map[string]any{"processed": processed})
 	return nil
-}
-
-func (p *UserModelUpdatePipeline) resolveUserID(jobCtx *runtime.Context) (uuid.UUID, error) {
-	if id, ok := jobCtx.PayloadUUID("user_id"); ok && id != uuid.Nil {
-		return id, nil
-	}
-	if jobCtx.Job.EntityID != nil && *jobCtx.Job.EntityID != uuid.Nil {
-		return *jobCtx.Job.EntityID, nil
-	}
-	return uuid.Nil, fmt.Errorf("missing user_id")
-}
-
-func (p *UserModelUpdatePipeline) enqueueFollowup(ctx context.Context, userID uuid.UUID) error {
-	if p.jobRunRepo == nil {
-		return nil
-	}
-
-	entityID := userID
-	// avoid infinite duplicates
-	exists, err := p.jobRunRepo.ExistsRunnable(ctx, nil, userID, "user_model_update", "user", &entityID)
-	if err != nil || exists {
-		return err
-	}
-
-	now := time.Now().UTC()
-	job := &types.JobRun{
-		ID:          uuid.New(),
-		OwnerUserID: userID,
-		JobType:     "user_model_update",
-		EntityType:  "user",
-		EntityID:    &entityID,
-		Status:      "queued",
-		Stage:       "queued",
-		Progress:    0,
-		Attempts:    0,
-		Payload:     datatypes.JSON([]byte(fmt.Sprintf(`{"user_id":"%s"}`, userID.String()))),
-		Result:      datatypes.JSON([]byte(`{}`)),
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-
-	_, err = p.jobRunRepo.Create(ctx, nil, []*types.JobRun{job})
-	return err
 }
 
 

@@ -129,7 +129,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiClient,
 		courseNotifier,
 		extractor,
-		clients.VectorStore,
+		clients.PineconeVectorStore,
 	)
 	if err := jobRegistry.Register(courseBuild); err != nil {
 		return Services{}, err

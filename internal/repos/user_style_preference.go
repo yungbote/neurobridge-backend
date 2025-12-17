@@ -15,7 +15,7 @@ import (
 
 type UserStylePreferenceRepo interface {
 	// reward in [-1..+1]; if binary != nil we also update Beta(a,b)
-	UpdateEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error
+	UpsertEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error
 }
 
 type userStylePreferenceRepo struct {
@@ -34,7 +34,7 @@ func clamp(x, lo, hi float64) float64 {
 	return math.Max(lo, math.Min(hi, x))
 }
 
-func (r *userStylePreferenceRepo) UpdateEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error {
+func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error {
 	t := tx
 	if t == nil {
 		t = r.db

@@ -18,11 +18,36 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	var assets []AssetRef
 	var segs []Segment
 
-	docAIRes, docAIErr := s.ex.TryDocAI(ctx, "application/pdf", mf.StorageKey)
+	var docAIRes *gcp.DocAIResult
+	var docAIErr error
+
+	// Prefer local PDF bytes when we have a local pdfPath (e.g., PPTX->PDF)
+	if strings.TrimSpace(pdfPath) != "" && s.ex.DocAI != nil {
+		b, rerr := os.ReadFile(pdfPath)
+		if rerr != nil {
+			docAIErr = fmt.Errorf("read local pdf for docai: %w", rerr)
+		} else if s.ex.DocAIProjectID == "" || s.ex.DocAIProcessorID == "" || s.ex.DocAILocation == "" {
+			docAIErr = fmt.Errorf("missing docai env (GCP_PROJECT_ID, DOCUMENTAI_LOCATION, DOCUMENTAI_PROCESSOR_ID)")
+		} else {
+			docAIRes, docAIErr = s.ex.DocAI.ProcessBytes(ctx, gcp.DocAIProcessBytesRequest{
+				ProjectID:        s.ex.DocAIProjectID,
+				Location:         s.ex.DocAILocation,
+				ProcessorID:      s.ex.DocAIProcessorID,
+				ProcessorVersion: s.ex.DocAIProcessorVer,
+				MimeType:         "application/pdf",
+				Data:             b,
+				FieldMask:        nil,
+			})
+		}
+	} else {
+		// Original behavior for true PDFs already in GCS
+		docAIRes, docAIErr = s.ex.TryDocAI(ctx, "application/pdf", mf.StorageKey)
+	}
+
 	if docAIErr != nil {
 		warnings = append(warnings, "docai failed: "+docAIErr.Error())
 		diag["docai_error"] = docAIErr.Error()
-	} else {
+	} else if docAIRes != nil {
 		diag["docai_primary_text_len"] = len(docAIRes.PrimaryText)
 		segs = append(segs, extractor.TagSegments(docAIRes.Segments, map[string]any{"kind": "docai_page_text"})...)
 		segs = append(segs, extractor.TagSegments(docAIRes.Tables, map[string]any{"kind": "table_text"})...)
@@ -30,11 +55,19 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	}
 
 	if extractor.TextSignalWeak(segs) {
-		if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
+		// Only run Vision async OCR on GCS when the GCS object is actually a PDF.
+		if strings.ToLower(strings.TrimSpace(mf.MimeType)) != "application/pdf" {
+			warnings = append(warnings, "vision OCR fallback skipped (source in GCS is not a PDF)")
+		} else if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
 			warnings = append(warnings, "vision OCR fallback skipped (missing VISION_OCR_OUTPUT_PREFIX or MATERIAL_GCS_BUCKET_NAME)")
 		} else if s.ex.Vision != nil {
 			gcsURI := fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, mf.StorageKey)
-			outPrefix := fmt.Sprintf("%s%s/%s/", extractor.EnsureGSPrefix(s.ex.VisionOutputPrefix), mf.MaterialSetID.String(), mf.ID.String())
+			outPrefix := fmt.Sprintf(
+				"%s%s/%s/",
+				extractor.EnsureGSPrefix(s.ex.VisionOutputPrefix),
+				mf.MaterialSetID.String(),
+				mf.ID.String(),
+			)
 			vres, err := s.ex.Vision.OCRFileInGCS(ctx, gcsURI, "application/pdf", outPrefix, s.ex.MaxPDFPagesRender)
 			if err != nil {
 				warnings = append(warnings, "vision OCR failed: "+err.Error())
@@ -58,7 +91,11 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	warnings = append(warnings, renderWarn...)
 	extractor.MergeDiag(diag, renderDiag)
 
-	if s.ex.Caption != nil && len(pageImages) > 0 {
+	if s.ex.Caption == nil {
+		warnings = append(warnings, "caption provider unavailable; figure_notes skipped")
+	} else if len(pageImages) == 0 {
+		warnings = append(warnings, "no page images rendered; figure_notes skipped")
+	} else {
 		capN := extractor.MinInt(len(pageImages), s.ex.MaxPDFPagesCaption)
 		for i := 0; i < capN; i++ {
 			page := i + 1
@@ -73,12 +110,11 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 			}
 			segs = append(segs, noteSegs...)
 		}
-	} else {
-		warnings = append(warnings, "caption provider unavailable; figure_notes skipped")
 	}
 
 	return segs, assets, warnings, diag, nil
 }
+
 
 func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]AssetRef, []AssetRef, []string, map[string]any) {
 	diag := map[string]any{"render": "pdftoppm"}

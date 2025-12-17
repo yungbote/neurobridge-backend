@@ -2,41 +2,45 @@ package user_model_update
 
 import (
 	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 	"github.com/yungbote/neurobridge-backend/internal/repos"
 )
 
-type UserModelUpdatePipeline struct {
-	db								*gorm.DB
-	log								*logger.Logger
-	userEventRepo			repos.UserEventRepo
-	cursorRepo				repos.UserEventCursorRepo
-	conceptStateRepo	repos.UserConceptStateRepo
-	stylePrefRepo			repos.UserStylePreferenceRepo
-	jobRunRepo				repos.JobRunRepo
+type Pipeline struct {
+	db  *gorm.DB
+	log *logger.Logger
+
+	events       repos.UserEventRepo
+	cursors      repos.UserEventCursorRepo
+	conceptState repos.UserConceptStateRepo
+	stylePrefs   repos.UserStylePreferenceRepo
+
+	// kept for future expansion / wiring compatibility
+	jobRuns repos.JobRunRepo
 }
 
 func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
-	userEventRepo repos.UserEventRepo,
-	cursorRepo repos.UserEventCursorRepo,
-	conceptStateRepo repos.UserConceptStateRepo,
-	stylePrefRepo repos.UserStylePreferenceRepo,
-	jobRunRepo repos.JobRunRepo,
-) *UserModelUpdatePipeline {
-	return &UserModelUpdatePipeline{
-		db:      db,
-		log:     baseLog.With("job", "user_model_update"),
-		userEventRepo:   userEventRepo,
-		cursorRepo:      cursorRepo,
-		conceptStateRepo: conceptStateRepo,
-		stylePrefRepo:   stylePrefRepo,
-		jobRunRepo: jobRunRepo,
+	events repos.UserEventRepo,
+	cursors repos.UserEventCursorRepo,
+	conceptState repos.UserConceptStateRepo,
+	stylePrefs repos.UserStylePreferenceRepo,
+	jobRuns repos.JobRunRepo,
+) *Pipeline {
+	return &Pipeline{
+		db:           db,
+		log:          baseLog.With("job", "user_model_update"),
+		events:       events,
+		cursors:      cursors,
+		conceptState: conceptState,
+		stylePrefs:   stylePrefs,
+		jobRuns:      jobRuns,
 	}
 }
 
-func (p *UserModelUpdatePipeline) Type() string { return "user_model_update" }
+func (p *Pipeline) Type() string { return "user_model_update" }
 
 
 
