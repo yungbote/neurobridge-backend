@@ -8,38 +8,39 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	speech "cloud.google.com/go/speech/apiv1"
+	speechpb "cloud.google.com/go/speech/apiv1/speechpb"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	  speech "cloud.google.com/go/speech/apiv1"
-	speechpb "cloud.google.com/go/speech/apiv1/speechpb"
 	"google.golang.org/protobuf/types/known/durationpb"
+
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
 type Segment struct {
-  Text       string         `json:"text"`
+	Text string `json:"text"`
 
-  // Document provenance
-  Page       *int           `json:"page,omitempty"`
+	// Document provenance
+	Page *int `json:"page,omitempty"`
 
-  // Audio/video provenance
-  StartSec   *float64       `json:"start_sec,omitempty"`
-  EndSec     *float64       `json:"end_sec,omitempty"`
+	// Audio/video provenance
+	StartSec *float64 `json:"start_sec,omitempty"`
+	EndSec   *float64 `json:"end_sec,omitempty"`
 
-  // Speaker diarization (speech/video)
-  SpeakerTag *int           `json:"speaker_tag,omitempty"`
+	// Speaker diarization (speech/video)
+	SpeakerTag *int `json:"speaker_tag,omitempty"`
 
-  // Confidence when provided by OCR/transcription providers
-  Confidence *float64       `json:"confidence,omitempty"`
+	// Confidence when provided by OCR/transcription providers
+	Confidence *float64 `json:"confidence,omitempty"`
 
-  // Any additional provenance/labels:
-  // kind: "ocr_text" | "transcript" | "frame_ocr" | "figure_notes" | "table_text" | ...
-  // provider: "gcp_vision" | "gcp_speech" | "gcp_documentai" | "gcp_videointelligence" | "openai_caption"
-  // asset_key: "materials/.../derived/pages/page_0001.png"
-  Metadata   map[string]any `json:"metadata,omitempty"`
+	// Any additional provenance/labels:
+	// kind: "ocr_text" | "transcript" | "frame_ocr" | "figure_notes" | "table_text" | ...
+	// provider: "gcp_vision" | "gcp_speech" | "gcp_documentai" | "gcp_videointelligence" | "openai_caption"
+	// asset_key: "materials/.../derived/pages/page_0001.png"
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
-
 
 type SpeechProviderService interface {
 	TranscribeAudioBytes(ctx context.Context, audio []byte, mimeType string, cfg SpeechConfig) (*SpeechResult, error)
@@ -53,7 +54,7 @@ type SpeechConfig struct {
 	UseEnhanced  bool
 
 	EnableAutomaticPunctuation bool
-	EnableWordTimeOffsets      bool // should be true for your pipeline :contentReference[oaicite:7]{index=7}
+	EnableWordTimeOffsets      bool // should be true for your pipeline
 
 	EnableSpeakerDiarization bool
 	MinSpeakerCount          int
@@ -97,11 +98,17 @@ func NewSpeechProviderService(log *logger.Logger) (SpeechProviderService, error)
 
 	var c *speech.Client
 	var err error
+
+	opts := []option.ClientOption{}
 	if creds != "" {
-		c, err = speech.NewClient(ctx, option.WithCredentialsFile(creds))
-	} else {
-		c, err = speech.NewClient(ctx)
+		if strings.HasPrefix(strings.TrimSpace(creds), "{") {
+			opts = append(opts, option.WithCredentialsJSON([]byte(creds)))
+		} else {
+			opts = append(opts, option.WithCredentialsFile(creds))
+		}
 	}
+
+	c, err = speech.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("speech client: %w", err)
 	}
@@ -122,7 +129,6 @@ func (s *speechProviderService) Close() error {
 
 func (s *speechProviderService) TranscribeAudioBytes(ctx context.Context, audio []byte, mimeType string, cfg SpeechConfig) (*SpeechResult, error) {
 	ctx = defaultCtx(ctx)
-	// bytes transcription is best for short audio; keep a strict timeout
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -152,7 +158,6 @@ func (s *speechProviderService) TranscribeAudioBytes(ctx context.Context, audio 
 
 func (s *speechProviderService) TranscribeAudioGCS(ctx context.Context, gcsURI string, cfg SpeechConfig) (*SpeechResult, error) {
 	ctx = defaultCtx(ctx)
-	// GCS long audio can take a while
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
@@ -191,14 +196,14 @@ func buildSpeechRecognitionConfig(mimeType string, gcsURI string, cfg SpeechConf
 	}
 
 	rc := &speechpb.RecognitionConfig{
-		LanguageCode:            cfg.LanguageCode,
-		Model:                   cfg.Model,
-		UseEnhanced:             cfg.UseEnhanced,
+		LanguageCode:               cfg.LanguageCode,
+		Model:                      cfg.Model,
+		UseEnhanced:                cfg.UseEnhanced,
 		EnableAutomaticPunctuation: cfg.EnableAutomaticPunctuation,
-		EnableWordTimeOffsets:   cfg.EnableWordTimeOffsets,
-		Encoding:                enc,
-		SampleRateHertz:         int32(max0(cfg.SampleRateHertz)),
-		AudioChannelCount:       int32(max0(cfg.AudioChannelCount)),
+		EnableWordTimeOffsets:      cfg.EnableWordTimeOffsets,
+		Encoding:                   enc,
+		SampleRateHertz:            int32(max0(cfg.SampleRateHertz)),
+		AudioChannelCount:          int32(max0(cfg.AudioChannelCount)),
 	}
 
 	if cfg.EnableSpeakerDiarization {
@@ -225,9 +230,16 @@ func inferSpeechEncoding(mimeType string, gcsURI string) speechpb.RecognitionCon
 	case strings.Contains(m, "ogg") || ext == ".ogg" || ext == ".opus":
 		return speechpb.RecognitionConfig_OGG_OPUS
 	default:
-		// leave unspecified; API can sometimes auto-detect in practice
 		return speechpb.RecognitionConfig_ENCODING_UNSPECIFIED
 	}
+}
+
+type speechWord struct {
+	w   string
+	s   float64
+	e   float64
+	spk int
+	c   float64
 }
 
 func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongRunningRecognizeResponse, wantWordOffsets bool, diarize bool) *SpeechResult {
@@ -241,16 +253,7 @@ func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongR
 		return out
 	}
 
-	// Collect words with timestamps + speaker tags (if any)
-	type word struct {
-		w   string
-		s   float64
-		e   float64
-		spk int
-		c   float64
-	}
-	words := []word{}
-
+	words := []speechWord{}
 	var full strings.Builder
 
 	for _, r := range resp.Results {
@@ -274,7 +277,7 @@ func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongR
 				ws := durToSec(ww.StartTime)
 				we := durToSec(ww.EndTime)
 				spk := int(ww.SpeakerTag)
-				words = append(words, word{
+				words = append(words, speechWord{
 					w:   ww.Word,
 					s:   ws,
 					e:   we,
@@ -291,14 +294,14 @@ func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongR
 	if wantWordOffsets && len(words) > 0 {
 		out.Words = make([]Segment, 0, len(words))
 		for _, w := range words {
-			s := w.s
-			e := w.e
+			sv := w.s
+			ev := w.e
 			spk := w.spk
 			conf := w.c
 			out.Words = append(out.Words, Segment{
 				Text:       w.w,
-				StartSec:   &s,
-				EndSec:     &e,
+				StartSec:   &sv,
+				EndSec:     &ev,
 				SpeakerTag: &spk,
 				Confidence: ptrFloat(conf),
 				Metadata:   map[string]any{"kind": "word"},
@@ -310,7 +313,6 @@ func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongR
 	if diarize && len(words) > 0 {
 		out.Segments = groupBySpeaker(words)
 	} else if wantWordOffsets && len(words) > 0 {
-		// fallback: group by time windows (~10s)
 		out.Segments = groupByTime(words, 10.0)
 	} else {
 		out.Segments = []Segment{{Text: out.PrimaryText, Metadata: map[string]any{"kind": "transcript"}}}
@@ -319,13 +321,7 @@ func parseSpeechResponse(provider string, sourceURI string, resp *speechpb.LongR
 	return out
 }
 
-func groupBySpeaker(words []struct {
-	w   string
-	s   float64
-	e   float64
-	spk int
-	c   float64
-}) []Segment {
+func groupBySpeaker(words []speechWord) []Segment {
 	if len(words) == 0 {
 		return nil
 	}
@@ -343,8 +339,8 @@ func groupBySpeaker(words []struct {
 		if txt == "" {
 			return
 		}
-		s := curStart
-		e := curEnd
+		sv := curStart
+		ev := curEnd
 		spk := curSpk
 		var c *float64
 		if confN > 0 {
@@ -353,8 +349,8 @@ func groupBySpeaker(words []struct {
 		}
 		segs = append(segs, Segment{
 			Text:       txt,
-			StartSec:   &s,
-			EndSec:     &e,
+			StartSec:   &sv,
+			EndSec:     &ev,
 			SpeakerTag: &spk,
 			Confidence: c,
 			Metadata:   map[string]any{"kind": "transcript", "group": "speaker"},
@@ -384,13 +380,7 @@ func groupBySpeaker(words []struct {
 	return segs
 }
 
-func groupByTime(words []struct {
-	w   string
-	s   float64
-	e   float64
-	spk int
-	c   float64
-}, windowSec float64) []Segment {
+func groupByTime(words []speechWord, windowSec float64) []Segment {
 	if len(words) == 0 {
 		return nil
 	}
@@ -410,8 +400,8 @@ func groupByTime(words []struct {
 		if txt == "" {
 			return
 		}
-		s := curStart
-		e := curEnd
+		sv := curStart
+		ev := curEnd
 		var c *float64
 		if confN > 0 {
 			v := confSum / float64(confN)
@@ -419,8 +409,8 @@ func groupByTime(words []struct {
 		}
 		segs = append(segs, Segment{
 			Text:       txt,
-			StartSec:   &s,
-			EndSec:     &e,
+			StartSec:   &sv,
+			EndSec:     &ev,
 			Confidence: c,
 			Metadata:   map[string]any{"kind": "transcript", "group": "time"},
 		})
@@ -493,6 +483,8 @@ func max0(x int) int {
 	}
 	return x
 }
+
+//func ptrFloat(v float64) *float64 { return &v }
 
 
 

@@ -19,7 +19,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
-
 type VideoIntelligenceProviderService interface {
 	AnnotateVideoGCS(ctx context.Context, gcsURI string, cfg VideoAIConfig) (*VideoAIResult, error)
 	Close() error
@@ -27,7 +26,7 @@ type VideoIntelligenceProviderService interface {
 
 type VideoAIConfig struct {
 	LanguageCode string
-	Model        string // "default" or "video" per docs :contentReference[oaicite:10]{index=10}
+	Model        string // "default" or "video"
 
 	EnableAutomaticPunctuation bool
 	EnableSpeakerDiarization   bool
@@ -41,9 +40,9 @@ type VideoAIConfig struct {
 }
 
 type VideoAIResult struct {
-	Provider    string    `json:"provider"`
-	SourceURI   string    `json:"source_uri"`
-	PrimaryText string    `json:"primary_text"`
+	Provider    string `json:"provider"`
+	SourceURI   string `json:"source_uri"`
+	PrimaryText string `json:"primary_text"`
 
 	TranscriptSegments []Segment `json:"transcript_segments,omitempty"` // kind=transcript
 	TextSegments       []Segment `json:"text_segments,omitempty"`       // kind=frame_ocr
@@ -72,13 +71,16 @@ func NewVideoIntelligenceProviderService(log *logger.Logger) (VideoIntelligenceP
 
 	ctx := context.Background()
 
-	var c *videointelligence.Client
-	var err error
+	opts := []option.ClientOption{}
 	if creds != "" {
-		c, err = videointelligence.NewClient(ctx, option.WithCredentialsFile(creds))
-	} else {
-		c, err = videointelligence.NewClient(ctx)
+		if strings.HasPrefix(strings.TrimSpace(creds), "{") {
+			opts = append(opts, option.WithCredentialsJSON([]byte(creds)))
+		} else {
+			opts = append(opts, option.WithCredentialsFile(creds))
+		}
 	}
+
+	c, err := videointelligence.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("videointelligence client: %w", err)
 	}
@@ -113,7 +115,6 @@ func (s *videoIntelligenceProviderService) AnnotateVideoGCS(ctx context.Context,
 		cfg.Model = "video"
 	}
 	if !cfg.EnableSpeechTranscription && !cfg.EnableTextDetection && !cfg.EnableShotChangeDetection {
-		// default to the two critical ones
 		cfg.EnableSpeechTranscription = true
 		cfg.EnableTextDetection = true
 	}
@@ -129,7 +130,6 @@ func (s *videoIntelligenceProviderService) AnnotateVideoGCS(ctx context.Context,
 		features = append(features, vipb.Feature_SHOT_CHANGE_DETECTION)
 	}
 
-	// Speech transcription config per docs :contentReference[oaicite:11]{index=11}
 	var vcfg *vipb.VideoContext
 	if cfg.EnableSpeechTranscription || cfg.EnableTextDetection {
 		vcfg = &vipb.VideoContext{}
@@ -137,29 +137,26 @@ func (s *videoIntelligenceProviderService) AnnotateVideoGCS(ctx context.Context,
 
 	if cfg.EnableSpeechTranscription {
 		stc := &vipb.SpeechTranscriptionConfig{
-			LanguageCode:              cfg.LanguageCode,
+			LanguageCode:               cfg.LanguageCode,
 			EnableAutomaticPunctuation: cfg.EnableAutomaticPunctuation,
-			FilterProfanity:           false,
-			EnableWordConfidence:      true,
-			Model:                     cfg.Model,
+			FilterProfanity:            false,
+			EnableWordConfidence:       true,
 		}
 		if cfg.EnableSpeakerDiarization {
 			stc.EnableSpeakerDiarization = true
 			if cfg.MinSpeakerCount > 0 {
-				stc.DiarizationSpeakerCount = int32(cfg.MinSpeakerCount) // older field; still accepted
+				stc.DiarizationSpeakerCount = int32(cfg.MinSpeakerCount)
 			}
 		}
 		vcfg.SpeechTranscriptionConfig = stc
 	}
-
-	// Text detection config (basic)
 	if cfg.EnableTextDetection {
 		vcfg.TextDetectionConfig = &vipb.TextDetectionConfig{}
 	}
 
 	req := &vipb.AnnotateVideoRequest{
-		InputUri:  gcsURI,
-		Features:  features,
+		InputUri:     gcsURI,
+		Features:     features,
 		VideoContext: vcfg,
 	}
 
@@ -187,22 +184,16 @@ func (s *videoIntelligenceProviderService) AnnotateVideoGCS(ctx context.Context,
 
 	ar := resp.AnnotationResults[0]
 
-	// Speech transcriptions -> transcript segments
 	if cfg.EnableSpeechTranscription && len(ar.SpeechTranscriptions) > 0 {
 		out.TranscriptSegments = parseVideoSpeech(ar.SpeechTranscriptions)
 	}
-
-	// Text detections -> on-screen text segments (frame_ocr)
 	if cfg.EnableTextDetection && len(ar.TextAnnotations) > 0 {
 		out.TextSegments = parseVideoText(ar.TextAnnotations)
 	}
-
-	// Shot changes -> shot segments
 	if cfg.EnableShotChangeDetection && len(ar.ShotAnnotations) > 0 {
 		out.ShotSegments = parseShots(ar.ShotAnnotations)
 	}
 
-	// Primary text = transcript + OCR text (best effort)
 	var b strings.Builder
 	for _, s := range out.TranscriptSegments {
 		if strings.TrimSpace(s.Text) == "" {
@@ -247,13 +238,11 @@ func parseVideoSpeech(st []*vipb.SpeechTranscription) []Segment {
 			continue
 		}
 
-		// If words exist, build diarized segments; else use transcript with no timing.
 		if len(alt.Words) == 0 {
 			segments = append(segments, seg{text: strings.TrimSpace(alt.Transcript), s: 0, e: 0, spk: 0, conf: float64(alt.Confidence)})
 			continue
 		}
 
-		// Group contiguous words by speaker tag if present.
 		curSpk := int(alt.Words[0].SpeakerTag)
 		curStart := durToSecVI(alt.Words[0].StartTime)
 		curEnd := durToSecVI(alt.Words[0].EndTime)
@@ -307,7 +296,6 @@ func parseVideoSpeech(st []*vipb.SpeechTranscription) []Segment {
 		flush()
 	}
 
-	// Convert to canonical segments
 	out := make([]Segment, 0, len(segments))
 	for _, s := range segments {
 		ss := s.s
@@ -349,7 +337,6 @@ func parseVideoText(ann []*vipb.TextAnnotation) []Segment {
 		}
 	}
 
-	// Sort by time
 	sort.Slice(tmp, func(i, j int) bool {
 		if tmp[i].s == tmp[j].s {
 			return tmp[i].e < tmp[j].e
@@ -428,6 +415,9 @@ func (s *videoIntelligenceProviderService) retryAnnotate(ctx context.Context, fn
 	}
 	return nil, last
 }
+
+
+//func ptrFloat(v float64) *float64 { return &v }
 
 
 

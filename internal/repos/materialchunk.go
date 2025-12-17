@@ -24,17 +24,21 @@ func NewMaterialChunkRepo(db *gorm.DB, baseLog *logger.Logger) MaterialChunkRepo
 }
 
 func (r *materialChunkRepo) Create(ctx context.Context, tx *gorm.DB, chunks []*types.MaterialChunk) ([]*types.MaterialChunk, error) {
-  transaction := tx
-  if transaction == nil {
-    transaction = r.db
-  }
-  if len(chunks) == 0 {
-    return []*types.MaterialChunk{}, nil
-  }
-  if err := transaction.WithContext(ctx).Create(&chunks).Error; err != nil {
-    return nil, err
-  }
-  return chunks, nil
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	if len(chunks) == 0 {
+		return []*types.MaterialChunk{}, nil
+	}
+
+	// Keep batches small because Text is large
+	const batchSize = 100
+
+	if err := transaction.WithContext(ctx).CreateInBatches(chunks, batchSize).Error; err != nil {
+		return nil, err
+	}
+	return chunks, nil
 }
 
 func (r *materialChunkRepo) GetByMaterialFileIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) ([]*types.MaterialChunk, error) {

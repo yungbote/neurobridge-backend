@@ -1,12 +1,10 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -462,13 +460,6 @@ func globSorted(dir string, pattern string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
-}
-
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
 }
 
 

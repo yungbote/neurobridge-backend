@@ -259,15 +259,37 @@ func (c *openAIClient) Embed(ctx context.Context, inputs []string) ([][]float32,
 	if len(inputs) == 0 {
 		return [][]float32{}, nil
 	}
+
+	// Ensure no empty strings (defensive; empty can produce weird behavior)
+	clean := make([]string, len(inputs))
+	for i := range inputs {
+		s := strings.TrimSpace(inputs[i])
+		if s == "" {
+			s = " " // keep index stable
+		}
+		clean[i] = s
+	}
+
 	req := embeddingsRequest{
 		Model: c.embedModel,
-		Input: inputs,
+		Input: clean,
 	}
-	var resp embeddingsResponse
-	if err := c.do(ctx, "POST", "/v1/embeddings", req, &resp); err != nil {
+
+	// Use doOnce so we can inspect raw response if it's malformed/missing indices.
+	respHTTP, raw, err := c.doOnce(ctx, "POST", "/v1/embeddings", req)
+	if err != nil {
+		_ = respHTTP
 		return nil, err
 	}
-	out := make([][]float32, len(inputs))
+
+	var resp embeddingsResponse
+	if uErr := json.Unmarshal(raw, &resp); uErr != nil {
+		return nil, fmt.Errorf("openai embeddings decode error: %w; raw=%s", uErr, string(raw))
+	}
+
+	out := make([][]float32, len(clean))
+
+	// Primary fill using explicit indices
 	for _, d := range resp.Data {
 		vec := make([]float32, len(d.Embedding))
 		for i, f := range d.Embedding {
@@ -277,13 +299,87 @@ func (c *openAIClient) Embed(ctx context.Context, inputs []string) ([][]float32,
 			out[d.Index] = vec
 		}
 	}
-	for i := range out {
-		if out[i] == nil {
-			return nil, fmt.Errorf("missing embedding for index %d", i)
+
+	// Fallback: if indices were missing/zeroed but counts match, fill in order.
+	if hasMissingEmbeddings(out) && len(resp.Data) == len(clean) {
+		for i := 0; i < len(clean); i++ {
+			if out[i] != nil {
+				continue
+			}
+			d := resp.Data[i]
+			vec := make([]float32, len(d.Embedding))
+			for j, f := range d.Embedding {
+				vec[j] = float32(f)
+			}
+			out[i] = vec
 		}
 	}
+
+	// If still missing, retry once (sometimes the API returns a partial body even with 200).
+	if hasMissingEmbeddings(out) {
+		c.log.Warn("Embeddings response missing indices; retrying once",
+			"requested", len(clean),
+			"returned", len(resp.Data),
+			"model", c.embedModel,
+		)
+
+		respHTTP2, raw2, err2 := c.doOnce(ctx, "POST", "/v1/embeddings", req)
+		if err2 != nil {
+			_ = respHTTP2
+			return nil, err2
+		}
+
+		var resp2 embeddingsResponse
+		if uErr := json.Unmarshal(raw2, &resp2); uErr != nil {
+			return nil, fmt.Errorf("openai embeddings decode error after retry: %w; raw=%s", uErr, string(raw2))
+		}
+
+		out2 := make([][]float32, len(clean))
+		for _, d := range resp2.Data {
+			vec := make([]float32, len(d.Embedding))
+			for i, f := range d.Embedding {
+				vec[i] = float32(f)
+			}
+			if d.Index >= 0 && d.Index < len(out2) {
+				out2[d.Index] = vec
+			}
+		}
+		if hasMissingEmbeddings(out2) && len(resp2.Data) == len(clean) {
+			for i := 0; i < len(clean); i++ {
+				if out2[i] != nil {
+					continue
+				}
+				d := resp2.Data[i]
+				vec := make([]float32, len(d.Embedding))
+				for j, f := range d.Embedding {
+					vec[j] = float32(f)
+				}
+				out2[i] = vec
+			}
+		}
+
+		if hasMissingEmbeddings(out2) {
+			// Give yourself maximum debug info
+			return nil, fmt.Errorf(
+				"openai embeddings missing indices after retry: requested=%d returned=%d model=%s raw=%s",
+				len(clean), len(resp2.Data), c.embedModel, string(raw2),
+			)
+		}
+		return out2, nil
+	}
+
 	return out, nil
 }
+
+func hasMissingEmbeddings(v [][]float32) bool {
+	for i := range v {
+		if v[i] == nil || len(v[i]) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 
 // -------------------- Responses API (text + structured + multimodal) --------------------
 

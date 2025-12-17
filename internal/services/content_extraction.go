@@ -1,6 +1,7 @@
 package services
 
 import (
+	"unicode/utf8"
 	"bufio"
 	"bytes"
 	"context"
@@ -10,15 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
-	"cloud.google.com/go/documentai/apiv1/documentaipb"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -508,52 +506,86 @@ func (s *contentExtractionService) handleImage(ctx context.Context, mf *types.Ma
 	var assets []AssetRef
 	var segs []Segment
 
+	// Ensure we have bytes (downloadMaterialToTemp may drop bytes if large; images usually small, but be safe)
+	if len(imgBytes) == 0 && strings.TrimSpace(imgPath) != "" {
+		if b, err := os.ReadFile(imgPath); err == nil {
+			imgBytes = b
+		}
+	}
+
 	// OCR (Vision)
-	if s.vision != nil {
+	if s.vision != nil && len(imgBytes) > 0 {
 		ocr, err := s.vision.OCRImageBytes(ctx, imgBytes, mf.MimeType)
 		if err != nil {
 			warnings = append(warnings, "vision image ocr failed: "+err.Error())
 			diag["vision_error"] = err.Error()
 		} else {
 			diag["vision_primary_text_len"] = len(ocr.PrimaryText)
-			// keep as a single segment
 			if strings.TrimSpace(ocr.PrimaryText) != "" {
 				segs = append(segs, Segment{
 					Text: ocr.PrimaryText,
 					Metadata: map[string]any{
-						"kind": "ocr_text",
+						"kind":     "ocr_text",
 						"provider": "gcp_vision",
 					},
 				})
 			}
 		}
-	} else {
+	} else if s.vision == nil {
 		warnings = append(warnings, "vision provider unavailable; image OCR skipped")
 	}
 
-	// Caption image (meaning)
-	// Upload derived copy (optional) — but we already have original. We caption the original asset URL if possible.
-	origAsset := AssetRef{
-		Kind: "image",
-		Key:  mf.StorageKey,
-		URL:  s.bucket.GetPublicURL(BucketCategoryMaterial, mf.StorageKey),
-	}
-	if s.caption != nil {
-		capSegs, warn, err := s.captionAssetToSegments(ctx, "image_notes", origAsset, 1, nil, nil)
+	// Caption image (meaning) — IMPORTANT: use ImageBytes so OpenAI never has to fetch your CDN URL.
+	if s.caption != nil && len(imgBytes) > 0 {
+		res, err := s.caption.DescribeImage(ctx, CaptionRequest{
+			Task:      "image_notes",
+			ImageBytes: imgBytes,
+			ImageMime:  mf.MimeType, // e.g. image/jpeg
+			Detail:     "high",
+			MaxTokens:  1200,
+		})
 		if err != nil {
 			warnings = append(warnings, "caption image failed: "+err.Error())
 		} else {
-			if warn != "" {
-				warnings = append(warnings, warn)
+			// Convert CaptionResult into one segment (same formatting as your captionAssetToSegments)
+			var b strings.Builder
+			b.WriteString(res.Summary)
+			if len(res.KeyTakeaways) > 0 {
+				b.WriteString("\n\nKey takeaways:\n- ")
+				b.WriteString(strings.Join(res.KeyTakeaways, "\n- "))
 			}
-			segs = append(segs, capSegs...)
+			if len(res.Relationships) > 0 {
+				b.WriteString("\n\nRelationships:\n- ")
+				b.WriteString(strings.Join(res.Relationships, "\n- "))
+			}
+			if len(res.TextInImage) > 0 {
+				b.WriteString("\n\nText in image:\n- ")
+				b.WriteString(strings.Join(res.TextInImage, "\n- "))
+			}
+
+			txt := strings.TrimSpace(b.String())
+			if txt != "" {
+				segs = append(segs, Segment{
+					Text: txt,
+					Metadata: map[string]any{
+						"kind":     "image_notes",
+						"provider": "openai_caption",
+						"asset_key": mf.StorageKey,
+					},
+				})
+			} else {
+				warnings = append(warnings, "caption produced empty text")
+			}
 		}
-	} else {
+	} else if s.caption == nil {
 		warnings = append(warnings, "caption provider unavailable; image_notes skipped")
+	} else if len(imgBytes) == 0 {
+		warnings = append(warnings, "caption skipped: no image bytes available")
 	}
 
 	return segs, assets, warnings, diag, nil
 }
+
 
 // -------------------- Audio --------------------
 
@@ -874,27 +906,20 @@ func (s *contentExtractionService) tryDocAI(ctx context.Context, mf *types.Mater
 		return nil, fmt.Errorf("missing docai env (GCP_PROJECT_ID, DOCUMENTAI_LOCATION, DOCUMENTAI_PROCESSOR_ID)")
 	}
 
-	// Online bytes is safest for single file, but can hit size limits.
-	// We call bytes for maximum determinism (and because we already downloaded to disk).
-	// For very large PDFs you can add batch mode later; this service supports batch through DocumentProviderService.
-	data, err := os.ReadFile(s.safeOriginalTempPath(mf))
-	_ = err
-	// We do not have direct access to orig bytes here; caller passes file path.
-	// In this implementation we use GCS online processing to avoid re-reading local path.
-	// Using gs:// URI is robust and avoids request size limits.
+	// Use gs:// URI (robust + avoids request size limits)
 	if s.materialBucketName == "" {
 		return nil, fmt.Errorf("missing MATERIAL_GCS_BUCKET_NAME for docai gs:// calls")
 	}
 	gcsURI := fmt.Sprintf("gs://%s/%s", s.materialBucketName, storageKey)
 
 	return s.docai.ProcessGCSOnline(ctx, DocAIProcessGCSRequest{
-		ProjectID: s.docaiProjectID,
-		Location:  s.docaiLocation,
-		ProcessorID: s.docaiProcessorID,
-		ProcessorVersion: s.docaiProcessorVer,
-		MimeType: mimeType,
-		GCSURI:   gcsURI,
-		FieldMask: nil,
+		ProjectID:         s.docaiProjectID,
+		Location:          s.docaiLocation,
+		ProcessorID:       s.docaiProcessorID,
+		ProcessorVersion:  s.docaiProcessorVer,
+		MimeType:          mimeType,
+		GCSURI:            gcsURI,
+		FieldMask:         nil,
 	})
 }
 
@@ -974,6 +999,7 @@ func (s *contentExtractionService) downloadMaterialToTemp(ctx context.Context, m
 	return path, cleanup, b, nil
 }
 
+
 // -------------------- Persist segments as chunks --------------------
 
 func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile, segs []Segment) error {
@@ -1014,13 +1040,19 @@ func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, 
 		}
 
 		parts := splitIntoChunks(text, s.chunkSize, s.chunkOverlap)
+
 		for _, ptxt := range parts {
+			ptxt = strings.TrimSpace(ptxt)
+			if ptxt == "" {
+				continue
+			}
+			ptxt = sanitizeUTF8(ptxt)
 			chunks = append(chunks, &types.MaterialChunk{
 				ID:             uuid.New(),
 				MaterialFileID: mf.ID,
 				Index:          idx,
 				Text:           ptxt,
-				Embedding:      datatypes.JSON([]byte(`[]`)),
+				Embedding:      datatypes.JSON(nil),
 				Metadata:       datatypes.JSON(mustJSON(meta)),
 				CreatedAt:      now,
 				UpdatedAt:      now,
@@ -1036,7 +1068,7 @@ func (s *contentExtractionService) persistSegmentsAsChunks(ctx context.Context, 
 			MaterialFileID: mf.ID,
 			Index:          0,
 			Text:           "No extractable content was produced for this file.",
-			Embedding:      datatypes.JSON([]byte(`[]`)),
+			Embedding:      datatypes.JSON(nil),
 			Metadata:       datatypes.JSON(mustJSON(map[string]any{"kind": "unextractable"})),
 			CreatedAt:      now,
 			UpdatedAt:      now,
@@ -1188,6 +1220,10 @@ func splitIntoChunks(text string, chunkSize int, overlap int) []string {
 	if text == "" {
 		return nil
 	}
+
+	// Work in runes so we never cut a UTF-8 sequence in half
+	r := []rune(text)
+
 	if chunkSize < 200 {
 		chunkSize = 200
 	}
@@ -1199,22 +1235,26 @@ func splitIntoChunks(text string, chunkSize int, overlap int) []string {
 		step = chunkSize
 	}
 
-	out := []string{}
-	for start := 0; start < len(text); start += step {
+	out := make([]string, 0, (len(r)/step)+1)
+	for start := 0; start < len(r); start += step {
 		end := start + chunkSize
-		if end > len(text) {
-			end = len(text)
+		if end > len(r) {
+			end = len(r)
 		}
-		p := strings.TrimSpace(text[start:end])
+
+		p := strings.TrimSpace(string(r[start:end]))
 		if p != "" {
 			out = append(out, p)
 		}
-		if end == len(text) {
+
+		if end == len(r) {
 			break
 		}
 	}
+
 	return out
 }
+
 
 func mergeDiag(dst map[string]any, src map[string]any) {
 	if dst == nil || src == nil {
@@ -1293,6 +1333,172 @@ func defaultCtx(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		// Do not panic inside worker pipelines; return empty object.
+		return []byte(`{}`)
+	}
+	return b
+}
+
+// ExtractTextStrict is a small "native text" fallback for already-in-memory bytes.
+// Your primary pipelines are DocAI/Vision/Speech/Video/Caption; this just prevents
+// compile errors and provides best-effort for text-like inputs.
+func ExtractTextStrict(name, mime string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("no data")
+	}
+
+	m := strings.ToLower(strings.TrimSpace(mime))
+	ext := strings.ToLower(filepath.Ext(name))
+
+	// If explicitly text-ish, return as UTF-8 string best effort.
+	if strings.HasPrefix(m, "text/") || m == "application/json" || m == "application/xml" ||
+		ext == ".txt" || ext == ".md" || ext == ".csv" || ext == ".log" || ext == ".json" ||
+		ext == ".yaml" || ext == ".yml" || ext == ".xml" || ext == ".html" || ext == ".htm" {
+
+		s := string(data)
+		// crude HTML stripping if needed
+		if m == "text/html" || ext == ".html" || ext == ".htm" {
+			re := regexp.MustCompile(`(?s)<[^>]*>`)
+			s = re.ReplaceAllString(s, " ")
+		}
+		return s, nil
+	}
+
+	// Heuristic: if it "looks like text", return it rather than erroring.
+	printable := 0
+	total := 0
+	for _, r := range string(data) {
+		total++
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			printable++
+			continue
+		}
+		// basic printable range
+		if r >= 32 && r != 127 {
+			printable++
+		}
+	}
+	if total > 0 && float64(printable)/float64(total) > 0.90 {
+		return string(data), nil
+	}
+
+	return "", fmt.Errorf("strict extraction unsupported for mime=%q ext=%q", mime, ext)
+}
+
+type limitedBufferWriter struct {
+	max int64
+	n   int64
+	buf *bytes.Buffer
+}
+
+func (w *limitedBufferWriter) Write(p []byte) (int, error) {
+	if w.buf == nil || w.max <= 0 {
+		return len(p), nil
+	}
+	remain := w.max - w.n
+	if remain > 0 {
+		if int64(len(p)) <= remain {
+			_, _ = w.buf.Write(p)
+			w.n += int64(len(p))
+		} else {
+			_, _ = w.buf.Write(p[:remain])
+			w.n += remain
+		}
+	}
+	// IMPORTANT: claim we wrote everything so MultiWriter doesn't fail
+	return len(p), nil
+}
+
+func sanitizeUTF8(s string) string {
+    if s == "" {
+        return s
+    }
+    if utf8.ValidString(s) {
+        return s
+    }
+    // Replace invalid byte sequences with a space (keeps words separated)
+    return strings.ToValidUTF8(s, " ")
+}
+
+func (s *contentExtractionService) captionBytesToSegments(
+	ctx context.Context,
+	task string,
+	assetKey string,
+	imageMime string,
+	imageBytes []byte,
+	page int,
+) ([]Segment, string, error) {
+	if s.caption == nil {
+		return nil, "caption provider unavailable", nil
+	}
+	if len(imageBytes) == 0 {
+		return nil, "caption skipped: empty image bytes", nil
+	}
+	if strings.TrimSpace(imageMime) == "" {
+		imageMime = "image/jpeg"
+	}
+
+	req := CaptionRequest{
+		Task:       task,
+		Prompt:     "",
+		ImageBytes: imageBytes,
+		ImageMime:  imageMime,
+		Detail:     "high",
+		MaxTokens:  1200,
+	}
+
+	res, err := s.caption.DescribeImage(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Convert CaptionResult into one segment (same formatting as captionAssetToSegments)
+	var b strings.Builder
+	b.WriteString(res.Summary)
+	if len(res.KeyTakeaways) > 0 {
+		b.WriteString("\n\nKey takeaways:\n- ")
+		b.WriteString(strings.Join(res.KeyTakeaways, "\n- "))
+	}
+	if len(res.Relationships) > 0 {
+		b.WriteString("\n\nRelationships:\n- ")
+		b.WriteString(strings.Join(res.Relationships, "\n- "))
+	}
+	if len(res.TextInImage) > 0 {
+		b.WriteString("\n\nText in image:\n- ")
+		b.WriteString(strings.Join(res.TextInImage, "\n- "))
+	}
+
+	txt := strings.TrimSpace(b.String())
+	if txt == "" {
+		return nil, "caption produced empty text", nil
+	}
+
+	md := map[string]any{
+		"kind":      task,
+		"asset_key": assetKey,
+		"provider":  "openai_caption",
+		"source":    "bytes",
+	}
+	if page > 0 {
+		md["page"] = page
+	}
+
+	seg := Segment{
+		Text:     txt,
+		Metadata: md,
+	}
+	if page > 0 {
+		p := page
+		seg.Page = &p
+	}
+
+	return []Segment{seg}, "", nil
 }
 
 

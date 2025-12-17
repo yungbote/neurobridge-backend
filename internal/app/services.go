@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -34,10 +36,10 @@ type Services struct {
 	CourseNotifier services.CourseNotifier
 
 	// Providers (hard way)
-	Vision   services.VisionProviderService
-	DocAI    services.DocumentProviderService
-	Speech   services.SpeechProviderService
-	VideoAI  services.VideoIntelligenceProviderService
+	Vision  services.VisionProviderService
+	DocAI   services.DocumentProviderService
+	Speech  services.SpeechProviderService
+	VideoAI services.VideoIntelligenceProviderService
 
 	// Local tooling + captioning
 	MediaTools services.MediaToolsService
@@ -49,6 +51,9 @@ type Services struct {
 	// Job infra
 	JobRegistry *jobs.Registry
 	JobWorker   *jobs.Worker
+
+	// Redis-backed SSE bus (optional)
+	SSEBus services.SSEBus
 }
 
 func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub) (Services, error) {
@@ -70,22 +75,56 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	fileService := services.NewFileService(db, log, bucketService, repos.MaterialFile)
-	authService := services.NewAuthService(db, log, repos.User, avatarService, repos.UserToken, cfg.JWTSecretKey, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
+
+	authService := services.NewAuthService(
+		db, log,
+		repos.User,
+		avatarService,
+		repos.UserToken,
+		cfg.JWTSecretKey,
+		cfg.AccessTokenTTL,
+		cfg.RefreshTokenTTL,
+	)
+
 	userService := services.NewUserService(db, log, repos.User)
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
 	courseService := services.NewCourseService(db, log, repos.Course, repos.MaterialSet)
 	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)
 	lessonService := services.NewLessonService(db, log, repos.Course, repos.CourseModule, repos.Lesson)
 
-	// Job infra
-	jobNotifier := services.NewJobNotifier(sseHub)
+	// ---------------- SSE routing (API hub vs worker -> redis) ----------------
+	var bus services.SSEBus
+	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) != "" {
+		b, err := services.NewRedisSSEBus(log)
+		if err != nil {
+			return Services{}, err
+		}
+		bus = b
+	}
+
+	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
+	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
+
+	var emitter services.SSEEmitter
+	if runServer {
+		// API: broadcast locally to connected clients
+		emitter = &services.HubEmitter{Hub: sseHub}
+	} else {
+		// Worker: MUST publish to Redis so API can fan-out to clients
+		if bus == nil {
+			return Services{}, fmt.Errorf("worker requires REDIS_ADDR to publish SSE events")
+		}
+		emitter = &services.RedisEmitter{Bus: bus}
+	}
+
+	// Notifiers now use the emitter (hub or redis)
+	jobNotifier := services.NewJobNotifier(emitter)
 	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier)
 	workflow := services.NewWorkflowService(db, log, materialService, repos.Course, jobService)
 
-	// Course-domain notifier
-	courseNotifier := services.NewCourseNotifier(sseHub)
+	courseNotifier := services.NewCourseNotifier(emitter)
 
-	// ---------- Provider services ----------
+	// ---------------- Provider services ----------------
 	visionProvider, err := services.NewVisionProviderService(log)
 	if err != nil {
 		return Services{}, fmt.Errorf("init vision provider: %w", err)
@@ -128,7 +167,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		captionProvider,
 	)
 
-	// ---------- Job registry ----------
+	// ---------------- Job registry + worker ----------------
+	// Only the worker process needs to actually run jobs, but registering is harmless.
 	reg := jobs.NewRegistry()
 
 	courseBuild := pipelines.NewCourseBuildPipeline(
@@ -144,13 +184,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		bucketService,
 		openaiClient,
 		courseNotifier,
-		extractor, // <-- NEW: pass the orchestrator into the pipeline
+		extractor,
 	)
 	if err := reg.Register(courseBuild); err != nil {
 		return Services{}, err
 	}
 
-	worker := jobs.NewWorker(db, log, repos.JobRun, reg, jobNotifier)
+	var worker *jobs.Worker
+	if runWorker {
+		worker = jobs.NewWorker(db, log, repos.JobRun, reg, jobNotifier)
+	}
 
 	return Services{
 		Bucket: bucketService,
@@ -182,6 +225,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 		JobRegistry: reg,
 		JobWorker:   worker,
+
+		SSEBus: bus,
 	}, nil
 }
 

@@ -11,25 +11,15 @@ import (
 	"time"
 
 	"cloud.google.com/go/documentai/apiv1"
-  documentaipb "cloud.google.com/go/documentai/apiv1/documentaipb"
+	"cloud.google.com/go/documentai/apiv1/documentaipb"
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
-// DocumentProviderService uses Document AI to extract:
-// - full text in reading order
-// - per-page text segments
-// - tables as markdown (table_text)
-// - forms as key/value lines (form_text)
-//
-// It supports both:
-// - Online processing (ProcessDocument) for single file
-// - Batch processing (BatchProcessDocuments) for large docs and GCS workflows
-//
-// Document AI is the “hard way” to not miss tables/layout. :contentReference[oaicite:9]{index=9}
 type DocumentProviderService interface {
 	ProcessBytes(ctx context.Context, req DocAIProcessBytesRequest) (*DocAIResult, error)
 	ProcessGCSOnline(ctx context.Context, req DocAIProcessGCSRequest) (*DocAIResult, error)
@@ -39,46 +29,46 @@ type DocumentProviderService interface {
 }
 
 type DocAIProcessBytesRequest struct {
-	ProjectID     string
-	Location      string
-	ProcessorID   string
-	ProcessorVersion string // optional
-	MimeType      string
-	Data          []byte
-	FieldMask     []string // optional, e.g. []{"text","pages.pageNumber"}
+	ProjectID        string
+	Location         string
+	ProcessorID      string
+	ProcessorVersion string
+	MimeType         string
+	Data             []byte
+	FieldMask        []string
 }
 
 type DocAIProcessGCSRequest struct {
-	ProjectID     string
-	Location      string
-	ProcessorID   string
-	ProcessorVersion string // optional
-	MimeType      string
-	GCSURI        string // gs://bucket/key
-	FieldMask     []string
+	ProjectID        string
+	Location         string
+	ProcessorID      string
+	ProcessorVersion string
+	MimeType         string
+	GCSURI           string
+	FieldMask        []string
 }
 
 type DocAIBatchRequest struct {
-	ProjectID     string
-	Location      string
-	ProcessorID   string
-	ProcessorVersion string // optional
-	MimeType      string
+	ProjectID        string
+	Location         string
+	ProcessorID      string
+	ProcessorVersion string
+	MimeType         string
 
-	InputGCSURI  string // gs://bucket/prefix/ (folder)
-	OutputGCSURI string // gs://bucket/prefix/ (folder)
+	InputGCSURI  string
+	OutputGCSURI string
 }
 
 type DocAIResult struct {
-	Provider    string    `json:"provider"` // "gcp_documentai"
-	Processor   string    `json:"processor"`
-	MimeType    string    `json:"mime_type"`
-	PrimaryText string    `json:"primary_text"`
-	Segments    []Segment `json:"segments,omitempty"`
-	Tables      []Segment `json:"tables,omitempty"`
-	Forms       []Segment `json:"forms,omitempty"`
-	DocumentJSON []byte   `json:"document_json,omitempty"` // optional raw document json
-	Warnings    []string  `json:"warnings,omitempty"`
+	Provider     string    `json:"provider"`
+	Processor    string    `json:"processor"`
+	MimeType     string    `json:"mime_type"`
+	PrimaryText  string    `json:"primary_text"`
+	Segments     []Segment `json:"segments,omitempty"`
+	Tables       []Segment `json:"tables,omitempty"`
+	Forms        []Segment `json:"forms,omitempty"`
+	DocumentJSON []byte    `json:"document_json,omitempty"`
+	Warnings     []string  `json:"warnings,omitempty"`
 }
 
 type DocAIBatchResult struct {
@@ -94,7 +84,6 @@ type documentProviderService struct {
 	docClient *documentai.DocumentProcessorClient
 	storage   *storage.Client
 
-	// list retry for batch output
 	listRetry      int
 	listRetryDelay time.Duration
 }
@@ -112,14 +101,6 @@ func NewDocumentProviderService(log *logger.Logger) (DocumentProviderService, er
 
 	ctx := context.Background()
 
-	var (
-		c   *documentai.DocumentProcessorClient
-		st  *storage.Client
-		err error
-	)
-
-	// Document AI is regional; you must set endpoint to "<location>-documentai.googleapis.com:443".
-	// Docs for client libraries explicitly mention specifying regional endpoints. :contentReference[oaicite:10]{index=10}
 	location := strings.TrimSpace(os.Getenv("DOCUMENTAI_LOCATION"))
 	if location == "" {
 		location = "us"
@@ -128,25 +109,25 @@ func NewDocumentProviderService(log *logger.Logger) (DocumentProviderService, er
 
 	opts := []option.ClientOption{option.WithEndpoint(endpoint)}
 	if creds != "" {
-		opts = append(opts, option.WithCredentialsFile(creds))
+		if strings.HasPrefix(strings.TrimSpace(creds), "{") {
+			opts = append(opts, option.WithCredentialsJSON([]byte(creds)))
+		} else {
+			opts = append(opts, option.WithCredentialsFile(creds))
+		}
 	}
 
-	c, err = documentai.NewDocumentProcessorClient(ctx, opts...)
+	c, err := documentai.NewDocumentProcessorClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("documentai client: %w", err)
 	}
 
-	if creds != "" {
-		st, err = storage.NewClient(ctx, option.WithCredentialsFile(creds))
-	} else {
-		st, err = storage.NewClient(ctx)
-	}
+	st, err := storage.NewClient(ctx, opts...)
 	if err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("storage client: %w", err)
 	}
 
-	slog.Info("Document AI provider initialized", "endpoint", endpoint, "has_creds_file", creds != "")
+	slog.Info("Document AI provider initialized", "endpoint", endpoint, "has_creds", creds != "")
 
 	return &documentProviderService{
 		log:            slog,
@@ -194,7 +175,7 @@ func (s *documentProviderService) ProcessBytes(ctx context.Context, req DocAIPro
 		},
 	}
 	if len(req.FieldMask) > 0 {
-		r.FieldMask = &documentaipb.FieldMask{Paths: req.FieldMask}
+		r.FieldMask = &fieldmaskpb.FieldMask{Paths: req.FieldMask}
 	}
 
 	resp, err := s.docClient.ProcessDocument(ctx, r)
@@ -221,15 +202,15 @@ func (s *documentProviderService) ProcessGCSOnline(ctx context.Context, req DocA
 
 	r := &documentaipb.ProcessRequest{
 		Name: name,
-		Source: &documentaipb.ProcessRequest_InlineDocument{
-			InlineDocument: &documentaipb.Document{
-				Uri:      req.GCSURI,
+		Source: &documentaipb.ProcessRequest_GcsDocument{
+			GcsDocument: &documentaipb.GcsDocument{
+				GcsUri:   req.GCSURI,
 				MimeType: req.MimeType,
 			},
 		},
 	}
 	if len(req.FieldMask) > 0 {
-		r.FieldMask = &documentaipb.FieldMask{Paths: req.FieldMask}
+		r.FieldMask = &fieldmaskpb.FieldMask{Paths: req.FieldMask}
 	}
 
 	resp, err := s.docClient.ProcessDocument(ctx, r)
@@ -243,8 +224,6 @@ func (s *documentProviderService) ProcessGCSOnline(ctx context.Context, req DocA
 	return buildDocAIResult(resp.Document, name, req.MimeType), nil
 }
 
-// Batch processing writes Document JSON outputs to GCS (Document format).
-// Docs describe batch processing and outputs in GCS. :contentReference[oaicite:11]{index=11}
 func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAIBatchRequest) (*DocAIBatchResult, error) {
 	ctx = defaultCtx(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
@@ -256,7 +235,6 @@ func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAI
 
 	name := processorName(req.ProjectID, req.Location, req.ProcessorID, req.ProcessorVersion)
 
-	// Input: folder/prefix with documents
 	inBucket, inPrefix, err := parseGCSURI(req.InputGCSURI)
 	if err != nil {
 		return nil, err
@@ -265,7 +243,6 @@ func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAI
 		inPrefix += "/"
 	}
 
-	// Output: folder/prefix
 	outBucket, outPrefix, err := parseGCSURI(req.OutputGCSURI)
 	if err != nil {
 		return nil, err
@@ -284,7 +261,7 @@ func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAI
 			},
 		},
 		DocumentOutputConfig: &documentaipb.DocumentOutputConfig{
-			Destination: &documentaipb.DocumentOutputConfig_GcsOutputConfig{
+			Destination: &documentaipb.DocumentOutputConfig_GcsOutputConfig_{
 				GcsOutputConfig: &documentaipb.DocumentOutputConfig_GcsOutputConfig{
 					GcsUri: fmt.Sprintf("gs://%s/%s", outBucket, outPrefix),
 				},
@@ -297,13 +274,11 @@ func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAI
 		return nil, fmt.Errorf("documentai BatchProcessDocuments: %w", err)
 	}
 
-	meta, err := op.Wait(ctx)
+	_, err = op.Wait(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("documentai batch wait: %w", err)
-		_ = meta
 	}
 
-	// List JSON outputs under output prefix. Document AI writes JSON docs there.
 	keys, err := s.listObjectsWithRetry(ctx, outBucket, outPrefix)
 	if err != nil {
 		return nil, err
@@ -324,7 +299,7 @@ func (s *documentProviderService) BatchProcessGCS(ctx context.Context, req DocAI
 	}, nil
 }
 
-// ---------- parsing into segments (no missed tables/forms/layout) ----------
+// ---------- parsing into segments ----------
 
 func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType string) *DocAIResult {
 	out := &DocAIResult{
@@ -332,14 +307,12 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 		Processor: processor,
 		MimeType:  mimeType,
 	}
-
 	if doc == nil {
 		return out
 	}
 
 	out.PrimaryText = strings.TrimSpace(doc.Text)
 
-	// Per-page: paragraphs in reading order (best effort)
 	segs := []Segment{}
 	tableSegs := []Segment{}
 	formSegs := []Segment{}
@@ -349,14 +322,13 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 			continue
 		}
 		pageNum := int(p.PageNumber)
-		// Paragraphs
+
 		var pageText strings.Builder
 		for _, para := range p.Paragraphs {
 			if para == nil || para.Layout == nil || para.Layout.TextAnchor == nil {
 				continue
 			}
-			t := textFromAnchor(doc.Text, para.Layout.TextAnchor)
-			t = strings.TrimSpace(t)
+			t := strings.TrimSpace(textFromAnchor(doc.Text, para.Layout.TextAnchor))
 			if t == "" {
 				continue
 			}
@@ -377,10 +349,8 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 			})
 		}
 
-		// Tables → markdown
 		for ti, table := range p.Tables {
-			md := tableToMarkdown(doc.Text, table)
-			md = strings.TrimSpace(md)
+			md := strings.TrimSpace(tableToMarkdown(doc.Text, table))
 			if md == "" {
 				continue
 			}
@@ -389,14 +359,13 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 				Text: md,
 				Page: &pn,
 				Metadata: map[string]any{
-					"kind":       "table_text",
-					"provider":   "gcp_documentai",
+					"kind":        "table_text",
+					"provider":    "gcp_documentai",
 					"table_index": ti,
 				},
 			})
 		}
 
-		// Form fields → "field: value"
 		for fi, ff := range p.FormFields {
 			if ff == nil {
 				continue
@@ -430,15 +399,12 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 	out.Tables = tableSegs
 	out.Forms = formSegs
 
-	// Store raw JSON for auditing/debugging if needed
 	if b, err := json.Marshal(doc); err == nil {
 		out.DocumentJSON = b
 	}
-
 	return out
 }
 
-// TextAnchor may contain multiple segments; concatenate.
 func textFromAnchor(full string, anchor *documentaipb.Document_TextAnchor) string {
 	if anchor == nil || len(anchor.TextSegments) == 0 || full == "" {
 		return ""
@@ -469,22 +435,18 @@ func tableToMarkdown(full string, t *documentaipb.Document_Page_Table) string {
 		return ""
 	}
 
-	// Build header row from HeaderRows[0] if present, else first body row.
 	rows := [][]string{}
-
 	header := []string{}
 	if len(t.HeaderRows) > 0 && t.HeaderRows[0] != nil {
 		header = tableRowToCells(full, t.HeaderRows[0])
 	}
-	bodyRows := []*documentaipb.Document_Page_Table_TableRow{}
-	bodyRows = append(bodyRows, t.BodyRows...)
+	bodyRows := append([]*documentaipb.Document_Page_Table_TableRow{}, t.BodyRows...)
 
 	if len(header) == 0 && len(bodyRows) > 0 && bodyRows[0] != nil {
 		header = tableRowToCells(full, bodyRows[0])
 		bodyRows = bodyRows[1:]
 	}
 	if len(header) == 0 {
-		// nothing
 		return ""
 	}
 
@@ -499,7 +461,6 @@ func tableToMarkdown(full string, t *documentaipb.Document_Page_Table) string {
 		return ""
 	}
 
-	// Normalize column count
 	maxCols := 0
 	for _, r := range rows {
 		if len(r) > maxCols {
@@ -515,9 +476,7 @@ func tableToMarkdown(full string, t *documentaipb.Document_Page_Table) string {
 		}
 	}
 
-	// Markdown
 	var out strings.Builder
-	// header
 	out.WriteString("| ")
 	out.WriteString(strings.Join(escapePipes(rows[0]), " | "))
 	out.WriteString(" |\n| ")
@@ -533,7 +492,6 @@ func tableToMarkdown(full string, t *documentaipb.Document_Page_Table) string {
 		out.WriteString(strings.Join(escapePipes(rows[i]), " | "))
 		out.WriteString(" |\n")
 	}
-
 	return out.String()
 }
 

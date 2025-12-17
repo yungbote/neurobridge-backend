@@ -1,7 +1,6 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,49 +12,44 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
-	vision "cloud.google.com/go/vision/apiv1"
+	vision "cloud.google.com/go/vision/v2/apiv1"
+	visionpb "cloud.google.com/go/vision/v2/apiv1/visionpb"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-  visionpb "cloud.google.com/go/vision/v2/apiv1/visionpb"
+
 	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
 type VisionProviderService interface {
-	// OCR on raw image bytes (DOCUMENT_TEXT_DETECTION) with structure + confidence.
 	OCRImageBytes(ctx context.Context, img []byte, mimeType string) (*VisionOCRResult, error)
-
-	// OCR a PDF/TIFF stored in GCS using async batch annotate. Results written to a GCS prefix,
-	// then this method reads/parses them back into pages/segments.
 	OCRFileInGCS(ctx context.Context, gcsSourceURI string, mimeType string, gcsOutputPrefix string, maxPages int) (*VisionOCRResult, error)
-
 	Close() error
 }
 
 type VisionOCRResult struct {
-	Provider      string         `json:"provider"` // "gcp_vision"
-	SourceURI     string         `json:"source_uri,omitempty"`
-	MimeType      string         `json:"mime_type,omitempty"`
-	PrimaryText   string         `json:"primary_text"`
+	Provider      string          `json:"provider"`
+	SourceURI     string          `json:"source_uri,omitempty"`
+	MimeType      string          `json:"mime_type,omitempty"`
+	PrimaryText   string          `json:"primary_text"`
 	Pages         []VisionOCRPage `json:"pages,omitempty"`
-	Segments      []Segment      `json:"segments,omitempty"`
-	OutputObjects []string       `json:"output_objects,omitempty"` // JSON files produced by async OCR
-	Warnings      []string       `json:"warnings,omitempty"`
+	Segments      []Segment       `json:"segments,omitempty"`
+	OutputObjects []string        `json:"output_objects,omitempty"`
+	Warnings      []string        `json:"warnings,omitempty"`
 }
 
 type VisionOCRPage struct {
-	PageNumber int            `json:"page_number"`
-	Text       string         `json:"text"`
-	Confidence float64        `json:"confidence"`
-	Blocks     []VisionBlock  `json:"blocks,omitempty"`
+	PageNumber int           `json:"page_number"`
+	Text       string        `json:"text"`
+	Confidence float64       `json:"confidence"`
+	Blocks     []VisionBlock `json:"blocks,omitempty"`
 }
 
 type VisionBlock struct {
-	Confidence float64        `json:"confidence"`
-	Bounding   *VisionBBox    `json:"bounding_box,omitempty"`
+	Confidence float64     `json:"confidence"`
+	Bounding   *VisionBBox `json:"bounding_box,omitempty"`
 }
 
 type VisionBBox struct {
-	// normalized vertices (0..1) when available, else pixels may appear depending on response
 	Vertices [][2]float64 `json:"vertices,omitempty"`
 }
 
@@ -65,7 +59,6 @@ type visionProviderService struct {
 	visionClient *vision.ImageAnnotatorClient
 	storage      *storage.Client
 
-	// hygiene options
 	cleanOutputPrefix bool
 	listRetry         int
 	listRetryDelay    time.Duration
@@ -84,41 +77,31 @@ func NewVisionProviderService(log *logger.Logger) (VisionProviderService, error)
 
 	ctx := context.Background()
 
-	var (
-		vClient *vision.ImageAnnotatorClient
-		sClient *storage.Client
-		err     error
-	)
-
+	opts := []option.ClientOption{}
 	if creds != "" {
-		vClient, err = vision.NewImageAnnotatorClient(ctx, option.WithCredentialsFile(creds))
-		if err != nil {
-			return nil, fmt.Errorf("vision client: %w", err)
+		if strings.HasPrefix(strings.TrimSpace(creds), "{") {
+			opts = append(opts, option.WithCredentialsJSON([]byte(creds)))
+		} else {
+			opts = append(opts, option.WithCredentialsFile(creds))
 		}
-		sClient, err = storage.NewClient(ctx, option.WithCredentialsFile(creds))
-		if err != nil {
-			_ = vClient.Close()
-			return nil, fmt.Errorf("storage client: %w", err)
-		}
-	} else {
-		// ADC (GKE/Cloud Run w/ attached SA)
-		vClient, err = vision.NewImageAnnotatorClient(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("vision client: %w", err)
-		}
-		sClient, err = storage.NewClient(ctx)
-		if err != nil {
-			_ = vClient.Close()
-			return nil, fmt.Errorf("storage client: %w", err)
-		}
+	}
+
+	vClient, err := vision.NewImageAnnotatorClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("vision client: %w", err)
+	}
+	sClient, err := storage.NewClient(ctx, opts...)
+	if err != nil {
+		_ = vClient.Close()
+		return nil, fmt.Errorf("storage client: %w", err)
 	}
 
 	return &visionProviderService{
 		log:              slog,
 		visionClient:      vClient,
 		storage:           sClient,
-		cleanOutputPrefix: true,               // prevents mixing old outputs
-		listRetry:         12,                 // robust list/read loop
+		cleanOutputPrefix: true,
+		listRetry:         12,
 		listRetryDelay:    750 * time.Millisecond,
 	}, nil
 }
@@ -145,35 +128,45 @@ func (s *visionProviderService) OCRImageBytes(ctx context.Context, img []byte, m
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	vimg, err := vision.NewImageFromReader(bytes.NewReader(img))
-	if err != nil {
-		return nil, fmt.Errorf("vision NewImageFromReader: %w", err)
+	req := &visionpb.AnnotateImageRequest{
+		Image: &visionpb.Image{Content: img},
+		Features: []*visionpb.Feature{
+			{Type: visionpb.Feature_DOCUMENT_TEXT_DETECTION},
+		},
 	}
 
-	doc, err := s.visionClient.DetectDocumentText(ctx, vimg, nil)
+	br := &visionpb.BatchAnnotateImagesRequest{Requests: []*visionpb.AnnotateImageRequest{req}}
+	resp, err := s.visionClient.BatchAnnotateImages(ctx, br)
 	if err != nil {
-		return nil, fmt.Errorf("vision DetectDocumentText: %w", err)
+		return nil, fmt.Errorf("vision BatchAnnotateImages: %w", err)
 	}
-	if doc == nil || strings.TrimSpace(doc.Text) == "" {
+	if resp == nil || len(resp.Responses) == 0 || resp.Responses[0] == nil {
 		return &VisionOCRResult{Provider: "gcp_vision", MimeType: mimeType, PrimaryText: ""}, nil
 	}
 
-	// Vision "Document" has pages/blocks confidence. Compute page confidence.
-	pages := make([]VisionOCRPage, 0, len(doc.Pages))
-	segs := make([]Segment, 0, len(doc.Pages))
+	r0 := resp.Responses[0]
+	if r0.Error != nil && r0.Error.Message != "" {
+		return nil, fmt.Errorf("vision annotate error: %s", r0.Error.Message)
+	}
 
-	primary := collapseWhitespace(doc.Text)
+	fta := r0.FullTextAnnotation
+	if fta == nil || strings.TrimSpace(fta.Text) == "" {
+		return &VisionOCRResult{Provider: "gcp_vision", MimeType: mimeType, PrimaryText: ""}, nil
+	}
 
-	if len(doc.Pages) == 0 {
-		// single page
-		p := VisionOCRPage{
-			PageNumber: 1,
-			Text:       primary,
-			Confidence: 0,
-		}
-		pages = append(pages, p)
-		page := 1
-		segs = append(segs, Segment{Text: primary, Page: &page, Metadata: map[string]any{"kind": "ocr_text", "provider": "gcp_vision"}})
+	primary := collapseWhitespace(fta.Text)
+
+	pages := make([]VisionOCRPage, 0, len(fta.Pages))
+	segs := make([]Segment, 0, len(fta.Pages))
+
+	if len(fta.Pages) == 0 {
+		pages = append(pages, VisionOCRPage{PageNumber: 1, Text: primary, Confidence: 0})
+		p := 1
+		segs = append(segs, Segment{
+			Text:     primary,
+			Page:     &p,
+			Metadata: map[string]any{"kind": "ocr_text", "provider": "gcp_vision"},
+		})
 		return &VisionOCRResult{
 			Provider:    "gcp_vision",
 			MimeType:    mimeType,
@@ -183,23 +176,32 @@ func (s *visionProviderService) OCRImageBytes(ctx context.Context, img []byte, m
 		}, nil
 	}
 
-	for i, pg := range doc.Pages {
+	for i, pg := range fta.Pages {
+		if pg == nil {
+			continue
+		}
 		pageNum := i + 1
-		pageText := primary // Vision doc.Text is full doc; we can't perfectly slice without anchors here
+		pageText := primary // (we don’t slice per-page without anchors here)
+
 		conf := avgBlockConfidence(pg.Blocks)
 		blocks := make([]VisionBlock, 0, len(pg.Blocks))
 		for _, b := range pg.Blocks {
+			if b == nil {
+				continue
+			}
 			blocks = append(blocks, VisionBlock{
-				Confidence: b.Confidence,
-				Bounding:   bboxFromVertices(b.BoundingBox.Vertices),
+				Confidence: float64(b.Confidence),
+				Bounding:   bboxFromBoundingPoly(b.BoundingBox),
 			})
 		}
+
 		pages = append(pages, VisionOCRPage{
 			PageNumber: pageNum,
 			Text:       pageText,
 			Confidence: conf,
 			Blocks:     blocks,
 		})
+
 		p := pageNum
 		segs = append(segs, Segment{
 			Text:       pageText,
@@ -218,8 +220,6 @@ func (s *visionProviderService) OCRImageBytes(ctx context.Context, img []byte, m
 	}, nil
 }
 
-// OCRFileInGCS uses Vision asyncBatchAnnotate for PDF/TIFF in GCS and parses output JSON.
-// docs describe `context.pageNumber` in responses. :contentReference[oaicite:6]{index=6}
 func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI string, mimeType string, gcsOutputPrefix string, maxPages int) (*VisionOCRResult, error) {
 	ctx = defaultCtx(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
@@ -239,12 +239,10 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 	if !strings.HasSuffix(gcsOutputPrefix, "/") {
 		gcsOutputPrefix += "/"
 	}
-
 	if maxPages <= 0 {
 		maxPages = 200
 	}
 
-	// Hygiene: delete old outputs under prefix if enabled
 	if s.cleanOutputPrefix {
 		_ = s.deletePrefixBestEffort(ctx, gcsOutputPrefix)
 	}
@@ -257,11 +255,11 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 				},
 				InputConfig: &visionpb.InputConfig{
 					GcsSource: &visionpb.GcsSource{Uri: gcsSourceURI},
-					MimeType:  mimeType, // "application/pdf" or "image/tiff"
+					MimeType:  mimeType,
 				},
 				OutputConfig: &visionpb.OutputConfig{
 					GcsDestination: &visionpb.GcsDestination{Uri: gcsOutputPrefix},
-					BatchSize:      10, // pages per output json
+					BatchSize:      10,
 				},
 			},
 		},
@@ -271,13 +269,11 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 	if err != nil {
 		return nil, fmt.Errorf("vision AsyncBatchAnnotateFiles: %w", err)
 	}
-
 	_, err = op.Wait(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("vision operation wait: %w", err)
 	}
 
-	// List JSON outputs and parse.
 	outBucket, outPrefix, err := parseGCSURI(gcsOutputPrefix)
 	if err != nil {
 		return nil, err
@@ -313,7 +309,6 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 		}
 
 		pageObjs := parseVisionAsyncJSON(b, maxPages-seen)
-
 		for _, po := range pageObjs {
 			if seen >= maxPages {
 				break
@@ -328,6 +323,7 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 				}
 				primary.WriteString(txt)
 			}
+
 			pn := po.Page.PageNumber
 			conf := po.Page.Confidence
 			segs = append(segs, Segment{
@@ -343,7 +339,7 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 		}
 	}
 
-	out := &VisionOCRResult{
+	return &VisionOCRResult{
 		Provider:      "gcp_vision",
 		SourceURI:     gcsSourceURI,
 		MimeType:      mimeType,
@@ -351,36 +347,21 @@ func (s *visionProviderService) OCRFileInGCS(ctx context.Context, gcsSourceURI s
 		Pages:         pages,
 		Segments:      segs,
 		OutputObjects: jsonKeys,
-	}
-
-	return out, nil
+	}, nil
 }
 
-// ---------- internal helpers ----------
+// ---------- helpers ----------
 
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
-
-func ptrFloat(v float64) *float64 { return &v }
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func avgBlockConfidence(blocks []vision.Block) float64 {
+func avgBlockConfidence(blocks []*visionpb.Block) float64 {
 	if len(blocks) == 0 {
 		return 0
 	}
 	var sum float64
 	n := 0
 	for _, b := range blocks {
+		if b == nil {
+			continue
+		}
 		if b.Confidence > 0 {
 			sum += float64(b.Confidence)
 			n++
@@ -392,27 +373,47 @@ func avgBlockConfidence(blocks []vision.Block) float64 {
 	return sum / float64(n)
 }
 
-func bboxFromVertices(vs []vision.Vertex) *VisionBBox {
-	if len(vs) == 0 {
+func bboxFromBoundingPoly(bp *visionpb.BoundingPoly) *VisionBBox {
+	if bp == nil {
 		return nil
 	}
-	out := make([][2]float64, 0, len(vs))
-	for _, v := range vs {
-		out = append(out, [2]float64{float64(v.X), float64(v.Y)})
+	if len(bp.NormalizedVertices) > 0 {
+		out := make([][2]float64, 0, len(bp.NormalizedVertices))
+		for _, v := range bp.NormalizedVertices {
+			if v == nil {
+				continue
+			}
+			out = append(out, [2]float64{float64(v.X), float64(v.Y)})
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return &VisionBBox{Vertices: out}
 	}
-	return &VisionBBox{Vertices: out}
+	if len(bp.Vertices) > 0 {
+		out := make([][2]float64, 0, len(bp.Vertices))
+		for _, v := range bp.Vertices {
+			if v == nil {
+				continue
+			}
+			out = append(out, [2]float64{float64(v.X), float64(v.Y)})
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return &VisionBBox{Vertices: out}
+	}
+	return nil
 }
 
 type parsedVisionPage struct {
 	Page VisionOCRPage
 }
 
-// Parses Vision async output JSON (one output JSON file contains responses[] for multiple pages).
 func parseVisionAsyncJSON(b []byte, maxPages int) []parsedVisionPage {
 	if maxPages <= 0 {
 		return nil
 	}
-
 	var root map[string]any
 	if err := json.Unmarshal(b, &root); err != nil {
 		return nil
@@ -424,7 +425,6 @@ func parseVisionAsyncJSON(b []byte, maxPages int) []parsedVisionPage {
 	}
 
 	out := make([]parsedVisionPage, 0, minInt(maxPages, len(respAny)))
-
 	for _, r := range respAny {
 		if maxPages <= 0 {
 			break
@@ -434,9 +434,7 @@ func parseVisionAsyncJSON(b []byte, maxPages int) []parsedVisionPage {
 			continue
 		}
 
-		// error field in response
 		if e, ok := rm["error"].(map[string]any); ok && e != nil {
-			// skip but don’t crash
 			maxPages--
 			continue
 		}
@@ -458,7 +456,6 @@ func parseVisionAsyncJSON(b []byte, maxPages int) []parsedVisionPage {
 			if t, ok := fta["text"].(string); ok {
 				txt = collapseWhitespace(t)
 			}
-			// Try to compute confidence from pages[0].blocks[].confidence if present
 			if pages, ok := fta["pages"].([]any); ok && len(pages) > 0 {
 				if p0, ok := pages[0].(map[string]any); ok && p0 != nil {
 					conf = avgVisionJSONBlocksConfidence(p0)
@@ -467,15 +464,10 @@ func parseVisionAsyncJSON(b []byte, maxPages int) []parsedVisionPage {
 		}
 
 		out = append(out, parsedVisionPage{
-			Page: VisionOCRPage{
-				PageNumber: pageNum,
-				Text:       txt,
-				Confidence: conf,
-			},
+			Page: VisionOCRPage{PageNumber: pageNum, Text: txt, Confidence: conf},
 		})
 		maxPages--
 	}
-
 	return out
 }
 
@@ -596,6 +588,8 @@ func parseGCSURI(uri string) (bucket, key string, err error) {
 	key = parts[1]
 	return bucket, key, nil
 }
+
+func ptrFloat(v float64) *float64 { return &v }
 
 
 

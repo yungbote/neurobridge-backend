@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -38,15 +39,23 @@ func New() (*App, error) {
 	cfg := LoadConfig(log)
 
 	pg, err := db.NewPostgresService(log)
-	if err != nil {
+	if err != nil {	
 		log.Sync()
 		return nil, fmt.Errorf("init postgres: %w", err)
 	}
-	if err := pg.AutoMigrateAll(); err != nil {
-		log.Sync()
-		return nil, fmt.Errorf("postgres automigrate: %w", err)
+
+	// IMPORTANT: never run migrations concurrently (api + worker will race on indexes).
+	runMigrations := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MIGRATIONS"))) == "true"
+	if runMigrations {
+		if err := pg.AutoMigrateAll(); err != nil {
+			log.Sync()
+			return nil, fmt.Errorf("postgres automigrate: %w", err)
+		}
+	} else {
+		log.Info("Skipping postgres automigrate (RUN_MIGRATIONS != true)")
 	}
 	theDB := pg.DB()
+
 
 	ssehub := sse.NewSSEHub(log)
 
@@ -73,15 +82,26 @@ func New() (*App, error) {
 	}, nil
 }
 
-func (a *App) Start() {
+func (a *App) Start(runServer bool, runWorker bool) {
 	if a == nil || a.cancel != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	// Start generic job worker
-	if a.Services.JobWorker != nil {
+	// (A) If we're the API server, start Redis -> Hub forwarder
+	if runServer && a.Services.SSEBus != nil && a.SSEHub != nil {
+		a.Log.Info("Starting Redis SSE forwarder...")
+		err := a.Services.SSEBus.StartForwarder(ctx, func(m sse.SSEMessage) {
+			a.SSEHub.Broadcast(m)
+		})
+		if err != nil {
+			a.Log.Error("Failed to start Redis SSE forwarder", "error", err)
+		}
+	}
+
+	// (B) If we're the worker container, start worker pool
+	if runWorker && a.Services.JobWorker != nil {
 		a.Services.JobWorker.Start(ctx)
 	}
 }
@@ -100,6 +120,9 @@ func (a *App) Close() {
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
+	}
+	if a.Services.SSEBus != nil {
+		_ = a.Services.SSEBus.Close()
 	}
 	if a.Log != nil {
 		a.Log.Sync()

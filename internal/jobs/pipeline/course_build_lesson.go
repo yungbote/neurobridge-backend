@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
 	"gorm.io/datatypes"
+
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
@@ -15,6 +17,7 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 		return nil
 	}
 	p.progress(bc, "lessons", 75, "Generating missing lessons/quizzes")
+
 	// Load Modules/Lessons
 	modules, err := p.moduleRepo.GetByCourseIDs(bc.ctx, nil, []uuid.UUID{bc.courseID})
 	if err != nil || len(modules) == 0 {
@@ -30,6 +33,7 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 	if err != nil || len(lessons) == 0 {
 		return fmt.Errorf("no lessons found")
 	}
+
 	// Build Vector Index From Chunks
 	chunkVectors := make([]chunkWithVec, 0, len(bc.chunks))
 	for _, ch := range bc.chunks {
@@ -45,6 +49,7 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 	if len(chunkVectors) == 0 {
 		return fmt.Errorf("no embeddings available for retrieval")
 	}
+
 	lessonIDs := make([]uuid.UUID, 0, len(lessons))
 	for _, l := range lessons {
 		if l != nil {
@@ -58,35 +63,93 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 			hasQuiz[q.LessonID] = true
 		}
 	}
+
+	// Build a concept lookup map (optional)
+	conceptLookup := map[string]conceptNode{}
+	{
+		var meta map[string]any
+		_ = json.Unmarshal(bc.course.Metadata, &meta)
+		if v, ok := meta["concept_map"]; ok {
+			b, _ := json.Marshal(v)
+			var cm conceptMap
+			if err := json.Unmarshal(b, &cm); err == nil {
+				for _, c := range cm.Concepts {
+					if strings.TrimSpace(c.ID) != "" {
+						conceptLookup[c.ID] = c
+					}
+				}
+			}
+		}
+	}
+
 	total := len(lessons)
 	done := 0
+
 	for _, l := range lessons {
 		if l == nil {
 			continue
 		}
-		// old idempotency: if ContentMD exists, skip
+
+		// idempotency: if ContentMD exists, skip
 		if strings.TrimSpace(l.ContentMD) != "" {
 			done++
 			continue
 		}
+
+		// Prefer concept_ids (v2), fallback to topics (old)
+		conceptIDs := extractStringArrayFromLessonMetadata(l.Metadata, "concept_ids")
 		topics := extractTopicsFromLessonMetadata(l.Metadata)
-		query := l.Title + " " + strings.Join(topics, " ")
+
+		// Build query: title + (concept names/summaries) + topics
+		var qParts []string
+		qParts = append(qParts, l.Title)
+		for _, cid := range conceptIDs {
+			if cn, ok := conceptLookup[cid]; ok {
+				qParts = append(qParts, cn.Name)
+				if cn.Summary != "" {
+					qParts = append(qParts, cn.Summary)
+				}
+			} else {
+				qParts = append(qParts, cid)
+			}
+		}
+		if len(topics) > 0 {
+			qParts = append(qParts, strings.Join(topics, " "))
+		}
+		query := strings.Join(qParts, " ")
+
 		qVecs, err := p.ai.Embed(bc.ctx, []string{query})
 		if err != nil {
 			return fmt.Errorf("embed query: %w", err)
 		}
-		top := topKChunks(chunkVectors, qVecs[0], 10)
+
+		top := topKChunks(chunkVectors, qVecs[0], 12)
+
 		var ctxBuilder strings.Builder
 		ctxBuilder.WriteString("You MUST ground the lesson in the provided excerpts.\nExcerpts:\n")
 		for _, t := range top {
-			ctxBuilder.WriteString(fmt.Sprintf("[chunk_id=%s] %s\n", t.Chunk.ID.String(), truncate(t.Chunk.Text, 800)))
+			ctxBuilder.WriteString(fmt.Sprintf("[chunk_id=%s] %s\n", t.Chunk.ID.String(), truncate(t.Chunk.Text, 900)))
 		}
+
 		lessonSchema := lessonContentSchemaOld()
-		out, err := p.ai.GenerateJSON(bc.ctx,
-			"You write clear lessons full lessons and include citations as chunk_id strings from the provided excerpts. Never cite anything not in excerpts.",
+		out, err := p.ai.GenerateJSON(
+			bc.ctx,
+			"You are a medical educator writing polished, high-quality lesson content.\n\n"+
+				"Rules:\n"+
+				"- Use ONLY the excerpts as factual grounding.\n"+
+				"- Do NOT include any frontend/UI/source code.\n"+
+				"- Produce a real lesson with structure: headings, subheadings, clinical reasoning where appropriate.\n"+
+				"- citations MUST be chunk_id strings used.\n",
 			fmt.Sprintf(
-				"Lesson title: %s\nTopics: %s\n\n%s\n\nWrite two versions: summary and full lesson. Return citations as a list of chunk_id strings you actually used.",
-				l.Title, strings.Join(topics, ", "), ctxBuilder.String(),
+				"Lesson title: %s\nConcept IDs: %s\nTopics: %s\n\n%s\n\n"+
+					"Write two versions:\n"+
+					"1) concise_md: short high-signal summary\n"+
+					"2) step_by_step_md: full structured lesson with headings and sections\n"+
+					"Return citations as a list of chunk_id strings you actually used.\n",
+				l.Title,
+				strings.Join(conceptIDs, ", "),
+				strings.Join(topics, ", "),
+				ctxBuilder.String(),
 			),
 			"lesson_content",
 			lessonSchema,
@@ -94,34 +157,44 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 		if err != nil {
 			return err
 		}
+
 		summary := fmt.Sprint(out["concise_md"])
 		step := fmt.Sprint(out["step_by_step_md"])
 		citations := toStringSlice(out["citations"])
 		est := intFromAny(out["estimated_minutes"], l.EstimatedMinutes)
+
 		meta := map[string]any{
-			"topics":			topics,
-			"variants":		map[string]any{
-				"concise_md":				summary,
-				"step_by_step_md":	step,
+			"topics":      topics,
+			"concept_ids": conceptIDs,
+			"variants": map[string]any{
+				"concise_md":        summary,
+				"step_by_step_md":   step,
 			},
-			"citations":	citations,
+			"citations": citations,
 		}
+
+		// IMPORTANT: store FULL lesson in content_md
 		if err := p.db.WithContext(bc.ctx).Model(&types.Lesson{}).
 			Where("id = ?", l.ID).
 			Updates(map[string]any{
-				"content_md":						summary,
-				"estimated_minutes":		est,
-				"metadata":							datatypes.JSON(mustJSON(meta)),
-				"updated_at":						time.Now(),
+				"content_md":        step,
+				"estimated_minutes": est,
+				"metadata":          datatypes.JSON(mustJSON(meta)),
+				"updated_at":        time.Now(),
 			}).Error; err != nil {
 			return fmt.Errorf("update lesson: %w", err)
 		}
-		// Quiz Generation (old behavior)
+
+		// Quiz Generation (existing behavior preserved)
 		if !hasQuiz[l.ID] {
 			quizSchema := lessonQuizSchemaOld()
-			quizOut, err := p.ai.GenerateJSON(bc.ctx,
+			quizOut, err := p.ai.GenerateJSON(
+				bc.ctx,
 				"You generate fair quiz questions based strictly on the material in the lesson. Use MCQ only.",
-				fmt.Sprintf("Lesson:\n%s\n\nGenerate Any the appropriate amount of multiple-choice questions with an appropriate amount of options each dependent on the material for the lesson.", summary),
+				fmt.Sprintf(
+					"Lesson:\n%s\n\nGenerate the appropriate number of multiple-choice questions with an appropriate number of options each dependent on the material for the lesson.",
+					summary,
+				),
 				"lesson_quiz",
 				quizSchema,
 			)
@@ -140,30 +213,46 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 				optsJSON, _ := json.Marshal(opts)
 				correctJSON, _ := json.Marshal(map[string]any{"index": correct})
 				qs = append(qs, &types.QuizQuestion{
-					ID:									uuid.New(),
-					LessonID:						l.ID,
-					Index:							qi,
-					Type:								"mcq",
-					PromptMD:						fmt.Sprint(qm["prompt_md"]),
-					Options:						datatypes.JSON(optsJSON),
-					CorrectAnswer:			datatypes.JSON(correctJSON),
-					ExplanationMD:			fmt.Sprint(qm["explanation_md"]),
-					Metadata:						datatypes.JSON(mustJSON(map[string]any{"topics": topics, "citations": citations})),
-					CreatedAt:					time.Now(),
-					UpdatedAt:					time.Now(),
+					ID:            uuid.New(),
+					LessonID:       l.ID,
+					Index:          qi,
+					Type:           "mcq",
+					PromptMD:       fmt.Sprint(qm["prompt_md"]),
+					Options:        datatypes.JSON(optsJSON),
+					CorrectAnswer:  datatypes.JSON(correctJSON),
+					ExplanationMD:  fmt.Sprint(qm["explanation_md"]),
+					Metadata:       datatypes.JSON(mustJSON(map[string]any{"topics": topics, "citations": citations})),
+					CreatedAt:      time.Now(),
+					UpdatedAt:      time.Now(),
 				})
 			}
 			if _, err := p.quizRepo.Create(bc.ctx, nil, qs); err != nil {
 				return fmt.Errorf("create quiz: %w", err)
 			}
 		}
+
 		done++
 		pct := 75 + int(float64(done)/float64(max(1, total))*20.0)
 		p.progress(bc, "lessons", pct, fmt.Sprintf("Generated %d/%d lessons", done, total))
 	}
+
 	return nil
 }
 
+func extractStringArrayFromLessonMetadata(js datatypes.JSON, key string) []string {
+	if len(js) == 0 {
+		return []string{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(js, &m); err != nil {
+		return []string{}
+	}
+	v, ok := m[key]
+	if !ok {
+		return []string{}
+	}
+	return toStringSlice(v)
+}
 
 func lessonContentSchemaOld() map[string]any {
 	return map[string]any{

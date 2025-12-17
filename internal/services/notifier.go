@@ -1,10 +1,17 @@
 package services
 
 import (
+	"context"
+
 	"github.com/google/uuid"
+
 	"github.com/yungbote/neurobridge-backend/internal/sse"
 	"github.com/yungbote/neurobridge-backend/internal/types"
 )
+
+// =========================
+// Job notifier
+// =========================
 
 type JobNotifier interface {
 	JobCreated(userID uuid.UUID, job *types.JobRun)
@@ -14,15 +21,18 @@ type JobNotifier interface {
 }
 
 type jobNotifier struct {
-	hub *sse.SSEHub
+	emit SSEEmitter
 }
 
-func NewJobNotifier(hub *sse.SSEHub) JobNotifier {
-	return &jobNotifier{hub: hub}
+func NewJobNotifier(emit SSEEmitter) JobNotifier {
+	return &jobNotifier{emit: emit}
 }
 
 func (n *jobNotifier) JobCreated(userID uuid.UUID, job *types.JobRun) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.SSEEventJobCreated,
 		Data:    map[string]any{"job": job},
@@ -30,12 +40,15 @@ func (n *jobNotifier) JobCreated(userID uuid.UUID, job *types.JobRun) {
 }
 
 func (n *jobNotifier) JobProgress(userID uuid.UUID, job *types.JobRun, stage string, progress int, message string) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.SSEEventJobProgress,
 		Data: map[string]any{
-			"job_id":   job.ID,
-			"job_type": job.JobType,
+			"job_id":   safeJobID(job),
+			"job_type": safeJobType(job),
 			"stage":    stage,
 			"progress": progress,
 			"message":  message,
@@ -45,12 +58,15 @@ func (n *jobNotifier) JobProgress(userID uuid.UUID, job *types.JobRun, stage str
 }
 
 func (n *jobNotifier) JobFailed(userID uuid.UUID, job *types.JobRun, stage string, errorMessage string) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.SSEEventJobFailed,
 		Data: map[string]any{
-			"job_id":   job.ID,
-			"job_type": job.JobType,
+			"job_id":   safeJobID(job),
+			"job_type": safeJobType(job),
 			"stage":    stage,
 			"error":    errorMessage,
 			"job":      job,
@@ -59,39 +75,45 @@ func (n *jobNotifier) JobFailed(userID uuid.UUID, job *types.JobRun, stage strin
 }
 
 func (n *jobNotifier) JobDone(userID uuid.UUID, job *types.JobRun) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.SSEEventJobDone,
 		Data: map[string]any{
-			"job_id":   job.ID,
-			"job_type": job.JobType,
+			"job_id":   safeJobID(job),
+			"job_type": safeJobType(job),
 			"job":      job,
 		},
 	})
 }
 
-
+// =========================
+// Course notifier
+// =========================
 
 type CourseNotifier interface {
-	// Domain event: “here is the current course snapshot”
 	CourseCreated(userID uuid.UUID, course *types.Course, job *types.JobRun)
 
-	// Domain events: “course generation is progressing”
 	CourseGenerationProgress(userID uuid.UUID, course *types.Course, job *types.JobRun, stage string, progress int, message string)
 	CourseGenerationFailed(userID uuid.UUID, course *types.Course, job *types.JobRun, stage string, errorMessage string)
 	CourseGenerationDone(userID uuid.UUID, course *types.Course, job *types.JobRun)
 }
 
 type courseNotifier struct {
-	hub *sse.SSEHub
+	emit SSEEmitter
 }
 
-func NewCourseNotifier(hub *sse.SSEHub) CourseNotifier {
-	return &courseNotifier{hub: hub}
+func NewCourseNotifier(emit SSEEmitter) CourseNotifier {
+	return &courseNotifier{emit: emit}
 }
 
 func (n *courseNotifier) CourseCreated(userID uuid.UUID, course *types.Course, job *types.JobRun) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.SSEEventUserCourseCreated,
 		Data: map[string]any{
@@ -102,7 +124,10 @@ func (n *courseNotifier) CourseCreated(userID uuid.UUID, course *types.Course, j
 }
 
 func (n *courseNotifier) CourseGenerationProgress(userID uuid.UUID, course *types.Course, job *types.JobRun, stage string, progress int, message string) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.CourseGenerationProgress,
 		Data: map[string]any{
@@ -121,7 +146,10 @@ func (n *courseNotifier) CourseGenerationProgress(userID uuid.UUID, course *type
 }
 
 func (n *courseNotifier) CourseGenerationFailed(userID uuid.UUID, course *types.Course, job *types.JobRun, stage string, errorMessage string) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.CourseGenerationFailed,
 		Data: map[string]any{
@@ -139,7 +167,10 @@ func (n *courseNotifier) CourseGenerationFailed(userID uuid.UUID, course *types.
 }
 
 func (n *courseNotifier) CourseGenerationDone(userID uuid.UUID, course *types.Course, job *types.JobRun) {
-	n.hub.Broadcast(sse.SSEMessage{
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	n.emit.Emit(context.Background(), sse.SSEMessage{
 		Channel: userID.String(),
 		Event:   sse.CourseGenerationDone,
 		Data: map[string]any{
@@ -152,6 +183,10 @@ func (n *courseNotifier) CourseGenerationDone(userID uuid.UUID, course *types.Co
 		},
 	})
 }
+
+// =========================
+// helpers
+// =========================
 
 func safeCourseID(course *types.Course) uuid.UUID {
 	if course == nil {
