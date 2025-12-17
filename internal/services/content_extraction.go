@@ -1349,11 +1349,6 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func collapseWhitespace(s string) string {
-	s = strings.ReplaceAll(s, "\u00a0", " ")
-	return strings.Join(strings.Fields(s), " ")
-}
-
 // ExtractTextStrict is a small "native text" fallback for already-in-memory bytes.
 func ExtractTextStrict(name, mime string, data []byte) (string, error) {
 	if len(data) == 0 {
