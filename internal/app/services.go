@@ -42,6 +42,9 @@ type Services struct {
 	// Job infra
 	JobRegistry *jobs.Registry
 	JobWorker   *jobs.Worker
+
+	// Keep bus here for convenience/compat
+	SSEBus services.SSEBus
 }
 
 func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub, clients Clients) (Services, error) {
@@ -78,23 +81,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		// API: broadcast locally to connected clients
 		emitter = &services.HubEmitter{Hub: sseHub}
 	} else {
-		// Worker: MUST publish to Redis so API can fan-out to clients
-		if bus == nil {
+		// Worker: publish to Redis so API can fan-out to clients
+		if clients.SSEBus == nil {
 			return Services{}, fmt.Errorf("worker requires REDIS_ADDR to publish SSE events")
 		}
 		emitter = &services.RedisEmitter{Bus: clients.SSEBus}
 	}
 
-	// Notifiers now use the emitter (hub or redis)
 	jobNotifier := services.NewJobNotifier(emitter)
 	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier)
 	workflow := services.NewWorkflowService(db, log, materialService, repos.Course, jobService)
-
 	courseNotifier := services.NewCourseNotifier(emitter)
 
 	mediaTools := services.NewMediaToolsService(log)
 
-	// Orchestrator: full extraction pipeline
 	extractor := services.NewContentExtractionService(
 		db,
 		log,
@@ -109,8 +109,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiCaption,
 	)
 
-	// ---------------- Job registry + worker ----------------
-	// Only the worker process needs to actually run jobs, but registering is harmless.
+	// Job registry + worker
 	reg := jobs.NewRegistry()
 
 	courseBuild := pipelines.NewCourseBuildPipeline(
@@ -138,23 +137,23 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	return Services{
-		Avatar: avatarService,
-		File:   fileService,
-
-		Auth:     authService,
-		User:     userService,
-		Material: materialService,
-		Course:   courseService,
-		Module:   moduleService,
-		Lesson:   lessonService,
-		JobNotifier:    jobNotifier,
-		JobService:     jobService,
-		Workflow:       workflow,
-		CourseNotifier: courseNotifier,
-		MediaTools: mediaTools,
+		Avatar:          avatarService,
+		File:            fileService,
+		Auth:            authService,
+		User:            userService,
+		Material:        materialService,
+		Course:          courseService,
+		Module:          moduleService,
+		Lesson:          lessonService,
+		JobNotifier:     jobNotifier,
+		JobService:      jobService,
+		Workflow:        workflow,
+		CourseNotifier:  courseNotifier,
+		MediaTools:      mediaTools,
 		ContentExtractor: extractor,
-		JobRegistry: reg,
-		JobWorker:   worker,
+		JobRegistry:     reg,
+		JobWorker:       worker,
+		SSEBus:          clients.SSEBus,
 	}, nil
 }
 

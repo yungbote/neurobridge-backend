@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
-	"strings"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -18,10 +18,12 @@ type App struct {
 	Log    *logger.Logger
 	DB     *gorm.DB
 	Router *gin.Engine
-	Cfg			Config
-	Repos		Repos
-	Clients	Clients
+	Cfg    Config
+	Repos  Repos
+
+	Clients  Clients
 	Services Services
+
 	SSEHub *sse.SSEHub
 	cancel context.CancelFunc
 }
@@ -40,13 +42,13 @@ func New() (*App, error) {
 	cfg := LoadConfig(log)
 
 	pg, err := db.NewPostgresService(log)
-	if err != nil {	
+	if err != nil {
 		log.Sync()
 		return nil, fmt.Errorf("init postgres: %w", err)
 	}
 
 	// IMPORTANT: never run migrations concurrently (api + worker will race on indexes).
-	runMigrations := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MIGRATIONS"))) == "true"
+	runMigrations := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_MIGRATIONS")), "true")
 	if runMigrations {
 		if err := pg.AutoMigrateAll(); err != nil {
 			log.Sync()
@@ -55,9 +57,8 @@ func New() (*App, error) {
 	} else {
 		log.Info("Skipping postgres automigrate (RUN_MIGRATIONS != true)")
 	}
+
 	theDB := pg.DB()
-
-
 	ssehub := sse.NewSSEHub(log)
 
 	reposet := wireRepos(theDB, log)
@@ -68,8 +69,9 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	serviceset, err := wireServices(theDB, log, cfg, reposet, clients, ssehub)
+	serviceset, err := wireServices(theDB, log, cfg, reposet, ssehub, clientSet)
 	if err != nil {
+		clientSet.Close()
 		log.Sync()
 		return nil, err
 	}
@@ -97,10 +99,10 @@ func (a *App) Start(runServer bool, runWorker bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 
-	// (A) If we're the API server, start Redis -> Hub forwarder
-	if runServer && a.Services.SSEBus != nil && a.SSEHub != nil {
+	// (A) API server: Redis -> Hub forwarder (optional)
+	if runServer && a.Clients.SSEBus != nil && a.SSEHub != nil {
 		a.Log.Info("Starting Redis SSE forwarder...")
-		err := a.Services.SSEBus.StartForwarder(ctx, func(m sse.SSEMessage) {
+		err := a.Clients.SSEBus.StartForwarder(ctx, func(m sse.SSEMessage) {
 			a.SSEHub.Broadcast(m)
 		})
 		if err != nil {
@@ -108,7 +110,7 @@ func (a *App) Start(runServer bool, runWorker bool) {
 		}
 	}
 
-	// (B) If we're the worker container, start worker pool
+	// (B) Worker container: start worker pool
 	if runWorker && a.Services.JobWorker != nil {
 		a.Services.JobWorker.Start(ctx)
 	}
@@ -128,9 +130,6 @@ func (a *App) Close() {
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
-	}
-	if a.Services.SSEBus != nil {
-		_ = a.Services.SSEBus.Close()
 	}
 	a.Clients.Close()
 	if a.Log != nil {

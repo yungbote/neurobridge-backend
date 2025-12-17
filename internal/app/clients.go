@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
@@ -12,88 +12,117 @@ import (
 )
 
 type Clients struct {
-	SSEBus:						redis.SSEBus
-	OpenaiClient			openai.Client
-	OpenaiCaption			openai.Caption
-	GcpBucket					gcp.BucketService
-	GcpDocument				gcp.Document
-	GcpSpeech					gcp.Speech
-	GcpVideo					gcp.Video
-	GcpVision					gcp.Vision
+	// Redis
+	SSEBus redis.SSEBus
+
+	// OpenAI
+	OpenaiClient  openai.Client
+	OpenaiCaption openai.Caption
+
+	// GCP
+	GcpBucket   gcp.BucketService
+	GcpDocument gcp.Document
+	GcpSpeech   gcp.Speech
+	GcpVideo    gcp.Video
+	GcpVision   gcp.Vision
 }
 
 func wireClients(log *logger.Logger) (Clients, error) {
 	log.Info("Wiring clients...")
 
-	// Redis
-	var bus redis.SSEBus
+	var out Clients
+
+	// ---------------- Redis (optional on API; required on worker) ----------------
 	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) != "" {
 		b, err := redis.NewSSEBus(log)
 		if err != nil {
 			return Clients{}, fmt.Errorf("init redis SSE bus: %w", err)
 		}
-		bus = b
+		out.SSEBus = b
 	}
 
-	// Gcs
+	// ---------------- GCP Bucket ----------------
 	bucket, err := gcp.NewBucketService(log)
 	if err != nil {
-		return Clients{}, fmt.Errorf("init bucket client: %w", err)
+		// close anything we already opened
+		if out.SSEBus != nil {
+			_ = out.SSEBus.Close()
+		}
+		return Clients{}, fmt.Errorf("init gcp bucket client: %w", err)
 	}
+	out.GcpBucket = bucket
 
-	// Openai
-	openaiClient, err := openai.NewClient(log)
+	// ---------------- OpenAI ----------------
+	oa, err := openai.NewClient(log)
 	if err != nil {
+		out.Close()
 		return Clients{}, fmt.Errorf("init openai client: %w", err)
 	}
-	caption, err := openai.NewCaptionProviderService(log, openaiClient)
-	if err != nil {
-		return Clients{}, fmt.Errorf("init caption client: %w", err)
-	}
+	out.OpenaiClient = oa
 
-	// Gcp
+	cap, err := openai.NewCaptionProviderService(log, oa)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init openai caption client: %w", err)
+	}
+	out.OpenaiCaption = cap
+
+	// ---------------- GCP Providers ----------------
 	vision, err := gcp.NewVision(log)
 	if err != nil {
-		return Clients{}, fmt.Errorf("init vision client: %w", err)
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp vision: %w", err)
 	}
-	document, err := gcp.NewDocument(log)
+	out.GcpVision = vision
+
+	doc, err := gcp.NewDocument(log)
 	if err != nil {
-		_ = vision.Close()
-		return Clients{}, fmt.Errorf("init document client: %w", err)
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp document: %w", err)
 	}
+	out.GcpDocument = doc
+
 	speech, err := gcp.NewSpeech(log)
 	if err != nil {
-		_ = document.Close()
-		_ = vision.Close()
-		return Clients{}, fmt.Errorf("init speech client: %w", err)
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp speech: %w", err)
 	}
+	out.GcpSpeech = speech
+
 	video, err := gcp.NewVideo(log)
 	if err != nil {
-		_ = document.Close()
-		_ = vision.Close()
-		_ = speech.Close()
-		return Clients{}, fmt.Errorf("init video client: %w", err)
+		out.Close()
+		return Clients{}, fmt.Errorf("init gcp video: %w", err)
 	}
+	out.GcpVideo = video
 
-	return Clients{
-		SSEBus:					bus,
-		OpenaiClient:		openaiClient,
-		OpenaiCaption:	caption,
-		GcpBucket:			bucket,
-		GcpDocument:		document,
-		GcpSpeech:			speech,
-		GcpVideo:				video,
-		GcpVision:			vision,
-	}, nil
+	return out, nil
 }
 
 func (c *Clients) Close() {
-	if c == nil { return }
-	if c.SSEBus != nil { _ = c.SSEBus.Close() }
-	if c.GcpVideo != nil { _ = c.GcpVideo.Close() }
-	if c.GcpSpeech != nil { _ = c.GcpSpeech.Close() }
-	if c.GcpDocument != nil { _ = c.GcpDocument.Close() }
-	if c.GcpVision != nil { _ = c.GcpVision.Close() }
+	if c == nil {
+		return
+	}
+	if c.SSEBus != nil {
+		_ = c.SSEBus.Close()
+		c.SSEBus = nil
+	}
+	if c.GcpVideo != nil {
+		_ = c.GcpVideo.Close()
+		c.GcpVideo = nil
+	}
+	if c.GcpSpeech != nil {
+		_ = c.GcpSpeech.Close()
+		c.GcpSpeech = nil
+	}
+	if c.GcpDocument != nil {
+		_ = c.GcpDocument.Close()
+		c.GcpDocument = nil
+	}
+	if c.GcpVision != nil {
+		_ = c.GcpVision.Close()
+		c.GcpVision = nil
+	}
 }
 
 
