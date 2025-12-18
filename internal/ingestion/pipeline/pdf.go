@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
 )
 
 func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -115,7 +115,6 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	return segs, assets, warnings, diag, nil
 }
 
-
 func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]AssetRef, []AssetRef, []string, map[string]any) {
 	diag := map[string]any{"render": "pdftoppm"}
 	var warnings []string
@@ -170,13 +169,3 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 
 // keep identical imports usage
 var _ = strings.TrimSpace
-
-
-
-
-
-
-
-
-
-

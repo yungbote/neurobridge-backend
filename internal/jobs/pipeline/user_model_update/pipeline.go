@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
 func (p *Pipeline) Run(ctx *jobrt.Context) error {
@@ -115,7 +115,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 	// Persist cursor
 	if afterAt != nil && afterID != nil {
 		curRow := &types.UserEventCursor{
-			ID:           uuid.New(),
+			ID:            uuid.New(),
 			UserID:        userID,
 			Consumer:      consumer,
 			LastCreatedAt: afterAt,
@@ -128,13 +128,3 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 	ctx.Succeed("done", map[string]any{"processed": processed})
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

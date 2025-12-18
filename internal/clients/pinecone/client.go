@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Client interface {
@@ -20,10 +20,10 @@ type Client interface {
 }
 
 type Config struct {
-	APIKey      string
-	APIVersion  string
-	BaseURL     string
-	Timeout     time.Duration
+	APIKey     string
+	APIVersion string
+	BaseURL    string
+	Timeout    time.Duration
 }
 
 type client struct {
@@ -209,13 +209,3 @@ func defaultCtx(ctx context.Context) context.Context {
 	}
 	return ctx
 }
-
-
-
-
-
-
-
-
-
-

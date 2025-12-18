@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func (p *CourseBuildPipeline) stageBlueprint(buildCtx *buildContext) error {
@@ -198,7 +198,7 @@ func courseBlueprintSchemaV2() map[string]any {
 								"properties": map[string]any{
 									"title": map[string]any{"type": "string"},
 									"concept_ids": map[string]any{
-										"type": "array",
+										"type":  "array",
 										"items": map[string]any{"type": "string"},
 									},
 									"estimated_minutes": map[string]any{"type": "integer"},
@@ -253,13 +253,3 @@ func courseBlueprintSchemaOld() map[string]any {
 		"additionalProperties": false,
 	}
 }
-
-
-
-
-
-
-
-
-
-

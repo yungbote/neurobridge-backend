@@ -2,9 +2,9 @@ package gcp
 
 import (
 	"context"
+	"google.golang.org/api/option"
 	"os"
 	"strings"
-	"google.golang.org/api/option"
 )
 
 func ClientOptionsFromEnv() []option.ClientOption {
@@ -42,13 +42,3 @@ func collapseWhitespace(s string) string {
 	// cheap, fast: Fields collapses all whitespace sequences to single spaces
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\u00a0", " ")), " ")
 }
-
-
-
-
-
-
-
-
-
-

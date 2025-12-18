@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audioPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -79,13 +79,3 @@ func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audio
 
 	return segs, assets, warnings, diag, nil
 }
-
-
-
-
-
-
-
-
-
-

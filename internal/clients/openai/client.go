@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 // ImageInput is the normalized multimodal image input used by Client.
@@ -560,13 +560,3 @@ func defaultCtx(ctx context.Context) context.Context {
 	}
 	return ctx
 }
-
-
-
-
-
-
-
-
-
-

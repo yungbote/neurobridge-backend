@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -58,7 +58,7 @@ func isMeaningfulEventType(t string) bool {
 }
 
 func (h *EventHandler) Ingest(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
@@ -110,13 +110,3 @@ func (h *EventHandler) Ingest(c *gin.Context) {
 		"enqueued": enqueued,
 	})
 }
-
-
-
-
-
-
-
-
-
-

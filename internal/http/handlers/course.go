@@ -1,29 +1,29 @@
-package handlers 
+package handlers
 
 import (
-	"net/http"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
+	"net/http"
 )
 
 type CourseHandler struct {
-	log						*logger.Logger
-	courseService	services.CourseService
+	log           *logger.Logger
+	courseService services.CourseService
 }
 
 func NewCourseHandler(log *logger.Logger, courseService services.CourseService) *CourseHandler {
 	return &CourseHandler{
-		log:						log.With("handler", "CourseHandler"),
-		courseService:	courseService,
+		log:           log.With("handler", "CourseHandler"),
+		courseService: courseService,
 	}
 }
 
 func (h *CourseHandler) ListUserCourses(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
@@ -36,13 +36,3 @@ func (h *CourseHandler) ListUserCourses(c *gin.Context) {
 	}
 	response.RespondOK(c, gin.H{"courses": courses})
 }
-
-
-
-
-
-
-
-
-
-

@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 // -------------------- Concept Map Stage --------------------
@@ -22,13 +22,13 @@ type conceptMap struct {
 }
 
 type conceptNode struct {
-	ID        string  `json:"id"`                  // stable-ish id (slug/uuid string)
-	Name      string  `json:"name"`                // human name
-	ParentID  *string `json:"parent_id,omitempty"` // nil for roots
-	Depth     int     `json:"depth"`               // 0=root
-	Summary   string  `json:"summary"`             // 1-3 sentences
-	KeyPoints []string `json:"key_points"`         // bullets
-	Citations []string `json:"citations"`          // chunk_id strings used
+	ID        string   `json:"id"`                  // stable-ish id (slug/uuid string)
+	Name      string   `json:"name"`                // human name
+	ParentID  *string  `json:"parent_id,omitempty"` // nil for roots
+	Depth     int      `json:"depth"`               // 0=root
+	Summary   string   `json:"summary"`             // 1-3 sentences
+	KeyPoints []string `json:"key_points"`          // bullets
+	Citations []string `json:"citations"`           // chunk_id strings used
 }
 
 // LLM schema for concept map
@@ -48,11 +48,11 @@ func conceptMapSchema() map[string]any {
 						"depth":     map[string]any{"type": "integer"},
 						"summary":   map[string]any{"type": "string"},
 						"key_points": map[string]any{
-							"type": "array",
+							"type":  "array",
 							"items": map[string]any{"type": "string"},
 						},
 						"citations": map[string]any{
-							"type": "array",
+							"type":  "array",
 							"items": map[string]any{"type": "string"},
 						},
 					},
@@ -220,13 +220,3 @@ func buildStratifiedConceptExcerpts(chunks []*types.MaterialChunk, perFile int, 
 
 	return strings.TrimSpace(b.String())
 }
-
-
-
-
-
-
-
-
-
-

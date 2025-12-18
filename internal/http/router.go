@@ -2,24 +2,24 @@ package http
 
 import (
 	"github.com/gin-gonic/gin"
-	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
 	httpH "github.com/yungbote/neurobridge-backend/internal/http/handlers"
+	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
 )
 
 type RouterConfig struct {
-	AuthHandler				*httpH.AuthHandler
-	AuthMiddleware		*httpMW.AuthMiddleware
-	UserHandler				*httpH.UserHandler
-	RealtimeHandler		*httpH.RealtimeHandler
+	AuthHandler     *httpH.AuthHandler
+	AuthMiddleware  *httpMW.AuthMiddleware
+	UserHandler     *httpH.UserHandler
+	RealtimeHandler *httpH.RealtimeHandler
 
-	MaterialHandler		*httpH.MaterialHandler
-	CourseHandler			*httpH.CourseHandler
-	ModuleHandler			*httpH.ModuleHandler
-	LessonHandler			*httpH.LessonHandler
-	EventHandler			*httpH.EventHandler
-	JobHandler				*httpH.JobHandler
+	MaterialHandler *httpH.MaterialHandler
+	CourseHandler   *httpH.CourseHandler
+	ModuleHandler   *httpH.ModuleHandler
+	LessonHandler   *httpH.LessonHandler
+	EventHandler    *httpH.EventHandler
+	JobHandler      *httpH.JobHandler
 
-	HealthHandler			*httpH.HealthHandler
+	HealthHandler *httpH.HealthHandler
 }
 
 func NewRouter(cfg RouterConfig) *gin.Engine {
@@ -100,13 +100,3 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 	return r
 }
-
-
-
-
-
-
-
-
-
-

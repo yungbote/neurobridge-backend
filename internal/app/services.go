@@ -7,15 +7,15 @@ import (
 
 	"gorm.io/gorm"
 
- "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/course_build"
- "github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/course_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	jobworker "github.com/yungbote/neurobridge-backend/internal/jobs/worker"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 	"github.com/yungbote/neurobridge-backend/internal/services"
-	"github.com/yungbote/neurobridge-backend/internal/sse"
-	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
-	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
 )
 
 type Services struct {
@@ -32,7 +32,7 @@ type Services struct {
 	Lesson   services.LessonService
 
 	// User Event Ingestion (raw user_event log)
-	Events	services.EventService
+	Events services.EventService
 
 	// Jobs + notifications
 	JobNotifier    services.JobNotifier
@@ -48,10 +48,10 @@ type Services struct {
 	JobWorker   *jobworker.Worker
 
 	// Keep bus here for convenience/compat
-	SSEBus redis.SSEBus
+	SSEBus bus.Bus
 }
 
-func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *sse.SSEHub, clients Clients) (Services, error) {
+func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *realtime.SSEHub, clients Clients) (Services, error) {
 	log.Info("Wiring services...")
 
 	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket)
@@ -154,32 +154,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	return Services{
-		Avatar:          avatarService,
-		File:            fileService,
-		Auth:            authService,
-		User:            userService,
-		Material:        materialService,
-		Course:          courseService,
-		Module:          moduleService,
-		Lesson:          lessonService,
-		Events:					 eventService,
-		JobNotifier:     jobNotifier,
-		JobService:      jobService,
-		Workflow:        workflow,
-		CourseNotifier:  courseNotifier,
+		Avatar:           avatarService,
+		File:             fileService,
+		Auth:             authService,
+		User:             userService,
+		Material:         materialService,
+		Course:           courseService,
+		Module:           moduleService,
+		Lesson:           lessonService,
+		Events:           eventService,
+		JobNotifier:      jobNotifier,
+		JobService:       jobService,
+		Workflow:         workflow,
+		CourseNotifier:   courseNotifier,
 		ContentExtractor: extractor,
-		JobRegistry:     jobRegistry,
-		JobWorker:       worker,
-		SSEBus:          clients.SSEBus,
+		JobRegistry:      jobRegistry,
+		JobWorker:        worker,
+		SSEBus:           clients.SSEBus,
 	}, nil
 }
-
-
-
-
-
-
-
-
-
-

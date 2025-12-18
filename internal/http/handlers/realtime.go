@@ -7,29 +7,29 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/sse"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
 
 type RealtimeHandler struct {
 	Log *logger.Logger
-	Hub *sse.SSEHub
+	Hub *realtime.SSEHub
 
 	mu      sync.RWMutex
-	clients map[uuid.UUID]*sse.SSEClient // key: SessionID (UserToken.ID)
+	clients map[uuid.UUID]*realtime.SSEClient // key: SessionID (UserToken.ID)
 }
 
-func NewRealtimeHandler(log *logger.Logger, hub *sse.SSEHub) *RealtimeHandler {
+func NewRealtimeHandler(log *logger.Logger, hub *realtime.SSEHub) *RealtimeHandler {
 	return &RealtimeHandler{
 		Log:     log,
 		Hub:     hub,
-		clients: make(map[uuid.UUID]*sse.SSEClient),
+		clients: make(map[uuid.UUID]*realtime.SSEClient),
 	}
 }
 
 func (h *RealtimeHandler) SSEStream(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
 		return
@@ -71,7 +71,7 @@ func (h *RealtimeHandler) SSEStream(c *gin.Context) {
 }
 
 func (h *RealtimeHandler) SSESubscribe(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
 		return
@@ -103,7 +103,7 @@ func (h *RealtimeHandler) SSESubscribe(c *gin.Context) {
 }
 
 func (h *RealtimeHandler) SSEUnsubscribe(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
 		return
@@ -133,13 +133,3 @@ func (h *RealtimeHandler) SSEUnsubscribe(c *gin.Context) {
 	h.Hub.RemoveChannel(client, req.Channel)
 	c.JSON(http.StatusOK, gin.H{"message": "unsubscribed", "channel": req.Channel})
 }
-
-
-
-
-
-
-
-
-
-

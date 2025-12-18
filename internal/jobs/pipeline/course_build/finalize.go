@@ -3,9 +3,9 @@ package course_build
 import (
 	"encoding/json"
 	"fmt"
-	"time"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"gorm.io/datatypes"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"time"
 )
 
 func (p *CourseBuildPipeline) stageFinalize(bc *buildContext) error {
@@ -22,8 +22,8 @@ func (p *CourseBuildPipeline) stageFinalize(bc *buildContext) error {
 	if err := p.db.WithContext(bc.ctx).Model(&types.Course{}).
 		Where("id = ?", bc.courseID).
 		Updates(map[string]any{
-			"metadata":				datatypes.JSON(mustJSON(currentMeta)),
-			"updated_at":			time.Now(),
+			"metadata":   datatypes.JSON(mustJSON(currentMeta)),
+			"updated_at": time.Now(),
 		}).Error; err != nil {
 		return fmt.Errorf("update course ready status: %w", err)
 	}
@@ -32,13 +32,3 @@ func (p *CourseBuildPipeline) stageFinalize(bc *buildContext) error {
 	p.snapshot(bc)
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

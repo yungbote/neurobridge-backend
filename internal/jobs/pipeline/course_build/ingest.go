@@ -79,13 +79,3 @@ func (p *CourseBuildPipeline) stageIngest(buildCtx *buildContext) error {
 	p.progress(buildCtx, "ingest", 25, "Chunks ready")
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

@@ -19,11 +19,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Extractor struct {
@@ -323,13 +323,3 @@ func (e *Extractor) UpdateMaterialFileExtractionStatus(ctx context.Context, tx *
 
 // Placeholder preserved from old file (kept to avoid API churn if you later use it).
 func (e *Extractor) SafeOriginalTempPath(mf *types.MaterialFile) string { return "" }
-
-
-
-
-
-
-
-
-
-

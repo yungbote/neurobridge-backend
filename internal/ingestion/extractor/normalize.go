@@ -269,13 +269,3 @@ func (w *limitedBufferWriter) Write(p []byte) (int, error) {
 	// IMPORTANT: claim we wrote everything so writers don't fail
 	return len(p), nil
 }
-
-
-
-
-
-
-
-
-
-

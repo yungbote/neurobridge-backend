@@ -5,7 +5,7 @@ import (
 )
 
 type Server struct {
-	Engine			*gin.Engine
+	Engine *gin.Engine
 }
 
 func NewServer(cfg RouterConfig) *Server {
@@ -15,13 +15,3 @@ func NewServer(cfg RouterConfig) *Server {
 func (s *Server) Run(address string) error {
 	return s.Engine.Run(address)
 }
-
-
-
-
-
-
-
-
-
-

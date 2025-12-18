@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Caption interface {
@@ -30,13 +30,13 @@ func NewCaptionProviderService(log *logger.Logger, c Client) (CaptionProviderSer
 // --------------------------------
 
 type CaptionRequest struct {
-	Task      string // "figure_notes" | "image_notes" | "frame_notes"
-	Prompt    string // extra instructions (optional)
-	ImageURL  string
+	Task       string // "figure_notes" | "image_notes" | "frame_notes"
+	Prompt     string // extra instructions (optional)
+	ImageURL   string
 	ImageBytes []byte
-	ImageMime string
-	Detail    string // "low"|"high"
-	MaxTokens int
+	ImageMime  string
+	Detail     string // "low"|"high"
+	MaxTokens  int
 }
 
 type CaptionResult struct {
@@ -194,13 +194,3 @@ func dataURL(mime string, b []byte) string {
 	enc := base64.StdEncoding.EncodeToString(b)
 	return fmt.Sprintf("data:%s;base64,%s", mime, enc)
 }
-
-
-
-
-
-
-
-
-
-

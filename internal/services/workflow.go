@@ -9,11 +9,11 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/ssedata"
-	"github.com/yungbote/neurobridge-backend/internal/sse"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
 
 type WorkflowService interface {
@@ -21,11 +21,11 @@ type WorkflowService interface {
 }
 
 type workflowService struct {
-	db        *gorm.DB
-	log       *logger.Logger
-	materials MaterialService
+	db         *gorm.DB
+	log        *logger.Logger
+	materials  MaterialService
 	courseRepo repos.CourseRepo
-	jobs      JobService
+	jobs       JobService
 }
 
 func NewWorkflowService(
@@ -106,10 +106,10 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 		job = createdJob
 
 		// 4) Emit initial course snapshot immediately (request-scoped batch)
-		if ssd := ssedata.GetSSEData(ctx); ssd != nil {
-			ssd.AppendMessage(sse.SSEMessage{
+		if ssd := ctxutil.GetSSEData(ctx); ssd != nil {
+			ssd.AppendMessage(realtime.SSEMessage{
 				Channel: userID.String(),
-				Event:   sse.SSEEventUserCourseCreated,
+				Event:   realtime.SSEEventUserCourseCreated,
 				Data: map[string]any{
 					"course": course,
 					"job":    job,
@@ -125,13 +125,3 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 
 	return set, course, job, nil
 }
-
-
-
-
-
-
-
-
-
-

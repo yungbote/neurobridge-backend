@@ -15,8 +15,8 @@ import (
 	visionpb "cloud.google.com/go/vision/v2/apiv1/visionpb"
 	"google.golang.org/api/iterator"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Vision interface {
@@ -37,9 +37,9 @@ type VisionOCRResult struct {
 }
 
 type VisionOCRPage struct {
-	PageNumber int     `json:"page_number"`
-	Text       string  `json:"text"`
-	Confidence float64 `json:"confidence"`
+	PageNumber int           `json:"page_number"`
+	Text       string        `json:"text"`
+	Confidence float64       `json:"confidence"`
 	Blocks     []VisionBlock `json:"blocks,omitempty"`
 }
 
@@ -83,9 +83,9 @@ func NewVision(log *logger.Logger) (Vision, error) {
 	}
 
 	return &visionService{
-		log:              slog,
-		visionClient:     vClient,
-		storage:          sClient,
+		log:               slog,
+		visionClient:      vClient,
+		storage:           sClient,
 		cleanOutputPrefix: true,
 		listRetry:         12,
 		listRetryDelay:    750 * time.Millisecond,
@@ -574,13 +574,3 @@ func parseGCSURI(uri string) (bucket, key string, err error) {
 	key = parts[1]
 	return bucket, key, nil
 }
-
-
-
-
-
-
-
-
-
-

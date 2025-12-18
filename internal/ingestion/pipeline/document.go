@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
 func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, officePath string, kind string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -53,13 +53,3 @@ func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, offi
 
 	return segs, assets, warnings, diag, nil
 }
-
-
-
-
-
-
-
-
-
-

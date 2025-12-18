@@ -17,8 +17,8 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Document interface {
@@ -564,13 +564,3 @@ func (s *documentService) readObject(ctx context.Context, bucket, key string) ([
 	defer rc.Close()
 	return io.ReadAll(rc)
 }
-
-
-
-
-
-
-
-
-
-

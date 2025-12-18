@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"regexp"
 	"strings"
 	"time"
-	"github.com/google/uuid"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
 var eventTypeRe = regexp.MustCompile(`^[a-z0-9_\.]{3,64}$`)
@@ -50,7 +50,7 @@ func NewEventService(db *gorm.DB, baseLog *logger.Logger, repo repos.UserEventRe
 }
 
 func (s *eventService) Ingest(ctx context.Context, tx *gorm.DB, inputs []EventInput) (int, error) {
-	rd := requestdata.GetRequestData(ctx)
+	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return 0, fmt.Errorf("not authenticated")
 	}
@@ -122,7 +122,7 @@ func (s *eventService) Ingest(ctx context.Context, tx *gorm.DB, inputs []EventIn
 		}
 		b, _ := json.Marshal(data)
 		rows = append(rows, &types.UserEvent{
-			ID:             uuid.New(),
+			ID:              uuid.New(),
 			UserID:          rd.UserID,
 			ClientEventID:   clientID,
 			OccurredAt:      occurred,
@@ -150,13 +150,3 @@ func (s *eventService) Ingest(ctx context.Context, tx *gorm.DB, inputs []EventIn
 	}
 	return n, nil
 }
-
-
-
-
-
-
-
-
-
-

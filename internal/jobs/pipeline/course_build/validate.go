@@ -44,13 +44,3 @@ func (p *CourseBuildPipeline) loadAndValidate(buildCtx *buildContext) error {
 	buildCtx.fileIDs = ids
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

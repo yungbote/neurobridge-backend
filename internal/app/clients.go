@@ -10,13 +10,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	"github.com/yungbote/neurobridge-backend/internal/clients/redis"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 )
 
 type Clients struct {
 	// Redis
-	SSEBus redis.SSEBus
+	SSEBus bus.Bus
 
 	// OpenAI
 	OpenaiClient  openai.Client
@@ -44,7 +44,7 @@ func wireClients(log *logger.Logger) (Clients, error) {
 
 	// ---------------- Redis (optional on API; required on worker) ----------------
 	if strings.TrimSpace(os.Getenv("REDIS_ADDR")) != "" {
-		b, err := redis.NewSSEBus(log)
+		b, err := bus.NewRedisBus(log)
 		if err != nil {
 			return Clients{}, fmt.Errorf("init redis SSE bus: %w", err)
 		}
@@ -163,13 +163,3 @@ func (c *Clients) Close() {
 	c.OpenaiClient = nil
 	c.OpenaiCaption = nil
 }
-
-
-
-
-
-
-
-
-
-

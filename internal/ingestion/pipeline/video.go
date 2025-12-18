@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
 )
 
 func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, videoPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -153,13 +153,3 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 
 	return segs, assets, warnings, diag, nil
 }
-
-
-
-
-
-
-
-
-
-

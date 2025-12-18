@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
-// Segment now lives in internal/types (and gcp/openai clients use it).
+// Segment now lives in internal/domain (and gcp/openai clients use it).
 type Segment = types.Segment
 
 type ExtractionSummary struct {
@@ -37,13 +37,3 @@ func DefaultCtx(ctx context.Context) context.Context { return defaultCtx(ctx) }
 func MergeDiag(dst, src map[string]any)              { mergeDiag(dst, src) }
 func EnsureGSPrefix(s string) string                 { return ensureGSPrefix(s) }
 func MinInt(a, b int) int                            { return minInt(a, b) }
-
-
-
-
-
-
-
-
-
-

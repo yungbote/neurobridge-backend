@@ -3,9 +3,9 @@ package pinecone
 import (
 	"context"
 	"fmt"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"os"
 	"strings"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
 )
 
 type VectorStore interface {
@@ -41,7 +41,7 @@ func NewVectorStore(log *logger.Logger, pc Client) (VectorStore, error) {
 		nsPrefix = "nb"
 	}
 
-	// If host missing, bootstrap via describe_index (fine for local/dev; avoid in prod). 
+	// If host missing, bootstrap via describe_index (fine for local/dev; avoid in prod).
 	if host == "" {
 		desc, err := pc.DescribeIndex(context.Background(), indexName)
 		if err != nil {
@@ -110,13 +110,3 @@ func (s *vectorStore) qualifyNamespace(ns string) string {
 	}
 	return s.nsPrefix + ":" + ns
 }
-
-
-
-
-
-
-
-
-
-

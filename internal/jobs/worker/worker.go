@@ -8,10 +8,10 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Worker struct {
@@ -105,7 +105,9 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 
 type missingHandlerError struct{ JobType string }
 
-func (e *missingHandlerError) Error() string { return "no handler registered for job_type=" + e.JobType }
+func (e *missingHandlerError) Error() string {
+	return "no handler registered for job_type=" + e.JobType
+}
 
 func errFromRecover(v any) error { return &panicError{Val: v} }
 
@@ -124,13 +126,3 @@ func getEnvInt(key string, def int) int {
 	}
 	return i
 }
-
-
-
-
-
-
-
-
-
-

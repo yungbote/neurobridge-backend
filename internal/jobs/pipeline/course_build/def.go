@@ -3,18 +3,18 @@ package course_build
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type CourseBuildPipeline struct {
-	db							 *gorm.DB
-	log							 *logger.Logger
+	db               *gorm.DB
+	log              *logger.Logger
 	courseRepo       repos.CourseRepo
 	materialFileRepo repos.MaterialFileRepo
 	moduleRepo       repos.CourseModuleRepo
@@ -22,11 +22,11 @@ type CourseBuildPipeline struct {
 	quizRepo         repos.QuizQuestionRepo
 	blueprintRepo    repos.CourseBlueprintRepo
 	chunkRepo        repos.MaterialChunkRepo
-	bucket					 gcp.BucketService
-	ai							 openai.Client
-	courseNotify		 services.CourseNotifier
-	extractor				 ingestion.ContentExtractionService
-	vectorStore			 pinecone.VectorStore
+	bucket           gcp.BucketService
+	ai               openai.Client
+	courseNotify     services.CourseNotifier
+	extractor        ingestion.ContentExtractionService
+	vectorStore      pinecone.VectorStore
 }
 
 func NewCourseBuildPipeline(
@@ -42,8 +42,8 @@ func NewCourseBuildPipeline(
 	bucket gcp.BucketService,
 	ai openai.Client,
 	courseNotify services.CourseNotifier,
-	extractor			ingestion.ContentExtractionService,
-	vectorStore		pinecone.VectorStore,
+	extractor ingestion.ContentExtractionService,
+	vectorStore pinecone.VectorStore,
 ) *CourseBuildPipeline {
 	return &CourseBuildPipeline{
 		db:               db,
@@ -58,17 +58,7 @@ func NewCourseBuildPipeline(
 		bucket:           bucket,
 		ai:               ai,
 		courseNotify:     courseNotify,
-		extractor:				extractor,
-		vectorStore:			vectorStore,
+		extractor:        extractor,
+		vectorStore:      vectorStore,
 	}
 }
-
-
-
-
-
-
-
-
-
-

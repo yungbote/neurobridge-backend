@@ -3,23 +3,24 @@ package handlers
 import (
 	"io"
 	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/services"
-	"github.com/yungbote/neurobridge-backend/internal/ssedata"
-	"github.com/yungbote/neurobridge-backend/internal/sse"
+
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type MaterialHandler struct {
 	log      *logger.Logger
 	workflow services.WorkflowService
-	sseHub   *sse.SSEHub
+	sseHub   *realtime.SSEHub
 }
 
-func NewMaterialHandler(log *logger.Logger, workflow services.WorkflowService, sseHub *sse.SSEHub) *MaterialHandler {
+func NewMaterialHandler(log *logger.Logger, workflow services.WorkflowService, sseHub *realtime.SSEHub) *MaterialHandler {
 	return &MaterialHandler{
 		log:      log.With("handler", "MaterialHandler"),
 		workflow: workflow,
@@ -28,7 +29,7 @@ func NewMaterialHandler(log *logger.Logger, workflow services.WorkflowService, s
 }
 
 func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
-	rd := requestdata.GetRequestData(c.Request.Context())
+	rd := ctxutil.GetRequestData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
@@ -90,7 +91,7 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		return
 	}
 	// Flush request-scoped SSE messages if any (we still keep this pattern).
-	ssd := ssedata.GetSSEData(c.Request.Context())
+	ssd := ctxutil.GetSSEData(c.Request.Context())
 	if ssd != nil && len(ssd.Messages) > 0 {
 		for _, msg := range ssd.Messages {
 			h.sseHub.Broadcast(msg)
@@ -105,13 +106,3 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		"job_id":          job.ID,
 	})
 }
-
-
-
-
-
-
-
-
-
-

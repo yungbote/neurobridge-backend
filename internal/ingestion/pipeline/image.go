@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBytes []byte, imgPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -60,13 +60,3 @@ func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBy
 
 	return segs, assets, warnings, diag, nil
 }
-
-
-
-
-
-
-
-
-
-

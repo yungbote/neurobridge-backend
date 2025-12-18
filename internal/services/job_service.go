@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 	"github.com/google/uuid"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"time"
 )
 
 type JobService interface {
@@ -137,7 +137,7 @@ func (s *jobService) EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gor
 }
 
 func (s *jobService) GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
-	rd := requestdata.GetRequestData(ctx)
+	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -163,7 +163,7 @@ func (s *jobService) GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, job
 }
 
 func (s *jobService) GetLatestForEntityForRequestUser(ctx context.Context, tx *gorm.DB, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error) {
-	rd := requestdata.GetRequestData(ctx)
+	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -176,13 +176,3 @@ func (s *jobService) GetLatestForEntityForRequestUser(ctx context.Context, tx *g
 	}
 	return s.repo.GetLatestByEntity(ctx, transaction, rd.UserID, entityType, entityID, jobType)
 }
-
-
-
-
-
-
-
-
-
-

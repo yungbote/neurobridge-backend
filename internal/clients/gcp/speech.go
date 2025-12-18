@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Speech interface {
@@ -52,8 +52,8 @@ type SpeechResult struct {
 }
 
 type speechService struct {
-	log       *logger.Logger
-	client    *speech.Client
+	log        *logger.Logger
+	client     *speech.Client
 	maxRetries int
 }
 
@@ -439,13 +439,3 @@ func max0(x int) int {
 	}
 	return x
 }
-
-
-
-
-
-
-
-
-
-

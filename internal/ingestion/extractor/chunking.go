@@ -42,13 +42,3 @@ func SplitIntoChunks(text string, chunkSize int, overlap int) []string {
 
 	return out
 }
-
-
-
-
-
-
-
-
-
-

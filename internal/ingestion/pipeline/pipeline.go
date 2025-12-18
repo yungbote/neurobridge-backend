@@ -2,9 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
-	"fmt"
 	"strings"
 	"time"
 
@@ -12,12 +12,12 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Segment = extractor.Segment
@@ -236,7 +236,7 @@ func (s *service) captionAssetToSegments(
 		res, err = s.ex.Caption.DescribeImage(ctx, openai.CaptionRequest{
 			Task:      task,
 			Prompt:    "",
-			ImageURL:   asset.URL,
+			ImageURL:  asset.URL,
 			Detail:    "high",
 			MaxTokens: 1200,
 		})
@@ -344,7 +344,6 @@ func mimeFromKey(key string) string {
 	}
 }
 
-
 func (s *service) captionBytesToSegments(
 	ctx context.Context,
 	task string,
@@ -415,13 +414,3 @@ func (s *service) captionBytesToSegments(
 
 	return []Segment{seg}, "", nil
 }
-
-
-
-
-
-
-
-
-
-

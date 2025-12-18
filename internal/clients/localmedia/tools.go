@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 // Tools is the “hard way” glue around system binaries.
@@ -41,7 +41,9 @@ type Tools interface {
 
 // ---- Back-compat aliases so you don’t have to refactor call sites immediately ----
 type MediaToolsService = Tools
+
 func NewMediaToolsService(log *logger.Logger) MediaToolsService { return New(log) }
+
 // -------------------------------------------------------------------------------
 
 type PDFRenderOptions struct {
@@ -446,13 +448,3 @@ func defaultCtx(ctx context.Context) context.Context {
 	}
 	return ctx
 }
-
-
-
-
-
-
-
-
-
-

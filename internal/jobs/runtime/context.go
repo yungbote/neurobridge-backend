@@ -10,28 +10,28 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/repos"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/services"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
 type Context struct {
-	Ctx						context.Context
-	DB						*gorm.DB
-	Job						*types.JobRun
-	Repo					repos.JobRunRepo
-	Notify				services.JobNotifier
-	LastMessage		string			// Convenience: pipeline can write human messages without deciding event type
-	payload				map[string]any
+	Ctx         context.Context
+	DB          *gorm.DB
+	Job         *types.JobRun
+	Repo        repos.JobRunRepo
+	Notify      services.JobNotifier
+	LastMessage string // Convenience: pipeline can write human messages without deciding event type
+	payload     map[string]any
 }
 
 func NewContext(ctx context.Context, db *gorm.DB, job *types.JobRun, repo repos.JobRunRepo, notify services.JobNotifier) *Context {
 	c := &Context{
-		Ctx:			ctx,
-		DB:				db,
-		Job:			job,
-		Repo:			repo,
-		Notify:		notify,
+		Ctx:    ctx,
+		DB:     db,
+		Job:    job,
+		Repo:   repo,
+		Notify: notify,
 	}
 	_ = c.decodePayload()
 	return c
@@ -102,7 +102,6 @@ func (c *Context) Progress(stage string, pct int, msg string) {
 	c.Notify.JobProgress(c.Job.OwnerUserID, c.Job, stage, pct, msg)
 }
 
-
 func (c *Context) Fail(stage string, err error) {
 	now := time.Now()
 	msg := ""
@@ -164,7 +163,6 @@ func (c *Context) Succeed(finalStage string, result any) {
 	c.Notify.JobDone(c.Job.OwnerUserID, c.Job)
 }
 
-
 func toIfaceMap(in map[string]any) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))
 	for k, v := range in {
@@ -172,13 +170,3 @@ func toIfaceMap(in map[string]any) map[string]interface{} {
 	}
 	return out
 }
-
-
-
-
-
-
-
-
-
-

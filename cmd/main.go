@@ -43,13 +43,3 @@ func main() {
 	// Worker-only container: keep process alive.
 	select {}
 }
-
-
-
-
-
-
-
-
-
-

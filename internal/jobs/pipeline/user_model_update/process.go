@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func (p *Pipeline) applyQuestionAnswered(
@@ -198,13 +198,3 @@ func clamp01(x float64) float64 {
 	}
 	return x
 }
-
-
-
-
-
-
-
-
-
-

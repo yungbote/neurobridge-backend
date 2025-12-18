@@ -3,8 +3,8 @@ package user_model_update
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Pipeline struct {
@@ -41,13 +41,3 @@ func New(
 }
 
 func (p *Pipeline) Type() string { return "user_model_update" }
-
-
-
-
-
-
-
-
-
-

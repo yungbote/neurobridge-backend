@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"gorm.io/datatypes"
 	"io"
 	"math"
 	"sort"
 	"strings"
 	"time"
-	"github.com/google/uuid"
-	"gorm.io/datatypes"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
-
 
 func readAll(r io.Reader) ([]byte, error) {
 	var buf bytes.Buffer
@@ -257,13 +256,3 @@ func intFromAny(v any, def int) int {
 		return def
 	}
 }
-
-
-
-
-
-
-
-
-
-

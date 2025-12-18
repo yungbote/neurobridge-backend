@@ -9,7 +9,7 @@ import (
 	"gorm.io/datatypes"
 
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
@@ -277,7 +277,7 @@ func (p *CourseBuildPipeline) stageLessonsAndQuizzes(bc *buildContext) error {
 				correctJSON, _ := json.Marshal(map[string]any{"index": correct})
 
 				qs = append(qs, &types.QuizQuestion{
-					ID:           uuid.New(),
+					ID:            uuid.New(),
 					LessonID:      l.ID,
 					Index:         qi,
 					Type:          "mcq",
@@ -356,13 +356,3 @@ func lessonQuizSchemaOld() map[string]any {
 		"additionalProperties": false,
 	}
 }
-
-
-
-
-
-
-
-
-
-

@@ -9,7 +9,7 @@ import (
 	"gorm.io/datatypes"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func embeddingMissing(e datatypes.JSON) bool {
@@ -114,13 +114,3 @@ func (p *CourseBuildPipeline) stageEmbed(buildCtx *buildContext) error {
 	p.progress(buildCtx, "embed", 45, "Embeddings complete")
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

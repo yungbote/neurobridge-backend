@@ -18,13 +18,3 @@ func CORS() gin.HandlerFunc {
 		AllowCredentials: true,
 	})
 }
-
-
-
-
-
-
-
-
-
-

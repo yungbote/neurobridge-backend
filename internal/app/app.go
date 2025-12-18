@@ -9,9 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/db"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/sse"
+	"github.com/yungbote/neurobridge-backend/internal/data/db"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
 
 type App struct {
@@ -24,7 +24,7 @@ type App struct {
 	Clients  Clients
 	Services Services
 
-	SSEHub *sse.SSEHub
+	SSEHub *realtime.SSEHub
 	cancel context.CancelFunc
 }
 
@@ -59,7 +59,7 @@ func New() (*App, error) {
 	}
 
 	theDB := pg.DB()
-	ssehub := sse.NewSSEHub(log)
+	ssehub := realtime.NewSSEHub(log)
 
 	reposet := wireRepos(theDB, log)
 
@@ -102,7 +102,7 @@ func (a *App) Start(runServer bool, runWorker bool) {
 	// (A) API server: Redis -> Hub forwarder (optional)
 	if runServer && a.Clients.SSEBus != nil && a.SSEHub != nil {
 		a.Log.Info("Starting Redis SSE forwarder...")
-		err := a.Clients.SSEBus.StartForwarder(ctx, func(m sse.SSEMessage) {
+		err := a.Clients.SSEBus.StartForwarder(ctx, func(m realtime.SSEMessage) {
 			a.SSEHub.Broadcast(m)
 		})
 		if err != nil {
@@ -136,13 +136,3 @@ func (a *App) Close() {
 		a.Log.Sync()
 	}
 }
-
-
-
-
-
-
-
-
-
-

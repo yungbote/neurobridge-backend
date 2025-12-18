@@ -3,18 +3,18 @@ package services
 import (
 	"context"
 	"fmt"
-	"time"
-	"strings"
-	"golang.org/x/crypto/bcrypt"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/normalization"
-	"github.com/yungbote/neurobridge-backend/internal/repos"
-	"github.com/yungbote/neurobridge-backend/internal/requestdata"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/normalize"
 	"github.com/yungbote/neurobridge-backend/internal/utils"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"strings"
+	"time"
 )
 
 type JWTClaims struct {
@@ -37,9 +37,9 @@ type authService struct {
 	userRepo      repos.UserRepo
 	avatarService AvatarService
 	userTokenRepo repos.UserTokenRepo
-	jwtSecretKey	string
-	accessTTL			time.Duration
-	refreshTTL		time.Duration
+	jwtSecretKey  string
+	accessTTL     time.Duration
+	refreshTTL    time.Duration
 }
 
 func NewAuthService(
@@ -86,8 +86,8 @@ func (as *authService) RegisterUser(ctx context.Context, user *types.User) error
 }
 
 func (as *authService) LoginUser(ctx context.Context, email, password string) (string, string, error) {
-	email = normalization.ParseInputString(email)
-	password = normalization.ParseInputString(password)
+	email = normalize.ParseInputString(email)
+	password = normalize.ParseInputString(password)
 
 	if vErr := utils.InputValidation(ctx, "login", as.userRepo, as.log, &types.User{}, email, password); vErr != nil {
 		return "", "", vErr
@@ -161,7 +161,7 @@ func (as *authService) LoginUser(ctx context.Context, email, password string) (s
 }
 
 func (as *authService) RefreshUser(ctx context.Context) (string, string, error) {
-	rd := requestdata.GetRequestData(ctx)
+	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil {
 		as.log.Warn("No request data found in context")
 		return "", "", fmt.Errorf("no request data found in context")
@@ -246,7 +246,7 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 }
 
 func (as *authService) LogoutUser(ctx context.Context) error {
-	rd := requestdata.GetRequestData(ctx)
+	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil {
 		as.log.Warn("No request data found in context")
 		return fmt.Errorf("no request data found in context")
@@ -313,17 +313,16 @@ func (as *authService) SetContextFromToken(ctx context.Context, tokenString stri
 	}
 	existingToken := foundTokens[0]
 
-	rd := &requestdata.RequestData{
+	rd := &ctxutil.RequestData{
 		TokenString:  tokenString,
 		RefreshToken: existingToken.RefreshToken,
 		UserID:       userID,
 		SessionID:    existingToken.ID, // this token = this session
 	}
-	ctx = requestdata.WithRequestData(ctx, rd)
+	ctx = ctxutil.WithRequestData(ctx, rd)
 	return ctx, nil
 }
 
 func (as *authService) GetAccessTTL() time.Duration {
 	return as.accessTTL
 }
-

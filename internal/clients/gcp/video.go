@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/yungbote/neurobridge-backend/internal/logger"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type Video interface {
@@ -407,13 +407,3 @@ func (s *videoService) retryAnnotate(ctx context.Context, fn func() (*vipb.Annot
 	}
 	return nil, last
 }
-
-
-
-
-
-
-
-
-
-

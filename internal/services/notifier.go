@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/sse"
-	"github.com/yungbote/neurobridge-backend/internal/types"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
 
 // =========================
@@ -32,9 +32,9 @@ func (n *jobNotifier) JobCreated(userID uuid.UUID, job *types.JobRun) {
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.SSEEventJobCreated,
+		Event:   realtime.SSEEventJobCreated,
 		Data:    map[string]any{"job": job},
 	})
 }
@@ -43,9 +43,9 @@ func (n *jobNotifier) JobProgress(userID uuid.UUID, job *types.JobRun, stage str
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.SSEEventJobProgress,
+		Event:   realtime.SSEEventJobProgress,
 		Data: map[string]any{
 			"job_id":   safeJobID(job),
 			"job_type": safeJobType(job),
@@ -61,9 +61,9 @@ func (n *jobNotifier) JobFailed(userID uuid.UUID, job *types.JobRun, stage strin
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.SSEEventJobFailed,
+		Event:   realtime.SSEEventJobFailed,
 		Data: map[string]any{
 			"job_id":   safeJobID(job),
 			"job_type": safeJobType(job),
@@ -78,9 +78,9 @@ func (n *jobNotifier) JobDone(userID uuid.UUID, job *types.JobRun) {
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.SSEEventJobDone,
+		Event:   realtime.SSEEventJobDone,
 		Data: map[string]any{
 			"job_id":   safeJobID(job),
 			"job_type": safeJobType(job),
@@ -113,9 +113,9 @@ func (n *courseNotifier) CourseCreated(userID uuid.UUID, course *types.Course, j
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.SSEEventUserCourseCreated,
+		Event:   realtime.SSEEventUserCourseCreated,
 		Data: map[string]any{
 			"course": course,
 			"job":    job,
@@ -127,9 +127,9 @@ func (n *courseNotifier) CourseGenerationProgress(userID uuid.UUID, course *type
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.CourseGenerationProgress,
+		Event:   realtime.CourseGenerationProgress,
 		Data: map[string]any{
 			"course_id": safeCourseID(course),
 			"course":    course,
@@ -149,9 +149,9 @@ func (n *courseNotifier) CourseGenerationFailed(userID uuid.UUID, course *types.
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.CourseGenerationFailed,
+		Event:   realtime.CourseGenerationFailed,
 		Data: map[string]any{
 			"course_id": safeCourseID(course),
 			"course":    course,
@@ -170,9 +170,9 @@ func (n *courseNotifier) CourseGenerationDone(userID uuid.UUID, course *types.Co
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
-	n.emit.Emit(context.Background(), sse.SSEMessage{
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
-		Event:   sse.CourseGenerationDone,
+		Event:   realtime.CourseGenerationDone,
 		Data: map[string]any{
 			"course_id": safeCourseID(course),
 			"course":    course,
@@ -208,13 +208,3 @@ func safeJobType(job *types.JobRun) string {
 	}
 	return job.JobType
 }
-
-
-
-
-
-
-
-
-
-

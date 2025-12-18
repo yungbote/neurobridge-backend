@@ -2,10 +2,10 @@ package course_build
 
 import (
 	"fmt"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"gorm.io/datatypes"
 	"strings"
 	"time"
-	"gorm.io/datatypes"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 )
 
 func (p *CourseBuildPipeline) stageMetadata(buildCtx *buildContext) error {
@@ -44,20 +44,20 @@ func (p *CourseBuildPipeline) stageMetadata(buildCtx *buildContext) error {
 	level := strings.TrimSpace(fmt.Sprint(metaObj["level"]))
 	tags := normalizeTags(metaObj["tags"], 12)
 	meta := map[string]any{
-		"status":							"generating",
-		"tags":								tags,
-		"long_title":					longTitle,
-		"long_description":		longDesc,
+		"status":           "generating",
+		"tags":             tags,
+		"long_title":       longTitle,
+		"long_description": longDesc,
 	}
 	if err := p.db.WithContext(buildCtx.ctx).Model(&types.Course{}).
 		Where("id = ?", buildCtx.courseID).
 		Updates(map[string]any{
-			"title":					shortTitle,
-			"description":		shortDesc,
-			"subject":				subject,
-			"level":					level,
-			"metadata":				datatypes.JSON(mustJSON(meta)),
-			"updated_at":			time.Now(),
+			"title":       shortTitle,
+			"description": shortDesc,
+			"subject":     subject,
+			"level":       level,
+			"metadata":    datatypes.JSON(mustJSON(meta)),
+			"updated_at":  time.Now(),
 		}).Error; err != nil {
 		return fmt.Errorf("update course: %w", err)
 	}
@@ -73,27 +73,17 @@ func (p *CourseBuildPipeline) stageMetadata(buildCtx *buildContext) error {
 
 func courseMetadataSchema() map[string]any {
 	return map[string]any{
-		"type":					"object",
-		"properties":		map[string]any{
-			"short_title":				map[string]any{"type": "string"},
-			"short_description":	map[string]any{"type": "string"},
-			"title":							map[string]any{"type": "string"},
-			"description":				map[string]any{"type": "string"},
-			"subject":						map[string]any{"type": "string"},
-			"level":							map[string]any{"type": "string"},
-			"tags":								map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"type": "object",
+		"properties": map[string]any{
+			"short_title":       map[string]any{"type": "string"},
+			"short_description": map[string]any{"type": "string"},
+			"title":             map[string]any{"type": "string"},
+			"description":       map[string]any{"type": "string"},
+			"subject":           map[string]any{"type": "string"},
+			"level":             map[string]any{"type": "string"},
+			"tags":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		},
-		"required":							[]string{"short_title", "short_description", "title", "description", "subject", "level", "tags"},
+		"required":             []string{"short_title", "short_description", "title", "description", "subject", "level", "tags"},
 		"additionalProperties": false,
 	}
 }
-
-
-
-
-
-
-
-
-
-

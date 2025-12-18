@@ -5,25 +5,25 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/types"
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 )
 
 type buildContext struct {
-	jobCtx         *runtime.Context
-	ctx            context.Context
-	userID         uuid.UUID
-	materialSetID  uuid.UUID
-	courseID       uuid.UUID
-	course         *types.Course
-	files          []*types.MaterialFile
-	fileIDs        []uuid.UUID
-	chunks         []*types.MaterialChunk
-	combined       string
+	jobCtx        *runtime.Context
+	ctx           context.Context
+	userID        uuid.UUID
+	materialSetID uuid.UUID
+	courseID      uuid.UUID
+	course        *types.Course
+	files         []*types.MaterialFile
+	fileIDs       []uuid.UUID
+	chunks        []*types.MaterialChunk
+	combined      string
 
 	// new: enforce monotonic progress so frontend bar never jumps backward
-	lastProgress   int
+	lastProgress int
 }
 
 func (p *CourseBuildPipeline) Type() string { return "course_build" }
@@ -153,13 +153,3 @@ func (p *CourseBuildPipeline) downloadMaterialFile(ctx context.Context, key stri
 	defer func() { _ = rc.Close() }()
 	return readAll(rc)
 }
-
-
-
-
-
-
-
-
-
-

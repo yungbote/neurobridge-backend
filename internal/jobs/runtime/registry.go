@@ -11,8 +11,8 @@ type Handler interface {
 }
 
 type Registry struct {
-	mu				sync.RWMutex
-	handlers  map[string]Handler
+	mu       sync.RWMutex
+	handlers map[string]Handler
 }
 
 func NewRegistry() *Registry {
@@ -42,13 +42,3 @@ func (r *Registry) Get(jobType string) (Handler, bool) {
 	h, ok := r.handlers[jobType]
 	return h, ok
 }
-
-
-
-
-
-
-
-
-
-
