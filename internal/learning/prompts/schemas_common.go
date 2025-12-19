@@ -6,7 +6,14 @@ func SchemaVersionedObject(version int, properties map[string]any, required []st
 	}
 	properties["version"] = map[string]any{"type": "integer", "const": version}
 	properties["warnings"] = StringArraySchema()
-	properties["diagnostics"] = map[string]any{"type": "object"}
+
+	// FIX: OpenAI strict schema requires additionalProperties:false for object schemas.
+	// This makes diagnostics an allowed empty object {}.
+	properties["diagnostics"] = map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": false,
+	}
 
 	req := []string{"version", "warnings", "diagnostics"}
 	req = append(req, required...)

@@ -10,9 +10,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/db"
+	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
-	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
 )
 
 type App struct {
@@ -79,7 +79,7 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	handlerset := wireHandlers(log, serviceset, ssehub)
+	handlerset := wireHandlers(log, serviceset, reposet, ssehub)
 	middleware := wireMiddleware(log, serviceset)
 	router := wireRouter(handlerset, middleware)
 
@@ -139,13 +139,3 @@ func (a *App) Close() {
 		a.Log.Sync()
 	}
 }
-
-
-
-
-
-
-
-
-
-

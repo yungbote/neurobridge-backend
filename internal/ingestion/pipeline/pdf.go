@@ -18,6 +18,10 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	var assets []AssetRef
 	var segs []Segment
 
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, diag, err
+	}
+
 	var docAIRes *gcp.DocAIResult
 	var docAIErr error
 
@@ -90,6 +94,9 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	assets = append(assets, pageAssets...)
 	warnings = append(warnings, renderWarn...)
 	extractor.MergeDiag(diag, renderDiag)
+	if err := ctx.Err(); err != nil {
+		return segs, assets, warnings, diag, err
+	}
 
 	if s.ex.Caption == nil {
 		warnings = append(warnings, "caption provider unavailable; figure_notes skipped")
@@ -98,6 +105,9 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	} else {
 		capN := extractor.MinInt(len(pageImages), s.ex.MaxPDFPagesCaption)
 		for i := 0; i < capN; i++ {
+			if err := ctx.Err(); err != nil {
+				return segs, assets, warnings, diag, err
+			}
 			page := i + 1
 			imgAsset := pageImages[i]
 			noteSegs, warn, err := s.captionAssetToSegments(ctx, "figure_notes", imgAsset, page, nil, nil)
@@ -118,6 +128,11 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]AssetRef, []AssetRef, []string, map[string]any) {
 	diag := map[string]any{"render": "pdftoppm"}
 	var warnings []string
+
+	if err := ctx.Err(); err != nil {
+		warnings = append(warnings, "render canceled: "+err.Error())
+		return nil, nil, warnings, diag
+	}
 
 	if s.ex.Media == nil {
 		return nil, nil, []string{"media tools unavailable; cannot render pdf pages"}, diag
@@ -146,6 +161,10 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 
 	pageAssets := make([]AssetRef, 0, len(paths))
 	for i, pth := range paths {
+		if err := ctx.Err(); err != nil {
+			warnings = append(warnings, "upload pages canceled: "+err.Error())
+			break
+		}
 		pageNum := i + 1
 		key := fmt.Sprintf("%s/derived/pages/page_%04d.png", mf.StorageKey, pageNum)
 		if err := s.ex.UploadLocalToGCS(ctx, nil, key, pth); err != nil {

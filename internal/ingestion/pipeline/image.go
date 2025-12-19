@@ -14,6 +14,10 @@ func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBy
 	var assets []AssetRef
 	var segs []Segment
 
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, diag, err
+	}
+
 	if len(imgBytes) == 0 && strings.TrimSpace(imgPath) != "" {
 		if b, err := os.ReadFile(imgPath); err == nil {
 			imgBytes = b

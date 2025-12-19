@@ -19,6 +19,10 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	var assets []AssetRef
 	var segs []Segment
 
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, diag, err
+	}
+
 	if s.ex.VideoAI != nil && s.ex.MaterialBucketName != "" {
 		gcsURI := fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, mf.StorageKey)
 		vres, err := s.ex.VideoAI.AnnotateVideoGCS(ctx, gcsURI, gcp.VideoAIConfig{
@@ -52,6 +56,10 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	}
 	defer os.RemoveAll(tmpDir)
 
+	if err := ctx.Err(); err != nil {
+		return segs, assets, warnings, diag, err
+	}
+
 	audioPath := filepath.Join(tmpDir, "audio.wav")
 	_, err = s.ex.Media.ExtractAudioFromVideo(ctx, videoPath, audioPath, localmedia.AudioExtractOptions{
 		SampleRateHz: 16000,
@@ -82,6 +90,10 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 		return segs, assets, warnings, diag, nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return segs, assets, warnings, diag, err
+	}
+
 	if len(frames) > s.ex.MaxFramesVideo {
 		warnings = append(warnings, fmt.Sprintf("frames truncated: %d -> %d", len(frames), s.ex.MaxFramesVideo))
 		frames = frames[:s.ex.MaxFramesVideo]
@@ -89,6 +101,9 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 
 	frameAssets := make([]AssetRef, 0, len(frames))
 	for i, fp := range frames {
+		if err := ctx.Err(); err != nil {
+			return segs, assets, warnings, diag, err
+		}
 		frameIdx := i + 1
 		key := fmt.Sprintf("%s/derived/frames/frame_%06d.jpg", mf.StorageKey, frameIdx)
 		if err := s.ex.UploadLocalToGCS(ctx, nil, key, fp); err != nil {
@@ -109,6 +124,9 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	// Preserve original behavior (possible mismatch if uploads failed)
 	if s.ex.Vision != nil {
 		for i, a := range frameAssets {
+			if err := ctx.Err(); err != nil {
+				return segs, assets, warnings, diag, err
+			}
 			localPath := frames[i]
 			b, readErr := os.ReadFile(localPath)
 			if readErr != nil {

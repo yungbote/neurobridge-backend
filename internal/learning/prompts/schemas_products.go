@@ -32,6 +32,13 @@ func StyleUsedSchema() map[string]any {
 // IMPORTANT FIX:
 // Only require "kind". Different kinds use different fields.
 // Enforce per-kind rules in code (renderer/validator), not in JSON schema.
+// IMPORTANT FIX:
+// OpenAI strict JSON schema requires that for object schemas:
+// - additionalProperties must be present and false
+// - required must include EVERY key listed in properties
+//
+// So we require all fields here and enforce per-kind semantics in code/prompting
+// by allowing empty-string / empty-array values for unused fields.
 func BlockSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -48,18 +55,16 @@ func BlockSchema() map[string]any {
 				"video_embed",
 			),
 
-			// Optional depending on kind:
-			// - heading/paragraph/callout => content_md
-			// - bullets/steps             => items
-			// - image/video_embed         => asset_refs
+			// Always present (may be empty depending on kind).
 			"content_md": map[string]any{"type": "string"},
 			"items":      StringArraySchema(),
 			"asset_refs": StringArraySchema(),
 		},
-		"required":             []string{"kind"},
+		"required":             []string{"kind", "content_md", "items", "asset_refs"},
 		"additionalProperties": false,
 	}
 }
+
 
 func ContentJSONSchema() map[string]any {
 	return map[string]any{

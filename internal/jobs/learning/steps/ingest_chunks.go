@@ -2,8 +2,10 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -30,6 +32,15 @@ type IngestChunksInput struct {
 	SagaID        uuid.UUID
 }
 
+type IngestChunksOptions struct {
+	// FileTimeout hard-limits time spent ingesting a single material_file.
+	// If <= 0, defaults to 10 minutes.
+	FileTimeout time.Duration
+
+	// Report is an optional progress callback (e.g. to feed a heartbeat ticker).
+	Report func(stage string, pct int, message string)
+}
+
 type IngestChunksOutput struct {
 	PathID              uuid.UUID `json:"path_id"`
 	FilesTotal          int       `json:"files_total"`
@@ -37,7 +48,7 @@ type IngestChunksOutput struct {
 	FilesAlreadyChunked int       `json:"files_already_chunked"`
 }
 
-func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInput) (IngestChunksOutput, error) {
+func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInput, opts ...IngestChunksOptions) (IngestChunksOutput, error) {
 	out := IngestChunksOutput{}
 	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Extract == nil || deps.Saga == nil || deps.Bootstrap == nil {
 		return out, fmt.Errorf("ingest_chunks: missing deps")
@@ -50,6 +61,19 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 	}
 	if in.SagaID == uuid.Nil {
 		return out, fmt.Errorf("ingest_chunks: missing saga_id")
+	}
+
+	var opt IngestChunksOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	fileTimeout := opt.FileTimeout
+	if fileTimeout <= 0 {
+		fileTimeout = 10 * time.Minute
+	}
+	report := opt.Report
+	if report == nil {
+		report = func(string, int, string) {}
 	}
 
 	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
@@ -80,18 +104,27 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 	}
 
 	for _, mf := range files {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
 		if mf == nil || mf.ID == uuid.Nil {
 			continue
 		}
 		if hasChunks[mf.ID] {
 			out.FilesAlreadyChunked++
+			done := out.FilesAlreadyChunked + out.FilesProcessed
+			report("ingest", ingestProgress(done, out.FilesTotal), fmt.Sprintf("Already chunked %d/%d", done, out.FilesTotal))
 			continue
 		}
 
 		mf := mf
-		if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		doneBefore := out.FilesAlreadyChunked + out.FilesProcessed
+		report("ingest", ingestProgress(doneBefore, out.FilesTotal), fmt.Sprintf("Ingesting %d/%d: %s", doneBefore+1, out.FilesTotal, mf.OriginalName))
+
+		fileCtx, cancel := context.WithTimeout(ctx, fileTimeout)
+		err := deps.DB.WithContext(fileCtx).Transaction(func(tx *gorm.DB) error {
 			// Contract: every job derives path_id via bootstrap.
-			pathID, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID)
+			pathID, err := deps.Bootstrap.EnsurePath(fileCtx, tx, in.OwnerUserID, in.MaterialSetID)
 			if err != nil {
 				return err
 			}
@@ -100,7 +133,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 			}
 
 			// Idempotency guard (re-check in-tx)
-			chs, err := deps.Chunks.GetByMaterialFileIDs(ctx, tx, []uuid.UUID{mf.ID})
+			chs, err := deps.Chunks.GetByMaterialFileIDs(fileCtx, tx, []uuid.UUID{mf.ID})
 			if err != nil {
 				return err
 			}
@@ -111,7 +144,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 			// Conservative compensation: delete derived prefix (never the original upload key).
 			if strings.TrimSpace(mf.StorageKey) != "" {
 				derivedPrefix := strings.TrimRight(mf.StorageKey, "/") + "/derived/"
-				if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindGCSDeletePrefix, map[string]any{
+				if err := deps.Saga.AppendAction(fileCtx, tx, in.SagaID, services.SagaActionKindGCSDeletePrefix, map[string]any{
 					"category": "material",
 					"prefix":   derivedPrefix,
 				}); err != nil {
@@ -119,7 +152,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 				}
 			}
 
-			summary, err := deps.Extract.ExtractAndPersist(ctx, tx, mf)
+			summary, err := deps.Extract.ExtractAndPersist(fileCtx, tx, mf)
 			if err != nil {
 				return err
 			}
@@ -133,7 +166,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 					if a.Kind == "original" || a.Key == mf.StorageKey {
 						continue
 					}
-					if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindGCSDeleteKey, map[string]any{
+					if err := deps.Saga.AppendAction(fileCtx, tx, in.SagaID, services.SagaActionKindGCSDeleteKey, map[string]any{
 						"category": "material",
 						"key":      a.Key,
 					}); err != nil {
@@ -143,11 +176,34 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 			}
 
 			return nil
-		}); err != nil {
-			return out, err
+		})
+		ctxErr := fileCtx.Err()
+		cancel()
+		if err != nil {
+			// Prefer the context error so callers see a clear timeout/cancel.
+			if errors.Is(ctxErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				return out, fmt.Errorf(
+					"ingest_chunks: file timeout after %s (material_file_id=%s name=%q): %w",
+					fileTimeout.String(),
+					mf.ID.String(),
+					mf.OriginalName,
+					err,
+				)
+			}
+			if errors.Is(ctxErr, context.Canceled) || errors.Is(err, context.Canceled) {
+				return out, fmt.Errorf(
+					"ingest_chunks: file canceled (material_file_id=%s name=%q): %w",
+					mf.ID.String(),
+					mf.OriginalName,
+					err,
+				)
+			}
+			return out, fmt.Errorf("ingest_chunks: extract failed (material_file_id=%s name=%q): %w", mf.ID.String(), mf.OriginalName, err)
 		}
 
 		out.FilesProcessed++
+		done := out.FilesAlreadyChunked + out.FilesProcessed
+		report("ingest", ingestProgress(done, out.FilesTotal), fmt.Sprintf("Processed %d/%d", done, out.FilesTotal))
 	}
 
 	after, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
@@ -171,4 +227,29 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 	}
 
 	return out, nil
+}
+
+func ingestProgress(done, total int) int {
+	if total <= 0 {
+		return 2
+	}
+	// Keep progress monotonic and <100 until job Succeed.
+	const (
+		min = 2
+		max = 95
+	)
+	if done < 0 {
+		done = 0
+	}
+	if done > total {
+		done = total
+	}
+	pct := min + int(float64(done)/float64(total)*float64(max-min))
+	if pct < min {
+		return min
+	}
+	if pct > max {
+		return max
+	}
+	return pct
 }

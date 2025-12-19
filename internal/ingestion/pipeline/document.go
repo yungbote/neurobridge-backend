@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -14,6 +15,10 @@ func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, offi
 	var warnings []string
 	var assets []AssetRef
 	var segs []Segment
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, diag, err
+	}
 
 	text, warn, nd := s.ex.BestEffortNativeText(mf.OriginalName, mf.MimeType, nil)
 	extractor.MergeDiag(diag, nd)
@@ -42,10 +47,16 @@ func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, offi
 
 	pdfPath, err := s.ex.Media.ConvertOfficeToPDF(ctx, officePath, tmpDir)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return segs, assets, warnings, diag, err
+		}
 		return segs, assets, append(warnings, "office->pdf failed: "+err.Error()), diag, nil
 	}
 
-	pdfSegs, pdfAssets, pdfWarn, pdfDiag, _ := s.handlePDF(ctx, mf, pdfPath)
+	pdfSegs, pdfAssets, pdfWarn, pdfDiag, pdfErr := s.handlePDF(ctx, mf, pdfPath)
+	if pdfErr != nil && (errors.Is(pdfErr, context.Canceled) || errors.Is(pdfErr, context.DeadlineExceeded)) {
+		return segs, assets, warnings, diag, pdfErr
+	}
 	segs = append(segs, pdfSegs...)
 	assets = append(assets, pdfAssets...)
 	warnings = append(warnings, pdfWarn...)

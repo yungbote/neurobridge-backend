@@ -2,9 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,6 +116,9 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 	case "pdf":
 		segs, derivedAssets, warns, diag, err := s.handlePDF(ctx, mf, origPath)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			warnings = append(warnings, "pdf extraction error: "+err.Error())
 		}
 		allSegments = append(allSegments, segs...)
@@ -123,6 +129,9 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 	case "docx", "pptx":
 		segs, derivedAssets, warns, diag, err := s.handleOffice(ctx, mf, origPath, kind)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			warnings = append(warnings, "office extraction error: "+err.Error())
 		}
 		allSegments = append(allSegments, segs...)
@@ -133,6 +142,9 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 	case "image":
 		segs, derivedAssets, warns, diag, err := s.handleImage(ctx, mf, origBytes, origPath)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			warnings = append(warnings, "image extraction error: "+err.Error())
 		}
 		allSegments = append(allSegments, segs...)
@@ -143,6 +155,9 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 	case "video":
 		segs, derivedAssets, warns, diag, err := s.handleVideo(ctx, mf, origPath)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			warnings = append(warnings, "video extraction error: "+err.Error())
 		}
 		allSegments = append(allSegments, segs...)
@@ -153,6 +168,9 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 	case "audio":
 		segs, derivedAssets, warns, diag, err := s.handleAudio(ctx, mf, origPath)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			warnings = append(warnings, "audio extraction error: "+err.Error())
 		}
 		allSegments = append(allSegments, segs...)
@@ -225,6 +243,11 @@ func (s *service) captionAssetToSegments(
 	if s.ex.Caption == nil {
 		return nil, "caption provider unavailable", nil
 	}
+	ctx = extractor.DefaultCtx(ctx)
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	timeout := openAIVisionTimeout()
 
 	// 1) Try URL first (fast path)
 	var (
@@ -233,19 +256,23 @@ func (s *service) captionAssetToSegments(
 	)
 
 	if strings.TrimSpace(asset.URL) != "" {
-		res, err = s.ex.Caption.DescribeImage(ctx, openai.CaptionRequest{
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		res, err = s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{
 			Task:      task,
 			Prompt:    "",
 			ImageURL:  asset.URL,
 			Detail:    "high",
 			MaxTokens: 1200,
 		})
+		cancel()
 	}
 
 	// 2) If URL path failed (or URL missing), fall back to downloading bytes from GCS and send bytes to OpenAI.
 	if err != nil || res == nil {
 		if s.ex.Bucket != nil && strings.TrimSpace(asset.Key) != "" {
-			rc, derr := s.ex.Bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, asset.Key)
+			dlCtx, cancel := context.WithTimeout(ctx, timeout)
+			rc, derr := s.ex.Bucket.DownloadFile(dlCtx, gcp.BucketCategoryMaterial, asset.Key)
+			cancel()
 			if derr != nil {
 				// keep original error if it exists, otherwise return download error
 				if err == nil {
@@ -259,7 +286,8 @@ func (s *service) captionAssetToSegments(
 						err = fmt.Errorf("read downloaded asset bytes: %w", rerr)
 					}
 				} else if len(b) > 0 {
-					res, err = s.ex.Caption.DescribeImage(ctx, openai.CaptionRequest{
+					callCtx, cancel := context.WithTimeout(ctx, timeout)
+					res, err = s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{
 						Task:       task,
 						Prompt:     "",
 						ImageBytes: b,
@@ -267,6 +295,7 @@ func (s *service) captionAssetToSegments(
 						Detail:     "high",
 						MaxTokens:  1200,
 					})
+					cancel()
 				}
 			}
 		}
@@ -355,6 +384,10 @@ func (s *service) captionBytesToSegments(
 	if s.ex.Caption == nil {
 		return nil, "caption provider unavailable", nil
 	}
+	ctx = extractor.DefaultCtx(ctx)
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
 	if len(imageBytes) == 0 {
 		return nil, "caption skipped: empty image bytes", nil
 	}
@@ -371,7 +404,9 @@ func (s *service) captionBytesToSegments(
 		MaxTokens:  1200,
 	}
 
-	res, err := s.ex.Caption.DescribeImage(ctx, req)
+	callCtx, cancel := context.WithTimeout(ctx, openAIVisionTimeout())
+	res, err := s.ex.Caption.DescribeImage(callCtx, req)
+	cancel()
 	if err != nil {
 		return nil, "", err
 	}
@@ -413,4 +448,14 @@ func (s *service) captionBytesToSegments(
 	}
 
 	return []Segment{seg}, "", nil
+}
+
+func openAIVisionTimeout() time.Duration {
+	sec := 60
+	if v := strings.TrimSpace(os.Getenv("OPENAI_VISION_TIMEOUT_SECONDS")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			sec = parsed
+		}
+	}
+	return time.Duration(sec) * time.Second
 }

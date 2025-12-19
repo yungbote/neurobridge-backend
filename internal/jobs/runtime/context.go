@@ -82,14 +82,23 @@ func (c *Context) Update(updates map[string]any) error {
 }
 
 func (c *Context) Progress(stage string, pct int, msg string) {
+	if c == nil {
+		return
+	}
+	ctx := c.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := time.Now()
 
-	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
-		"stage":        stage,
-		"progress":     pct,
-		"heartbeat_at": now,
-		"updated_at":   now,
-	})
+	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
+		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+			"stage":        stage,
+			"progress":     pct,
+			"heartbeat_at": now,
+			"updated_at":   now,
+		})
+	}
 
 	if c.Job != nil {
 		c.Job.Stage = stage
@@ -99,24 +108,35 @@ func (c *Context) Progress(stage string, pct int, msg string) {
 		// status remains whatever it is in DB ("running" after claim)
 	}
 
-	c.Notify.JobProgress(c.Job.OwnerUserID, c.Job, stage, pct, msg)
+	if c.Notify != nil && c.Job != nil {
+		c.Notify.JobProgress(c.Job.OwnerUserID, c.Job, stage, pct, msg)
+	}
 }
 
 func (c *Context) Fail(stage string, err error) {
+	if c == nil {
+		return
+	}
+	ctx := c.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := time.Now()
 	msg := ""
 	if err != nil {
 		msg = err.Error()
 	}
 
-	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
-		"status":        "failed",
-		"stage":         stage,
-		"error":         msg,
-		"last_error_at": now,
-		"locked_at":     nil,
-		"updated_at":    now,
-	})
+	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
+		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+			"status":        "failed",
+			"stage":         stage,
+			"error":         msg,
+			"last_error_at": now,
+			"locked_at":     nil,
+			"updated_at":    now,
+		})
+	}
 
 	if c.Job != nil {
 		c.Job.Status = "failed"
@@ -127,10 +147,19 @@ func (c *Context) Fail(stage string, err error) {
 		c.Job.UpdatedAt = now
 	}
 
-	c.Notify.JobFailed(c.Job.OwnerUserID, c.Job, stage, msg)
+	if c.Notify != nil && c.Job != nil {
+		c.Notify.JobFailed(c.Job.OwnerUserID, c.Job, stage, msg)
+	}
 }
 
 func (c *Context) Succeed(finalStage string, result any) {
+	if c == nil {
+		return
+	}
+	ctx := c.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	now := time.Now()
 	var res datatypes.JSON
 	if result != nil {
@@ -138,16 +167,18 @@ func (c *Context) Succeed(finalStage string, result any) {
 		res = datatypes.JSON(b)
 	}
 
-	_ = c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, map[string]interface{}{
-		"status":       "succeeded",
-		"stage":        finalStage,
-		"progress":     100,
-		"error":        "",
-		"result":       res,
-		"locked_at":    nil,
-		"heartbeat_at": now,
-		"updated_at":   now,
-	})
+	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
+		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+			"status":       "succeeded",
+			"stage":        finalStage,
+			"progress":     100,
+			"error":        "",
+			"result":       res,
+			"locked_at":    nil,
+			"heartbeat_at": now,
+			"updated_at":   now,
+		})
+	}
 
 	if c.Job != nil {
 		c.Job.Status = "succeeded"
@@ -160,7 +191,9 @@ func (c *Context) Succeed(finalStage string, result any) {
 		c.Job.UpdatedAt = now
 	}
 
-	c.Notify.JobDone(c.Job.OwnerUserID, c.Job)
+	if c.Notify != nil && c.Job != nil {
+		c.Notify.JobDone(c.Job.OwnerUserID, c.Job)
+	}
 }
 
 func toIfaceMap(in map[string]any) map[string]interface{} {

@@ -172,6 +172,61 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		}
 		child := rows[0]
 		ss.ChildJobStatus = child.Status
+		if ss.StartedAt == nil {
+			t := child.CreatedAt.UTC()
+			ss.StartedAt = &t
+			_ = p.saveState(jc, nil, st)
+		}
+
+		// Hard stop: if a child stage takes too long, fail the root saga so we don't wait forever.
+		if ss.StartedAt != nil && p.childMaxWait > 0 && time.Since(*ss.StartedAt) > p.childMaxWait {
+			now := time.Now().UTC()
+			_ = jc.Repo.UpdateFields(jc.Ctx, nil, childID, map[string]interface{}{
+				"status":        "failed",
+				"stage":         "timeout",
+				"error":         fmt.Sprintf("timed out after %s waiting for parent stage %s", p.childMaxWait.String(), jobType),
+				"last_error_at": now,
+				"locked_at":     nil,
+				"updated_at":    now,
+			})
+			return p.failAndCompensateWithStage(
+				jc,
+				st,
+				sagaID,
+				jobType,
+				"timeout_"+jobType,
+				fmt.Errorf("learning_build: child stage %s timed out after %s (child_job_id=%s)", jobType, p.childMaxWait.String(), childID.String()),
+			)
+		}
+
+		// If the child is "running" but hasn't heartbeated recently, treat it as stuck.
+		if p.childStaleRunning > 0 && strings.EqualFold(strings.TrimSpace(child.Status), "running") {
+			stale := false
+			if child.HeartbeatAt != nil && !child.HeartbeatAt.IsZero() {
+				stale = time.Since(child.HeartbeatAt.UTC()) > p.childStaleRunning
+			} else {
+				stale = time.Since(child.CreatedAt.UTC()) > p.childStaleRunning
+			}
+			if stale {
+				now := time.Now().UTC()
+				_ = jc.Repo.UpdateFields(jc.Ctx, nil, childID, map[string]interface{}{
+					"status":        "failed",
+					"stage":         "stale_heartbeat",
+					"error":         fmt.Sprintf("stale heartbeat (> %s) while running; treated as stuck by learning_build", p.childStaleRunning.String()),
+					"last_error_at": now,
+					"locked_at":     nil,
+					"updated_at":    now,
+				})
+				return p.failAndCompensateWithStage(
+					jc,
+					st,
+					sagaID,
+					jobType,
+					"stale_"+jobType,
+					fmt.Errorf("learning_build: child stage %s has stale heartbeat (> %s) (child_job_id=%s)", jobType, p.childStaleRunning.String(), childID.String()),
+				)
+			}
+		}
 
 		switch child.Status {
 		case "succeeded":
@@ -481,6 +536,23 @@ func (p *Pipeline) failAndCompensate(jc *jobrt.Context, st *state, sagaID uuid.U
 	_ = p.saga.MarkSagaStatus(jc.Ctx, sagaID, services.SagaStatusFailed)
 	_ = p.saga.Compensate(jc.Ctx, sagaID)
 	jc.Fail(stage, err)
+	return nil
+}
+
+func (p *Pipeline) failAndCompensateWithStage(jc *jobrt.Context, st *state, sagaID uuid.UUID, stateStage string, jobStage string, err error) error {
+	if st != nil {
+		ss := st.ensureStage(stateStage)
+		ss.Status = stageStatusFailed
+		if err != nil {
+			ss.LastError = err.Error()
+		}
+		now := time.Now().UTC()
+		ss.FinishedAt = &now
+	}
+	_ = p.saveState(jc, nil, st)
+	_ = p.saga.MarkSagaStatus(jc.Ctx, sagaID, services.SagaStatusFailed)
+	_ = p.saga.Compensate(jc.Ctx, sagaID)
+	jc.Fail(jobStage, err)
 	return nil
 }
 

@@ -13,6 +13,8 @@ type RouterConfig struct {
 	RealtimeHandler *httpH.RealtimeHandler
 
 	MaterialHandler *httpH.MaterialHandler
+	PathHandler     *httpH.PathHandler
+	ActivityHandler *httpH.ActivityHandler
 	CourseHandler   *httpH.CourseHandler
 	ModuleHandler   *httpH.ModuleHandler
 	LessonHandler   *httpH.LessonHandler
@@ -69,6 +71,18 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Materials
 		if cfg.MaterialHandler != nil {
 			protected.POST("/material-sets/upload", cfg.MaterialHandler.UploadMaterials)
+		}
+
+		// Paths (Path-centric learning)
+		if cfg.PathHandler != nil {
+			protected.GET("/paths", cfg.PathHandler.ListUserPaths)
+			protected.GET("/paths/:id", cfg.PathHandler.GetPath)
+			protected.GET("/paths/:id/nodes", cfg.PathHandler.ListPathNodes)
+			protected.GET("/path-nodes/:id/activities", cfg.PathHandler.ListPathNodeActivities)
+		}
+
+		if cfg.ActivityHandler != nil {
+			protected.GET("/activities/:id", cfg.ActivityHandler.GetActivity)
 		}
 
 		// Course

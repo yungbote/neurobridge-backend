@@ -71,6 +71,9 @@ type Pipeline struct {
 
 	minPoll time.Duration
 	maxPoll time.Duration
+
+	childMaxWait      time.Duration
+	childStaleRunning time.Duration
 }
 
 func New(
@@ -98,16 +101,32 @@ func New(
 		maxPoll = minPoll
 	}
 
+	childMaxWait := 20 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("LEARNING_BUILD_CHILD_MAX_MINUTES")); v != "" {
+		if mins, err := strconv.Atoi(v); err == nil && mins > 0 {
+			childMaxWait = time.Duration(mins) * time.Minute
+		}
+	}
+
+	childStaleRunning := 10 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("LEARNING_BUILD_CHILD_STALE_RUNNING_MINUTES")); v != "" {
+		if mins, err := strconv.Atoi(v); err == nil && mins > 0 {
+			childStaleRunning = time.Duration(mins) * time.Minute
+		}
+	}
+
 	return &Pipeline{
-		db:        db,
-		log:       baseLog.With("job", "learning_build"),
-		jobs:      jobs,
-		path:      path,
-		saga:      saga,
-		bootstrap: bootstrap,
-		inline:    inline,
-		minPoll:   minPoll,
-		maxPoll:   maxPoll,
+		db:                db,
+		log:               baseLog.With("job", "learning_build"),
+		jobs:              jobs,
+		path:              path,
+		saga:              saga,
+		bootstrap:         bootstrap,
+		inline:            inline,
+		minPoll:           minPoll,
+		maxPoll:           maxPoll,
+		childMaxWait:      childMaxWait,
+		childStaleRunning: childStaleRunning,
 	}
 }
 
