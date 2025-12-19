@@ -203,6 +203,10 @@ func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryInd
 	return learning.NewUserLibraryIndexRepo(db, baseLog)
 }
 
+func NewConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEvidenceRepo {
+	return learning.NewConceptEvidenceRepo(db, baseLog)
+}
+
 
 
 
