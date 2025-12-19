@@ -47,6 +47,14 @@ type PathRepo = learning.PathRepo
 type PathNodeRepo = learning.PathNodeRepo
 type PathNodeActivityRepo = learning.PathNodeActivityRepo
 
+type ConceptClusterRepo = learning.ConceptClusterRepo
+type ConceptClusterMemberRepo = learning.ConceptClusterMemberRepo
+type ConceptEdgeRepo = learning.ConceptEdgeRepo
+type ConceptEvidenceRepo = learning.ConceptEvidenceRepo
+type CohortPriorRepo = learning.CohortPriorRepo
+type ActivityVariantStatRepo = learning.ActivityVariantStatRepo
+type DecisionTraceRepo = learning.DecisionTraceRepo
+type UserLibraryIndexRepo = learning.UserLibraryIndexRepo
 type ChainSignatureRepo = learning.ChainSignatureRepo
 type ChainPriorRepo = learning.ChainPriorRepo
 type UserCompletedUnitRepo = learning.UserCompletedUnitRepo
@@ -165,6 +173,34 @@ func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPattern
 
 func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {
 	return jobs.NewJobRunRepo(db, baseLog)
+}
+
+func NewConceptClusterRepo(db *gorm.DB, baseLog *logger.Logger) ConceptClusterRepo {
+	return learning.NewConceptClusterRepo(db, baseLog)
+}
+
+func NewConceptClusterMemberRepo(db *gorm.DB, baseLog *logger.Logger) ConceptClusterMemberRepo {
+	return learning.NewConceptClusterMemberRepo(db, baseLog)
+}
+
+func NewConceptEdgeRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEdgeRepo {
+	return learning.NewConceptEdgeRepo(db, baseLog)
+}
+
+func NewCohortPriorRepo(db *gorm.DB, baseLog *logger.Logger) CohortPriorRepo {
+	return learning.NewCohortPriorRepo(db, baseLog)
+}
+
+func NewActivityVariantStatRepo(db *gorm.DB, baseLog *logger.Logger) ActivityVariantStatRepo {
+	return learning.NewActivityVariantStatRepo(db, baseLog)
+}
+
+func NewDecisionTraceRepo(db *gorm.DB, baseLog *logger.Logger) DecisionTraceRepo {
+	return learning.NewDecisionTraceRepo(db, baseLog)
+}
+
+func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryIndexRepo {
+	return learning.NewUserLibraryIndexRepo(db, baseLog)
 }
 
 

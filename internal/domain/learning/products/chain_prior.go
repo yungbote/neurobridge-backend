@@ -1,4 +1,4 @@
-package learning
+package products
 
 import (
 	"time"
