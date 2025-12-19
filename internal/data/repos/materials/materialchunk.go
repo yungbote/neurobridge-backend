@@ -6,12 +6,14 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+	"time"
 )
 
 type MaterialChunkRepo interface {
 	Create(ctx context.Context, tx *gorm.DB, chunks []*types.MaterialChunk) ([]*types.MaterialChunk, error)
 	GetByMaterialFileIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) ([]*types.MaterialChunk, error)
 	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.MaterialChunk, error)
+	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
 }
 
 type materialChunkRepo struct {
@@ -75,4 +77,24 @@ func (r *materialChunkRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uui
 		return nil, err
 	}
 	return results, nil
+}
+
+func (r *materialChunkRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	if id == uuid.Nil {
+		return nil
+	}
+	if updates == nil {
+		updates = map[string]interface{}{}
+	}
+	if _, ok := updates["updated_at"]; !ok {
+		updates["updated_at"] = time.Now().UTC()
+	}
+	return transaction.WithContext(ctx).
+		Model(&types.MaterialChunk{}).
+		Where("id = ?", id).
+		Updates(updates).Error
 }

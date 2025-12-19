@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -18,8 +19,11 @@ type UserLibraryIndexRepo interface {
 	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserLibraryIndex, error)
 	GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
 	GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
+	GetByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
+	GetByUserAndMaterialSetForUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
 
 	Upsert(ctx context.Context, tx *gorm.DB, row *types.UserLibraryIndex) error
+	UpsertPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error
 
 	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
 	SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error
@@ -101,6 +105,36 @@ func (r *userLibraryIndexRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm
 	return out, nil
 }
 
+func (r *userLibraryIndexRepo) GetByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
+	return r.getByUserAndMaterialSet(ctx, tx, userID, materialSetID, false)
+}
+
+func (r *userLibraryIndexRepo) GetByUserAndMaterialSetForUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
+	return r.getByUserAndMaterialSet(ctx, tx, userID, materialSetID, true)
+}
+
+func (r *userLibraryIndexRepo) getByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, forUpdate bool) (*types.UserLibraryIndex, error) {
+	t := tx
+	if t == nil {
+		t = r.db
+	}
+	if userID == uuid.Nil || materialSetID == uuid.Nil {
+		return nil, nil
+	}
+	q := t.WithContext(ctx)
+	if forUpdate {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var row types.UserLibraryIndex
+	if err := q.Where("user_id = ? AND material_set_id = ?", userID, materialSetID).Limit(1).Find(&row).Error; err != nil {
+		return nil, err
+	}
+	if row.ID == uuid.Nil {
+		return nil, nil
+	}
+	return &row, nil
+}
+
 func (r *userLibraryIndexRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.UserLibraryIndex) error {
 	t := tx
 	if t == nil {
@@ -123,6 +157,37 @@ func (r *userLibraryIndexRepo) Upsert(ctx context.Context, tx *gorm.DB, row *typ
 				"tags",
 				"concept_cluster_ids",
 				"updated_at",
+			}),
+		}).
+		Create(row).Error
+}
+
+func (r *userLibraryIndexRepo) UpsertPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error {
+	t := tx
+	if t == nil {
+		t = r.db
+	}
+	if userID == uuid.Nil || materialSetID == uuid.Nil || pathID == uuid.Nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	row := &types.UserLibraryIndex{
+		ID:                uuid.New(),
+		UserID:            userID,
+		MaterialSetID:     materialSetID,
+		PathID:            &pathID,
+		Tags:              datatypes.JSON([]byte(`[]`)),
+		ConceptClusterIDs: datatypes.JSON([]byte(`[]`)),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+
+	return t.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "user_id"}, {Name: "material_set_id"}},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				"path_id":    pathID,
+				"updated_at": now,
 			}),
 		}).
 		Create(row).Error
@@ -171,13 +236,3 @@ func (r *userLibraryIndexRepo) FullDeleteByUserIDs(ctx context.Context, tx *gorm
 	}
 	return t.WithContext(ctx).Unscoped().Where("user_id IN ?", userIDs).Delete(&types.UserLibraryIndex{}).Error
 }
-
-
-
-
-
-
-
-
-
-

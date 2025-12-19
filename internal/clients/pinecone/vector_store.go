@@ -11,6 +11,7 @@ import (
 type VectorStore interface {
 	Upsert(ctx context.Context, namespace string, vectors []Vector) error
 	QueryIDs(ctx context.Context, namespace string, q []float32, topK int, filter map[string]any) ([]string, error)
+	DeleteIDs(ctx context.Context, namespace string, ids []string) error
 }
 
 type vectorStore struct {
@@ -101,6 +102,21 @@ func (s *vectorStore) QueryIDs(ctx context.Context, namespace string, q []float3
 		}
 	}
 	return out, nil
+}
+
+func (s *vectorStore) DeleteIDs(ctx context.Context, namespace string, ids []string) error {
+	if s == nil || s.pc == nil {
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	ns := s.qualifyNamespace(namespace)
+	_, err := s.pc.DeleteVectors(ctx, s.indexHost, DeleteRequest{
+		Namespace: ns,
+		IDs:       ids,
+	})
+	return err
 }
 
 func (s *vectorStore) qualifyNamespace(ns string) string {

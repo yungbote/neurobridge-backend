@@ -7,7 +7,7 @@ import (
 
 func AutoMigrateAll(db *gorm.DB) error {
 	return db.AutoMigrate(
-		
+
 		// =========================
 		// Core identity + auth
 		// =========================
@@ -42,7 +42,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.ConceptEdge{},
 		&types.ConceptCluster{},
 		&types.ConceptClusterMember{},
-		// Library + Population Priors + Decision Traces 
+		// Library + Population Priors + Decision Traces
 		&types.UserLibraryIndex{},
 		&types.CohortPrior{},
 		&types.DecisionTrace{},
@@ -81,10 +81,12 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
 		&types.QuizAttempt{},
-		
+
 		// =========================
 		// Jobs / worker
 		// =========================
+		&types.SagaRun{},
+		&types.SagaAction{},
 		&types.JobRun{},
 	)
 }

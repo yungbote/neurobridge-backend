@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ type ChainSignatureRepo interface {
 	Create(ctx context.Context, tx *gorm.DB, rows []*types.ChainSignature) ([]*types.ChainSignature, error)
 	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ChainSignature, error)
 	GetByChainKeys(ctx context.Context, tx *gorm.DB, keys []string) ([]*types.ChainSignature, error)
+	ListByScope(ctx context.Context, tx *gorm.DB, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error)
 
 	UpsertByChainKey(ctx context.Context, tx *gorm.DB, row *types.ChainSignature) error
 	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
@@ -74,6 +76,25 @@ func (r *chainSignatureRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, ke
 	return out, nil
 }
 
+func (r *chainSignatureRepo) ListByScope(ctx context.Context, tx *gorm.DB, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error) {
+	t := tx
+	if t == nil {
+		t = r.db
+	}
+	var out []*types.ChainSignature
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return out, nil
+	}
+	if err := t.WithContext(ctx).
+		Where("scope = ? AND scope_id IS NOT DISTINCT FROM ?", scope, scopeID).
+		Order("chain_key ASC").
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *chainSignatureRepo) UpsertByChainKey(ctx context.Context, tx *gorm.DB, row *types.ChainSignature) error {
 	t := tx
 	if t == nil {
@@ -115,13 +136,3 @@ func (r *chainSignatureRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id u
 	}
 	return t.WithContext(ctx).Model(&types.ChainSignature{}).Where("id = ?", id).Updates(updates).Error
 }
-
-
-
-
-
-
-
-
-
-

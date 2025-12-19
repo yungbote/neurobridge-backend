@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"gorm.io/gorm"
 
@@ -31,6 +32,9 @@ type BucketService interface {
 	DeleteFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string) error
 	ReplaceFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, newFile io.Reader) error
 	DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error)
+	CopyObject(ctx context.Context, category BucketCategory, srcKey, dstKey string) error
+	ListKeys(ctx context.Context, category BucketCategory, prefix string) ([]string, error)
+	DeletePrefix(ctx context.Context, category BucketCategory, prefix string) error
 	GetPublicURL(category BucketCategory, key string) string
 }
 
@@ -137,6 +141,55 @@ func (bs *bucketService) ReplaceFile(ctx context.Context, tx *gorm.DB, category 
 	}
 	if err := bs.UploadFile(ctx, tx, category, key, newFile); err != nil {
 		return fmt.Errorf("failed uploading new file: %w", err)
+	}
+	return nil
+}
+
+func (bs *bucketService) CopyObject(ctx context.Context, category BucketCategory, srcKey, dstKey string) error {
+	cfg, err := bs.getBucketConfig(category)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	src := bs.storageClient.Bucket(cfg.name).Object(srcKey)
+	dst := bs.storageClient.Bucket(cfg.name).Object(dstKey)
+	_, err = dst.CopierFrom(src).Run(ctx)
+	if err != nil {
+		return fmt.Errorf("copy %s->%s: %w", srcKey, dstKey, err)
+	}
+	return nil
+}
+
+func (bs *bucketService) ListKeys(ctx context.Context, category BucketCategory, prefix string) ([]string, error) {
+	cfg, err := bs.getBucketConfig(category)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	it := bs.storageClient.Bucket(cfg.name).Objects(ctx, &storage.Query{Prefix: prefix})
+	out := []string{}
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, attrs.Name)
+	}
+	return out, nil
+}
+
+func (bs *bucketService) DeletePrefix(ctx context.Context, category BucketCategory, prefix string) error {
+	keys, err := bs.ListKeys(ctx, category, prefix)
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		_ = bs.DeleteFile(ctx, nil, category, k)
 	}
 	return nil
 }

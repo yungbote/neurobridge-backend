@@ -11,6 +11,7 @@ import (
 )
 
 type UserRepo = user.UserRepo
+type UserProfileVectorRepo = user.UserProfileVectorRepo
 type UserTokenRepo = auth.UserTokenRepo
 
 type AssetRepo = materials.AssetRepo
@@ -18,6 +19,7 @@ type MaterialSetRepo = materials.MaterialSetRepo
 type MaterialFileRepo = materials.MaterialFileRepo
 type MaterialChunkRepo = materials.MaterialChunkRepo
 type MaterialAssetRepo = materials.MaterialAssetRepo
+type MaterialSetSummaryRepo = materials.MaterialSetSummaryRepo
 
 type CourseRepo = learning.CourseRepo
 type CourseModuleRepo = learning.CourseModuleRepo
@@ -36,6 +38,7 @@ type UserConceptStateRepo = learning.UserConceptStateRepo
 type UserStylePreferenceRepo = learning.UserStylePreferenceRepo
 type UserEventRepo = learning.UserEventRepo
 type UserEventCursorRepo = learning.UserEventCursorRepo
+type UserProgressionEventRepo = learning.UserProgressionEventRepo
 
 type ConceptRepo = learning.ConceptRepo
 type ActivityRepo = learning.ActivityRepo
@@ -61,8 +64,13 @@ type UserCompletedUnitRepo = learning.UserCompletedUnitRepo
 type TeachingPatternRepo = learning.TeachingPatternRepo
 
 type JobRunRepo = jobs.JobRunRepo
+type SagaRunRepo = jobs.SagaRunRepo
+type SagaActionRepo = jobs.SagaActionRepo
 
 func NewUserRepo(db *gorm.DB, baseLog *logger.Logger) UserRepo { return user.NewUserRepo(db, baseLog) }
+func NewUserProfileVectorRepo(db *gorm.DB, baseLog *logger.Logger) UserProfileVectorRepo {
+	return user.NewUserProfileVectorRepo(db, baseLog)
+}
 func NewUserTokenRepo(db *gorm.DB, baseLog *logger.Logger) UserTokenRepo {
 	return auth.NewUserTokenRepo(db, baseLog)
 }
@@ -81,6 +89,9 @@ func NewMaterialChunkRepo(db *gorm.DB, baseLog *logger.Logger) MaterialChunkRepo
 }
 func NewMaterialAssetRepo(db *gorm.DB, baseLog *logger.Logger) MaterialAssetRepo {
 	return materials.NewMaterialAssetRepo(db, baseLog)
+}
+func NewMaterialSetSummaryRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetSummaryRepo {
+	return materials.NewMaterialSetSummaryRepo(db, baseLog)
 }
 
 func NewCourseRepo(db *gorm.DB, baseLog *logger.Logger) CourseRepo {
@@ -128,6 +139,9 @@ func NewUserEventRepo(db *gorm.DB, baseLog *logger.Logger) UserEventRepo {
 func NewUserEventCursorRepo(db *gorm.DB, baseLog *logger.Logger) UserEventCursorRepo {
 	return learning.NewUserEventCursorRepo(db, baseLog)
 }
+func NewUserProgressionEventRepo(db *gorm.DB, baseLog *logger.Logger) UserProgressionEventRepo {
+	return learning.NewUserProgressionEventRepo(db, baseLog)
+}
 
 func NewConceptRepo(db *gorm.DB, baseLog *logger.Logger) ConceptRepo {
 	return learning.NewConceptRepo(db, baseLog)
@@ -174,6 +188,12 @@ func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPattern
 func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {
 	return jobs.NewJobRunRepo(db, baseLog)
 }
+func NewSagaRunRepo(db *gorm.DB, baseLog *logger.Logger) SagaRunRepo {
+	return jobs.NewSagaRunRepo(db, baseLog)
+}
+func NewSagaActionRepo(db *gorm.DB, baseLog *logger.Logger) SagaActionRepo {
+	return jobs.NewSagaActionRepo(db, baseLog)
+}
 
 func NewConceptClusterRepo(db *gorm.DB, baseLog *logger.Logger) ConceptClusterRepo {
 	return learning.NewConceptClusterRepo(db, baseLog)
@@ -206,13 +226,3 @@ func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryInd
 func NewConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEvidenceRepo {
 	return learning.NewConceptEvidenceRepo(db, baseLog)
 }
-
-
-
-
-
-
-
-
-
-

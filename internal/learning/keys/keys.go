@@ -10,9 +10,9 @@ import (
 
 // ChainEdge is a minimal portable edge for chain_key hashing
 type ChainEdge struct {
-	From				string			`json:"from"`
-	To					string			`json:"to"`
-	Type				string			`json:"type"`			// prereq/related
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"` // prereq/related
 }
 
 // ChainKey computes a deterministic key from concept keys + edges.
@@ -38,19 +38,19 @@ func ChainKey(conceptKeys []string, edges []ChainEdge) string {
 		if es[i].From != es[j].From {
 			return es[i].From < es[j].From
 		}
-		if es[i].To !+ es[j].To {
+		if es[i].To != es[j].To {
 			return es[i].To < es[j].To
 		}
 		return es[i].Type < es[j].Type
 	})
 	payload := map[string]any{
-		"concept_keys": 		keys,
-		"edges":						es,
-		"v":								1,
+		"concept_keys": keys,
+		"edges":        es,
+		"v":            1,
 	}
 	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
-	return "chain:" + hex.EncodeToString(sum[:])[:32]
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 // RepresentationKey computes a deterministic key from a representation tuple.
@@ -62,7 +62,7 @@ func RepresentationKey(representation map[string]any) string {
 	normalized := normalizeJSON(representation)
 	b, _ := json.Marshal(normalized)
 	sum := sha256.Sum256(b)
-	return "repr:" + hex.EncodeToString(sum[:])[:32]
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 func normalizeKeys(in []string) []string {
@@ -130,13 +130,3 @@ func allStrings(a []any) bool {
 	}
 	return true
 }
-
-
-
-
-
-
-
-
-
-

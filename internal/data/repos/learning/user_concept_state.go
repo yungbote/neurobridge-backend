@@ -15,6 +15,7 @@ import (
 type UserConceptStateRepo interface {
 	UpsertDelta(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error
 	Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error)
+	ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error)
 }
 
 type userConceptStateRepo struct {
@@ -79,4 +80,21 @@ func (r *userConceptStateRepo) UpsertDelta(ctx context.Context, tx *gorm.DB, use
 			}),
 		}).
 		Create(row).Error
+}
+
+func (r *userConceptStateRepo) ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error) {
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	out := []*types.UserConceptState{}
+	if userID == uuid.Nil || len(conceptIDs) == 0 {
+		return out, nil
+	}
+	if err := transaction.WithContext(ctx).
+		Where("user_id = ? AND concept_id IN ?", userID, conceptIDs).
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
 }

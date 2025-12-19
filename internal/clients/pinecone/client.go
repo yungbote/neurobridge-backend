@@ -17,6 +17,7 @@ type Client interface {
 	DescribeIndex(ctx context.Context, indexName string) (*IndexDescription, error)
 	UpsertVectors(ctx context.Context, host string, req UpsertRequest) (*UpsertResponse, error)
 	Query(ctx context.Context, host string, req QueryRequest) (*QueryResponse, error)
+	DeleteVectors(ctx context.Context, host string, req DeleteRequest) (*DeleteResponse, error)
 }
 
 type Config struct {
@@ -208,4 +209,25 @@ func defaultCtx(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+type DeleteRequest struct {
+	Namespace string   `json:"namespace,omitempty"`
+	IDs       []string `json:"ids,omitempty"`
+}
+
+type DeleteResponse struct {
+	DeletedCount int64 `json:"deletedCount,omitempty"`
+}
+
+func (c *client) DeleteVectors(ctx context.Context, host string, req DeleteRequest) (*DeleteResponse, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil, fmt.Errorf("host required")
+	}
+	if len(req.IDs) == 0 {
+		return &DeleteResponse{DeletedCount: 0}, nil
+	}
+	u := "https://" + host + "/vectors/delete"
+	return doJSON[DeleteResponse](c, ctx, "POST", u, req)
 }

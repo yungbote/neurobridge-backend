@@ -3,58 +3,50 @@ package services
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
-	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
 
 type WorkflowService interface {
-	UploadMaterialsAndStartCourseBuild(ctx context.Context, tx *gorm.DB, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, *types.Course, *types.JobRun, error)
+	UploadMaterialsAndStartLearningBuild(ctx context.Context, tx *gorm.DB, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, *types.JobRun, error)
 }
 
 type workflowService struct {
-	db         *gorm.DB
-	log        *logger.Logger
-	materials  MaterialService
-	courseRepo repos.CourseRepo
-	jobs       JobService
+	db        *gorm.DB
+	log       *logger.Logger
+	materials MaterialService
+	jobs      JobService
 }
 
 func NewWorkflowService(
 	db *gorm.DB,
 	baseLog *logger.Logger,
 	materials MaterialService,
-	courseRepo repos.CourseRepo,
 	jobs JobService,
 ) WorkflowService {
 	return &workflowService{
-		db:         db,
-		log:        baseLog.With("service", "WorkflowService"),
-		materials:  materials,
-		courseRepo: courseRepo,
-		jobs:       jobs,
+		db:        db,
+		log:       baseLog.With("service", "WorkflowService"),
+		materials: materials,
+		jobs:      jobs,
 	}
 }
 
-func (w *workflowService) UploadMaterialsAndStartCourseBuild(
+func (w *workflowService) UploadMaterialsAndStartLearningBuild(
 	ctx context.Context,
 	tx *gorm.DB,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
-) (*types.MaterialSet, *types.Course, *types.JobRun, error) {
+) (*types.MaterialSet, *types.JobRun, error) {
 	if userID == uuid.Nil {
-		return nil, nil, nil, fmt.Errorf("missing user id")
+		return nil, nil, fmt.Errorf("missing user id")
 	}
 	if len(uploaded) == 0 {
-		return nil, nil, nil, fmt.Errorf("no files")
+		return nil, nil, fmt.Errorf("no files")
 	}
 
 	transaction := tx
@@ -63,9 +55,8 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 	}
 
 	var (
-		set    *types.MaterialSet
-		course *types.Course
-		job    *types.JobRun
+		set *types.MaterialSet
+		job *types.JobRun
 	)
 
 	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
@@ -76,52 +67,23 @@ func (w *workflowService) UploadMaterialsAndStartCourseBuild(
 		}
 		set = createdSet
 
-		// 2) Create placeholder course row (domain object)
-		now := time.Now()
-		course = &types.Course{
-			ID:            uuid.New(),
-			UserID:        userID,
-			MaterialSetID: &set.ID,
-			Title:         "Generating course…",
-			Description:   "We’re analyzing your files and building your course.",
-			Metadata:      datatypes.JSON([]byte(`{"status":"generating"}`)),
-			Progress:      0,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}
-		if _, err := w.courseRepo.Create(ctx, txx, []*types.Course{course}); err != nil {
-			return fmt.Errorf("create course: %w", err)
-		}
-
-		// 3) Enqueue generic job pointing at this course
+		// 2) Enqueue learning_build (root orchestrator creates saga_id).
 		payload := map[string]any{
 			"material_set_id": set.ID.String(),
-			"course_id":       course.ID.String(),
 		}
-		entityID := course.ID
-		createdJob, err := w.jobs.Enqueue(ctx, txx, userID, "course_build", "course", &entityID, payload)
+		entityID := set.ID
+		createdJob, err := w.jobs.Enqueue(ctx, txx, userID, "learning_build", "material_set", &entityID, payload)
 		if err != nil {
 			return err
 		}
 		job = createdJob
 
-		// 4) Emit initial course snapshot immediately (request-scoped batch)
-		if ssd := ctxutil.GetSSEData(ctx); ssd != nil {
-			ssd.AppendMessage(realtime.SSEMessage{
-				Channel: userID.String(),
-				Event:   realtime.SSEEventUserCourseCreated,
-				Data: map[string]any{
-					"course": course,
-					"job":    job,
-				},
-			})
-		}
-
 		return nil
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	return set, course, job, nil
+	// Keep behavior similar: return immediately; worker will run the job.
+	return set, job, nil
 }

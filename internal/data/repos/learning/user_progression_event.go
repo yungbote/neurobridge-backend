@@ -15,6 +15,7 @@ type UserProgressionEventRepo interface {
 	Create(ctx context.Context, tx *gorm.DB, rows []*types.UserProgressionEvent) ([]*types.UserProgressionEvent, error)
 	ListRecentByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
 	ListRecentAll(ctx context.Context, tx *gorm.DB, limit int) ([]*types.UserProgressionEvent, error)
+	ListByUserAndPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
 }
 
 type userProgressionEventRepo struct {
@@ -92,12 +93,24 @@ func (r *userProgressionEventRepo) ListRecentAll(ctx context.Context, tx *gorm.D
 	return out, nil
 }
 
-
-
-
-
-
-
-
-
-
+func (r *userProgressionEventRepo) ListByUserAndPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error) {
+	t := r.dbx(tx)
+	out := []*types.UserProgressionEvent{}
+	if userID == uuid.Nil || pathID == uuid.Nil {
+		return out, nil
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	if limit > 50000 {
+		limit = 50000
+	}
+	if err := t.WithContext(ctx).
+		Where("user_id = ? AND path_id = ?", userID, pathID).
+		Order("occurred_at DESC").
+		Limit(limit).
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}

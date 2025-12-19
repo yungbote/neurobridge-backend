@@ -73,6 +73,8 @@ type Segment = materials.Segment
 func PtrFloat(v float64) *float64 { return materials.PtrFloat(v) }
 
 type JobRun = jobs.JobRun
+type SagaRun = jobs.SagaRun
+type SagaAction = jobs.SagaAction
 
 type LearningProfile = personalization.LearningProfile
 type TopicMastery = personalization.TopicMastery
@@ -120,13 +122,3 @@ type ChainPrior = products.ChainPrior
 type UserCompletedUnit = products.UserCompletedUnit
 type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
-
-
-
-
-
-
-
-
-
-
