@@ -29,13 +29,25 @@ type Repos struct {
 	UserConceptState     repos.UserConceptStateRepo
 	UserStylePreference  repos.UserStylePreferenceRepo
 	Concept              repos.ConceptRepo
+	ConceptCluster			 repos.ConceptClusterRepo
+	ConceptClusterMember repos.ConceptClusterMemberRepo
+	ConceptEdge					 repos.ConceptEdgeRepo
+	ConceptEvidence			 repos.ConceptEvidenceRepo
+	ChainSignature			 repos.ChainSignatureRepo
+	ChainPrior				   repos.ChainPriorRepo
+	CohortPrior					 repos.CohortPriorRepo
 	Activity             repos.ActivityRepo
 	ActivityVariant      repos.ActivityVariantRepo
+	ActivityVariantStat	 repos.ActivityVariantStatRepo
 	ActivityConcept      repos.ActivityConceptRepo
 	ActivityCitation     repos.ActivityCitationRepo
 	Path                 repos.PathRepo
 	PathNode             repos.PathNodeRepo
 	PathNodeActivity     repos.PathNodeActivityRepo
+	DecisionTrace				 repos.DecisionTraceRepo
+	TeachingPattern			 repos.TeachingPatternRepo
+	UserCompletedUnit    repos.UserCompletedUnitRepo
+	UserLibraryIndex		 repos.UserLibraryIndexRepo
 }
 
 func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
@@ -63,12 +75,34 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		UserConceptState:     repos.NewUserConceptStateRepo(db, log),
 		UserStylePreference:  repos.NewUserStylePreferenceRepo(db, log),
 		Concept:              repos.NewConceptRepo(db, log),
+		ConceptCluster:       repos.NewConceptClusterRepo(db, log),
+		ConceptClusterMember: repos.NewConceptClusterMemberRepo(db, log),
+		ConceptEdge:					repos.NewConceptEdgeRepo(db, log),
+		ConceptEvidence:			repos.NewConceptEvidenceRepo(db, log),
+		ChainSignature:				repos.NewChainSignatureRepo(db, log),
+		ChainPrior:						repos.NewChainPriorRepo(db, log),
+		CohortPrior:					repos.NewCohortPriorRepo(db, log),
 		Activity:             repos.NewActivityRepo(db, log),
 		ActivityVariant:      repos.NewActivityVariantRepo(db, log),
+		ActivityVariantStat:	repos.NewActivityVariantStatRepo(db, log),
 		ActivityConcept:      repos.NewActivityConceptRepo(db, log),
 		ActivityCitation:     repos.NewActivityCitationRepo(db, log),
 		Path:                 repos.NewPathRepo(db, log),
 		PathNode:             repos.NewPathNodeRepo(db, log),
 		PathNodeActivity:     repos.NewPathNodeActivityRepo(db, log),
+		DecisionTrace:				repos.NewDecisionTraceRepo(db, log),
+		TeachingPattern:			repos.NewTeachingPatternRepo(db, log),
+		UserCompletedUnit:		repos.NewUserCompletedUnitRepo(db, log),
+		UserLibraryIndex:			repos.NewUserLibraryIndexRepo(db, log),
 	}
 }
+
+
+
+
+
+
+
+
+
+

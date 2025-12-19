@@ -118,7 +118,7 @@ type DecisionTrace = products.DecisionTrace
 type ChainSignature = products.ChainSignature
 type ChainPrior = products.ChainPrior
 type UserCompletedUnit = products.UserCompletedUnit
-
+type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
 
 

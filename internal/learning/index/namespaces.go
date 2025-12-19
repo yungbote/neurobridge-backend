@@ -5,6 +5,23 @@ import (
 	"github.com/google/uuid"
 )
 
+// Population-level library of reusable representations (not just patterns)
+// ex: best-performing activity variants for concept chains
+func PopulationLibraryNamespace() string {
+	return "population_library:global"
+}
+
+// Per-user library of what the user has already seen/completed (for similarity + novelty)
+// you can either store embeddings here or store documents that you embed on write.
+func UserLibraryNamespace(userID uuid.UUID) string {
+	return fmt.Sprintf("user_library:user:%s", userID.String())
+}
+
+// User profile vectors / preference docs (if you store them in Pinecone)
+func UserProfileNamespace() string {
+	return "user_profiles:global"
+}
+
 // Chunks are per material set
 func ChunksNamespace(materialSetID uuid.UUID) string {
 	return fmt.Sprintf("chunks:material_set:%s", materialSetID.String())

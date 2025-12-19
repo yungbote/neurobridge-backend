@@ -12,6 +12,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/db"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
 )
 
 type App struct {
@@ -40,6 +41,8 @@ func New() (*App, error) {
 
 	log.Info("Loading environment variables...")
 	cfg := LoadConfig(log)
+
+	prompts.RegisterAll()
 
 	pg, err := db.NewPostgresService(log)
 	if err != nil {
@@ -136,3 +139,13 @@ func (a *App) Close() {
 		a.Log.Sync()
 	}
 }
+
+
+
+
+
+
+
+
+
+
