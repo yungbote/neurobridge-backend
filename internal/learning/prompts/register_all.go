@@ -1,0 +1,645 @@
+package prompts
+
+// register_all.go
+//
+// Full overwrite. This registers every prompt in the registry using RegisterSpec(Spec{...}).
+// Assumes you already have:
+// - names.go with Prompt* constants
+// - schemas_products.go with *Schema() funcs
+// - schemas_common.go with helpers
+// - spec.go, registry.go, input.go, validators.go
+
+func RegisterAll() {
+	// ---------- Library + Concepts ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptMaterialSetSummary,
+		Version:    1,
+		SchemaName: "material_set_summary",
+		Schema:     MaterialSetSummarySchema,
+		System: `
+You are building a durable library index for uploaded learning materials.
+You must produce a concise, high-signal summary and lightweight classification fields.
+Do not invent topics not grounded in the excerpt.
+Return JSON only.`,
+		User: `
+Materials excerpt (each line may include chunk_id):
+{{.BundleExcerpt}}
+
+Output rules:
+- summary_md: 6-18 sentence markdown summary.
+- tags: 8-18 single-word lowercase tags (letters/numbers only).
+- concept_keys: 12-40 stable snake_case keys.
+- subject: short subject string.
+- level: intro|intermediate|advanced.
+- warnings: e.g. low_text_signal, heavily_visual, noisy_ocr.`,
+		Validators: []Validator{
+			RequireNonEmpty("BundleExcerpt", func(in Input) string { return in.BundleExcerpt }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptConceptInventory,
+		Version:    1, // schema version is inside ConceptInventorySchema() (currently const 3)
+		SchemaName: "concept_inventory",
+		Schema:     ConceptInventorySchema,
+		System: `
+You are constructing an exhaustive concept inventory that will drive a personalized learning path.
+Every concept must be grounded in the excerpts with citations (chunk_id strings).
+Concept keys must be stable snake_case.
+Return JSON only.`,
+		User: `
+EXCERPTS (each line includes chunk_id):
+{{.Excerpts}}
+
+Task:
+- Extract ALL distinct concepts present in excerpts.
+- Organize into hierarchy via parent_key + depth.
+- Provide summary + key_points + aliases + importance.
+- citations must be chunk_id strings actually used.
+- coverage: estimate completeness and list suspected missing topics.`,
+		Validators: []Validator{
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptConceptEdges,
+		Version:    1,
+		SchemaName: "concept_edges",
+		Schema:     ConceptEdgesSchema,
+		System: `
+You are building a concept graph for sequencing.
+Edges must be supported by excerpts.
+Avoid dense graphs; keep only meaningful edges.
+Return JSON only.`,
+		User: `
+CONCEPTS_JSON:
+{{.ConceptsJSON}}
+
+EXCERPTS:
+{{.Excerpts}}
+
+Create edges between concept keys.
+edge_type: prereq|related|analogy.
+strength: 0..1.
+citations: chunk_id strings you used.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptConceptClusters,
+		Version:    1,
+		SchemaName: "concept_clusters",
+		Schema:     ConceptClustersSchema,
+		System: `
+You are clustering concepts into higher-level families to transfer teaching priors.
+Clusters must be meaningful and non-overlapping unless necessary.
+Return JSON only.`,
+		User: `
+CONCEPTS_JSON:
+{{.ConceptsJSON}}
+
+Task:
+Return 6-18 clusters with:
+- label
+- concept_keys
+- tags
+- rationale`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+		},
+	})
+
+	// ---------- Personalization ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptUserProfileDoc,
+		Version:    1,
+		SchemaName: "user_profile_doc",
+		Schema:     UserProfileDocSchema,
+		System: `
+You generate a compact user teaching profile for personalization.
+Use only provided facts; do not invent demographic attributes.
+Return JSON only.`,
+		User: `
+USER_FACTS_JSON:
+{{.UserFactsJSON}}
+
+RECENT_EVENTS_SUMMARY:
+{{.RecentEventsSummary}}
+
+Task:
+Write profile_doc (120-260 words) describing how to teach this user.
+Also output style_preferences and warnings.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserFactsJSON", func(in Input) string { return in.UserFactsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptPopulationCohortFeatures,
+		Version:    1,
+		SchemaName: "population_cohort_features",
+		Schema:     PopulationCohortFeaturesSchema,
+		System: `
+You assign a user to cohort segments for population-level priors.
+Do not invent sensitive demographic attributes; use behavior/learning preferences only.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+RECENT_EVENTS_SUMMARY:
+{{.RecentEventsSummary}}
+
+Task:
+Return 1-6 cohort keys with weight, confidence, and rationale.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+		},
+	})
+
+	// ---------- Coherence + Planning ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptPathCharter,
+		Version:    1,
+		SchemaName: "path_charter",
+		Schema:     PathCharterSchema,
+		System: `
+You are establishing global coherence constraints for a personalized learning path.
+The charter must keep terminology and diagram conventions consistent.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+MATERIAL_SET_SUMMARY (optional):
+{{.BundleExcerpt}}
+
+Task:
+Output path_style with:
+- tone, reading_level, verbosity, pace, analogy_style
+- terminology_policy (must_use_terms, avoid_terms)
+- diagram_conventions (preferred_formats, labeling, density)`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptPathStructure,
+		Version:    1,
+		SchemaName: "path_structure",
+		Schema:     PathStructureSchema,
+		System: `
+You design the path structure (nodes and activity slots) to cover all concepts coherently.
+Respect prerequisite edges when ordering.
+Return JSON only.`,
+		User: `
+PATH_CHARTER_JSON:
+{{.PathCharterJSON}}
+
+CONCEPTS_JSON:
+{{.ConceptsJSON}}
+
+EDGES_JSON:
+{{.EdgesJSON}}
+
+Task:
+Create nodes that cover all concepts.
+Each node includes:
+- title, goal, concept_keys, prereq_concept_keys, difficulty
+- activity_slots (reading/quiz/drill/case)
+Include coverage_check.uncovered_concept_keys.`,
+		Validators: []Validator{
+			RequireNonEmpty("PathCharterJSON", func(in Input) string { return in.PathCharterJSON }),
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+			RequireNonEmpty("EdgesJSON", func(in Input) string { return in.EdgesJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptNodeRepresentationPlan,
+		Version:    1, // schema version is inside NodeRepresentationPlanSchema() (currently const 2)
+		SchemaName: "node_representation_plan",
+		Schema:     NodeRepresentationPlanSchema,
+		System: `
+You decide the default representation envelope for a single path node.
+It must stay coherent with the path charter and the user profile.
+Include a study_cycle and a novelty policy (avoid dwelling on already-mastered similar content).
+Return JSON only.`,
+		User: `
+PATH_CHARTER_JSON:
+{{.PathCharterJSON}}
+
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+NODE_INDEX: {{.NodeIndex}}
+NODE_TITLE: {{.NodeTitle}}
+NODE_GOAL: {{.NodeGoal}}
+NODE_CONCEPT_KEYS: {{.NodeConceptKeysCSV}}
+
+COHORT_HINTS (optional):
+{{.CohortHints}}
+
+Task:
+Return:
+- default_representation (primary/secondary modality, variant, text_style, diagram_style, video_style, study_cycle)
+- novelty_policy:
+  - avoid_dwelling_when_similarity_gte
+  - use_diagnostic_when_similarity_gte
+  - target_mastery_threshold`,
+		Validators: []Validator{
+			RequireNonEmpty("PathCharterJSON", func(in Input) string { return in.PathCharterJSON }),
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptChainRepresentationCandidates,
+		Version:    1, // schema version is inside ChainRepresentationCandidatesSchema() (currently const 2)
+		SchemaName: "chain_representation_candidate",
+		Schema:     ChainRepresentationCandidatesSchema,
+		System: `
+You propose chain-level representation candidates that may override node defaults.
+Include study_cycle and novelty considerations, and suggest reusable teaching patterns when appropriate.
+Return JSON only.`,
+		User: `
+PATH_CHARTER_JSON:
+{{.PathCharterJSON}}
+
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+NODE_INDEX: {{.NodeIndex}}
+NODE_CONCEPT_KEYS: {{.NodeConceptKeysCSV}}
+
+CHAINS (JSON list of {chain_key, concept_keys, edges(optional)}):
+{{.TargetsJSON}}
+
+RECENT_EVENTS_SUMMARY (optional):
+{{.RecentEventsSummary}}
+
+COHORT_HINTS (optional):
+{{.CohortHints}}
+
+Task:
+Return candidates[] with:
+- chain_key, concept_keys
+- representation (includes study_cycle)
+- learning_value (why, priority 1..5, novelty_hint 0..1)
+- pattern_suggestion (pattern_key, pattern_query)
+- signals (user_signals_used, population_signals_used, coherence_risk, cost_risk)
+- notes`,
+		Validators: []Validator{
+			RequireNonEmpty("PathCharterJSON", func(in Input) string { return in.PathCharterJSON }),
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("TargetsJSON", func(in Input) string { return in.TargetsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptOverrideResolution,
+		Version:    1,
+		SchemaName: "override_resolution",
+		Schema:     OverrideResolutionSchema,
+		System: `
+You explain override decisions that were made by a deterministic policy.
+Do not invent inputs; use only the provided JSON.
+Return JSON only.`,
+		User: `
+DECISION_INPUTS_JSON:
+{{.InputsJSON}}
+
+CANDIDATES_JSON:
+{{.CandidatesJSON}}
+
+CHOSEN_JSON:
+{{.ChosenJSON}}
+
+Task:
+For each chain_key, explain whether node or chain was chosen, and list risks/mitigations.`,
+		Validators: []Validator{
+			RequireNonEmpty("InputsJSON", func(in Input) string { return in.InputsJSON }),
+			RequireNonEmpty("CandidatesJSON", func(in Input) string { return in.CandidatesJSON }),
+			RequireNonEmpty("ChosenJSON", func(in Input) string { return in.ChosenJSON }),
+		},
+	})
+
+	// ---------- Retrieval + Reuse ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptRetrievalSpec,
+		Version:    1, // schema version is inside RetrievalSpecSchema() (currently const 2)
+		SchemaName: "retrieval_spec",
+		Schema:     RetrievalSpecSchema,
+		System: `
+You generate retrieval specifications for reuse-vs-generate decisions.
+Your output must be implementable by code: query_text, namespaces, filters, top_k, reuse_threshold.
+Include teaching_patterns, chains, user_library, population_library when relevant.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+TARGETS (JSON list of {node_index, slot, chain_key, concept_keys, desired_modality, desired_variant}):
+{{.TargetsJSON}}
+
+PATH_CHARTER_JSON (optional):
+{{.PathCharterJSON}}
+
+Task:
+Return queries[] for each target.
+Use namespaces that can include: teaching_patterns, chains, user_library, population_library.
+Filters should include concept_keys + modality + variant + representation_key (if you have one).`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("TargetsJSON", func(in Input) string { return in.TargetsJSON }),
+		},
+	})
+
+	// ---------- Teaching patterns + Diagnostic gates ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptTeachingPatterns,
+		Version:    1,
+		SchemaName: "teaching_patterns",
+		Schema:     TeachingPatternsSchema,
+		System: `
+You author reusable teaching patterns that can be reused across similar chains and users.
+Patterns must specify representation (including study_cycle) and constraints.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+CONCEPT_CLUSTERS_JSON (optional):
+{{.ConceptsJSON}}
+
+CHAINS_JSON (optional):
+{{.TargetsJSON}}
+
+Task:
+Propose 5-20 patterns.
+pattern_key must be stable snake_case.
+Use representation + study_cycle that generalizes to a family of chains.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptDiagnosticGate,
+		Version:    1,
+		SchemaName: "diagnostic_gate",
+		Schema:     DiagnosticGateSchema,
+		System: `
+You generate a small diagnostic gate to verify mastery for a concept chain.
+Questions must be answerable from excerpts; do not invent facts.
+Return JSON only.`,
+		User: `
+CONCEPT_KEYS: {{.ConceptKeysCSV}}
+
+EXCERPTS (chunk_id lines):
+{{.ActivityExcerpts}}
+
+Task:
+Generate 2-5 MCQs to quickly verify mastery.
+Include citations per question.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptKeysCSV", func(in Input) string { return in.ConceptKeysCSV }),
+			RequireNonEmpty("ActivityExcerpts", func(in Input) string { return in.ActivityExcerpts }),
+		},
+	})
+
+	// ---------- Realization (generation) ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptActivityContent,
+		Version:    1,
+		SchemaName: "activity_content",
+		Schema:     ActivityContentSchema,
+		System: `
+You generate canonical activity content in block-based JSON.
+You MUST ground all facts in the provided excerpts (chunk_id lines).
+Do not invent facts or sources.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+PATH_CHARTER_JSON (optional):
+{{.PathCharterJSON}}
+
+ACTIVITY_KIND: {{.ActivityKind}}
+ACTIVITY_TITLE: {{.ActivityTitle}}
+CONCEPT_KEYS: {{.ConceptKeysCSV}}
+
+EXCERPTS (each line includes chunk_id):
+{{.ActivityExcerpts}}
+
+Rules:
+- Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed
+- citations must be chunk_id strings actually used.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("ActivityKind", func(in Input) string { return in.ActivityKind }),
+			RequireNonEmpty("ActivityTitle", func(in Input) string { return in.ActivityTitle }),
+			RequireNonEmpty("ConceptKeysCSV", func(in Input) string { return in.ConceptKeysCSV }),
+			RequireNonEmpty("ActivityExcerpts", func(in Input) string { return in.ActivityExcerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptActivityVariant,
+		Version:    1,
+		SchemaName: "activity_variant",
+		Schema:     ActivityVariantSchema,
+		System: `
+You produce a presentation variant of an existing activity.
+You must preserve factual correctness and must not introduce new facts beyond the canonical activity.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+PATH_CHARTER_JSON (optional):
+{{.PathCharterJSON}}
+
+COHORT_HINTS (optional):
+{{.CohortHints}}
+
+VARIANT: {{.Variant}}
+
+CANONICAL_ACTIVITY_JSON:
+{{.CanonicalActivityJSON}}
+
+Task:
+Produce content_json blocks for this variant plus a render_spec describing diagram requests and layout hints.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("Variant", func(in Input) string { return in.Variant }),
+			RequireNonEmpty("CanonicalActivityJSON", func(in Input) string { return in.CanonicalActivityJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptDiagramSpec,
+		Version:    1,
+		SchemaName: "diagram_spec",
+		Schema:     DiagramSpecSchema,
+		System: `
+You produce a machine-renderable diagram spec (mermaid/dot/json) that supports a learning activity.
+Keep it faithful to the grounded content; do not invent facts.
+Return JSON only.`,
+		User: `
+DIAGRAM_REQUEST (free text):
+{{.CohortHints}}
+
+CONCEPT_KEYS: {{.ConceptKeysCSV}}
+
+GROUNDING EXCERPTS (chunk_id lines):
+{{.ActivityExcerpts}}
+
+Task:
+Return diagram_type, format, spec, alt_text, citations.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptKeysCSV", func(in Input) string { return in.ConceptKeysCSV }),
+			RequireNonEmpty("ActivityExcerpts", func(in Input) string { return in.ActivityExcerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptVideoStoryboard,
+		Version:    1,
+		SchemaName: "video_storyboard",
+		Schema:     VideoStoryboardSchema,
+		System: `
+You produce a video storyboard and script for a micro-lecture.
+Do not invent facts; ground claims in excerpts.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+CONCEPT_KEYS: {{.ConceptKeysCSV}}
+
+GROUNDING EXCERPTS (chunk_id lines):
+{{.ActivityExcerpts}}
+
+Task:
+Return video_kind, length_minutes, script_md, beats, citations.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("ConceptKeysCSV", func(in Input) string { return in.ConceptKeysCSV }),
+			RequireNonEmpty("ActivityExcerpts", func(in Input) string { return in.ActivityExcerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptQuizFromActivity,
+		Version:    1,
+		SchemaName: "quiz_from_activity",
+		Schema:     QuizFromActivitySchema,
+		System: `
+You generate fair assessment questions grounded in the provided activity content.
+Do not introduce new facts.
+Return JSON only.`,
+		User: `
+ACTIVITY_CONTENT_MD:
+{{.ActivityContentMD}}
+
+KNOWN_CITATIONS (chunk_id strings, optional):
+{{.CitationsCSV}}
+
+Task:
+Generate 4-12 MCQ questions with citations per question.`,
+		Validators: []Validator{
+			RequireNonEmpty("ActivityContentMD", func(in Input) string { return in.ActivityContentMD }),
+		},
+	})
+
+	// ---------- Audits ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptCoverageAndCoheranceAudit,
+		Version:    1,
+		SchemaName: "coverage_and_coherance_audit",
+		Schema:     CoverageAndCoherenceAuditSchema,
+		System: `
+You audit a generated path for coverage and coherence.
+Use only the provided JSON snapshots; do not invent missing facts.
+Return JSON only.`,
+		User: `
+CONCEPTS_JSON:
+{{.ConceptsJSON}}
+
+PATH_NODES_JSON:
+{{.PathNodesJSON}}
+
+NODE_PLANS_JSON:
+{{.NodePlansJSON}}
+
+CHAIN_PLANS_JSON:
+{{.ChainPlansJSON}}
+
+ACTIVITIES_JSON:
+{{.ActivitiesJSON}}
+
+VARIANTS_JSON:
+{{.VariantsJSON}}
+
+Task:
+Return uncovered concepts, terminology conflicts, style inconsistencies, sequence issues, and recommended fixes.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+			RequireNonEmpty("PathNodesJSON", func(in Input) string { return in.PathNodesJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptDecisionTraceExplanation,
+		Version:    1,
+		SchemaName: "decision_trace_explanation",
+		Schema:     DecisionTraceExplanationSchema,
+		System: `
+You produce a concise explanation for a deterministic decision trace.
+Use only the provided JSON; do not invent signals.
+Return JSON only.`,
+		User: `
+DECISION_TYPE: {{.DecisionType}}
+
+INPUTS_JSON:
+{{.InputsJSON}}
+
+CANDIDATES_JSON:
+{{.CandidatesJSON}}
+
+CHOSEN_JSON:
+{{.ChosenJSON}}
+
+Task:
+Explain why the chosen option won, plus risks and mitigations.`,
+		Validators: []Validator{
+			RequireNonEmpty("DecisionType", func(in Input) string { return in.DecisionType }),
+			RequireNonEmpty("InputsJSON", func(in Input) string { return in.InputsJSON }),
+			RequireNonEmpty("ChosenJSON", func(in Input) string { return in.ChosenJSON }),
+		},
+	})
+}
+
+
+
+
+
+
+
+
+
+

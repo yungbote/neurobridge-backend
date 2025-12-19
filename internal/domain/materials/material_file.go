@@ -20,11 +20,9 @@ type MaterialFile struct {
 	FileURL      string `gorm:"column:file_url" json:"file_url"`
 	Status       string `gorm:"column:status;not null;default:'uploaded'" json:"status"`
 
-	// OLD (keep for compatibility but stop abusing it)
 	AIType   string         `gorm:"column:ai_type" json:"ai_type"`
 	AITopics datatypes.JSON `gorm:"column:ai_topics;type:jsonb" json:"ai_topics"`
 
-	// NEW: extraction status fields (queryable)
 	ExtractedKind         string         `gorm:"column:extracted_kind;index" json:"extracted_kind,omitempty"`
 	ExtractedAt           *time.Time     `gorm:"column:extracted_at;index" json:"extracted_at,omitempty"`
 	ExtractionWarnings    datatypes.JSON `gorm:"column:extraction_warnings;type:jsonb" json:"extraction_warnings"`
@@ -36,3 +34,13 @@ type MaterialFile struct {
 }
 
 func (MaterialFile) TableName() string { return "material_file" }
+
+
+
+
+
+
+
+
+
+

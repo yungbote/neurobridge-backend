@@ -7,49 +7,83 @@ import (
 
 func AutoMigrateAll(db *gorm.DB) error {
 	return db.AutoMigrate(
+		
+		// =========================
+		// Core identity + auth
+		// =========================
 		&types.User{},
 		&types.UserToken{},
 
+		// =========================
+		// Materials (uploads + extraction)
+		// =========================
 		&types.MaterialSet{},
 		&types.MaterialFile{},
 		&types.MaterialChunk{},
 		&types.MaterialAsset{},
+		&types.MaterialSetSummary{},
 
+		// =========================
+		// Course (legacy centerpiece)
+		// =========================
 		&types.Course{},
 		&types.CourseTag{},
 		&types.CourseModule{},
 		&types.Lesson{},
-		&types.LessonVariant{},
-		&types.LessonConcept{},
-		&types.LessonCitation{},
-		&types.LessonAsset{},
 		&types.QuizQuestion{},
 		&types.CourseBlueprint{},
 
-		// NEW graph model
+		// =========================
+		// Graph-centric learning (new centerpiece: Path)
+		// =========================
+		// Concepts + Graph Products
 		&types.Concept{},
+		&types.ConceptEvidence{},
+		&types.ConceptEdge{},
+		&types.ConceptCluster{},
+		&types.ConceptClusterMember{},
+		// Library + Population Priors + Decision Traces 
+		&types.UserLibraryIndex{},
+		&types.CohortPrior{},
+		&types.DecisionTrace{},
+		// Chain identity + Prios + Completion
+		&types.ChainSignature{},
+		&types.ChainPrior{},
+		&types.UserCompletedUnit{},
+		// Activities (+ variants + grounding)
 		&types.Activity{},
 		&types.ActivityVariant{},
+		&types.ActivityVariantStat{},
 		&types.ActivityConcept{},
 		&types.ActivityCitation{},
+		// Path (the non-legacy top-level object)
 		&types.Path{},
 		&types.PathNode{},
 		&types.PathNodeActivity{},
+		// Assets (polymorphic ownership)
 		&types.Asset{},
 
+		// =========================
 		// Personalization backbone
+		// =========================
 		&types.UserEvent{},
 		&types.UserEventCursor{},
 		&types.UserConceptState{},
 		&types.UserStylePreference{},
+		&types.UserProgressionEvent{},
+		&types.UserProfileVector{},
 
+		// =========================
 		// Legacy (keep for now)
+		// =========================
 		&types.LearningProfile{},
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
-		&types.LessonProgress{},
 		&types.QuizAttempt{},
-
+		
+		// =========================
+		// Jobs / worker
+		// =========================
 		&types.JobRun{},
 	)
 }

@@ -1,0 +1,71 @@
+package learning
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+)
+
+type TopicMasteryRepo interface {
+	Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicMastery) error
+	ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicMastery, error)
+}
+
+type topicMasteryRepo struct {
+	db  *gorm.DB
+	log *logger.Logger
+}
+
+func NewTopicMasteryRepo(db *gorm.DB, baseLog *logger.Logger) TopicMasteryRepo {
+	return &topicMasteryRepo{db: db, log: baseLog.With("repo", "TopicMasteryRepo")}
+}
+
+func (r *topicMasteryRepo) dbx(tx *gorm.DB) *gorm.DB {
+	if tx != nil {
+		return tx
+	}
+	return r.db
+}
+
+func (r *topicMasteryRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicMastery, error) {
+	out := []*types.TopicMastery{}
+	if userID == uuid.Nil {
+		return out, nil
+	}
+	if err := r.dbx(tx).WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("updated_at DESC").
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *topicMasteryRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicMastery) error {
+	if row == nil || row.UserID == uuid.Nil || row.Topic == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	row.UpdatedAt = now
+	if row.CreatedAt.IsZero() {
+		row.CreatedAt = now
+	}
+
+	return r.dbx(tx).WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "user_id"},
+				{Name: "topic"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"mastery", "confidence", "last_observed_at", "updated_at",
+			}),
+		}).
+		Create(row).Error
+}

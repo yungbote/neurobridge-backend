@@ -2,7 +2,6 @@ package materials
 
 import (
 	"time"
-
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -17,7 +16,7 @@ type MaterialChunk struct {
 	Text      string         `gorm:"column:text;type:text;not null" json:"text"`
 	Embedding datatypes.JSON `gorm:"type:jsonb;column:embedding" json:"embedding"`
 
-	// NEW: queryable provenance (stop hiding these in json)
+	// Queryable provenance
 	Kind       string   `gorm:"column:kind;index" json:"kind,omitempty"`
 	Provider   string   `gorm:"column:provider;index" json:"provider,omitempty"`
 	Page       *int     `gorm:"column:page;index" json:"page,omitempty"`
@@ -27,7 +26,6 @@ type MaterialChunk struct {
 	Confidence *float64 `gorm:"column:confidence" json:"confidence,omitempty"`
 	AssetKey   string   `gorm:"column:asset_key;index" json:"asset_key,omitempty"`
 
-	// still keep for extras
 	Metadata datatypes.JSON `gorm:"type:jsonb;column:metadata" json:"metadata"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
@@ -36,3 +34,13 @@ type MaterialChunk struct {
 }
 
 func (MaterialChunk) TableName() string { return "material_chunk" }
+
+
+
+
+
+
+
+
+
+

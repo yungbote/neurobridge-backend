@@ -3,6 +3,7 @@ package learning
 import (
 	"context"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,8 @@ import (
 type UserStylePreferenceRepo interface {
 	// reward in [-1..+1]; if binary != nil we also update Beta(a,b)
 	UpsertEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error
+	ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error)
+	ListGlobalByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserStylePreference, error)
 }
 
 type userStylePreferenceRepo struct {
@@ -42,8 +45,9 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 	if userID == uuid.Nil {
 		return nil
 	}
-	modality = stringsTrim(modality)
-	variant = stringsTrim(variant)
+
+	modality = strings.TrimSpace(modality)
+	variant = strings.TrimSpace(variant)
 	if modality == "" {
 		return nil
 	}
@@ -54,7 +58,6 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 	reward = clamp(reward, -1, 1)
 	now := time.Now().UTC()
 
-	// Load existing (simple & safe)
 	var row types.UserStylePreference
 	err := t.WithContext(ctx).
 		Where("user_id = ? AND concept_id IS NOT DISTINCT FROM ? AND modality = ? AND variant = ?",
@@ -85,7 +88,6 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 	}
 	row.EMA = row.EMA + alpha*(reward-row.EMA)
 	row.N = n
-	row.UpdatedAt = now
 
 	if binary != nil {
 		if *binary {
@@ -95,6 +97,9 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 		}
 	}
 
+	row.LastObservedAt = &now
+	row.UpdatedAt = now
+
 	return t.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
@@ -103,23 +108,43 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 				{Name: "modality"},
 				{Name: "variant"},
 			},
-			DoUpdates: clause.AssignmentColumns([]string{"ema", "n", "a", "b", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{
+				"ema", "n", "a", "b", "last_observed_at", "updated_at",
+			}),
 		}).
 		Create(&row).Error
 }
 
-func stringsTrim(s string) string {
-	// avoid adding strings import in multiple files if you prefer; keep local
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\n' || s[0] == '\t' || s[0] == '\r') {
-		s = s[1:]
+func (r *userStylePreferenceRepo) ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error) {
+	t := tx
+	if t == nil {
+		t = r.db
 	}
-	for len(s) > 0 {
-		last := s[len(s)-1]
-		if last == ' ' || last == '\n' || last == '\t' || last == '\r' {
-			s = s[:len(s)-1]
-		} else {
-			break
-		}
+	out := []*types.UserStylePreference{}
+	if userID == uuid.Nil || len(conceptIDs) == 0 {
+		return out, nil
 	}
-	return s
+	if err := t.WithContext(ctx).
+		Where("user_id = ? AND concept_id IN ?", userID, conceptIDs).
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *userStylePreferenceRepo) ListGlobalByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserStylePreference, error) {
+	t := tx
+	if t == nil {
+		t = r.db
+	}
+	out := []*types.UserStylePreference{}
+	if userID == uuid.Nil {
+		return out, nil
+	}
+	if err := t.WithContext(ctx).
+		Where("user_id = ? AND concept_id IS NULL", userID).
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
 }

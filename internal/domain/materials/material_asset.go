@@ -2,7 +2,6 @@ package materials
 
 import (
 	"time"
-
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -27,3 +26,13 @@ type MaterialAsset struct {
 }
 
 func (MaterialAsset) TableName() string { return "material_asset" }
+
+
+
+
+
+
+
+
+
+

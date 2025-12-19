@@ -3,58 +3,63 @@ package domain
 import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/auth"
 	"github.com/yungbote/neurobridge-backend/internal/domain/jobs"
-	"github.com/yungbote/neurobridge-backend/internal/domain/learning"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/core"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/joins"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/legacy_course"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/personalization"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/products"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
 )
 
 const (
-	EventSessionStarted = learning.EventSessionStarted
-	EventSessionEnded   = learning.EventSessionEnded
+	EventSessionStarted = personalization.EventSessionStarted
+	EventSessionEnded   = personalization.EventSessionEnded
 
-	EventPathOpened     = learning.EventPathOpened
-	EventPathClosed     = learning.EventPathClosed
-	EventNodeOpened     = learning.EventNodeOpened
-	EventNodeClosed     = learning.EventNodeClosed
-	EventActivityOpened = learning.EventActivityOpened
-	EventActivityClosed = learning.EventActivityClosed
+	EventPathOpened     = personalization.EventPathOpened
+	EventPathClosed     = personalization.EventPathClosed
+	EventNodeOpened     = personalization.EventNodeOpened
+	EventNodeClosed     = personalization.EventNodeClosed
+	EventActivityOpened = personalization.EventActivityOpened
+	EventActivityClosed = personalization.EventActivityClosed
 
-	EventActivityStarted   = learning.EventActivityStarted
-	EventActivityCompleted = learning.EventActivityCompleted
-	EventActivityAbandoned = learning.EventActivityAbandoned
+	EventActivityStarted   = personalization.EventActivityStarted
+	EventActivityCompleted = personalization.EventActivityCompleted
+	EventActivityAbandoned = personalization.EventActivityAbandoned
 
-	EventScrollDepth     = learning.EventScrollDepth
-	EventBlockViewed     = learning.EventBlockViewed
-	EventTextSelected    = learning.EventTextSelected
-	EventNoteCreated     = learning.EventNoteCreated
-	EventBookmarkCreated = learning.EventBookmarkCreated
+	EventScrollDepth     = personalization.EventScrollDepth
+	EventBlockViewed     = personalization.EventBlockViewed
+	EventTextSelected    = personalization.EventTextSelected
+	EventNoteCreated     = personalization.EventNoteCreated
+	EventBookmarkCreated = personalization.EventBookmarkCreated
 
-	EventVideoPlayed    = learning.EventVideoPlayed
-	EventVideoPaused    = learning.EventVideoPaused
-	EventVideoSeeked    = learning.EventVideoSeeked
-	EventAudoPlayed     = learning.EventAudoPlayed
-	EVentDiagramToggled = learning.EVentDiagramToggled
+	EventVideoPlayed    = personalization.EventVideoPlayed
+	EventVideoPaused    = personalization.EventVideoPaused
+	EventVideoSeeked    = personalization.EventVideoSeeked
+	EventAudoPlayed     = personalization.EventAudoPlayed
+	EVentDiagramToggled = personalization.EVentDiagramToggled
 
-	EventQuizStarted      = learning.EventQuizStarted
-	EventQuestionAnswered = learning.EventQuestionAnswered
-	EventQuizCompleted    = learning.EventQuizCompleted
+	EventQuizStarted      = personalization.EventQuizStarted
+	EventQuestionAnswered = personalization.EventQuestionAnswered
+	EventQuizCompleted    = personalization.EventQuizCompleted
 
-	EventHintUsed          = learning.EventHintUsed
-	EventExplanationOpened = learning.EventExplanationOpened
+	EventHintUsed          = personalization.EventHintUsed
+	EventExplanationOpened = personalization.EventExplanationOpened
 
-	EventFeedbackThumbsUp     = learning.EventFeedbackThumbsUp
-	EventFeedbackThumbsDown   = learning.EventFeedbackThumbsDown
-	EventFeedbackTooEasy      = learning.EventFeedbackTooEasy
-	EventFeedbackTooHard      = learning.EventFeedbackTooHard
-	EventFeedbackConfusing    = learning.EventFeedbackConfusing
-	EventFeedbackLovedDiagram = learning.EventFeedbackLovedDiagram
-	EventFeedbackWantExamples = learning.EventFeedbackWantExamples
+	EventFeedbackThumbsUp     = personalization.EventFeedbackThumbsUp
+	EventFeedbackThumbsDown   = personalization.EventFeedbackThumbsDown
+	EventFeedbackTooEasy      = personalization.EventFeedbackTooEasy
+	EventFeedbackTooHard      = personalization.EventFeedbackTooHard
+	EventFeedbackConfusing    = personalization.EventFeedbackConfusing
+	EventFeedbackLovedDiagram = personalization.EventFeedbackLovedDiagram
+	EventFeedbackWantExamples = personalization.EventFeedbackWantExamples
 
-	EventClientError = learning.EventClientError
-	EventClientPerf  = learning.EventClientPerf
+	EventClientError = personalization.EventClientError
+	EventClientPerf  = personalization.EventClientPerf
 )
 
 type User = user.User
+type UserProfileVector = user.UserProfileVector
 type UserToken = auth.UserToken
 
 type Asset = materials.Asset
@@ -62,46 +67,66 @@ type MaterialSet = materials.MaterialSet
 type MaterialFile = materials.MaterialFile
 type MaterialChunk = materials.MaterialChunk
 type MaterialAsset = materials.MaterialAsset
+type MaterialSetSummary = materials.MaterialSetSummary
 type Segment = materials.Segment
 
 func PtrFloat(v float64) *float64 { return materials.PtrFloat(v) }
 
 type JobRun = jobs.JobRun
 
-type LearningProfile = learning.LearningProfile
-type TopicMastery = learning.TopicMastery
-type TopicStylePreference = learning.TopicStylePreference
-type UserConceptState = learning.UserConceptState
-type UserStylePreference = learning.UserStylePreference
-type UserEvent = learning.UserEvent
-type UserEventCursor = learning.UserEventCursor
+type LearningProfile = personalization.LearningProfile
+type TopicMastery = personalization.TopicMastery
+type TopicStylePreference = personalization.TopicStylePreference
+type UserConceptState = personalization.UserConceptState
+type UserStylePreference = personalization.UserStylePreference
+type UserEvent = personalization.UserEvent
+type UserEventCursor = personalization.UserEventCursor
+type UserProgressionEvent = personalization.UserProgressionEvent
 
-type Course = learning.Course
-type CourseModule = learning.CourseModule
-type CourseConcept = learning.CourseConcept
-type CourseTag = learning.CourseTag
-type CourseBlueprint = learning.CourseBlueprint
+type Course = legacy_course.Course
+type CourseModule = legacy_course.CourseModule
+type CourseTag = legacy_course.CourseTag
+type CourseBlueprint = legacy_course.CourseBlueprint
 
-type Lesson = learning.Lesson
-type LessonVariant = learning.LessonVariant
-type LessonCitation = learning.LessonCitation
-type LessonConcept = learning.LessonConcept
-type LessonAsset = learning.LessonAsset
-type LessonProgress = learning.LessonProgress
+type Lesson = legacy_course.Lesson
 
-type QuizQuestion = learning.QuizQuestion
-type QuizAttempt = learning.QuizAttempt
+type QuizQuestion = legacy_course.QuizQuestion
+type QuizAttempt = legacy_course.QuizAttempt
 
-type StyleSpec = learning.StyleSpec
-type LessonBlock = learning.LessonBlock
-type LessonContentV1 = learning.LessonContentV1
+type StyleSpec = legacy_course.StyleSpec
+type LessonBlock = legacy_course.LessonBlock
+type LessonContentV1 = legacy_course.LessonContentV1
 
-type Concept = learning.Concept
-type Activity = learning.Activity
-type ActivityVariant = learning.ActivityVariant
-type ActivityConcept = learning.ActivityConcept
-type ActivityCitation = learning.ActivityCitation
+type Concept = core.Concept
+type Activity = core.Activity
+type ActivityVariant = core.ActivityVariant
+type ActivityConcept = joins.ActivityConcept
+type ActivityCitation = joins.ActivityCitation
 
-type Path = learning.Path
-type PathNode = learning.PathNode
-type PathNodeActivity = learning.PathNodeActivity
+type Path = core.Path
+type PathNode = core.PathNode
+type PathNodeActivity = joins.PathNodeActivity
+
+type ConceptEvidence = products.ConceptEvidence
+type ConceptEdge = products.ConceptEdge
+type ConceptCluster = products.ConceptCluster
+type ConceptClusterMember = products.ConceptClusterMember
+
+type UserLibraryIndex = products.UserLibraryIndex
+type CohortPrior = products.CohortPrior
+type DecisionTrace = products.DecisionTrace
+type ChainSignature = products.ChainSignature
+type ChainPrior = products.ChainPrior
+type UserCompletedUnit = products.UserCompletedUnit
+
+type ActivityVariantStat = products.ActivityVariantStat
+
+
+
+
+
+
+
+
+
+

@@ -102,10 +102,6 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.CourseTag{},
 		&types.CourseModule{},
 		&types.Lesson{},
-		&types.LessonVariant{},
-		&types.LessonConcept{},
-		&types.LessonCitation{},
-		&types.LessonAsset{},
 		&types.QuizQuestion{},
 		&types.CourseBlueprint{},
 
@@ -127,7 +123,6 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.LearningProfile{},
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
-		&types.LessonProgress{},
 		&types.QuizAttempt{},
 
 		&types.JobRun{},

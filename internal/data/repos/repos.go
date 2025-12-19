@@ -21,16 +21,10 @@ type MaterialAssetRepo = materials.MaterialAssetRepo
 
 type CourseRepo = learning.CourseRepo
 type CourseModuleRepo = learning.CourseModuleRepo
-type CourseConceptRepo = learning.CourseConceptRepo
 type CourseTagRepo = learning.CourseTagRepo
 type CourseBlueprintRepo = learning.CourseBlueprintRepo
 
 type LessonRepo = learning.LessonRepo
-type LessonVariantRepo = learning.LessonVariantRepo
-type LessonCitationRepo = learning.LessonCitationRepo
-type LessonConceptRepo = learning.LessonConceptRepo
-type LessonAssetRepo = learning.LessonAssetRepo
-type LessonProgressRepo = learning.LessonProgressRepo
 
 type QuizQuestionRepo = learning.QuizQuestionRepo
 type QuizAttemptRepo = learning.QuizAttemptRepo
@@ -52,6 +46,11 @@ type ActivityCitationRepo = learning.ActivityCitationRepo
 type PathRepo = learning.PathRepo
 type PathNodeRepo = learning.PathNodeRepo
 type PathNodeActivityRepo = learning.PathNodeActivityRepo
+
+type ChainSignatureRepo = learning.ChainSignatureRepo
+type ChainPriorRepo = learning.ChainPriorRepo
+type UserCompletedUnitRepo = learning.UserCompletedUnitRepo
+type TeachingPatternRepo = learning.TeachingPatternRepo
 
 type JobRunRepo = jobs.JobRunRepo
 
@@ -82,9 +81,6 @@ func NewCourseRepo(db *gorm.DB, baseLog *logger.Logger) CourseRepo {
 func NewCourseModuleRepo(db *gorm.DB, baseLog *logger.Logger) CourseModuleRepo {
 	return learning.NewCourseModuleRepo(db, baseLog)
 }
-func NewCourseConceptRepo(db *gorm.DB, baseLog *logger.Logger) CourseConceptRepo {
-	return learning.NewCourseConceptRepo(db, baseLog)
-}
 func NewCourseTagRepo(db *gorm.DB, baseLog *logger.Logger) CourseTagRepo {
 	return learning.NewCourseTagRepo(db, baseLog)
 }
@@ -94,21 +90,6 @@ func NewCourseBlueprintRepo(db *gorm.DB, baseLog *logger.Logger) CourseBlueprint
 
 func NewLessonRepo(db *gorm.DB, baseLog *logger.Logger) LessonRepo {
 	return learning.NewLessonRepo(db, baseLog)
-}
-func NewLessonVariantRepo(db *gorm.DB, baseLog *logger.Logger) LessonVariantRepo {
-	return learning.NewLessonVariantRepo(db, baseLog)
-}
-func NewLessonCitationRepo(db *gorm.DB, baseLog *logger.Logger) LessonCitationRepo {
-	return learning.NewLessonCitationRepo(db, baseLog)
-}
-func NewLessonConceptRepo(db *gorm.DB, baseLog *logger.Logger) LessonConceptRepo {
-	return learning.NewLessonConceptRepo(db, baseLog)
-}
-func NewLessonAssetRepo(db *gorm.DB, baseLog *logger.Logger) LessonAssetRepo {
-	return learning.NewLessonAssetRepo(db, baseLog)
-}
-func NewLessonProgressRepo(db *gorm.DB, baseLog *logger.Logger) LessonProgressRepo {
-	return learning.NewLessonProgressRepo(db, baseLog)
 }
 
 func NewQuizQuestionRepo(db *gorm.DB, baseLog *logger.Logger) QuizQuestionRepo {
@@ -166,6 +147,32 @@ func NewPathNodeActivityRepo(db *gorm.DB, baseLog *logger.Logger) PathNodeActivi
 	return learning.NewPathNodeActivityRepo(db, baseLog)
 }
 
+func NewChainSignatureRepo(db *gorm.DB, baseLog *logger.Logger) ChainSignatureRepo {
+	return learning.NewChainSignatureRepo(db, baseLog)
+}
+
+func NewChainPriorRepo(db *gorm.DB, baseLog *logger.Logger) ChainPriorRepo {
+	return learning.NewChainPriorRepo(db, baseLog)
+}
+
+func NewUserCompletedUnitRepo(db *gorm.DB, baseLog *logger.Logger) UserCompletedUnitRepo {
+	return learning.NewUserCompletedUnitRepo(db, baseLog)
+}
+
+func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPatternRepo {
+	return learning.NewTeachingPatternRepo(db, baseLog)
+}
+
 func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {
 	return jobs.NewJobRunRepo(db, baseLog)
 }
+
+
+
+
+
+
+
+
+
+
