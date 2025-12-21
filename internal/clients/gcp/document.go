@@ -388,6 +388,18 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 	out.Tables = tableSegs
 	out.Forms = formSegs
 
+	// Some processors may populate doc.Text but omit structured page paragraphs.
+	// Ensure callers still get usable text segments.
+	if len(out.Segments) == 0 && len(out.Tables) == 0 && len(out.Forms) == 0 && strings.TrimSpace(out.PrimaryText) != "" {
+		out.Segments = append(out.Segments, types.Segment{
+			Text: out.PrimaryText,
+			Metadata: map[string]any{
+				"kind":     "docai_primary_text",
+				"provider": "gcp_documentai",
+			},
+		})
+	}
+
 	if b, err := json.Marshal(doc); err == nil {
 		out.DocumentJSON = b
 	}

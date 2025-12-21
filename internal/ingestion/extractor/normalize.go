@@ -158,7 +158,8 @@ func TextSignalWeak(segs []Segment) bool {
 				k = vv
 			}
 		}
-		if k == "table_text" || k == "form_text" || k == "docai_page_text" || k == "ocr_text" {
+		// Count OCR-style sources that should indicate we have meaningful text to work with.
+		if k == "table_text" || k == "form_text" || k == "docai_page_text" || k == "ocr_text" || k == "pdftotext" || k == "native_text" {
 			total += len(s.Text)
 		}
 	}
@@ -183,10 +184,11 @@ func ClassifyKind(name, mime string, smallBytes []byte, path string) string {
 	if m == "application/pdf" || ext == ".pdf" || isPDFHeader(smallBytes) {
 		return "pdf"
 	}
-	if ext == ".docx" || strings.Contains(m, "wordprocessingml") {
+	if ext == ".docx" || ext == ".doc" || ext == ".docm" || ext == ".dotx" || ext == ".dotm" || strings.Contains(m, "wordprocessingml") {
 		return "docx"
 	}
-	if ext == ".pptx" || strings.Contains(m, "presentationml") {
+	if ext == ".pptx" || ext == ".ppt" || ext == ".pptm" || ext == ".pps" || ext == ".ppsx" || ext == ".ppsm" || ext == ".potx" || ext == ".potm" ||
+		strings.Contains(m, "presentationml") || m == "application/vnd.ms-powerpoint" {
 		return "pptx"
 	}
 	if strings.HasPrefix(m, "text/") || ext == ".txt" || ext == ".md" || ext == ".html" {

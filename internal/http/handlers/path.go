@@ -19,6 +19,9 @@ type PathHandler struct {
 	pathNodes        repos.PathNodeRepo
 	pathNodeActivity repos.PathNodeActivityRepo
 	activities       repos.ActivityRepo
+
+	concepts repos.ConceptRepo
+	edges    repos.ConceptEdgeRepo
 }
 
 func NewPathHandler(
@@ -27,6 +30,8 @@ func NewPathHandler(
 	pathNodes repos.PathNodeRepo,
 	pathNodeActivity repos.PathNodeActivityRepo,
 	activities repos.ActivityRepo,
+	concepts repos.ConceptRepo,
+	edges repos.ConceptEdgeRepo,
 ) *PathHandler {
 	return &PathHandler{
 		log:              log.With("handler", "PathHandler"),
@@ -34,6 +39,8 @@ func NewPathHandler(
 		pathNodes:        pathNodes,
 		pathNodeActivity: pathNodeActivity,
 		activities:       activities,
+		concepts:         concepts,
+		edges:            edges,
 	}
 }
 
@@ -117,6 +124,74 @@ func (h *PathHandler) ListPathNodes(c *gin.Context) {
 	}
 
 	response.RespondOK(c, gin.H{"nodes": nodes})
+}
+
+// GET /api/paths/:id/concept-graph
+func (h *PathHandler) GetConceptGraph(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	pathID, err := uuid.Parse(c.Param("id"))
+	if err != nil || pathID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_path_id", err)
+		return
+	}
+
+	row, err := h.path.GetByID(c.Request.Context(), nil, pathID)
+	if err != nil {
+		h.log.Error("GetConceptGraph failed (load path)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+	if row == nil || row.UserID == nil || *row.UserID != rd.UserID {
+		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
+		return
+	}
+
+	concepts, err := h.concepts.GetByScope(c.Request.Context(), nil, "path", &pathID)
+	if err != nil {
+		h.log.Error("GetConceptGraph failed (load concepts)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_concepts_failed", err)
+		return
+	}
+	if len(concepts) == 0 {
+		response.RespondOK(c, gin.H{"concepts": []any{}, "edges": []any{}})
+		return
+	}
+
+	ids := make([]uuid.UUID, 0, len(concepts))
+	idSet := make(map[uuid.UUID]bool, len(concepts))
+	for _, cc := range concepts {
+		if cc == nil || cc.ID == uuid.Nil {
+			continue
+		}
+		ids = append(ids, cc.ID)
+		idSet[cc.ID] = true
+	}
+
+	edges, err := h.edges.GetByConceptIDs(c.Request.Context(), nil, ids)
+	if err != nil {
+		h.log.Error("GetConceptGraph failed (load edges)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_edges_failed", err)
+		return
+	}
+
+	// Only return edges that stay within this path's concept set.
+	filtered := make([]any, 0, len(edges))
+	for _, e := range edges {
+		if e == nil {
+			continue
+		}
+		if !idSet[e.FromConceptID] || !idSet[e.ToConceptID] {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	response.RespondOK(c, gin.H{"concepts": concepts, "edges": filtered})
 }
 
 type PathNodeActivityListItem struct {

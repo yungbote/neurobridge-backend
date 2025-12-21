@@ -1,13 +1,15 @@
 package handlers
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
-	"net/http"
 )
 
 type CourseHandler struct {

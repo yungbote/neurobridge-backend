@@ -204,7 +204,7 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 
 	if len(allSegments) == 0 {
 		allSegments = append(allSegments, Segment{
-			Text: "No extractable signals were produced. This may require manual review or updated extraction capabilities.",
+			Text: "No extractable content was produced for this file.",
 			Metadata: map[string]any{
 				"kind": "unextractable",
 				"mime": mf.MimeType,

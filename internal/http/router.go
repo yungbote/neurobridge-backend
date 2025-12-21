@@ -78,6 +78,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/paths", cfg.PathHandler.ListUserPaths)
 			protected.GET("/paths/:id", cfg.PathHandler.GetPath)
 			protected.GET("/paths/:id/nodes", cfg.PathHandler.ListPathNodes)
+			protected.GET("/paths/:id/concept-graph", cfg.PathHandler.GetConceptGraph)
 			protected.GET("/path-nodes/:id/activities", cfg.PathHandler.ListPathNodeActivities)
 		}
 

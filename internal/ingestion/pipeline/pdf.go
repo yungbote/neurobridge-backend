@@ -1,10 +1,14 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
@@ -58,33 +62,78 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 		segs = append(segs, extractor.TagSegments(docAIRes.Forms, map[string]any{"kind": "form_text"})...)
 	}
 
+	// Local fallback: if DocAI fails/unavailable for a local PDF (e.g., PPTX->PDF),
+	// attempt `pdftotext` so we still get usable text signals for downstream jobs.
+	if len(segs) == 0 && strings.TrimSpace(pdfPath) != "" {
+		txt, err := pdfToTextLocal(ctx, pdfPath)
+		if err != nil {
+			warnings = append(warnings, "pdftotext fallback failed: "+err.Error())
+			diag["pdftotext_error"] = err.Error()
+		} else if strings.TrimSpace(txt) != "" {
+			diag["pdftotext_len"] = len(txt)
+			segs = append(segs, Segment{
+				Text: txt,
+				Metadata: map[string]any{
+					"kind":     "pdftotext",
+					"provider": "local_pdftotext",
+				},
+			})
+		}
+	}
+
 	if extractor.TextSignalWeak(segs) {
-		// Only run Vision async OCR on GCS when the GCS object is actually a PDF.
-		if strings.ToLower(strings.TrimSpace(mf.MimeType)) != "application/pdf" {
-			warnings = append(warnings, "vision OCR fallback skipped (source in GCS is not a PDF)")
-		} else if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
+		if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
 			warnings = append(warnings, "vision OCR fallback skipped (missing VISION_OCR_OUTPUT_PREFIX or MATERIAL_GCS_BUCKET_NAME)")
 		} else if s.ex.Vision != nil {
-			gcsURI := fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, mf.StorageKey)
-			outPrefix := fmt.Sprintf(
-				"%s%s/%s/",
-				extractor.EnsureGSPrefix(s.ex.VisionOutputPrefix),
-				mf.MaterialSetID.String(),
-				mf.ID.String(),
+			var (
+				gcsURI       string
+				visionSource string
 			)
-			vres, err := s.ex.Vision.OCRFileInGCS(ctx, gcsURI, "application/pdf", outPrefix, s.ex.MaxPDFPagesRender)
-			if err != nil {
-				warnings = append(warnings, "vision OCR failed: "+err.Error())
-				diag["vision_error"] = err.Error()
+
+			// Prefer OCR on the original PDF in GCS when the upload itself is a PDF.
+			if strings.EqualFold(strings.TrimSpace(mf.MimeType), "application/pdf") {
+				gcsURI = fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, mf.StorageKey)
+				visionSource = "material_pdf"
+			} else if strings.TrimSpace(pdfPath) != "" {
+				// For office->pdf conversions, upload the derived PDF and OCR that.
+				derivedKey := strings.TrimRight(mf.StorageKey, "/") + "/derived/source.pdf"
+				if err := s.ex.UploadLocalToGCS(ctx, nil, derivedKey, pdfPath); err != nil {
+					warnings = append(warnings, "vision OCR fallback skipped (upload derived pdf failed): "+err.Error())
+				} else {
+					gcsURI = fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, derivedKey)
+					visionSource = "derived_pdf"
+					diag["vision_input_key"] = derivedKey
+				}
 			} else {
-				diag["vision_primary_text_len"] = len(vres.PrimaryText)
-				for _, sg := range vres.Segments {
-					if sg.Metadata == nil {
-						sg.Metadata = map[string]any{}
+				warnings = append(warnings, "vision OCR fallback skipped (no PDF source available)")
+			}
+
+			if strings.TrimSpace(gcsURI) != "" {
+				diag["vision_source"] = visionSource
+				diag["vision_input_gcs_uri"] = gcsURI
+				outPrefix := fmt.Sprintf(
+					"%s%s/%s/",
+					extractor.EnsureGSPrefix(s.ex.VisionOutputPrefix),
+					mf.MaterialSetID.String(),
+					mf.ID.String(),
+				)
+				vres, err := s.ex.Vision.OCRFileInGCS(ctx, gcsURI, "application/pdf", outPrefix, s.ex.MaxPDFPagesRender)
+				if err != nil {
+					warnings = append(warnings, "vision OCR failed: "+err.Error())
+					diag["vision_error"] = err.Error()
+				} else {
+					diag["vision_primary_text_len"] = len(vres.PrimaryText)
+					for _, sg := range vres.Segments {
+						if sg.Metadata == nil {
+							sg.Metadata = map[string]any{}
+						}
+						sg.Metadata["kind"] = "ocr_text"
+						sg.Metadata["provider"] = "gcp_vision_async"
+						if strings.TrimSpace(visionSource) != "" {
+							sg.Metadata["ocr_source"] = visionSource
+						}
+						segs = append(segs, sg)
 					}
-					sg.Metadata["kind"] = "ocr_text"
-					sg.Metadata["provider"] = "gcp_vision_async"
-					segs = append(segs, sg)
 				}
 			}
 		}
@@ -123,6 +172,53 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	}
 
 	return segs, assets, warnings, diag, nil
+}
+
+func pdfToTextLocal(ctx context.Context, pdfPath string) (string, error) {
+	ctx = extractor.DefaultCtx(ctx)
+	if strings.TrimSpace(pdfPath) == "" {
+		return "", fmt.Errorf("pdfPath required")
+	}
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		return "", fmt.Errorf("pdftotext not found in PATH: %w", err)
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	tmpDir, err := os.MkdirTemp("", "nb_pdftotext_*")
+	if err != nil {
+		return "", fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outPath := filepath.Join(tmpDir, "out.txt")
+
+	cmd := exec.CommandContext(callCtx, "pdftotext",
+		"-enc", "UTF-8",
+		"-q",
+		pdfPath,
+		outPath,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		s := strings.TrimSpace(stderr.String())
+		if s != "" {
+			return "", fmt.Errorf("pdftotext: %w; stderr=%s", err, s)
+		}
+		return "", fmt.Errorf("pdftotext: %w", err)
+	}
+
+	b, err := os.ReadFile(outPath)
+	if err != nil {
+		return "", fmt.Errorf("read pdftotext output: %w", err)
+	}
+	txt := strings.TrimSpace(string(b))
+	if txt == "" {
+		return "", fmt.Errorf("pdftotext produced empty output")
+	}
+	return txt, nil
 }
 
 func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]AssetRef, []AssetRef, []string, map[string]any) {

@@ -36,7 +36,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, sseHub *re
 		User:     httpH.NewUserHandler(services.User),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(log, services.Workflow, sseHub),
-		Path:     httpH.NewPathHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
+		Path:     httpH.NewPathHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity, repos.Concept, repos.ConceptEdge),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
 		Course:   httpH.NewCourseHandler(log, services.Course),
 		Module:   httpH.NewModuleHandler(services.Module),

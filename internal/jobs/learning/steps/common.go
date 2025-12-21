@@ -22,6 +22,26 @@ func stringFromAny(v any) string {
 	return strings.TrimSpace(fmt.Sprint(v))
 }
 
+func chunkMetadataKind(ch *types.MaterialChunk) string {
+	if ch == nil || len(ch.Metadata) == 0 || strings.TrimSpace(string(ch.Metadata)) == "" || strings.TrimSpace(string(ch.Metadata)) == "null" {
+		return ""
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(ch.Metadata, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stringFromAny(meta["kind"]))
+}
+
+func isUnextractableChunk(ch *types.MaterialChunk) bool {
+	if strings.EqualFold(chunkMetadataKind(ch), "unextractable") {
+		return true
+	}
+	// Fallback for legacy rows missing metadata.kind.
+	txt := strings.ToLower(strings.TrimSpace(ch.Text))
+	return strings.HasPrefix(txt, "no extractable ")
+}
+
 func stringSliceFromAny(v any) []string {
 	if v == nil {
 		return nil
@@ -147,6 +167,9 @@ func stratifiedChunkExcerpts(chunks []*types.MaterialChunk, perFile int, maxChar
 	byFile := map[uuid.UUID][]*types.MaterialChunk{}
 	for _, ch := range chunks {
 		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
 			continue
 		}
 		txt := strings.TrimSpace(ch.Text)
