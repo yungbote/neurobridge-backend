@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
@@ -323,23 +324,6 @@ func (as *authService) OAuthLoginApple(ctx context.Context, idToken string, nonc
 	return as.oauthLogin(ctx, "apple", idToken, nonceID, firstName, lastName)
 }
 
-func (as *authService) oauthLogin(ctx context.Context, ext *ExternalIdentity, fallbackFirst, fallbackLast string) (string, string, error) {
-	if ext == nil || strings.TrimSpace(ext.Sub) == "" || strings.TrimSpace(ext.Provider) == "" {
-		return "", "", fmt.Errorf("invalid external identity")
-	}
-	var accessToken, refreshToken string
-	err := as.db.WithContext(ctx).Transaction(func(ctx *gorm.DB) error {
-		u, err := as.findOrCreateUserForExternalIdentity(ctx, tx, ext, fallbackFirst, fallbackLast)
-		if err != nil { return err }
-		a, r, err := as.issueSession(ctx, tx, u)
-		if err != nil { return err }
-		accessToken, refreshToken = a, r
-		return nil
-	})
-	if err != nil { return "", "", err }
-	return accessToken, refreshToken, nil
-}
-
 func (as *authService) oauthLogin(ctx context.Context, provider string, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error) {
 	if nonceID == uuid.Nil {
 		return "", "", fmt.Errorf("nonce_id is required")
@@ -594,6 +578,16 @@ func randomSecret(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return uuid.New().String()
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func randomNonce(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// fallback
+		sum := sha256.Sum256([]byte(uuid.New().String()))
+		return base64.RawURLEncoding.EncodeToString(sum[:])
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }

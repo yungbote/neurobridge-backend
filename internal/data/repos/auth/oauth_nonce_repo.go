@@ -12,7 +12,7 @@ import (
 
 type OAuthNonceRepo interface {
 	Create(ctx context.Context, tx *gorm.DB, nonces []*types.OAuthNonce) ([]*types.OAuthNonce, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.OAuthNoncem, error)
+	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.OAuthNonce, error)
 	MarkUsed(ctx context.Context, tx *gorm.DB, id uuid.UUID) error
 	FullDeleteExpires(ctx context.Context, tx *gorm.DB, before time.Time) error
 }
@@ -69,7 +69,7 @@ func (r *oauthNonceRepo) MarkUsed(ctx context.Context, tx *gorm.DB, id uuid.UUID
 	return nil
 }
 
-func (r *oauthNonceRepo) FullDeleteExpired(ctx context.Context, tx *gorm.DB, before time.Time) error {
+func (r *oauthNonceRepo) FullDeleteExpires(ctx context.Context, tx *gorm.DB, before time.Time) error {
 	txx := tx
 	if txx == nil {
 		txx = r.db

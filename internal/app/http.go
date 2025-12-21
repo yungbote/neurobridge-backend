@@ -33,7 +33,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, sseHub *re
 	return Handlers{
 		Health:   httpH.NewHealthHandler(),
 		Auth:     httpH.NewAuthHandler(services.Auth),
-		User:     httpH.NewUserHandler(services.User),
+		User:     httpH.NewUserHandler(services.User, sseHub),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(log, services.Workflow, sseHub),
 		Path:     httpH.NewPathHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity, repos.Concept, repos.ConceptEdge),
@@ -70,3 +70,13 @@ func wireMiddleware(log *logger.Logger, services Services) Middleware {
 		Auth: httpMW.NewAuthMiddleware(log, services.Auth),
 	}
 }
+
+
+
+
+
+
+
+
+
+

@@ -77,6 +77,14 @@ func NewUserTokenRepo(db *gorm.DB, baseLog *logger.Logger) UserTokenRepo {
 	return auth.NewUserTokenRepo(db, baseLog)
 }
 
+func NewUserIdentityRepo(db *gorm.DB, baseLog *logger.Logger) UserIdentityRepo {
+	return auth.NewUserIdentityRepo(db, baseLog)
+}
+
+func NewOAuthNonceRepo(db *gorm.DB, baseLog *logger.Logger) OAuthNonceRepo {
+	return auth.NewOAuthNonceRepo(db, baseLog)
+}
+
 func NewAssetRepo(db *gorm.DB, baseLog *logger.Logger) AssetRepo {
 	return materials.NewAssetRepo(db, baseLog)
 }
@@ -228,3 +236,13 @@ func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryInd
 func NewConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEvidenceRepo {
 	return learning.NewConceptEvidenceRepo(db, baseLog)
 }
+
+
+
+
+
+
+
+
+
+

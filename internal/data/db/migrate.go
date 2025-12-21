@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"gorm.io/gorm"
 )

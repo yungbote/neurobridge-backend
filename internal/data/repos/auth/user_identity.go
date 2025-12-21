@@ -4,6 +4,7 @@ import (
 	"context"
 	"gorm.io/gorm"
 	"github.com/google/uuid"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 

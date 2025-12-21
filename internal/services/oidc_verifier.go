@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -35,11 +37,11 @@ type OIDCVerifier interface {
 }
 
 type oidcVerifier struct {
-	httpClient *http.Client
+	httpClient     *http.Client
 	googleClientID string
 	appleClientID  string
-	google *providerVerifier
-	apple  *providerVerifier
+	google         *providerVerifier
+	apple          *providerVerifier
 }
 
 func NewOIDCVerifier(httpClient *http.Client, googleClientID, appleClientID string) (OIDCVerifier, error) {
@@ -52,19 +54,24 @@ func NewOIDCVerifier(httpClient *http.Client, googleClientID, appleClientID stri
 	if strings.TrimSpace(appleClientID) == "" {
 		return nil, fmt.Errorf("APPLE_OIDC_CLIENT_ID is required")
 	}
-	googleIss := []string{"accounts.google.com", "https://accounts.google.com"} // per Google docs :contentReference[oaicite:5]{index=5}
-	g := newProviderVerifier(httpClient,
+
+	googleIss := []string{"accounts.google.com", "https://accounts.google.com"}
+	g := newProviderVerifier(
+		httpClient,
 		"https://accounts.google.com/.well-known/openid-configuration",
 		googleIss,
 		googleClientID,
 		[]string{"RS256"},
 	)
-	a := newProviderVerifier(httpClient,
+
+	a := newProviderVerifier(
+		httpClient,
 		"https://appleid.apple.com/.well-known/openid-configuration",
 		[]string{"https://appleid.apple.com"},
 		appleClientID,
 		[]string{"ES256"},
 	)
+
 	return &oidcVerifier{
 		httpClient:     httpClient,
 		googleClientID: googleClientID,
@@ -78,22 +85,24 @@ func (v *oidcVerifier) VerifyGoogleIDToken(ctx context.Context, idToken string, 
 	claims, err := v.google.verify(ctx, idToken)
 	if err != nil {
 		return nil, err
-		out := claimsToExternal("google", claims)
-		if err := verifyNonceAgainstHash("google", out.NonceClaim, expectedNonceHash); err != nil {
-			return nil, err
-		}
-		return out, nil
+	}
+	out := claimsToExternal("google", claims)
+	if err := verifyNonceAgainstHash("google", out.NonceClaim, expectedNonceHash); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (v *oidcVerifier) VerifyAppleIDToken(ctx context.Context, idToken string, expectedNonceHash string) (*ExternalIdentity, error) {
 	claims, err := v.apple.verify(ctx, idToken)
 	if err != nil {
 		return nil, err
-		out := claimsToExternal("apple", claims)
-		if err := verifyNonceAgainstHash("apple", out.NonceClaim, expectedNonceHash); err != nil {
-			return nil, err
-		}
-		return out, nil
+	}
+	out := claimsToExternal("apple", claims)
+	if err := verifyNonceAgainstHash("apple", out.NonceClaim, expectedNonceHash); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func verifyNonceAgainstHash(provider, nonceClaim, expectedNonceHash string) error {
@@ -101,9 +110,9 @@ func verifyNonceAgainstHash(provider, nonceClaim, expectedNonceHash string) erro
 		return fmt.Errorf("missing expected nonce hash")
 	}
 	if strings.TrimSpace(nonceClaim) == "" {
-		// If nonce was used in the request, it MUST be present in the ID token. :contentReference[oaicite:6]{index=6}
 		return fmt.Errorf("missing nonce claim in id_token")
 	}
+
 	// - Google: nonce claim is typically the raw nonce -> hash it and compare.
 	// - Apple: nonce claim is often already the hashed value depending on client; accept either direct match or hash(claim).
 	if constantTimeEq(nonceClaim, expectedNonceHash) {
@@ -140,6 +149,7 @@ type providerVerifier struct {
 	allowedIss   []string
 	requiredAud  string
 	algAllow     []string
+
 	jwks          *jwksCache
 	discoveryOnce sync.Once
 	discoveryErr  error
@@ -165,10 +175,12 @@ func (p *providerVerifier) ensureDiscovery(ctx context.Context) error {
 			return
 		}
 		defer res.Body.Close()
+
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			p.discoveryErr = fmt.Errorf("discovery request failed: %s", res.Status)
 			return
 		}
+
 		var d oidcDiscovery
 		if err := json.NewDecoder(res.Body).Decode(&d); err != nil {
 			p.discoveryErr = err
@@ -190,9 +202,11 @@ func (p *providerVerifier) verify(ctx context.Context, tokenString string) (jwt.
 	if err := p.ensureDiscovery(ctx); err != nil {
 		return nil, fmt.Errorf("oidc discovery error: %w", err)
 	}
+
 	parser := jwt.NewParser(jwt.WithValidMethods(p.algAllow))
 	claims := jwt.MapClaims{}
-	_, err := parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+
+	tok, err := parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
 		if strings.TrimSpace(kid) == "" {
 			return nil, fmt.Errorf("missing kid")
@@ -206,22 +220,105 @@ func (p *providerVerifier) verify(ctx context.Context, tokenString string) (jwt.
 	if err != nil {
 		return nil, fmt.Errorf("invalid id_token: %w", err)
 	}
-	// exp/nbf validation
-	if err := claims.Valid(jwt.NewNumericDate(time.Now())); err != nil {
-		return nil, fmt.Errorf("token claims invalid: %w", err)
+	if tok == nil || !tok.Valid {
+		return nil, fmt.Errorf("invalid id_token")
 	}
+
+	// Time-based validation (jwt/v5 MapClaims does not expose Valid()).
+	if err := validateTimeClaims(claims, time.Now(), 0); err != nil {
+		return nil, err
+	}
+
 	iss, _ := claims["iss"].(string)
 	if !containsIssuer(p.allowedIss, iss) {
 		return nil, fmt.Errorf("issuer mismatch: %q", iss)
 	}
+
 	if !audContains(claims["aud"], p.requiredAud) {
 		return nil, fmt.Errorf("audience mismatch")
 	}
+
 	sub, _ := claims["sub"].(string)
 	if strings.TrimSpace(sub) == "" {
 		return nil, fmt.Errorf("missing sub")
 	}
+
 	return claims, nil
+}
+
+func validateTimeClaims(claims jwt.MapClaims, now time.Time, leeway time.Duration) error {
+	// exp is required for ID tokens
+	expAny, ok := claims["exp"]
+	if !ok {
+		return fmt.Errorf("missing exp")
+	}
+	exp, err := parseNumericTime(expAny)
+	if err != nil {
+		return fmt.Errorf("invalid exp: %w", err)
+	}
+	if now.After(exp.Add(leeway)) {
+		return fmt.Errorf("token expired")
+	}
+
+	// nbf is optional
+	if nbfAny, ok := claims["nbf"]; ok {
+		nbf, err := parseNumericTime(nbfAny)
+		if err != nil {
+			return fmt.Errorf("invalid nbf: %w", err)
+		}
+		if now.Add(leeway).Before(nbf) {
+			return fmt.Errorf("token not valid yet")
+		}
+	}
+
+	// iat is optional; reject tokens issued too far in the future
+	if iatAny, ok := claims["iat"]; ok {
+		iat, err := parseNumericTime(iatAny)
+		if err != nil {
+			return fmt.Errorf("invalid iat: %w", err)
+		}
+		if iat.After(now.Add(5 * time.Minute)) {
+			return fmt.Errorf("token issued in the future")
+		}
+	}
+
+	return nil
+}
+
+func parseNumericTime(v any) (time.Time, error) {
+	// JWT numeric dates are seconds since epoch
+	var sec int64
+
+	switch x := v.(type) {
+	case float64:
+		sec = int64(x)
+	case float32:
+		sec = int64(x)
+	case int64:
+		sec = x
+	case int:
+		sec = int64(x)
+	case json.Number:
+		n, err := x.Int64()
+		if err != nil {
+			return time.Time{}, err
+		}
+		sec = n
+	case string:
+		// sometimes providers serialize to string
+		n, err := strconv.ParseInt(x, 10, 64)
+		if err != nil {
+			return time.Time{}, err
+		}
+		sec = n
+	default:
+		return time.Time{}, fmt.Errorf("unexpected type %T", v)
+	}
+
+	if sec <= 0 {
+		return time.Time{}, fmt.Errorf("non-positive numeric date")
+	}
+	return time.Unix(sec, 0).UTC(), nil
 }
 
 func containsIssuer(list []string, iss string) bool {
@@ -249,6 +346,7 @@ func audContains(aud any, required string) bool {
 
 func claimsToExternal(provider string, c jwt.MapClaims) *ExternalIdentity {
 	out := &ExternalIdentity{Provider: provider}
+
 	if s, _ := c["sub"].(string); s != "" {
 		out.Sub = s
 	}
@@ -256,6 +354,7 @@ func claimsToExternal(provider string, c jwt.MapClaims) *ExternalIdentity {
 		out.Email = e
 	}
 	out.EmailVerified = parseBool(c["email_verified"])
+
 	if gn, _ := c["given_name"].(string); gn != "" {
 		out.FirstName = gn
 	}
@@ -265,9 +364,7 @@ func claimsToExternal(provider string, c jwt.MapClaims) *ExternalIdentity {
 	if n, _ := c["nonce"].(string); n != "" {
 		out.NonceClaim = n
 	}
-	if out.NonceClaim == "" {
-		// some providers/clients may provide it differently; keep strict on missing nonce in Verify* functions
-	}
+
 	return out
 }
 
@@ -319,9 +416,11 @@ type jwk struct {
 	Kid string `json:"kid"`
 	Use string `json:"use"`
 	Alg string `json:"alg"`
+
 	// RSA
 	N string `json:"n"`
 	E string `json:"e"`
+
 	// EC
 	Crv string `json:"crv"`
 	X   string `json:"x"`
@@ -334,13 +433,16 @@ func (j *jwksCache) getKey(ctx context.Context, kid string) (any, error) {
 	stale := time.Since(j.fetchedAt) > j.ttl
 	url := j.jwksURL
 	j.mu.RUnlock()
+
 	if key != nil && !stale {
 		return key, nil
 	}
 	if strings.TrimSpace(url) == "" {
 		return nil, errors.New("jwks url not set")
 	}
+
 	if err := j.refresh(ctx, url); err != nil {
+		// fallback to cached key if present
 		j.mu.RLock()
 		key = j.keys[kid]
 		j.mu.RUnlock()
@@ -349,6 +451,7 @@ func (j *jwksCache) getKey(ctx context.Context, kid string) (any, error) {
 		}
 		return nil, err
 	}
+
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	key = j.keys[kid]
@@ -365,13 +468,16 @@ func (j *jwksCache) refresh(ctx context.Context, url string) error {
 		return err
 	}
 	defer res.Body.Close()
+
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("jwks fetch failed: %s", res.Status)
 	}
+
 	var set jwkSet
 	if err := json.NewDecoder(res.Body).Decode(&set); err != nil {
 		return err
 	}
+
 	next := map[string]any{}
 	for _, k := range set.Keys {
 		if strings.TrimSpace(k.Kid) == "" {
@@ -390,9 +496,11 @@ func (j *jwksCache) refresh(ctx context.Context, url string) error {
 			}
 		}
 	}
+
 	if len(next) == 0 {
 		return fmt.Errorf("jwks contained no usable keys")
 	}
+
 	j.mu.Lock()
 	j.keys = next
 	j.fetchedAt = time.Now()
@@ -409,6 +517,7 @@ func rsaFromModExp(nB64, eB64 string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	n := new(big.Int).SetBytes(nb)
 	e := 0
 	for _, b := range eb {
@@ -417,6 +526,7 @@ func rsaFromModExp(nB64, eB64 string) (*rsa.PublicKey, error) {
 	if e == 0 {
 		return nil, fmt.Errorf("invalid exponent")
 	}
+
 	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
@@ -428,6 +538,7 @@ func ecdsaFromXY(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
 	default:
 		return nil, fmt.Errorf("unsupported curve: %s", crv)
 	}
+
 	xb, err := base64.RawURLEncoding.DecodeString(xB64)
 	if err != nil {
 		return nil, err
@@ -436,11 +547,14 @@ func ecdsaFromXY(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	x := new(big.Int).SetBytes(xb)
 	y := new(big.Int).SetBytes(yb)
+
 	if !curve.IsOnCurve(x, y) {
 		return nil, fmt.Errorf("invalid EC point")
 	}
+
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 

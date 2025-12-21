@@ -11,3 +11,13 @@ type Bus interface {
 	StartForwarder(ctx context.Context, onMsg func(m realtime.SSEMessage)) error
 	Close() error
 }
+
+
+
+
+
+
+
+
+
+

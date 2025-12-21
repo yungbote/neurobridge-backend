@@ -97,7 +97,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		cfg.NonceRefreshTTL,
 	)
 
-	userService := services.NewUserService(db, log, repos.User)
+	userService := services.NewUserService(db, log, repos.User, avatarService)
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
 	courseService := services.NewCourseService(db, log, repos.Course, repos.MaterialSet)
 	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)

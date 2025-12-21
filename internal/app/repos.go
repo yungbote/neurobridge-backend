@@ -110,3 +110,13 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		UserLibraryIndex:     repos.NewUserLibraryIndexRepo(db, log),
 	}
 }
+
+
+
+
+
+
+
+
+
+

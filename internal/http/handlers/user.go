@@ -1,19 +1,30 @@
 package handlers
 
 import (
-	"github.com/gin-gonic/gin"
-	"github.com/yungbote/neurobridge-backend/internal/services"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type UserHandler struct {
 	userService services.UserService
+	hub         *realtime.SSEHub // API server broadcasts directly to connected clients
 }
 
-func NewUserHandler(userService services.UserService) *UserHandler {
-	return &UserHandler{userService: userService}
+func NewUserHandler(userService services.UserService, hub *realtime.SSEHub) *UserHandler {
+	return &UserHandler{
+		userService: userService,
+		hub:         hub,
+	}
 }
 
+// GET /me
 func (uh *UserHandler) GetMe(c *gin.Context) {
 	me, err := uh.userService.GetMe(c.Request.Context(), nil)
 	if err != nil {
@@ -22,3 +33,164 @@ func (uh *UserHandler) GetMe(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"me": me})
 }
+
+// PATCH /user/name
+// body: { "first_name": "...", "last_name": "..." }
+func (uh *UserHandler) ChangeName(c *gin.Context) {
+	var req struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": err.Error()})
+		return
+	}
+
+	u, err := uh.userService.UpdateName(c.Request.Context(), req.FirstName, req.LastName)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "change_name_failed", "detail": err.Error()})
+		return
+	}
+
+	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserNameChanged, gin.H{
+		"first_name":   u.FirstName,
+		"last_name":    u.LastName,
+		"avatar_url":   u.AvatarURL,   // name change regenerates initials avatar
+		"avatar_color": u.AvatarColor, // unchanged, but useful for clients
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// PATCH /user/theme
+// body: { "preferred_theme": "light" | "dark" | "system" }
+func (uh *UserHandler) ChangeTheme(c *gin.Context) {
+	var req struct {
+		PreferredTheme string `json:"preferred_theme"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": err.Error()})
+		return
+	}
+
+	u, err := uh.userService.UpdatePreferredTheme(c.Request.Context(), req.PreferredTheme)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "change_theme_failed", "detail": err.Error()})
+		return
+	}
+
+	// NOTE: realtime hub constants currently don't include a theme event.
+	// Using a string event is fine; just make sure frontend matches it.
+	uh.broadcastUser(u.ID.String(), realtime.SSEEvent("UserThemeChanged"), gin.H{
+		"preferred_theme": u.PreferredTheme,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// PATCH /user/avatar_color
+// body: { "avatar_color": "#RRGGBB" } (or whatever convention you decide)
+func (uh *UserHandler) ChangeAvatarColor(c *gin.Context) {
+	var req struct {
+		AvatarColor string `json:"avatar_color"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": err.Error()})
+		return
+	}
+	req.AvatarColor = strings.TrimSpace(req.AvatarColor)
+	if req.AvatarColor == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "avatar_color_required"})
+		return
+	}
+
+	u, err := uh.userService.UpdateAvatarColor(c.Request.Context(), req.AvatarColor)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "change_avatar_color_failed", "detail": err.Error()})
+		return
+	}
+
+	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserAvatarUpdated, gin.H{
+		"avatar_url":   u.AvatarURL,
+		"avatar_color": u.AvatarColor,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// POST /user/avatar/upload (multipart/form-data)
+// field: "file"
+func (uh *UserHandler) UploadAvatar(c *gin.Context) {
+	// Accept up to ~10MB (adjust as you want)
+	const maxBytes = 10 << 20
+
+	fh, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_file"})
+		return
+	}
+
+	f, err := fh.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "open_file_failed", "detail": err.Error()})
+		return
+	}
+	defer f.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "read_file_failed", "detail": err.Error()})
+		return
+	}
+	if len(raw) > maxBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_too_large"})
+		return
+	}
+
+	u, err := uh.userService.UploadAvatarImage(c.Request.Context(), raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upload_avatar_failed", "detail": err.Error()})
+		return
+	}
+
+	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserAvatarUpdated, gin.H{
+		"avatar_url":   u.AvatarURL,
+		"avatar_color": u.AvatarColor, // unchanged; include anyway
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ---- helpers ----
+
+func (uh *UserHandler) broadcastUser(channel string, event realtime.SSEEvent, data any) {
+	if uh == nil || uh.hub == nil {
+		return
+	}
+	if strings.TrimSpace(channel) == "" {
+		return
+	}
+	uh.hub.Broadcast(realtime.SSEMessage{
+		Channel: channel,
+		Event:   event,
+		Data:    data,
+	})
+}
+
+// Keep it here if you want to ensure the frontend matches.
+func (uh *UserHandler) mustHub() error {
+	if uh == nil || uh.hub == nil {
+		return fmt.Errorf("SSE hub not configured")
+	}
+	return nil
+}
+
+
+
+
+
+
+
+
+
+

@@ -69,6 +69,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// User (Me)
 		if cfg.UserHandler != nil {
 			protected.GET("/me", cfg.UserHandler.GetMe)
+			protected.PATCH("/user/name", cfg.UserHandler.ChangeName)
+			protected.PATCH("/user/theme", cfg.UserHandler.ChangeTheme)
+			protected.PATCH("/user/avatar_color", cfg.UserHandler.ChangeAvatarColor)
+			protected.POST("/user/avatar/upload", cfg.UserHandler.UploadAvatar)
 		}
 
 		// Materials
