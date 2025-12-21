@@ -61,6 +61,8 @@ const (
 type User = user.User
 type UserProfileVector = user.UserProfileVector
 type UserToken = auth.UserToken
+type UserIdentity = auth.UserIdentity
+type OAuthNonce = auth.OAuthNonce
 
 type Asset = materials.Asset
 type MaterialSet = materials.MaterialSet
@@ -122,3 +124,13 @@ type ChainPrior = products.ChainPrior
 type UserCompletedUnit = products.UserCompletedUnit
 type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
+
+
+
+
+
+
+
+
+
+

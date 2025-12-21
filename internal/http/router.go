@@ -40,6 +40,9 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		if cfg.AuthHandler != nil {
 			api.POST("/register", cfg.AuthHandler.Register)
 			api.POST("/login", cfg.AuthHandler.Login)
+			api.POST("/oauth/nonce", cfg.AuthHandler.OAuthNonce)
+			api.POST("/oauth/google", cfg.AuthHandler.OAuthGoogle)
+			api.POST("/oauth/apple", cfg.AuthHandler.OAuthApple)
 		}
 	}
 

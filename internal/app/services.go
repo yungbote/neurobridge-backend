@@ -42,6 +42,8 @@ type Services struct {
 
 	// Auth + domain
 	Auth     services.AuthService
+	OIDCVer	 services.OIDCVerifier
+
 	User     services.UserService
 	Material services.MaterialService
 	Course   services.CourseService
@@ -78,14 +80,21 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	fileService := services.NewFileService(db, log, clients.GcpBucket, repos.MaterialFile)
 
+	oidcVerifier, err := services.NewOIDCVerifier(nil, cfg.GoogleOIDCClientID, cfg.AppleOIDCClientID)
+	if err != nil { panic(err) }
+
 	authService := services.NewAuthService(
 		db, log,
 		repos.User,
 		avatarService,
 		repos.UserToken,
+		repos.UserIdentity,
+		repos.OAuthNonce,
+		oidcVerifier,
 		cfg.JWTSecretKey,
 		cfg.AccessTokenTTL,
 		cfg.RefreshTokenTTL,
+		cfg.NonceRefreshTTL,
 	)
 
 	userService := services.NewUserService(db, log, repos.User)
@@ -372,3 +381,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		SSEBus:           clients.SSEBus,
 	}, nil
 }
+
+
+
+
+
+
+
+
+
+

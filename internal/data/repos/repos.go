@@ -13,6 +13,8 @@ import (
 type UserRepo = user.UserRepo
 type UserProfileVectorRepo = user.UserProfileVectorRepo
 type UserTokenRepo = auth.UserTokenRepo
+type UserIdentityRepo = auth.UserIdentityRepo
+type OAuthNonceRepo = auth.OAuthNonceRepo
 
 type AssetRepo = materials.AssetRepo
 type MaterialSetRepo = materials.MaterialSetRepo

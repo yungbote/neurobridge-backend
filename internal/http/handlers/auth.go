@@ -83,3 +83,91 @@ func (ah *AuthHandler) Logout(c *gin.Context) {
 	}
 	response.RespondOK(c, gin.H{"ok": true})
 }
+
+func (ah *AuthHandler) OAuthNonce(c *gin.Context) {
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	nonceID, nonce, expiresIn, err := ah.authService.CreateOAuthNonce(c.Request.Context(), req.Provider)
+	if err != nil {
+		response.RespondError(c, http.StatusBadRequest, "nonce_failed", err)
+		return
+	}
+	response.RespondOK(c, gin.H{
+		"nonce_id":    nonceID.String(),
+		"nonce":       nonce,
+		"expires_in":  expiresIn,
+	})
+}
+
+func (ah *AuthHandler) OAuthGoogle(c *gin.Context) {
+	var req struct {
+		IDToken   string `json:"id_token"`
+		NonceID   string `json:"nonce_id"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	nonceID, err := uuid.Parse(req.NonceID)
+	if err != nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_nonce_id", err)
+		return
+	}
+	accessToken, refreshToken, err := ah.authService.OAuthLoginGoogle(c.Request.Context(), req.IDToken, nonceID, req.FirstName, req.LastName)
+	if err != nil {
+		response.RespondError(c, http.StatusUnauthorized, "oauth_login_failed", err)
+		return
+	}
+	expiresIn := int(ah.authService.GetAccessTTL().Seconds())
+	response.RespondOK(c, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    expiresIn,
+	})
+}
+
+func (ah *AuthHandler) OAuthApple(c *gin.Context) {
+	var req struct {
+		IDToken   string `json:"id_token"`
+		NonceID   string `json:"nonce_id"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	nonceID, err := uuid.Parse(req.NonceID)
+	if err != nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_nonce_id", err)
+		return
+	}
+	accessToken, refreshToken, err := ah.authService.OAuthLoginApple(c.Request.Context(), req.IDToken, nonceID, req.FirstName, req.LastName)
+	if err != nil {
+		response.RespondError(c, http.StatusUnauthorized, "oauth_login_failed", err)
+		return
+	}
+	expiresIn := int(ah.authService.GetAccessTTL().Seconds())
+	response.RespondOK(c, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    expiresIn,
+	})
+}
+
+
+
+
+
+
+
+
+
+

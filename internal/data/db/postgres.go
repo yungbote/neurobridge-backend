@@ -63,3 +63,13 @@ func NewPostgresService(logg *logger.Logger) (*PostgresService, error) {
 }
 
 func (s *PostgresService) DB() *gorm.DB { return s.db }
+
+
+
+
+
+
+
+
+
+

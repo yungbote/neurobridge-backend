@@ -10,6 +10,8 @@ type Repos struct {
 	User                 repos.UserRepo
 	UserProfileVector    repos.UserProfileVectorRepo
 	UserToken            repos.UserTokenRepo
+	UserIdentity				 repos.UserIdentityRepo
+	OAuthNonce					 repos.OAuthNonceRepo
 	Asset                repos.AssetRepo
 	MaterialSet          repos.MaterialSetRepo
 	MaterialFile         repos.MaterialFileRepo
@@ -61,6 +63,8 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		User:                 repos.NewUserRepo(db, log),
 		UserProfileVector:    repos.NewUserProfileVectorRepo(db, log),
 		UserToken:            repos.NewUserTokenRepo(db, log),
+		UserIdentity:				  repos.NewUserIdentityRepo(db, log),
+		OAuthNonce:						repos.NewOAuthNonceRepo(db, log),
 		Asset:                repos.NewAssetRepo(db, log),
 		MaterialSet:          repos.NewMaterialSetRepo(db, log),
 		MaterialFile:         repos.NewMaterialFileRepo(db, log),

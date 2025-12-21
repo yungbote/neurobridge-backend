@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -29,39 +31,57 @@ type AuthService interface {
 	SetContextFromToken(ctx context.Context, tokenString string) (context.Context, error)
 	GetAccessTTL() time.Duration
 	generateAccessToken(ctx context.Context, tx *gorm.DB, user *types.User) (string, error)
+	CreateOAuthNonce(ctx context.Context, provider string) (nonceID uuid.UUID, nonce string, expiresInSeconds int, err error)
+	OAuthLoginGoogle(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
+	OAuthLoginApple(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
+	issueSession(ctx context.Context, tx *gorm.DB, user *types.User) (string, string, error)
+	findOrCreateUserForExternalIdentity(ctx context.Context, tx *gorm.DB, provider string, ext *ExternalIdentity, fallbackFirst string, fallbackLast string) (*types.User, error)
+	oauthLogin(ctx context.Context, provider string, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
 }
 
 type authService struct {
-	db            *gorm.DB
-	log           *logger.Logger
-	userRepo      repos.UserRepo
-	avatarService AvatarService
-	userTokenRepo repos.UserTokenRepo
-	jwtSecretKey  string
-	accessTTL     time.Duration
-	refreshTTL    time.Duration
+	db								*gorm.DB
+	log								*logger.Logger
+	userRepo					repos.UserRepo
+	avatarService			AvatarService
+	userTokenRepo			repos.UserTokenRepo
+	userIdentityRepo	repos.UserIdentityRepo
+	oauthNonceRepo		repos.OAuthNonceRepo
+	oidcVerifier			OIDCVerifier
+	jwtSecretKey			string
+	accessTTL					time.Duration
+	refreshTTL				time.Duration
+	oauthNonceTTL			time.Duration
 }
 
 func NewAuthService(
-	db *gorm.DB,
-	log *logger.Logger,
-	userRepo repos.UserRepo,
-	avatarService AvatarService,
-	userTokenRepo repos.UserTokenRepo,
-	jwtSecretKey string,
-	accessTTL time.Duration,
-	refreshTTL time.Duration,
+	db								*gorm.DB,
+	log								*logger.Logger,
+	userRepo					repos.UserRepo,
+	avatarService			AvatarService,
+	userTokenRepo			repos.UserTokenRepo,
+	userIdentityRepo	repos.UserIdentityRepo,
+	oauthNonceRepo		repos.OAuthNonceRepo,
+	oidcVerifier			OIDCVerifier,
+	jwtSecretKey			string,
+	accessTTL					time.Duration,
+	refreshTTL				time.Duration,
+	oauthNonceTTL			time.Duration,
 ) AuthService {
 	serviceLog := log.With("service", "AuthService")
 	return &authService{
-		db:            db,
-		log:           serviceLog,
-		userRepo:      userRepo,
-		avatarService: avatarService,
-		userTokenRepo: userTokenRepo,
-		jwtSecretKey:  jwtSecretKey,
-		accessTTL:     accessTTL,
-		refreshTTL:    refreshTTL,
+		db:									db,
+		log:								serviceLog,
+		userRepo:						userRepo,
+		avatarService:			avatarService,
+		userTokenRepo:			userTokenRepo,
+		userIdentityRepo:		userIdentityRepo,
+		oauthNonceRepo:			oauthNonceRepo,
+		oidcVerifier:				oidcVerifier,
+		jwtSecretKey:				jwtSecretKey,
+		accessTTL:					accessTTL,
+		refreshTTL:					refreshTTL,
+		oauthNonceTTL:			oauthNonceTTL,
 	}
 }
 
@@ -272,6 +292,249 @@ func (as *authService) LogoutUser(ctx context.Context) error {
 	})
 }
 
+func (as *authService) CreateOAuthNonce(ctx context.Context, provider string) (uuid.UUID, string, int, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "google" && provider != "apple" {
+		return uuid.Nil, "", 0, fmt.Errorf("unsupported provider")
+	}
+	nonce := randomNonce(32) // raw nonce returned to client
+	nonceHash := hashNonceBase64URL(nonce)
+	expiresAt := time.Now().Add(as.oauthNonceTTL)
+	n := &types.OAuthNonce{
+		ID:        uuid.New(),
+		Provider:  provider,
+		NonceHash: nonceHash,
+		ExpiresAt: expiresAt,
+	}
+	if err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_, err := as.oauthNonceRepo.Create(ctx, tx, []*types.OAuthNonce{n})
+		return err
+	}); err != nil {
+		return uuid.Nil, "", 0, fmt.Errorf("failed to create oauth nonce: %w", err)
+	}
+	return n.ID, nonce, int(as.oauthNonceTTL.Seconds()), nil
+}
+
+func (as *authService) OAuthLoginGoogle(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error) {
+	return as.oauthLogin(ctx, "google", idToken, nonceID, firstName, lastName)
+}
+
+func (as *authService) OAuthLoginApple(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error) {
+	return as.oauthLogin(ctx, "apple", idToken, nonceID, firstName, lastName)
+}
+
+func (as *authService) oauthLogin(ctx context.Context, ext *ExternalIdentity, fallbackFirst, fallbackLast string) (string, string, error) {
+	if ext == nil || strings.TrimSpace(ext.Sub) == "" || strings.TrimSpace(ext.Provider) == "" {
+		return "", "", fmt.Errorf("invalid external identity")
+	}
+	var accessToken, refreshToken string
+	err := as.db.WithContext(ctx).Transaction(func(ctx *gorm.DB) error {
+		u, err := as.findOrCreateUserForExternalIdentity(ctx, tx, ext, fallbackFirst, fallbackLast)
+		if err != nil { return err }
+		a, r, err := as.issueSession(ctx, tx, u)
+		if err != nil { return err }
+		accessToken, refreshToken = a, r
+		return nil
+	})
+	if err != nil { return "", "", err }
+	return accessToken, refreshToken, nil
+}
+
+func (as *authService) oauthLogin(ctx context.Context, provider string, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error) {
+	if nonceID == uuid.Nil {
+		return "", "", fmt.Errorf("nonce_id is required")
+	}
+	var accessToken, refreshToken string
+	err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1) Load nonce record
+		nonces, err := as.oauthNonceRepo.GetByIDs(ctx, tx, []uuid.UUID{nonceID})
+		if err != nil {
+			return fmt.Errorf("failed to load oauth nonce: %w", err)
+		}
+		if len(nonces) == 0 || nonces[0] == nil {
+			return fmt.Errorf("oauth nonce not found")
+		}
+		n := nonces[0]
+		if n.Provider != provider {
+			return fmt.Errorf("nonce provider mismatch")
+		}
+		if n.UsedAt != nil {
+			return fmt.Errorf("oauth nonce already used")
+		}
+		if time.Now().After(n.ExpiresAt) {
+			return fmt.Errorf("oauth nonce expired")
+		}
+		// 2) Verify ID token INCLUDING nonce
+		var ext *ExternalIdentity
+		switch provider {
+		case "google":
+			ext, err = as.oidcVerifier.VerifyGoogleIDToken(ctx, idToken, n.NonceHash)
+		case "apple":
+			ext, err = as.oidcVerifier.VerifyAppleIDToken(ctx, idToken, n.NonceHash)
+		default:
+			return fmt.Errorf("unsupported provider")
+		}
+		if err != nil {
+			return fmt.Errorf("id_token verification failed: %w", err)
+		}
+		// 3) Consume nonce (single-use) AFTER verification but BEFORE issuing session
+		if err := as.oauthNonceRepo.MarkUsed(ctx, tx, n.ID); err != nil {
+			return fmt.Errorf("failed to consume nonce: %w", err)
+		}
+		// 4) Find or create user (this is signup+login in one)
+		user, err := as.findOrCreateUserForExternalIdentity(ctx, tx, provider, ext, firstName, lastName)
+		if err != nil {
+			return err
+		}
+		// 5) Issue your normal session (JWT + refresh)
+		a, r, err := as.issueSession(ctx, tx, user)
+		if err != nil {
+			return err
+		}
+		accessToken, refreshToken = a, r
+		return nil
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return accessToken, refreshToken, nil
+}
+
+func (as *authService) findOrCreateUserForExternalIdentity(
+	ctx context.Context,
+	tx *gorm.DB,
+	provider string,
+	ext *ExternalIdentity,
+	fallbackFirst string,
+	fallbackLast string,
+) (*types.User, error) {
+	if ext == nil || strings.TrimSpace(ext.Sub) == "" {
+		return nil, fmt.Errorf("invalid external identity")
+	}
+	// 1) lookup by (provider, sub)
+	ids, err := as.userIdentityRepo.GetByProviderSubs(ctx, tx, provider, []string{ext.Sub})
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup identity: %w", err)
+	}
+	if len(ids) > 0 && ids[0] != nil {
+		users, uErr := as.userRepo.GetByIDs(ctx, tx, []uuid.UUID{ids[0].UserID})
+		if uErr != nil {
+			return nil, fmt.Errorf("failed to load user for identity: %w", uErr)
+		}
+		if len(users) == 0 {
+			return nil, fmt.Errorf("user not found for identity")
+		}
+		return users[0], nil
+	}
+	// 2) OPTIONAL: link to existing user by verified email to avoid dup accounts
+	var existingUser *types.User
+	if ext.EmailVerified && strings.TrimSpace(ext.Email) != "" {
+		found, err := as.userRepo.GetByEmails(ctx, tx, []string{ext.Email})
+		if err != nil {
+			return nil, fmt.Errorf("failed to lookup user by email: %w", err)
+		}
+		if len(found) > 0 {
+			existingUser = found[0]
+		}
+	}
+	// 3) Create user if needed
+	if existingUser == nil {
+		if strings.TrimSpace(ext.Email) == "" {
+			// You require user.email NOT NULL; Apple will provide email on first authorization.
+			return nil, fmt.Errorf("email_required_for_first_time_oauth_signup")
+		}
+		first := strings.TrimSpace(ext.FirstName)
+		last := strings.TrimSpace(ext.LastName)
+		if first == "" {
+			first = strings.TrimSpace(fallbackFirst)
+		}
+		if last == "" {
+			last = strings.TrimSpace(fallbackLast)
+		}
+		if first == "" {
+			first = "New"
+		}
+		if last == "" {
+			last = "User"
+		}
+		u := &types.User{
+			ID:        uuid.New(),
+			Email:     ext.Email,
+			FirstName: first,
+			LastName:  last,
+		}
+		// Password is NOT NULL; set random hashed password so password-login isn't usable unless you add "set password".
+		raw := randomNonce(48)
+		hashed, err := bcrypt.GenerateFromPassword([]byte(raw), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash generated password: %w", err)
+		}
+		u.Password = string(hashed)
+		if ucaErr := as.avatarService.CreateAndUploadUserAvatar(ctx, tx, u); ucaErr != nil {
+			return nil, fmt.Errorf("failed to create and upload user avatar: %w", ucaErr)
+		}
+		if _, err := as.userRepo.Create(ctx, tx, []*types.User{u}); err != nil {
+			return nil, fmt.Errorf("failed to create user: %w", err)
+		}
+		existingUser = u
+	}
+	// 4) Create identity mapping
+	ui := &types.UserIdentity{
+		ID:            uuid.New(),
+		UserID:        existingUser.ID,
+		Provider:      provider,
+		ProviderSub:   ext.Sub,
+		Email:         ext.Email,
+		EmailVerified: ext.EmailVerified,
+	}
+	if _, err := as.userIdentityRepo.Create(ctx, tx, []*types.UserIdentity{ui}); err != nil {
+		return nil, fmt.Errorf("failed to create user identity: %w", err)
+	}
+	return existingUser, nil
+}
+
+func (as *authService) issueSession(ctx context.Context, tx *gorm.DB, user *types.User) (string, string, error) {
+	// clean expired tokens
+	foundTokens, ftErr := as.userTokenRepo.GetByUserIDs(ctx, tx, []uuid.UUID{user.ID})
+	if ftErr != nil {
+		as.log.Warn("Failed to check user tokens", "error", ftErr)
+		return "", "", fmt.Errorf("failed to check user tokens: %w", ftErr)
+	}
+	now := time.Now()
+	var expired []*types.UserToken
+	for _, t := range foundTokens {
+		if t != nil && t.ExpiresAt.Before(now) {
+			expired = append(expired, t)
+		}
+	}
+	if len(expired) > 0 {
+		if dtErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, expired); dtErr != nil {
+			as.log.Warn("Failed to delete expired user tokens", "error", dtErr)
+			return "", "", fmt.Errorf("failed to delete expired user tokens: %w", dtErr)
+		}
+	}
+	accessToken, err := as.generateAccessToken(ctx, tx, user)
+	if err != nil {
+		return "", "", fmt.Errorf("generate access token error: %w", err)
+	}
+	refreshToken := uuid.New().String()
+	expiresAt := time.Now().Add(as.refreshTTL)
+	userToken := types.UserToken{
+		ID:           uuid.New(),
+		UserID:       user.ID,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    expiresAt,
+	}
+	if _, err := as.userTokenRepo.Create(ctx, tx, []*types.UserToken{&userToken}); err != nil {
+		as.log.Warn("Create User Token Error", "error", err)
+		return "", "", fmt.Errorf("create user token error: %w", err)
+	}
+	return accessToken, refreshToken, nil
+}
+
+
+
 func (as *authService) generateAccessToken(ctx context.Context, tx *gorm.DB, user *types.User) (string, error) {
 	claims := JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -326,3 +589,21 @@ func (as *authService) SetContextFromToken(ctx context.Context, tokenString stri
 func (as *authService) GetAccessTTL() time.Duration {
 	return as.accessTTL
 }
+
+func randomSecret(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return uuid.New().String()
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+
+
+
+
+
+
+
+
+

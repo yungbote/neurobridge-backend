@@ -13,6 +13,8 @@ func AutoMigrateAll(db *gorm.DB) error {
 		// =========================
 		&types.User{},
 		&types.UserToken{},
+		&types.UserIdentity{},
+		&types.OAuthNonce{},
 
 		// =========================
 		// Materials (uploads + extraction)
@@ -91,13 +93,59 @@ func AutoMigrateAll(db *gorm.DB) error {
 	)
 }
 
-func (s *PostgresService) AutoMigrateAll() error {
-	s.log.Info("Auto migrating postgres tables...")
-
-	err := AutoMigrateAll(s.db)
-	if err != nil {
-		s.log.Error("Auto migration failed", "error", err)
-		return err
+func EnsureAuthIndexes(db *gorm.DB) error {
+	// uuid-ossp is already enabled in NewPostgresService, but safe to re-run
+	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`).Error; err != nil {
+		return fmt.Errorf("enable uuid-ossp: %w", err)
+	}
+	// user_identity
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_identity_user_id ON user_identity(user_id);`).Error; err != nil {
+		return fmt.Errorf("create idx_user_identity_user_id: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_identity_provider_sub
+		ON user_identity(provider, provider_sub)
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_user_identity_provider_sub: %w", err)
+	}
+	// oauth_nonce
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_oauth_nonce_expires_at ON oauth_nonce(expires_at);`).Error; err != nil {
+		return fmt.Errorf("create idx_oauth_nonce_expires_at: %w", err)
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_oauth_nonce_provider_used ON oauth_nonce(provider, used_at);`).Error; err != nil {
+		return fmt.Errorf("create idx_oauth_nonce_provider_used: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_nonce_provider_hash_active
+		ON oauth_nonce(provider, nonce_hash)
+		WHERE deleted_at IS NULL AND used_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_oauth_nonce_provider_hash_active: %w", err)
 	}
 	return nil
 }
+
+func (s *PostgresService) AutoMigrateAll() error {
+	s.log.Info("Auto migrating postgres tables...")
+	if err := AutoMigrateAll(s.db); err != nil {
+		s.log.Error("Auto migration failed", "error", err)
+		return err
+	}
+	if err := EnsureAuthIndexes(s.db); err != nil {
+		s.log.Error("Auth index migration failed", "error", err)
+		return err
+	}
+
+	return nil
+}
+
+
+
+
+
+
+
+
+
+

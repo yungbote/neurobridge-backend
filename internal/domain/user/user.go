@@ -41,3 +41,13 @@ type UserProfileVector struct {
 }
 
 func (UserProfileVector) TableName() string { return "user_profile_vector" }
+
+
+
+
+
+
+
+
+
+

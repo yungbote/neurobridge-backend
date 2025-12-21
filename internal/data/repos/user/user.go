@@ -98,3 +98,13 @@ func (ur *userRepo) EmailExists(ctx context.Context, tx *gorm.DB, userEmail stri
 	exists := count > 0
 	return exists, nil
 }
+
+
+
+
+
+
+
+
+
+
