@@ -5,7 +5,8 @@ json/serviceaccounts/*.json
 
 .cache/
 
-
+.gomodcache/
+.gocache/
 
 
 
