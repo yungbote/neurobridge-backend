@@ -269,6 +269,10 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 	}
 
 	_ = p.saga.MarkSagaStatus(jc.Ctx, sagaID, services.SagaStatusSucceeded)
+
+	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
+	p.enqueueChatPathIndex(jc, pathID)
+
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),
 		"saga_id":         sagaID.String(),
@@ -512,6 +516,10 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 	}
 
 	_ = p.saga.MarkSagaStatus(jc.Ctx, sagaID, services.SagaStatusSucceeded)
+
+	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
+	p.enqueueChatPathIndex(jc, pathID)
+
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),
 		"saga_id":         sagaID.String(),
@@ -554,6 +562,17 @@ func (p *Pipeline) failAndCompensateWithStage(jc *jobrt.Context, st *state, saga
 	_ = p.saga.Compensate(jc.Ctx, sagaID)
 	jc.Fail(jobStage, err)
 	return nil
+}
+
+func (p *Pipeline) enqueueChatPathIndex(jc *jobrt.Context, pathID uuid.UUID) {
+	if p == nil || p.jobs == nil || jc == nil || jc.Job == nil || pathID == uuid.Nil {
+		return
+	}
+	payload := map[string]any{"path_id": pathID.String()}
+	entityID := pathID
+	if _, err := p.jobs.Enqueue(jc.Ctx, nil, jc.Job.OwnerUserID, "chat_path_index", "path", &entityID, payload); err != nil {
+		p.log.Warn("Failed to enqueue chat_path_index", "error", err, "path_id", pathID.String())
+	}
 }
 
 func (p *Pipeline) saveState(jc *jobrt.Context, tx *gorm.DB, st *state) error {

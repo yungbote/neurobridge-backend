@@ -91,6 +91,21 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.SagaRun{},
 		&types.SagaAction{},
 		&types.JobRun{},
+		&types.JobRunEvent{},
+
+		// =========================
+		// Chat
+		// =========================
+		&types.ChatThread{},
+		&types.ChatMessage{},
+		&types.ChatThreadState{},
+		&types.ChatSummaryNode{},
+		&types.ChatMemoryItem{},
+		&types.ChatEntity{},
+		&types.ChatEdge{},
+		&types.ChatClaim{},
+		&types.ChatDoc{},
+		&types.ChatTurn{},
 	)
 }
 
@@ -127,6 +142,107 @@ func EnsureAuthIndexes(db *gorm.DB) error {
 	return nil
 }
 
+func EnsureChatIndexes(db *gorm.DB) error {
+	// Full-text search over contextual_text (lexical retrieval view).
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_doc_fts
+		ON chat_doc
+		USING GIN (to_tsvector('english', contextual_text));
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_doc_fts: %w", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_doc_scope_type
+		ON chat_doc (user_id, scope, scope_id, doc_type, created_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_doc_scope_type: %w", err)
+	}
+
+	// Fast message pagination per thread.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_message_thread_seq
+		ON chat_message (thread_id, seq);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_message_thread_seq: %w", err)
+	}
+
+	// SQL-only fallback retrieval: lexical search over canonical messages.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_message_fts
+		ON chat_message
+		USING GIN (to_tsvector('english', content))
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_message_fts: %w", err)
+	}
+
+	// Dedupe client retries for user messages.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_message_idempotency_user
+		ON chat_message (thread_id, user_id, idempotency_key)
+		WHERE deleted_at IS NULL AND role = 'user' AND idempotency_key <> '';
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_message_idempotency_user: %w", err)
+	}
+
+	// Fast thread listing per user.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_thread_user_status_last
+		ON chat_thread (user_id, status, last_message_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_thread_user_status_last: %w", err)
+	}
+
+	// Graph helpers.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_entity_user_scope_name
+		ON chat_entity (user_id, scope, scope_id, lower(name));
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_entity_user_scope_name: %w", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_edge_user_scope_src
+		ON chat_edge (user_id, scope, scope_id, src_entity_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_edge_user_scope_src: %w", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_edge_user_scope_dst
+		ON chat_edge (user_id, scope, scope_id, dst_entity_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_edge_user_scope_dst: %w", err)
+	}
+
+	// Memory helpers.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_memory_user_scope_kind
+		ON chat_memory_item (user_id, scope, scope_id, kind);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_memory_user_scope_kind: %w", err)
+	}
+
+	// Turn tracing.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_turn_user_thread_user_message
+		ON chat_turn (user_id, thread_id, user_message_id)
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_turn_user_thread_user_message: %w", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_chat_turn_thread_created_at
+		ON chat_turn (thread_id, created_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_chat_turn_thread_created_at: %w", err)
+	}
+
+	return nil
+}
+
 func (s *PostgresService) AutoMigrateAll() error {
 	s.log.Info("Auto migrating postgres tables...")
 	if err := AutoMigrateAll(s.db); err != nil {
@@ -137,16 +253,10 @@ func (s *PostgresService) AutoMigrateAll() error {
 		s.log.Error("Auth index migration failed", "error", err)
 		return err
 	}
+	if err := EnsureChatIndexes(s.db); err != nil {
+		s.log.Error("Chat index migration failed", "error", err)
+		return err
+	}
 
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

@@ -85,7 +85,7 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "could_not_read_files", nil)
 		return
 	}
-	set, job, err := h.workflow.UploadMaterialsAndStartLearningBuild(c.Request.Context(), nil, userID, uploaded)
+	set, pathID, thread, job, err := h.workflow.UploadMaterialsAndStartLearningBuildWithChat(c.Request.Context(), nil, userID, uploaded)
 	if err != nil {
 		response.RespondError(c, http.StatusInternalServerError, "workflow_failed", err)
 		return
@@ -102,6 +102,8 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 	response.RespondOK(c, gin.H{
 		"ok":              true,
 		"material_set_id": set.ID,
+		"path_id":         pathID,
+		"thread_id":       thread.ID,
 		"job_id":          job.ID,
 	})
 }

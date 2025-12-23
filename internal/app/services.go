@@ -9,6 +9,11 @@ import (
 
 	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chain_signature_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_maintain"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_path_index"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_purge"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_rebuild"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_respond"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/completed_unit_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_cluster_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
@@ -41,8 +46,8 @@ type Services struct {
 	File   services.FileService
 
 	// Auth + domain
-	Auth     services.AuthService
-	OIDCVer	 services.OIDCVerifier
+	Auth    services.AuthService
+	OIDCVer services.OIDCVerifier
 
 	User     services.UserService
 	Material services.MaterialService
@@ -58,6 +63,8 @@ type Services struct {
 	JobService     services.JobService
 	Workflow       services.WorkflowService
 	CourseNotifier services.CourseNotifier
+	ChatNotifier   services.ChatNotifier
+	Chat           services.ChatService
 
 	// Orchestrator
 	ContentExtractor ingestion.ContentExtractionService
@@ -81,7 +88,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	fileService := services.NewFileService(db, log, clients.GcpBucket, repos.MaterialFile)
 
 	oidcVerifier, err := services.NewOIDCVerifier(nil, cfg.GoogleOIDCClientID, cfg.AppleOIDCClientID)
-	if err != nil { panic(err) }
+	if err != nil {
+		panic(err)
+	}
 
 	authService := services.NewAuthService(
 		db, log,
@@ -121,8 +130,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	jobNotifier := services.NewJobNotifier(emitter)
 	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier)
-	workflow := services.NewWorkflowService(db, log, materialService, jobService)
+
+	// Shared bootstrap service (used by workflows + learning pipelines).
+	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
+
+	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.ChatThread)
 	courseNotifier := services.NewCourseNotifier(emitter)
+	chatNotifier := services.NewChatNotifier(emitter)
 
 	extractor := ingestion.NewContentExtractionService(
 		db,
@@ -141,9 +155,85 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	// Job registry
 	jobRegistry := jobruntime.NewRegistry()
 
+	// --------------------
+	// Chat pipelines
+	// --------------------
+	chatRespond := chat_respond.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.ChatThreadState,
+		repos.ChatSummaryNode,
+		repos.ChatDoc,
+		repos.ChatTurn,
+		repos.JobRun,
+		jobService,
+		chatNotifier,
+	)
+	if err := jobRegistry.Register(chatRespond); err != nil {
+		return Services{}, err
+	}
+
+	chatMaintain := chat_maintain.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.ChatThreadState,
+		repos.ChatSummaryNode,
+		repos.ChatDoc,
+		repos.ChatMemoryItem,
+		repos.ChatEntity,
+		repos.ChatEdge,
+		repos.ChatClaim,
+	)
+	if err := jobRegistry.Register(chatMaintain); err != nil {
+		return Services{}, err
+	}
+
+	chatRebuild := chat_rebuild.New(
+		db,
+		log,
+		clients.PineconeVectorStore,
+		repos.JobRun,
+		jobService,
+	)
+	if err := jobRegistry.Register(chatRebuild); err != nil {
+		return Services{}, err
+	}
+
+	chatPurge := chat_purge.New(
+		db,
+		log,
+		clients.PineconeVectorStore,
+	)
+	if err := jobRegistry.Register(chatPurge); err != nil {
+		return Services{}, err
+	}
+
+	chatPathIndex := chat_path_index.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		repos.ChatDoc,
+		repos.Path,
+		repos.PathNode,
+		repos.PathNodeActivity,
+		repos.Activity,
+		repos.Concept,
+	)
+	if err := jobRegistry.Register(chatPathIndex); err != nil {
+		return Services{}, err
+	}
+
 	// Shared learning_build services (durable saga + path bootstrap).
 	sagaSvc := services.NewSagaService(db, log, repos.SagaRun, repos.SagaAction, clients.GcpBucket, clients.PineconeVectorStore)
-	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
 
 	// --------------------
 	// Learning build (Path-centric) pipelines
@@ -361,6 +451,18 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		worker = jobworker.NewWorker(db, log, repos.JobRun, jobRegistry, jobNotifier)
 	}
 
+	chatService := services.NewChatService(
+		db,
+		log,
+		repos.Path,
+		repos.JobRun,
+		jobService,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.ChatTurn,
+		chatNotifier,
+	)
+
 	return Services{
 		Avatar:           avatarService,
 		File:             fileService,
@@ -375,19 +477,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		JobService:       jobService,
 		Workflow:         workflow,
 		CourseNotifier:   courseNotifier,
+		ChatNotifier:     chatNotifier,
+		Chat:             chatService,
 		ContentExtractor: extractor,
 		JobRegistry:      jobRegistry,
 		JobWorker:        worker,
 		SSEBus:           clients.SSEBus,
 	}, nil
 }
-
-
-
-
-
-
-
-
-
-

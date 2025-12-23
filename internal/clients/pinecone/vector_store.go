@@ -10,8 +10,15 @@ import (
 
 type VectorStore interface {
 	Upsert(ctx context.Context, namespace string, vectors []Vector) error
+	// QueryMatches returns IDs with their similarity scores (higher is better).
+	QueryMatches(ctx context.Context, namespace string, q []float32, topK int, filter map[string]any) ([]VectorMatch, error)
 	QueryIDs(ctx context.Context, namespace string, q []float32, topK int, filter map[string]any) ([]string, error)
 	DeleteIDs(ctx context.Context, namespace string, ids []string) error
+}
+
+type VectorMatch struct {
+	ID    string
+	Score float64
 }
 
 type vectorStore struct {
@@ -83,6 +90,23 @@ func (s *vectorStore) QueryIDs(ctx context.Context, namespace string, q []float3
 	if s == nil || s.pc == nil {
 		return nil, fmt.Errorf("vector store unavailable")
 	}
+	matches, err := s.QueryMatches(ctx, namespace, q, topK, filter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if strings.TrimSpace(m.ID) != "" {
+			out = append(out, m.ID)
+		}
+	}
+	return out, nil
+}
+
+func (s *vectorStore) QueryMatches(ctx context.Context, namespace string, q []float32, topK int, filter map[string]any) ([]VectorMatch, error) {
+	if s == nil || s.pc == nil {
+		return nil, fmt.Errorf("vector store unavailable")
+	}
 	ns := s.qualifyNamespace(namespace)
 	resp, err := s.pc.Query(ctx, s.indexHost, QueryRequest{
 		Namespace:       ns,
@@ -95,11 +119,12 @@ func (s *vectorStore) QueryIDs(ctx context.Context, namespace string, q []float3
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(resp.Matches))
+	out := make([]VectorMatch, 0, len(resp.Matches))
 	for _, m := range resp.Matches {
-		if strings.TrimSpace(m.ID) != "" {
-			out = append(out, m.ID)
+		if strings.TrimSpace(m.ID) == "" {
+			continue
 		}
+		out = append(out, VectorMatch{ID: m.ID, Score: m.Score})
 	}
 	return out, nil
 }

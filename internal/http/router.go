@@ -13,6 +13,7 @@ type RouterConfig struct {
 	RealtimeHandler *httpH.RealtimeHandler
 
 	MaterialHandler *httpH.MaterialHandler
+	ChatHandler     *httpH.ChatHandler
 	PathHandler     *httpH.PathHandler
 	ActivityHandler *httpH.ActivityHandler
 	CourseHandler   *httpH.CourseHandler
@@ -62,6 +63,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Realtime (SSE)
 		if cfg.RealtimeHandler != nil {
 			protected.GET("/sse/stream", cfg.RealtimeHandler.SSEStream)
+			// Correct spelling (keep legacy typo route for backwards-compat).
+			protected.POST("/sse/subscribe", cfg.RealtimeHandler.SSESubscribe)
 			protected.POST("/sse/subsceribe", cfg.RealtimeHandler.SSESubscribe)
 			protected.POST("/sse/unsubscribe", cfg.RealtimeHandler.SSEUnsubscribe)
 		}
@@ -78,6 +81,21 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Materials
 		if cfg.MaterialHandler != nil {
 			protected.POST("/material-sets/upload", cfg.MaterialHandler.UploadMaterials)
+		}
+
+		// Chat
+		if cfg.ChatHandler != nil {
+			protected.POST("/chat/threads", cfg.ChatHandler.CreateThread)
+			protected.GET("/chat/threads", cfg.ChatHandler.ListThreads)
+			protected.GET("/chat/threads/:id", cfg.ChatHandler.GetThread)
+			protected.POST("/chat/threads/:id/rebuild", cfg.ChatHandler.RebuildThread)
+			protected.DELETE("/chat/threads/:id", cfg.ChatHandler.DeleteThread)
+			protected.POST("/chat/threads/:id/messages", cfg.ChatHandler.SendMessage)
+			protected.GET("/chat/threads/:id/messages", cfg.ChatHandler.ListMessages)
+			protected.PATCH("/chat/threads/:id/messages/:message_id", cfg.ChatHandler.UpdateMessage)
+			protected.DELETE("/chat/threads/:id/messages/:message_id", cfg.ChatHandler.DeleteMessage)
+
+			protected.GET("/chat/turns/:id", cfg.ChatHandler.GetTurn)
 		}
 
 		// Paths (Path-centric learning)

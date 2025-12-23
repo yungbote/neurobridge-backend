@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -32,10 +35,14 @@ func (n *jobNotifier) JobCreated(userID uuid.UUID, job *types.JobRun) {
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
+	data := map[string]any{"job": job}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
 	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
 		Event:   realtime.SSEEventJobCreated,
-		Data:    map[string]any{"job": job},
+		Data:    data,
 	})
 }
 
@@ -43,17 +50,21 @@ func (n *jobNotifier) JobProgress(userID uuid.UUID, job *types.JobRun, stage str
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
+	data := map[string]any{
+		"job_id":   safeJobID(job),
+		"job_type": safeJobType(job),
+		"stage":    stage,
+		"progress": progress,
+		"message":  message,
+		"job":      job,
+	}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
 	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
 		Event:   realtime.SSEEventJobProgress,
-		Data: map[string]any{
-			"job_id":   safeJobID(job),
-			"job_type": safeJobType(job),
-			"stage":    stage,
-			"progress": progress,
-			"message":  message,
-			"job":      job,
-		},
+		Data:    data,
 	})
 }
 
@@ -61,16 +72,20 @@ func (n *jobNotifier) JobFailed(userID uuid.UUID, job *types.JobRun, stage strin
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
+	data := map[string]any{
+		"job_id":   safeJobID(job),
+		"job_type": safeJobType(job),
+		"stage":    stage,
+		"error":    errorMessage,
+		"job":      job,
+	}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
 	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
 		Event:   realtime.SSEEventJobFailed,
-		Data: map[string]any{
-			"job_id":   safeJobID(job),
-			"job_type": safeJobType(job),
-			"stage":    stage,
-			"error":    errorMessage,
-			"job":      job,
-		},
+		Data:    data,
 	})
 }
 
@@ -78,14 +93,18 @@ func (n *jobNotifier) JobDone(userID uuid.UUID, job *types.JobRun) {
 	if n == nil || n.emit == nil || userID == uuid.Nil {
 		return
 	}
+	data := map[string]any{
+		"job_id":   safeJobID(job),
+		"job_type": safeJobType(job),
+		"job":      job,
+	}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
 	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
 		Event:   realtime.SSEEventJobDone,
-		Data: map[string]any{
-			"job_id":   safeJobID(job),
-			"job_type": safeJobType(job),
-			"job":      job,
-		},
+		Data:    data,
 	})
 }
 
@@ -207,4 +226,34 @@ func safeJobType(job *types.JobRun) string {
 		return ""
 	}
 	return job.JobType
+}
+
+func jobLinkData(job *types.JobRun) map[string]any {
+	if job == nil || len(job.Payload) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(job.Payload, &m); err != nil {
+		return nil
+	}
+
+	out := map[string]any{}
+
+	// Normalize chat thread linkage to "thread_id" for frontend filtering.
+	if tid := strings.TrimSpace(fmt.Sprint(m["thread_id"])); tid != "" {
+		out["thread_id"] = tid
+	} else if tid := strings.TrimSpace(fmt.Sprint(m["chat_thread_id"])); tid != "" {
+		out["thread_id"] = tid
+	}
+	if pid := strings.TrimSpace(fmt.Sprint(m["path_id"])); pid != "" {
+		out["path_id"] = pid
+	}
+	if msid := strings.TrimSpace(fmt.Sprint(m["material_set_id"])); msid != "" {
+		out["material_set_id"] = msid
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

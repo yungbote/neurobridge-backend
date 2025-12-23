@@ -55,6 +55,16 @@ type Repos struct {
 	TeachingPattern      repos.TeachingPatternRepo
 	UserCompletedUnit    repos.UserCompletedUnitRepo
 	UserLibraryIndex     repos.UserLibraryIndexRepo
+	ChatThread					 repos.ChatThreadRepo
+	ChatMessage					 repos.ChatMessageRepo
+	ChatThreadState      repos.ChatThreadStateRepo
+	ChatSummaryNode      repos.ChatSummaryNodeRepo
+	ChatMemoryItem       repos.ChatMemoryItemRepo
+	ChatEntity           repos.ChatEntityRepo
+	ChatEdge             repos.ChatEdgeRepo
+	ChatClaim            repos.ChatClaimRepo
+	ChatDoc              repos.ChatDocRepo
+	ChatTurn             repos.ChatTurnRepo
 }
 
 func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
@@ -108,10 +118,18 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		TeachingPattern:      repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:    repos.NewUserCompletedUnitRepo(db, log),
 		UserLibraryIndex:     repos.NewUserLibraryIndexRepo(db, log),
+		ChatThread:					  repos.NewChatThreadRepo(db, log),
+		ChatMessage:					repos.NewChatMessageRepo(db, log),
+		ChatThreadState:      repos.NewChatThreadStateRepo(db, log),
+		ChatSummaryNode:      repos.NewChatSummaryNodeRepo(db, log),
+		ChatMemoryItem:       repos.NewChatMemoryItemRepo(db, log),
+		ChatEntity:           repos.NewChatEntityRepo(db, log),
+		ChatEdge:             repos.NewChatEdgeRepo(db, log),
+		ChatClaim:            repos.NewChatClaimRepo(db, log),
+		ChatDoc:              repos.NewChatDocRepo(db, log),
+		ChatTurn:             repos.NewChatTurnRepo(db, log),
 	}
 }
-
-
 
 
 

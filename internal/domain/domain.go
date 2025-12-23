@@ -10,6 +10,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/products"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
+	"github.com/yungbote/neurobridge-backend/internal/domain/chat"
 )
 
 const (
@@ -75,6 +76,7 @@ type Segment = materials.Segment
 func PtrFloat(v float64) *float64 { return materials.PtrFloat(v) }
 
 type JobRun = jobs.JobRun
+type JobRunEvent = jobs.JobRunEvent
 type SagaRun = jobs.SagaRun
 type SagaAction = jobs.SagaAction
 
@@ -125,7 +127,16 @@ type UserCompletedUnit = products.UserCompletedUnit
 type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
 
-
+type ChatThread = chat.ChatThread
+type ChatMessage = chat.ChatMessage
+type ChatThreadState = chat.ChatThreadState
+type ChatSummaryNode = chat.ChatSummaryNode
+type ChatMemoryItem = chat.ChatMemoryItem
+type ChatEntity = chat.ChatEntity
+type ChatEdge = chat.ChatEdge
+type ChatClaim = chat.ChatClaim
+type ChatDoc = chat.ChatDoc
+type ChatTurn = chat.ChatTurn
 
 
 

@@ -6,6 +6,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/learning"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/materials"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/user"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -68,6 +69,17 @@ type TeachingPatternRepo = learning.TeachingPatternRepo
 type JobRunRepo = jobs.JobRunRepo
 type SagaRunRepo = jobs.SagaRunRepo
 type SagaActionRepo = jobs.SagaActionRepo
+
+type ChatThreadRepo = chat.ChatThreadRepo
+type ChatMessageRepo = chat.ChatMessageRepo
+type ChatThreadStateRepo = chat.ChatThreadStateRepo
+type ChatSummaryNodeRepo = chat.ChatSummaryNodeRepo
+type ChatMemoryItemRepo = chat.ChatMemoryItemRepo
+type ChatEntityRepo = chat.ChatEntityRepo
+type ChatEdgeRepo = chat.ChatEdgeRepo
+type ChatClaimRepo = chat.ChatClaimRepo
+type ChatDocRepo = chat.ChatDocRepo
+type ChatTurnRepo = chat.ChatTurnRepo
 
 func NewUserRepo(db *gorm.DB, baseLog *logger.Logger) UserRepo { return user.NewUserRepo(db, baseLog) }
 func NewUserProfileVectorRepo(db *gorm.DB, baseLog *logger.Logger) UserProfileVectorRepo {
@@ -237,8 +249,45 @@ func NewConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEvidence
 	return learning.NewConceptEvidenceRepo(db, baseLog)
 }
 
+func NewChatThreadRepo(db *gorm.DB, baseLog *logger.Logger) ChatThreadRepo {
+	return chat.NewChatThreadRepo(db, baseLog)
+}
 
+func NewChatMessageRepo(db *gorm.DB, baseLog *logger.Logger) ChatMessageRepo {
+	return chat.NewChatMessageRepo(db, baseLog)
+}
 
+func NewChatThreadStateRepo(db *gorm.DB, baseLog *logger.Logger) ChatThreadStateRepo {
+	return chat.NewChatThreadStateRepo(db, baseLog)
+}
+
+func NewChatSummaryNodeRepo(db *gorm.DB, baseLog *logger.Logger) ChatSummaryNodeRepo {
+	return chat.NewChatSummaryNodeRepo(db, baseLog)
+}
+
+func NewChatMemoryItemRepo(db *gorm.DB, baseLog *logger.Logger) ChatMemoryItemRepo {
+	return chat.NewChatMemoryItemRepo(db, baseLog)
+}
+
+func NewChatEntityRepo(db *gorm.DB, baseLog *logger.Logger) ChatEntityRepo {
+	return chat.NewChatEntityRepo(db, baseLog)
+}
+
+func NewChatEdgeRepo(db *gorm.DB, baseLog *logger.Logger) ChatEdgeRepo {
+	return chat.NewChatEdgeRepo(db, baseLog)
+}
+
+func NewChatClaimRepo(db *gorm.DB, baseLog *logger.Logger) ChatClaimRepo {
+	return chat.NewChatClaimRepo(db, baseLog)
+}
+
+func NewChatDocRepo(db *gorm.DB, baseLog *logger.Logger) ChatDocRepo {
+	return chat.NewChatDocRepo(db, baseLog)
+}
+
+func NewChatTurnRepo(db *gorm.DB, baseLog *logger.Logger) ChatTurnRepo {
+	return chat.NewChatTurnRepo(db, baseLog)
+}
 
 
 

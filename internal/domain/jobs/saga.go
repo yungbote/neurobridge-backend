@@ -45,3 +45,13 @@ type SagaAction struct {
 }
 
 func (SagaAction) TableName() string { return "saga_action" }
+
+
+
+
+
+
+
+
+
+

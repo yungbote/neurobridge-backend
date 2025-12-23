@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -38,6 +39,18 @@ type Client interface {
 
 	// Multimodal: user prompt + images -> plain text
 	GenerateTextWithImages(ctx context.Context, system string, user string, images []ImageInput) (string, error)
+
+	// Stream output_text deltas without conversation state. Returns the full text.
+	StreamText(ctx context.Context, system string, user string, onDelta func(delta string)) (string, error)
+
+	// Conversations API (server-side turn storage).
+	CreateConversation(ctx context.Context) (conversationID string, err error)
+
+	// Responses API w/ conversation: instructions are not persisted automatically.
+	GenerateTextInConversation(ctx context.Context, conversationID string, instructions string, user string) (string, error)
+
+	// Stream output_text deltas for a conversation-backed response. Returns the full text.
+	StreamTextInConversation(ctx context.Context, conversationID string, instructions string, user string, onDelta func(delta string)) (string, error)
 }
 
 // ---- Backwards-compat aliases (so you don't break existing imports immediately) ----
@@ -390,6 +403,9 @@ func hasMissingEmbeddings(v [][]float32) bool {
 type responsesRequest struct {
 	Model string `json:"model"`
 
+	Conversation any `json:"conversation,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+
 	Input []struct {
 		Role    string `json:"role"`
 		Content any    `json:"content"`
@@ -400,6 +416,8 @@ type responsesRequest struct {
 	} `json:"text,omitempty"`
 
 	Temperature float64 `json:"temperature,omitempty"`
+
+	Stream bool `json:"stream,omitempty"`
 }
 
 type responsesResponse struct {
@@ -559,4 +577,298 @@ func defaultCtx(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// StreamText streams output_text deltas from the Responses API (no conversation state).
+// It is best-effort: any non-empty delta is forwarded to onDelta and accumulated into the returned text.
+func (c *client) StreamText(ctx context.Context, system string, user string, onDelta func(delta string)) (string, error) {
+	reqBody := responsesRequest{
+		Model: c.model,
+		Input: []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		}{
+			{Role: "system", Content: strings.TrimSpace(system)},
+			{Role: "user", Content: user},
+		},
+		Temperature: 0.2,
+		Stream:      true,
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(defaultCtx(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
+	}
+
+	var full strings.Builder
+	err = streamSSE(resp.Body, func(event string, data string) error {
+		// OpenAI may send "data: [DONE]" style sentinels.
+		if strings.TrimSpace(data) == "" || strings.TrimSpace(data) == "[DONE]" {
+			return nil
+		}
+
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(data), &obj); err != nil {
+			return nil
+		}
+
+		evt := strings.TrimSpace(event)
+		if t, ok := obj["type"].(string); ok && strings.TrimSpace(t) != "" {
+			evt = strings.TrimSpace(t)
+		}
+
+		if r, ok := obj["refusal"].(string); ok && strings.TrimSpace(r) != "" {
+			return fmt.Errorf("model refused: %s", r)
+		}
+		if eAny, ok := obj["error"]; ok && eAny != nil {
+			b, _ := json.Marshal(eAny)
+			return fmt.Errorf("openai stream error: %s", string(b))
+		}
+
+		if d, ok := obj["delta"].(string); ok {
+			d = strings.TrimRight(d, "\u0000")
+			if d == "" {
+				return nil
+			}
+			if strings.Contains(evt, "output_text.delta") {
+				full.WriteString(d)
+				if onDelta != nil {
+					onDelta(d)
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return full.String(), nil
+}
+
+// -------------------- Conversations API --------------------
+
+func (c *client) CreateConversation(ctx context.Context) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(ctx, "POST", "/v1/conversations", map[string]any{}, &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.ID) == "" {
+		return "", fmt.Errorf("openai create conversation: missing id")
+	}
+	return strings.TrimSpace(out.ID), nil
+}
+
+func (c *client) GenerateTextInConversation(ctx context.Context, conversationID string, instructions string, user string) (string, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", fmt.Errorf("conversation_id required")
+	}
+
+	req := responsesRequest{
+		Model:        c.model,
+		Conversation: conversationID,
+		Instructions: strings.TrimSpace(instructions),
+		Input: []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		}{
+			{Role: "user", Content: user},
+		},
+		Temperature: 0.2,
+	}
+
+	var resp responsesResponse
+	if err := c.do(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+		return "", err
+	}
+	if resp.Refusal != "" {
+		return "", fmt.Errorf("model refused: %s", resp.Refusal)
+	}
+
+	text := extractOutputText(resp)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("no output_text found in response")
+	}
+	return text, nil
+}
+
+// StreamTextInConversation streams output_text deltas from the Responses API.
+// It is best-effort: any non-empty delta is forwarded to onDelta and accumulated into the returned text.
+func (c *client) StreamTextInConversation(ctx context.Context, conversationID string, instructions string, user string, onDelta func(delta string)) (string, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", fmt.Errorf("conversation_id required")
+	}
+
+	reqBody := responsesRequest{
+		Model:        c.model,
+		Conversation: conversationID,
+		Instructions: strings.TrimSpace(instructions),
+		Input: []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		}{
+			{Role: "user", Content: user},
+		},
+		Temperature: 0.2,
+		Stream:      true,
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(defaultCtx(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
+	}
+
+	var full strings.Builder
+	err = streamSSE(resp.Body, func(event string, data string) error {
+		// OpenAI may send "data: [DONE]" style sentinels.
+		if strings.TrimSpace(data) == "" || strings.TrimSpace(data) == "[DONE]" {
+			return nil
+		}
+
+		// Some events are JSON objects with { delta: "..." }.
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(data), &obj); err != nil {
+			return nil
+		}
+
+		evt := strings.TrimSpace(event)
+		if t, ok := obj["type"].(string); ok && strings.TrimSpace(t) != "" {
+			evt = strings.TrimSpace(t)
+		}
+
+		// Refusal/error signals.
+		if r, ok := obj["refusal"].(string); ok && strings.TrimSpace(r) != "" {
+			return fmt.Errorf("model refused: %s", r)
+		}
+		if eAny, ok := obj["error"]; ok && eAny != nil {
+			b, _ := json.Marshal(eAny)
+			return fmt.Errorf("openai stream error: %s", string(b))
+		}
+
+		// Only forward deltas for delta events (or if the payload clearly carries a delta).
+		if d, ok := obj["delta"].(string); ok {
+			d = strings.TrimRight(d, "\u0000")
+			if d == "" {
+				return nil
+			}
+			if strings.Contains(evt, "output_text.delta") {
+				full.WriteString(d)
+				if onDelta != nil {
+					onDelta(d)
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return full.String(), nil
+}
+
+func streamSSE(r io.Reader, onEvent func(event string, data string) error) error {
+	br := bufio.NewReader(r)
+	var (
+		eventName string
+		dataLines []string
+	)
+
+	flush := func() error {
+		if len(dataLines) == 0 {
+			eventName = ""
+			return nil
+		}
+		data := strings.Join(dataLines, "\n")
+		dataLines = nil
+		ev := eventName
+		eventName = ""
+
+		// Capture deltas into out by reusing onEvent callback behavior.
+		// We accumulate by intercepting onEvent's side effects via a wrapper.
+		if onEvent == nil {
+			return nil
+		}
+		// Wrap: if callback wants to write deltas, it can do so via closure.
+		return onEvent(ev, data)
+	}
+
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				_ = flush()
+				break
+			}
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		// Blank line ends event.
+		if line == "" {
+			if err := flush(); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Comment.
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			continue
+		}
+	}
+
+	return nil
 }

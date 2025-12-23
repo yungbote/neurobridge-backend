@@ -19,6 +19,7 @@ type Handlers struct {
 	User     *httpH.UserHandler
 	Realtime *httpH.RealtimeHandler
 	Material *httpH.MaterialHandler
+	Chat     *httpH.ChatHandler
 	Path     *httpH.PathHandler
 	Activity *httpH.ActivityHandler
 	Course   *httpH.CourseHandler
@@ -36,6 +37,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, sseHub *re
 		User:     httpH.NewUserHandler(services.User, sseHub),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(log, services.Workflow, sseHub),
+		Chat:     httpH.NewChatHandler(services.Chat),
 		Path:     httpH.NewPathHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity, repos.Concept, repos.ConceptEdge),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
 		Course:   httpH.NewCourseHandler(log, services.Course),
@@ -54,6 +56,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		UserHandler:     handlers.User,
 		RealtimeHandler: handlers.Realtime,
 		MaterialHandler: handlers.Material,
+		ChatHandler:     handlers.Chat,
 		PathHandler:     handlers.Path,
 		ActivityHandler: handlers.Activity,
 		CourseHandler:   handlers.Course,
@@ -70,7 +73,6 @@ func wireMiddleware(log *logger.Logger, services Services) Middleware {
 		Auth: httpMW.NewAuthMiddleware(log, services.Auth),
 	}
 }
-
 
 
 
