@@ -189,13 +189,3 @@ func (r *conceptEvidenceRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, 
 	}
 	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptEvidence{}).Error
 }
-
-
-
-
-
-
-
-
-
-

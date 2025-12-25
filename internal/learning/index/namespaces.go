@@ -48,7 +48,6 @@ func ChainsNamespace(scope string, scopeID *uuid.UUID) string {
 	return fmt.Sprintf("chains:%s:%s", scope, scopeID.String())
 }
 
-
 func ActivitiesNamespace(scope string, scopeID *uuid.UUID) string {
 	if scope == "global" || scopeID == nil || *scopeID == uuid.Nil {
 		return "activities:global"
@@ -68,13 +67,3 @@ func CohortPriorsNamespace() string {
 func TeachingPatternsNamespace() string {
 	return "teaching_patterns:global"
 }
-
-
-
-
-
-
-
-
-
-

@@ -95,12 +95,12 @@ func (r *chatDocRepo) GetByIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUI
 }
 
 type ChatLexicalQuery struct {
-	UserID    uuid.UUID
-	Scope     string
-	ScopeID   *uuid.UUID
-	DocTypes  []string
-	Query     string
-	Limit     int
+	UserID   uuid.UUID
+	Scope    string
+	ScopeID  *uuid.UUID
+	DocTypes []string
+	Query    string
+	Limit    int
 }
 
 type ChatLexicalHit struct {

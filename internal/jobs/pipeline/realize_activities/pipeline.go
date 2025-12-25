@@ -24,29 +24,22 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
-	jc.Progress("realize", 2, "Creating activities")
-	out, err := steps.RealizeActivities(jc.Ctx, steps.RealizeActivitiesDeps{
-		DB:                 p.db,
-		Log:                p.log,
-		Path:               p.path,
-		PathNodes:          p.nodes,
-		PathNodeActivities: p.nodeActivities,
-		Activities:         p.activities,
-		Variants:           p.variants,
-		ActivityConcepts:   p.activityConcepts,
-		ActivityCitations:  p.activityCites,
-		Concepts:           p.concepts,
-		Files:              p.files,
-		Chunks:             p.chunks,
-		UserProfile:        p.profile,
-		AI:                 p.ai,
-		Vec:                p.vec,
-		Saga:               p.saga,
-		Bootstrap:          p.bootstrap,
-	}, steps.RealizeActivitiesInput{
+	jc.Progress("realize", 2, "Writing lessons")
+	out, err := steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
+		DB:          p.db,
+		Log:         p.log,
+		Path:        p.path,
+		PathNodes:   p.nodes,
+		Files:       p.files,
+		Chunks:      p.chunks,
+		UserProfile: p.profile,
+		AI:          p.ai,
+		Vec:         p.vec,
+		Bucket:      p.bucket,
+		Bootstrap:   p.bootstrap,
+	}, steps.NodeContentBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
-		SagaID:        sagaID,
 	})
 	if err != nil {
 		jc.Fail("realize", err)
@@ -57,8 +50,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"material_set_id": setID.String(),
 		"saga_id":         sagaID.String(),
 		"path_id":         out.PathID.String(),
-		"activities_made": out.ActivitiesMade,
-		"variants_made":   out.VariantsMade,
+		"nodes_written":   out.NodesWritten,
+		"nodes_existing":  out.NodesExisting,
 	})
 	return nil
 }

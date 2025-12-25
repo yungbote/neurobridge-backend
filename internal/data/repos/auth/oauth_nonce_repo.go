@@ -3,11 +3,11 @@ package auth
 import (
 	"context"
 	"fmt"
-	"time"
 	"github.com/google/uuid"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+	"time"
 )
 
 type OAuthNonceRepo interface {
@@ -18,8 +18,8 @@ type OAuthNonceRepo interface {
 }
 
 type oauthNonceRepo struct {
-	db				*gorm.DB
-	log				*logger.Logger
+	db  *gorm.DB
+	log *logger.Logger
 }
 
 func NewOAuthNonceRepo(db *gorm.DB, baseLog *logger.Logger) OAuthNonceRepo {
@@ -47,7 +47,9 @@ func (r *oauthNonceRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.U
 		txx = r.db
 	}
 	var results []*types.OAuthNonce
-	if len(ids) == 0 { return results, nil }
+	if len(ids) == 0 {
+		return results, nil
+	}
 	if err := txx.WithContext(ctx).Where("id IN ?", ids).Find(&results).Error; err != nil {
 		return nil, err
 	}
@@ -64,8 +66,12 @@ func (r *oauthNonceRepo) MarkUsed(ctx context.Context, tx *gorm.DB, id uuid.UUID
 		Model(&types.OAuthNonce{}).
 		Where("id = ? AND used_at IS NULL", id).
 		Update("used_at", now)
-	if res.Error != nil { return res.Error }
-	if res.RowsAffected == 0 { return fmt.Errorf("nonce already used or not found") }
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("nonce already used or not found")
+	}
 	return nil
 }
 
@@ -79,13 +85,3 @@ func (r *oauthNonceRepo) FullDeleteExpires(ctx context.Context, tx *gorm.DB, bef
 		Where("expires_at < ?", before).
 		Delete(&types.OAuthNonce{}).Error
 }
-
-
-
-
-
-
-
-
-
-

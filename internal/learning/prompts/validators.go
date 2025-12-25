@@ -32,13 +32,3 @@ func RequireAnyNonEmpty(msg string, getter ...func(Input) string) Validator {
 		return fmt.Errorf("%s", msg)
 	}
 }
-
-
-
-
-
-
-
-
-
-

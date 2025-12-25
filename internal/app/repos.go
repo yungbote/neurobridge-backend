@@ -10,8 +10,8 @@ type Repos struct {
 	User                 repos.UserRepo
 	UserProfileVector    repos.UserProfileVectorRepo
 	UserToken            repos.UserTokenRepo
-	UserIdentity				 repos.UserIdentityRepo
-	OAuthNonce					 repos.OAuthNonceRepo
+	UserIdentity         repos.UserIdentityRepo
+	OAuthNonce           repos.OAuthNonceRepo
 	Asset                repos.AssetRepo
 	MaterialSet          repos.MaterialSetRepo
 	MaterialFile         repos.MaterialFileRepo
@@ -55,8 +55,13 @@ type Repos struct {
 	TeachingPattern      repos.TeachingPatternRepo
 	UserCompletedUnit    repos.UserCompletedUnitRepo
 	UserLibraryIndex     repos.UserLibraryIndexRepo
-	ChatThread					 repos.ChatThreadRepo
-	ChatMessage					 repos.ChatMessageRepo
+	LearningNodeDoc      repos.LearningNodeDocRepo
+	LearningNodeFigure   repos.LearningNodeFigureRepo
+	LearningNodeVideo    repos.LearningNodeVideoRepo
+	DocGenerationRun     repos.LearningDocGenerationRunRepo
+	DrillInstance        repos.LearningDrillInstanceRepo
+	ChatThread           repos.ChatThreadRepo
+	ChatMessage          repos.ChatMessageRepo
 	ChatThreadState      repos.ChatThreadStateRepo
 	ChatSummaryNode      repos.ChatSummaryNodeRepo
 	ChatMemoryItem       repos.ChatMemoryItemRepo
@@ -73,8 +78,8 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		User:                 repos.NewUserRepo(db, log),
 		UserProfileVector:    repos.NewUserProfileVectorRepo(db, log),
 		UserToken:            repos.NewUserTokenRepo(db, log),
-		UserIdentity:				  repos.NewUserIdentityRepo(db, log),
-		OAuthNonce:						repos.NewOAuthNonceRepo(db, log),
+		UserIdentity:         repos.NewUserIdentityRepo(db, log),
+		OAuthNonce:           repos.NewOAuthNonceRepo(db, log),
 		Asset:                repos.NewAssetRepo(db, log),
 		MaterialSet:          repos.NewMaterialSetRepo(db, log),
 		MaterialFile:         repos.NewMaterialFileRepo(db, log),
@@ -118,8 +123,13 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		TeachingPattern:      repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:    repos.NewUserCompletedUnitRepo(db, log),
 		UserLibraryIndex:     repos.NewUserLibraryIndexRepo(db, log),
-		ChatThread:					  repos.NewChatThreadRepo(db, log),
-		ChatMessage:					repos.NewChatMessageRepo(db, log),
+		LearningNodeDoc:      repos.NewLearningNodeDocRepo(db, log),
+		LearningNodeFigure:   repos.NewLearningNodeFigureRepo(db, log),
+		LearningNodeVideo:    repos.NewLearningNodeVideoRepo(db, log),
+		DocGenerationRun:     repos.NewLearningDocGenerationRunRepo(db, log),
+		DrillInstance:        repos.NewLearningDrillInstanceRepo(db, log),
+		ChatThread:           repos.NewChatThreadRepo(db, log),
+		ChatMessage:          repos.NewChatMessageRepo(db, log),
 		ChatThreadState:      repos.NewChatThreadStateRepo(db, log),
 		ChatSummaryNode:      repos.NewChatSummaryNodeRepo(db, log),
 		ChatMemoryItem:       repos.NewChatMemoryItemRepo(db, log),
@@ -130,11 +140,3 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		ChatTurn:             repos.NewChatTurnRepo(db, log),
 	}
 }
-
-
-
-
-
-
-
-

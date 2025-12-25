@@ -37,4 +37,3 @@ type ChatDoc struct {
 }
 
 func (ChatDoc) TableName() string { return "chat_doc" }
-

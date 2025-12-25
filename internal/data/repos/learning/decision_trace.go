@@ -79,13 +79,3 @@ func (r *decisionTraceRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID 
 	}
 	return out, nil
 }
-
-
-
-
-
-
-
-
-
-

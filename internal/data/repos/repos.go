@@ -2,11 +2,11 @@ package repos
 
 import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/auth"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/jobs"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/learning"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/materials"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/user"
-	"github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -65,6 +65,11 @@ type ChainSignatureRepo = learning.ChainSignatureRepo
 type ChainPriorRepo = learning.ChainPriorRepo
 type UserCompletedUnitRepo = learning.UserCompletedUnitRepo
 type TeachingPatternRepo = learning.TeachingPatternRepo
+type LearningNodeDocRepo = learning.LearningNodeDocRepo
+type LearningNodeFigureRepo = learning.LearningNodeFigureRepo
+type LearningNodeVideoRepo = learning.LearningNodeVideoRepo
+type LearningDocGenerationRunRepo = learning.LearningDocGenerationRunRepo
+type LearningDrillInstanceRepo = learning.LearningDrillInstanceRepo
 
 type JobRunRepo = jobs.JobRunRepo
 type SagaRunRepo = jobs.SagaRunRepo
@@ -206,6 +211,21 @@ func NewUserCompletedUnitRepo(db *gorm.DB, baseLog *logger.Logger) UserCompleted
 func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPatternRepo {
 	return learning.NewTeachingPatternRepo(db, baseLog)
 }
+func NewLearningNodeDocRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocRepo {
+	return learning.NewLearningNodeDocRepo(db, baseLog)
+}
+func NewLearningNodeFigureRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeFigureRepo {
+	return learning.NewLearningNodeFigureRepo(db, baseLog)
+}
+func NewLearningNodeVideoRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeVideoRepo {
+	return learning.NewLearningNodeVideoRepo(db, baseLog)
+}
+func NewLearningDocGenerationRunRepo(db *gorm.DB, baseLog *logger.Logger) LearningDocGenerationRunRepo {
+	return learning.NewLearningDocGenerationRunRepo(db, baseLog)
+}
+func NewLearningDrillInstanceRepo(db *gorm.DB, baseLog *logger.Logger) LearningDrillInstanceRepo {
+	return learning.NewLearningDrillInstanceRepo(db, baseLog)
+}
 
 func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {
 	return jobs.NewJobRunRepo(db, baseLog)
@@ -288,10 +308,3 @@ func NewChatDocRepo(db *gorm.DB, baseLog *logger.Logger) ChatDocRepo {
 func NewChatTurnRepo(db *gorm.DB, baseLog *logger.Logger) ChatTurnRepo {
 	return chat.NewChatTurnRepo(db, baseLog)
 }
-
-
-
-
-
-
-

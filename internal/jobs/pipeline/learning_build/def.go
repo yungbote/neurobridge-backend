@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
@@ -20,6 +21,7 @@ type InlineDeps struct {
 	Extract ingestion.ContentExtractionService
 	AI      openai.Client
 	Vec     pinecone.VectorStore
+	Bucket  gcp.BucketService
 
 	Files     repos.MaterialFileRepo
 	Chunks    repos.MaterialChunkRepo
@@ -43,6 +45,11 @@ type InlineDeps struct {
 	Path               repos.PathRepo
 	PathNodes          repos.PathNodeRepo
 	PathNodeActivities repos.PathNodeActivityRepo
+	NodeDocs           repos.LearningNodeDocRepo
+	NodeFigures        repos.LearningNodeFigureRepo
+	NodeVideos         repos.LearningNodeVideoRepo
+	DocGenRuns         repos.LearningDocGenerationRunRepo
+	Assets             repos.AssetRepo
 
 	Activities        repos.ActivityRepo
 	Variants          repos.ActivityVariantRepo

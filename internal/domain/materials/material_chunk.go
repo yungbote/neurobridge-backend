@@ -1,10 +1,10 @@
 package materials
 
 import (
-	"time"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"time"
 )
 
 type MaterialChunk struct {
@@ -34,13 +34,3 @@ type MaterialChunk struct {
 }
 
 func (MaterialChunk) TableName() string { return "material_chunk" }
-
-
-
-
-
-
-
-
-
-

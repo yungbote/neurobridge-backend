@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"github.com/google/uuid"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -99,9 +99,9 @@ func (ah *AuthHandler) OAuthNonce(c *gin.Context) {
 		return
 	}
 	response.RespondOK(c, gin.H{
-		"nonce_id":    nonceID.String(),
-		"nonce":       nonce,
-		"expires_in":  expiresIn,
+		"nonce_id":   nonceID.String(),
+		"nonce":      nonce,
+		"expires_in": expiresIn,
 	})
 }
 
@@ -162,13 +162,3 @@ func (ah *AuthHandler) OAuthApple(c *gin.Context) {
 		"expires_in":    expiresIn,
 	})
 }
-
-
-
-
-
-
-
-
-
-

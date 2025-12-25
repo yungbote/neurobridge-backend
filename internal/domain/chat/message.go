@@ -32,11 +32,3 @@ type ChatMessage struct {
 }
 
 func (ChatMessage) TableName() string { return "chat_message" }
-
-
-
-
-
-
-
-

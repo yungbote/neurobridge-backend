@@ -11,8 +11,8 @@ import (
 type Concept struct {
 	ID uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 
-	Scope   string     `gorm:"column:scope;not null;default:'path';index:idx_concept_scope" json:"scope"`
-	ScopeID *uuid.UUID `gorm:"type:uuid;column:scope_id;index:idx_concept_scope" json:"scope_id,omitempty"`
+	Scope   string     `gorm:"column:scope;not null;default:'path';index:idx_concept_scope;index:idx_concept_scope_key,unique,priority:1" json:"scope"`
+	ScopeID *uuid.UUID `gorm:"type:uuid;column:scope_id;index:idx_concept_scope;index:idx_concept_scope_key,unique,priority:2" json:"scope_id,omitempty"`
 
 	ParentID *uuid.UUID `gorm:"type:uuid;column:parent_id;index" json:"parent_id,omitempty"`
 	Parent   *Concept   `gorm:"constraint:OnDelete:SET NULL;foreignKey:ParentID;references:ID" json:"parent,omitempty"`

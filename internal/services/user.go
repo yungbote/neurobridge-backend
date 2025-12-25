@@ -232,13 +232,3 @@ func (us *userService) UploadAvatarImage(ctx context.Context, raw []byte) (*type
 	}
 	return out, nil
 }
-
-
-
-
-
-
-
-
-
-

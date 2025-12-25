@@ -23,4 +23,3 @@ func New(db *gorm.DB, baseLog *logger.Logger, vec pinecone.VectorStore) *Pipelin
 }
 
 func (p *Pipeline) Type() string { return "chat_purge" }
-

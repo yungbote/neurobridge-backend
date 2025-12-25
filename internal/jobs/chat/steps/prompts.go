@@ -94,7 +94,7 @@ func schemaMemoryExtract() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"kind": map[string]any{"type": "string", "enum": []any{"fact", "preference", "decision", "todo"}},
+						"kind":  map[string]any{"type": "string", "enum": []any{"fact", "preference", "decision", "todo"}},
 						"scope": map[string]any{"type": "string", "enum": []any{"thread", "path", "user"}},
 						"key":   map[string]any{"type": "string"},
 						"value": map[string]any{"type": "string"},
@@ -208,4 +208,3 @@ func schemaGraphExtract() map[string]any {
 		"additionalProperties": false,
 	}
 }
-

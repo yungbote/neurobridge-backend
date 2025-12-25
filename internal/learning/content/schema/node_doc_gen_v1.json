@@ -1,0 +1,329 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "concept_keys": { "type": "array", "items": { "type": "string" } },
+    "estimated_minutes": { "type": "integer" },
+
+    "order": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "quick_check", "divider"]
+          },
+          "id": { "type": "string" }
+        },
+        "required": ["kind", "id"],
+        "additionalProperties": false
+      }
+    },
+
+    "headings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "level": { "type": "integer", "enum": [2, 3, 4] },
+          "text": { "type": "string" }
+        },
+        "required": ["id", "level", "text"],
+        "additionalProperties": false
+      }
+    },
+
+    "paragraphs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "callouts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "variant": { "type": "string", "enum": ["info", "tip", "warning"] },
+          "title": { "type": "string" },
+          "md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "variant", "title", "md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "codes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "language": { "type": "string" },
+          "filename": { "type": "string" },
+          "code": { "type": "string" }
+        },
+        "required": ["id", "language", "filename", "code"],
+        "additionalProperties": false
+      }
+    },
+
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "asset": {
+            "type": "object",
+            "properties": {
+              "url": { "type": "string" },
+              "material_file_id": { "type": "string" },
+              "storage_key": { "type": "string" },
+              "mime_type": { "type": "string" },
+              "file_name": { "type": "string" },
+              "source": { "type": "string", "enum": ["upload", "derived", "external", ""] }
+            },
+            "required": ["url", "material_file_id", "storage_key", "mime_type", "file_name", "source"],
+            "additionalProperties": false
+          },
+          "caption": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "asset", "caption", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "videos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "url": { "type": "string" },
+          "start_sec": { "type": "number" },
+          "caption": { "type": "string" }
+        },
+        "required": ["id", "url", "start_sec", "caption"],
+        "additionalProperties": false
+      }
+    },
+
+    "diagrams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["svg", "mermaid"] },
+          "source": { "type": "string" },
+          "caption": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "kind", "source", "caption", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "caption": { "type": "string" },
+          "columns": { "type": "array", "items": { "type": "string" } },
+          "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "caption", "columns", "rows", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "quick_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "prompt_md": { "type": "string" },
+          "answer_md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "prompt_md", "answer_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "dividers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "id": { "type": "string" } },
+        "required": ["id"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "title",
+    "summary",
+    "concept_keys",
+    "estimated_minutes",
+    "order",
+    "headings",
+    "paragraphs",
+    "callouts",
+    "codes",
+    "figures",
+    "videos",
+    "diagrams",
+    "tables",
+    "quick_checks",
+    "dividers"
+  ],
+  "additionalProperties": false
+}

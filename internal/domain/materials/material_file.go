@@ -34,13 +34,3 @@ type MaterialFile struct {
 }
 
 func (MaterialFile) TableName() string { return "material_file" }
-
-
-
-
-
-
-
-
-
-

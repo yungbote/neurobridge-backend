@@ -1,10 +1,10 @@
 package materials
 
 import (
-	"time"
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
 	"gorm.io/gorm"
+	"time"
 )
 
 type MaterialSet struct {
@@ -21,13 +21,3 @@ type MaterialSet struct {
 }
 
 func (MaterialSet) TableName() string { return "material_set" }
-
-
-
-
-
-
-
-
-
-

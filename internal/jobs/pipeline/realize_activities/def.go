@@ -3,6 +3,7 @@ package realize_activities
 import (
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
@@ -26,6 +27,7 @@ type Pipeline struct {
 	profile          repos.UserProfileVectorRepo
 	ai               openai.Client
 	vec              pinecone.VectorStore
+	bucket           gcp.BucketService
 	saga             services.SagaService
 	bootstrap        services.LearningBuildBootstrapService
 }
@@ -46,6 +48,7 @@ func New(
 	profile repos.UserProfileVectorRepo,
 	ai openai.Client,
 	vec pinecone.VectorStore,
+	bucket gcp.BucketService,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
 ) *Pipeline {
@@ -65,6 +68,7 @@ func New(
 		profile:          profile,
 		ai:               ai,
 		vec:              vec,
+		bucket:           bucket,
 		saga:             saga,
 		bootstrap:        bootstrap,
 	}

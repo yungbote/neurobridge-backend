@@ -25,4 +25,3 @@ type ChatSummaryNode struct {
 }
 
 func (ChatSummaryNode) TableName() string { return "chat_summary_node" }
-

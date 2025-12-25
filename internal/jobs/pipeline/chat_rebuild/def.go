@@ -36,4 +36,3 @@ func New(
 }
 
 func (p *Pipeline) Type() string { return "chat_rebuild" }
-

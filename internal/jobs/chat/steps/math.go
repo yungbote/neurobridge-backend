@@ -171,4 +171,3 @@ func kmeansCosine(embs [][]float32, k int, iters int) []int {
 
 	return assign
 }
-

@@ -21,19 +21,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	jc.Progress("maintain", 5, "Updating chat indexes")
 	if err := steps.MaintainThread(jc.Ctx, steps.MaintainDeps{
-		DB:       p.db,
-		Log:      p.log,
-		AI:       p.ai,
-		Vec:      p.vec,
-		Threads:  p.threads,
-		Messages: p.messages,
-		State:    p.state,
+		DB:        p.db,
+		Log:       p.log,
+		AI:        p.ai,
+		Vec:       p.vec,
+		Threads:   p.threads,
+		Messages:  p.messages,
+		State:     p.state,
 		Summaries: p.summaries,
-		Docs:     p.docs,
-		Memory:   p.memory,
-		Entities: p.entities,
-		Edges:    p.edges,
-		Claims:   p.claims,
+		Docs:      p.docs,
+		Memory:    p.memory,
+		Entities:  p.entities,
+		Edges:     p.edges,
+		Claims:    p.claims,
 	}, steps.MaintainInput{
 		UserID:   jc.Job.OwnerUserID,
 		ThreadID: threadID,
@@ -47,4 +47,3 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	return nil
 }
-

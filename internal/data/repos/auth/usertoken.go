@@ -265,13 +265,3 @@ func (utr *userTokenRepo) FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, 
 
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

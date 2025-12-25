@@ -557,13 +557,3 @@ func ecdsaFromXY(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
 
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
-
-
-
-
-
-
-
-
-
-

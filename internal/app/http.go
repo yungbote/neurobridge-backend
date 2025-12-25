@@ -29,7 +29,7 @@ type Handlers struct {
 	Job      *httpH.JobHandler
 }
 
-func wireHandlers(log *logger.Logger, services Services, repos Repos, sseHub *realtime.SSEHub) Handlers {
+func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
 	return Handlers{
 		Health:   httpH.NewHealthHandler(),
@@ -38,7 +38,22 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, sseHub *re
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(log, services.Workflow, sseHub),
 		Chat:     httpH.NewChatHandler(services.Chat),
-		Path:     httpH.NewPathHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity, repos.Concept, repos.ConceptEdge),
+		Path: httpH.NewPathHandler(
+			log,
+			repos.Path,
+			repos.PathNode,
+			repos.PathNodeActivity,
+			repos.Activity,
+			repos.LearningNodeDoc,
+			repos.DrillInstance,
+			repos.DocGenerationRun,
+			repos.MaterialChunk,
+			repos.Concept,
+			repos.ConceptEdge,
+			repos.JobRun,
+			repos.UserProfileVector,
+			clients.OpenaiClient,
+		),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
 		Course:   httpH.NewCourseHandler(log, services.Course),
 		Module:   httpH.NewModuleHandler(services.Module),
@@ -73,12 +88,3 @@ func wireMiddleware(log *logger.Logger, services Services) Middleware {
 		Auth: httpMW.NewAuthMiddleware(log, services.Auth),
 	}
 }
-
-
-
-
-
-
-
-
-

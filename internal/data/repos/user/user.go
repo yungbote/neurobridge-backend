@@ -152,13 +152,3 @@ func (ur *userRepo) UpdateAvatarFields(ctx context.Context, tx *gorm.DB, userID 
 			"avatar_url":        avatarURL,
 		}).Error
 }
-
-
-
-
-
-
-
-
-
-

@@ -27,6 +27,7 @@ type workflowService struct {
 	jobs      JobService
 
 	bootstrap LearningBuildBootstrapService
+	paths     repos.PathRepo
 	threads   repos.ChatThreadRepo
 }
 
@@ -36,6 +37,7 @@ func NewWorkflowService(
 	materials MaterialService,
 	jobs JobService,
 	bootstrap LearningBuildBootstrapService,
+	paths repos.PathRepo,
 	threads repos.ChatThreadRepo,
 ) WorkflowService {
 	return &workflowService{
@@ -44,6 +46,7 @@ func NewWorkflowService(
 		materials: materials,
 		jobs:      jobs,
 		bootstrap: bootstrap,
+		paths:     paths,
 		threads:   threads,
 	}
 }
@@ -75,7 +78,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 	if transaction == nil {
 		transaction = w.db
 	}
-	if w.bootstrap == nil || w.threads == nil {
+	if w.bootstrap == nil || w.paths == nil || w.threads == nil {
 		return nil, uuid.Nil, nil, nil, fmt.Errorf("workflow service not fully configured")
 	}
 
@@ -153,6 +156,13 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 			return err
 		}
 		thread.JobID = &job.ID
+
+		// 6) Persist path↔job linkage so frontend can recover state after refresh.
+		if err := w.paths.UpdateFields(ctx, txx, pathID, map[string]interface{}{
+			"job_id": job.ID,
+		}); err != nil {
+			return err
+		}
 
 		return nil
 	})

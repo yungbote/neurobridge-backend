@@ -41,13 +41,3 @@ type ChainPrior struct {
 }
 
 func (ChainPrior) TableName() string { return "chain_prior" }
-
-
-
-
-
-
-
-
-
-

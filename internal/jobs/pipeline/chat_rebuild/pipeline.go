@@ -47,4 +47,3 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	return nil
 }
-

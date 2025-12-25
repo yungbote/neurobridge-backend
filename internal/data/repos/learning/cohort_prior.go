@@ -132,10 +132,10 @@ func (r *cohortPriorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.Co
 				"n":                row.N,
 				"a":                row.A,
 				"b":                row.B,
-				"completion_rate":   row.CompletionRate,
-				"median_dwell_ms":   row.MedianDwellMS,
-				"last_observed_at":  row.LastObservedAt,
-				"updated_at":        row.UpdatedAt,
+				"completion_rate":  row.CompletionRate,
+				"median_dwell_ms":  row.MedianDwellMS,
+				"last_observed_at": row.LastObservedAt,
+				"updated_at":       row.UpdatedAt,
 			}).Error
 	}
 
@@ -171,13 +171,3 @@ func (r *cohortPriorRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids 
 	}
 	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.CohortPrior{}).Error
 }
-
-
-
-
-
-
-
-
-
-

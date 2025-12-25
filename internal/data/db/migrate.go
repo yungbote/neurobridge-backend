@@ -59,6 +59,12 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.ActivityVariantStat{},
 		&types.ActivityConcept{},
 		&types.ActivityCitation{},
+		// Node docs + drills (canonical content + supplemental tools)
+		&types.LearningNodeDoc{},
+		&types.LearningNodeFigure{},
+		&types.LearningNodeVideo{},
+		&types.LearningDocGenerationRun{},
+		&types.LearningDrillInstance{},
 		// Path (the non-legacy top-level object)
 		&types.Path{},
 		&types.PathNode{},
@@ -243,6 +249,94 @@ func EnsureChatIndexes(db *gorm.DB) error {
 	return nil
 }
 
+func EnsureLearningIndexes(db *gorm.DB) error {
+	// Concepts: enforce uniqueness within a scope boundary (and ignore soft-deleted rows).
+	//
+	// Older installs may have an incorrect unique index that only covered `key`, which prevents
+	// different paths from having overlapping concept keys.
+	if err := db.Exec(`ALTER TABLE concept DROP CONSTRAINT IF EXISTS idx_concept_scope_key;`).Error; err != nil {
+		return fmt.Errorf("drop concept constraint idx_concept_scope_key: %w", err)
+	}
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_concept_scope_key;`).Error; err != nil {
+		return fmt.Errorf("drop index idx_concept_scope_key: %w", err)
+	}
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_concept_scope_key_null_scope_id;`).Error; err != nil {
+		return fmt.Errorf("drop index idx_concept_scope_key_null_scope_id: %w", err)
+	}
+
+	// Treat NULL scope_id as a real scope boundary (mirror IS NOT DISTINCT FROM semantics used in repos).
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_concept_scope_key
+		ON concept (scope, scope_id, key)
+		WHERE deleted_at IS NULL AND scope_id IS NOT NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_concept_scope_key: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_concept_scope_key_null_scope_id
+		ON concept (scope, key)
+		WHERE deleted_at IS NULL AND scope_id IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_concept_scope_key_null_scope_id: %w", err)
+	}
+
+	// Material chunks: fast lexical retrieval for hybrid evidence selection.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_material_chunk_fts
+		ON material_chunk
+		USING GIN (to_tsvector('english', text))
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_material_chunk_fts: %w", err)
+	}
+
+	// Node docs: canonical per node.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_node_doc_path_node_id
+		ON learning_node_doc (path_node_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_doc_path_node_id: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_learning_node_doc_user_path_updated
+		ON learning_node_doc (user_id, path_id, updated_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_doc_user_path_updated: %w", err)
+	}
+
+	// Drill cache: (user,node,kind,count,sources_hash) uniqueness.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_drill_instance_key
+		ON learning_drill_instance (user_id, path_node_id, kind, count, sources_hash);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_drill_instance_key: %w", err)
+	}
+
+	// Node figures: (user,node,slot) uniqueness.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_node_figure_key
+		ON learning_node_figure (user_id, path_node_id, slot);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_figure_key: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_learning_node_figure_node_status_updated
+		ON learning_node_figure (path_node_id, status, updated_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_figure_node_status_updated: %w", err)
+	}
+
+	// Generation runs: quick per-node debugging.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_learning_doc_generation_run_node_created
+		ON learning_doc_generation_run (path_node_id, created_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_doc_generation_run_node_created: %w", err)
+	}
+
+	return nil
+}
+
 func (s *PostgresService) AutoMigrateAll() error {
 	s.log.Info("Auto migrating postgres tables...")
 	if err := AutoMigrateAll(s.db); err != nil {
@@ -255,6 +349,10 @@ func (s *PostgresService) AutoMigrateAll() error {
 	}
 	if err := EnsureChatIndexes(s.db); err != nil {
 		s.log.Error("Chat index migration failed", "error", err)
+		return err
+	}
+	if err := EnsureLearningIndexes(s.db); err != nil {
+		s.log.Error("Learning index migration failed", "error", err)
 		return err
 	}
 

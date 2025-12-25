@@ -64,10 +64,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"thread_id":             threadID.String(),
-		"user_message_id":       userMsgID.String(),
-		"assistant_message_id":  asstMsgID.String(),
-		"assistant_text_chars":  len(out.AssistantText),
+		"thread_id":            threadID.String(),
+		"user_message_id":      userMsgID.String(),
+		"assistant_message_id": asstMsgID.String(),
+		"assistant_text_chars": len(out.AssistantText),
 	})
 	return nil
 }

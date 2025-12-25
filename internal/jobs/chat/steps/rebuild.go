@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	chatIndex "github.com/yungbote/neurobridge-backend/internal/chat/index"
+	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )

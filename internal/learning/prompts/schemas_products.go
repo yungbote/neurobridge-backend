@@ -53,6 +53,7 @@ func BlockSchema() map[string]any {
 				"divider",
 				"image",
 				"video_embed",
+				"diagram",
 			),
 
 			// Always present (may be empty depending on kind).
@@ -65,12 +66,11 @@ func BlockSchema() map[string]any {
 	}
 }
 
-
 func ContentJSONSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"version": map[string]any{"type": "integer"},
+			"version":    map[string]any{"type": "integer"},
 			"style_used": StyleUsedSchema(),
 			"blocks": map[string]any{
 				"type":  "array",
@@ -371,13 +371,13 @@ func PathStructureSchema() map[string]any {
 	node := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"index":              IntSchema(),
-			"title":              map[string]any{"type": "string"},
-			"goal":               map[string]any{"type": "string"},
+			"index":               IntSchema(),
+			"title":               map[string]any{"type": "string"},
+			"goal":                map[string]any{"type": "string"},
 			"concept_keys":        StringArraySchema(),
 			"prereq_concept_keys": StringArraySchema(),
-			"difficulty":         EnumSchema("intro", "intermediate", "advanced"),
-			"activity_slots":     map[string]any{"type": "array", "items": slot},
+			"difficulty":          EnumSchema("intro", "intermediate", "advanced"),
+			"activity_slots":      map[string]any{"type": "array", "items": slot},
 		},
 		"required": []string{
 			"index", "title", "goal", "concept_keys", "prereq_concept_keys", "difficulty", "activity_slots",
@@ -697,13 +697,3 @@ func DiagnosticGateSchema() map[string]any {
 		"questions": map[string]any{"type": "array", "items": q},
 	}, []string{"purpose", "questions"})
 }
-
-
-
-
-
-
-
-
-
-

@@ -36,4 +36,3 @@ type ChatTurn struct {
 }
 
 func (ChatTurn) TableName() string { return "chat_turn" }
-

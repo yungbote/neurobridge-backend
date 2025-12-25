@@ -1,10 +1,10 @@
 package materials
 
 import (
-	"time"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"time"
 )
 
 type Asset struct {
@@ -28,13 +28,3 @@ type Asset struct {
 }
 
 func (Asset) TableName() string { return "asset" }
-
-
-
-
-
-
-
-
-
-

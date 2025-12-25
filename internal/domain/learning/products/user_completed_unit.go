@@ -22,10 +22,10 @@ type UserCompletedUnit struct {
 	CompletionConfidence float64 `gorm:"column:completion_confidence;not null;default:0" json:"completion_confidence"`
 
 	// Optional learning metrics at completion time (for novelty/skip decisions).
-	MasteryAt   float64 `gorm:"column:mastery_at;not null;default:0" json:"mastery_at"`
-	AvgScore    float64 `gorm:"column:avg_score;not null;default:0" json:"avg_score"`
-	TotalDwellMS int    `gorm:"column:total_dwell_ms;not null;default:0" json:"total_dwell_ms"`
-	Attempts    int     `gorm:"column:attempts;not null;default:0" json:"attempts"`
+	MasteryAt    float64 `gorm:"column:mastery_at;not null;default:0" json:"mastery_at"`
+	AvgScore     float64 `gorm:"column:avg_score;not null;default:0" json:"avg_score"`
+	TotalDwellMS int     `gorm:"column:total_dwell_ms;not null;default:0" json:"total_dwell_ms"`
+	Attempts     int     `gorm:"column:attempts;not null;default:0" json:"attempts"`
 
 	Metadata datatypes.JSON `gorm:"column:metadata;type:jsonb" json:"metadata,omitempty"`
 
@@ -34,13 +34,3 @@ type UserCompletedUnit struct {
 }
 
 func (UserCompletedUnit) TableName() string { return "user_completed_unit" }
-
-
-
-
-
-
-
-
-
-

@@ -21,6 +21,8 @@ type JobNotifier interface {
 	JobProgress(userID uuid.UUID, job *types.JobRun, stage string, progress int, message string)
 	JobFailed(userID uuid.UUID, job *types.JobRun, stage string, errorMessage string)
 	JobDone(userID uuid.UUID, job *types.JobRun)
+	JobCanceled(userID uuid.UUID, job *types.JobRun)
+	JobRestarted(userID uuid.UUID, job *types.JobRun)
 }
 
 type jobNotifier struct {
@@ -104,6 +106,44 @@ func (n *jobNotifier) JobDone(userID uuid.UUID, job *types.JobRun) {
 	n.emit.Emit(context.Background(), realtime.SSEMessage{
 		Channel: userID.String(),
 		Event:   realtime.SSEEventJobDone,
+		Data:    data,
+	})
+}
+
+func (n *jobNotifier) JobCanceled(userID uuid.UUID, job *types.JobRun) {
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	data := map[string]any{
+		"job_id":   safeJobID(job),
+		"job_type": safeJobType(job),
+		"job":      job,
+	}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
+		Channel: userID.String(),
+		Event:   realtime.SSEEventJobCanceled,
+		Data:    data,
+	})
+}
+
+func (n *jobNotifier) JobRestarted(userID uuid.UUID, job *types.JobRun) {
+	if n == nil || n.emit == nil || userID == uuid.Nil {
+		return
+	}
+	data := map[string]any{
+		"job_id":   safeJobID(job),
+		"job_type": safeJobType(job),
+		"job":      job,
+	}
+	for k, v := range jobLinkData(job) {
+		data[k] = v
+	}
+	n.emit.Emit(context.Background(), realtime.SSEMessage{
+		Channel: userID.String(),
+		Event:   realtime.SSEEventJobRestarted,
 		Data:    data,
 	})
 }

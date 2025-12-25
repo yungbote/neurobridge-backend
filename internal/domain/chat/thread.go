@@ -15,8 +15,8 @@ type ChatThread struct {
 	PathID *uuid.UUID `gorm:"type:uuid;column:path_id;index" json:"path_id,omitempty"`
 	JobID  *uuid.UUID `gorm:"type:uuid;column:job_id;index" json:"job_id,omitempty"`
 
-	Title    string `gorm:"column:title;not null;default:'New Chat'" json:"title"`
-	Status   string `gorm:"column:status;not null;default:'active';index" json:"status"`
+	Title    string         `gorm:"column:title;not null;default:'New Chat'" json:"title"`
+	Status   string         `gorm:"column:status;not null;default:'active';index" json:"status"`
 	Metadata datatypes.JSON `gorm:"type:jsonb;column:metadata;not null;default:'{}'" json:"metadata,omitempty"`
 
 	// Concurrency-safe per-thread sequencing:
@@ -31,12 +31,3 @@ type ChatThread struct {
 }
 
 func (ChatThread) TableName() string { return "chat_thread" }
-
-
-
-
-
-
-
-
-

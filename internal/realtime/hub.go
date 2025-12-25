@@ -20,22 +20,24 @@ const (
 	SSEEventUserAvatarUpdated SSEEvent = "UserAvatarChanged"
 	SSEEventUserCourseCreated SSEEvent = "UserCourseCreated"
 
-	SSEEventJobCreated				SSEEvent = "JobCreated"
-	SSEEventJobProgress				SSEEvent = "JobProgress"
-	SSEEventJobFailed					SSEEvent = "JobFailed"
-	SSEEventJobDone						SSEEvent = "JobDone"
+	SSEEventJobCreated   SSEEvent = "JobCreated"
+	SSEEventJobProgress  SSEEvent = "JobProgress"
+	SSEEventJobFailed    SSEEvent = "JobFailed"
+	SSEEventJobDone      SSEEvent = "JobDone"
+	SSEEventJobCanceled  SSEEvent = "JobCanceled"
+	SSEEventJobRestarted SSEEvent = "JobRestarted"
 
-	CourseGenerationProgress	SSEEvent = "CourseGenerationProgress"
-	CourseGenerationFailed		SSEEvent = "CourseGenerationFailed"
-	CourseGenerationDone			SSEEvent = "CourseGenerationDone"
+	CourseGenerationProgress SSEEvent = "CourseGenerationProgress"
+	CourseGenerationFailed   SSEEvent = "CourseGenerationFailed"
+	CourseGenerationDone     SSEEvent = "CourseGenerationDone"
 
-	SSEEventLessonUpdated			SSEEvent = "LessonUpdated"
+	SSEEventLessonUpdated SSEEvent = "LessonUpdated"
 
-	SSEEventChatThreadCreated		SSEEvent = "ChatThreadCreated"
-	SSEEventChatMessageCreated	SSEEvent = "ChatMessageCreated"
-	SSEEventChatMessageDelta		SSEEvent = "ChatMessageDelta"
-	SSEEventChatMessageDone			SSEEvent = "ChatMessageDone"
-	SSEEventChatMessageError		SSEEvent = "ChatMessageError"
+	SSEEventChatThreadCreated  SSEEvent = "ChatThreadCreated"
+	SSEEventChatMessageCreated SSEEvent = "ChatMessageCreated"
+	SSEEventChatMessageDelta   SSEEvent = "ChatMessageDelta"
+	SSEEventChatMessageDone    SSEEvent = "ChatMessageDone"
+	SSEEventChatMessageError   SSEEvent = "ChatMessageError"
 
 	// Backwards-compat alias (typo).
 	SSEEVentChatMessageError SSEEvent = SSEEventChatMessageError

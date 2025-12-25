@@ -164,13 +164,3 @@ func (r *conceptClusterRepo) FullDeleteByScope(ctx context.Context, tx *gorm.DB,
 		Where("scope = ? AND scope_id IS NOT DISTINCT FROM ?", scope, scopeID).
 		Delete(&types.ConceptCluster{}).Error
 }
-
-
-
-
-
-
-
-
-
-

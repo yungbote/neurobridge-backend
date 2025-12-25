@@ -105,6 +105,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/paths/:id/nodes", cfg.PathHandler.ListPathNodes)
 			protected.GET("/paths/:id/concept-graph", cfg.PathHandler.GetConceptGraph)
 			protected.GET("/path-nodes/:id/activities", cfg.PathHandler.ListPathNodeActivities)
+			protected.GET("/path-nodes/:id/content", cfg.PathHandler.GetPathNodeContent)
+			protected.GET("/path-nodes/:id/doc", cfg.PathHandler.GetPathNodeDoc)
+			protected.GET("/path-nodes/:id/drills", cfg.PathHandler.ListPathNodeDrills)
+			protected.POST("/path-nodes/:id/drills/:kind", cfg.PathHandler.GeneratePathNodeDrill)
 		}
 
 		if cfg.ActivityHandler != nil {
@@ -135,6 +139,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Job
 		if cfg.JobHandler != nil {
 			protected.GET("/jobs/:id", cfg.JobHandler.GetJob)
+			protected.POST("/jobs/:id/cancel", cfg.JobHandler.CancelJob)
+			protected.POST("/jobs/:id/restart", cfg.JobHandler.RestartJob)
 		}
 	}
 

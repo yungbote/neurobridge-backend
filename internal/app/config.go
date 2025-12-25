@@ -7,12 +7,12 @@ import (
 )
 
 type Config struct {
-	JWTSecretKey				string
-	AccessTokenTTL			time.Duration
-	RefreshTokenTTL			time.Duration
-	NonceRefreshTTL			time.Duration
-	GoogleOIDCClientID	string
-	AppleOIDCClientID		string
+	JWTSecretKey       string
+	AccessTokenTTL     time.Duration
+	RefreshTokenTTL    time.Duration
+	NonceRefreshTTL    time.Duration
+	GoogleOIDCClientID string
+	AppleOIDCClientID  string
 }
 
 func LoadConfig(log *logger.Logger) Config {
@@ -23,10 +23,10 @@ func LoadConfig(log *logger.Logger) Config {
 	googleOIDCClientID := utils.GetEnv("GOOGLE_OIDC_CLIENT_ID", "", log)
 	appleOIDCClientID := utils.GetEnv("APPLE_OIDC_CLIENT_ID", "", log)
 	return Config{
-		JWTSecretKey:				jwtSecretKey,
-		AccessTokenTTL:			time.Duration(accessTokenTTLSeconds) * time.Second,
-		RefreshTokenTTL:		time.Duration(refreshTokenTTLSeconds) * time.Second,
-		NonceRefreshTTL:		time.Duration(nonceRefreshTTLSeconds) * time.Second,
+		JWTSecretKey:       jwtSecretKey,
+		AccessTokenTTL:     time.Duration(accessTokenTTLSeconds) * time.Second,
+		RefreshTokenTTL:    time.Duration(refreshTokenTTLSeconds) * time.Second,
+		NonceRefreshTTL:    time.Duration(nonceRefreshTTLSeconds) * time.Second,
 		GoogleOIDCClientID: googleOIDCClientID,
 		AppleOIDCClientID:  appleOIDCClientID,
 	}

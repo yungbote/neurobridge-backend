@@ -1,0 +1,109 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "concept_keys": { "type": "array", "items": { "type": "string" } },
+    "estimated_minutes": { "type": "integer" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "quick_check", "divider"]
+          },
+
+          "level": { "type": "integer" },
+          "text": { "type": "string" },
+
+          "md": { "type": "string" },
+
+          "variant": { "type": "string", "enum": ["info", "tip", "warning", ""] },
+          "title": { "type": "string" },
+
+          "language": { "type": "string" },
+          "filename": { "type": "string" },
+          "code": { "type": "string" },
+
+          "asset": {
+            "type": "object",
+            "properties": {
+              "url": { "type": "string" },
+              "material_file_id": { "type": "string" },
+              "storage_key": { "type": "string" },
+              "mime_type": { "type": "string" },
+              "file_name": { "type": "string" },
+              "source": { "type": "string", "enum": ["upload", "derived", "external", ""] }
+            },
+            "required": ["url", "material_file_id", "storage_key", "mime_type", "file_name", "source"],
+            "additionalProperties": false
+          },
+          "caption": { "type": "string" },
+
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          },
+
+          "url": { "type": "string" },
+          "start_sec": { "type": "number" },
+
+          "kind": { "type": "string", "enum": ["svg", "mermaid", ""] },
+          "source": { "type": "string" },
+
+          "columns": { "type": "array", "items": { "type": "string" } },
+          "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+
+          "prompt_md": { "type": "string" },
+          "answer_md": { "type": "string" }
+        },
+        "required": [
+          "type",
+          "level",
+          "text",
+          "md",
+          "variant",
+          "title",
+          "language",
+          "filename",
+          "code",
+          "asset",
+          "caption",
+          "citations",
+          "url",
+          "start_sec",
+          "kind",
+          "source",
+          "columns",
+          "rows",
+          "prompt_md",
+          "answer_md"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "title", "summary", "concept_keys", "estimated_minutes", "blocks"],
+  "additionalProperties": false
+}

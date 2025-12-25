@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "title": { "type": "string" },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "heading": { "type": "string" },
+          "goal": { "type": "string" },
+          "include_worked_example": { "type": "boolean" },
+          "include_media_block": { "type": "boolean" },
+          "quick_checks": { "type": "integer" }
+        },
+        "required": [
+          "heading",
+          "goal",
+          "include_worked_example",
+          "include_media_block",
+          "quick_checks"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "title", "sections"],
+  "additionalProperties": false
+}
+

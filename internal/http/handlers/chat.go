@@ -136,8 +136,8 @@ func (h *ChatHandler) DeleteThread(c *gin.Context) {
 }
 
 type sendMessageReq struct {
-	Content         string `json:"content"`
-	IdempotencyKey  string `json:"idempotency_key"`
+	Content        string `json:"content"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // POST /api/chat/threads/:id/messages
@@ -166,7 +166,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 	response.RespondOK(c, gin.H{
 		"user_message":      userMsg,
 		"assistant_message": asstMsg,
-		"job":              job,
+		"job":               job,
 	})
 }
 

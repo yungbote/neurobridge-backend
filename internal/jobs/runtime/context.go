@@ -78,7 +78,8 @@ func (c *Context) Update(updates map[string]any) error {
 	if c.Job == nil || c.Job.ID == uuid.Nil {
 		return nil
 	}
-	return c.Repo.UpdateFields(c.Ctx, nil, c.Job.ID, toIfaceMap(updates))
+	_, err := c.Repo.UpdateFieldsUnlessStatus(c.Ctx, nil, c.Job.ID, []string{"canceled"}, toIfaceMap(updates))
+	return err
 }
 
 func (c *Context) Progress(stage string, pct int, msg string) {
@@ -92,17 +93,22 @@ func (c *Context) Progress(stage string, pct int, msg string) {
 	now := time.Now()
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"stage":        stage,
 			"progress":     pct,
+			"message":      msg,
 			"heartbeat_at": now,
 			"updated_at":   now,
 		})
+		if !ok {
+			return
+		}
 	}
 
 	if c.Job != nil {
 		c.Job.Stage = stage
 		c.Job.Progress = pct
+		c.Job.Message = msg
 		c.Job.HeartbeatAt = &now
 		c.Job.UpdatedAt = now
 		// status remains whatever it is in DB ("running" after claim)
@@ -128,19 +134,24 @@ func (c *Context) Fail(stage string, err error) {
 	}
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"status":        "failed",
 			"stage":         stage,
+			"message":       "",
 			"error":         msg,
 			"last_error_at": now,
 			"locked_at":     nil,
 			"updated_at":    now,
 		})
+		if !ok {
+			return
+		}
 	}
 
 	if c.Job != nil {
 		c.Job.Status = "failed"
 		c.Job.Stage = stage
+		c.Job.Message = ""
 		c.Job.Error = msg
 		c.Job.LastErrorAt = &now
 		c.Job.LockedAt = nil
@@ -168,22 +179,27 @@ func (c *Context) Succeed(finalStage string, result any) {
 	}
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		_ = c.Repo.UpdateFields(ctx, nil, c.Job.ID, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"status":       "succeeded",
 			"stage":        finalStage,
 			"progress":     100,
+			"message":      "",
 			"error":        "",
 			"result":       res,
 			"locked_at":    nil,
 			"heartbeat_at": now,
 			"updated_at":   now,
 		})
+		if !ok {
+			return
+		}
 	}
 
 	if c.Job != nil {
 		c.Job.Status = "succeeded"
 		c.Job.Stage = finalStage
 		c.Job.Progress = 100
+		c.Job.Message = ""
 		c.Job.Error = ""
 		c.Job.Result = res
 		c.Job.LockedAt = nil

@@ -294,13 +294,3 @@ func (r *conceptRepo) FullDeleteByParentIDs(ctx context.Context, tx *gorm.DB, pa
 	}
 	return t.WithContext(ctx).Unscoped().Where("parent_id IN ?", parentIDs).Delete(&types.Concept{}).Error
 }
-
-
-
-
-
-
-
-
-
-

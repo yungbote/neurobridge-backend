@@ -1,0 +1,92 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "enum": ["flashcards", "quiz"] },
+    "cards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "front_md": { "type": "string" },
+          "back_md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["front_md", "back_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "prompt_md": { "type": "string" },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "text": { "type": "string" }
+              },
+              "required": ["id", "text"],
+              "additionalProperties": false
+            }
+          },
+          "answer_id": { "type": "string" },
+          "explanation_md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "prompt_md", "options", "answer_id", "explanation_md", "citations"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "kind", "cards", "questions"],
+  "additionalProperties": false
+}
+

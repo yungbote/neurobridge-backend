@@ -41,13 +41,3 @@ type ChainSignature struct {
 }
 
 func (ChainSignature) TableName() string { return "chain_signature" }
-
-
-
-
-
-
-
-
-
-

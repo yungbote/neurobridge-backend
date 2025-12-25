@@ -215,13 +215,3 @@ func (r *conceptEdgeRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids 
 	}
 	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptEdge{}).Error
 }
-
-
-
-
-
-
-
-
-
-

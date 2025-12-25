@@ -32,4 +32,3 @@ type ChatMemoryItem struct {
 }
 
 func (ChatMemoryItem) TableName() string { return "chat_memory_item" }
-

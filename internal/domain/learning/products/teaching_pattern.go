@@ -30,13 +30,3 @@ type TeachingPattern struct {
 }
 
 func (TeachingPattern) TableName() string { return "teaching_pattern" }
-
-
-
-
-
-
-
-
-
-

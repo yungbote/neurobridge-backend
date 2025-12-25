@@ -103,13 +103,3 @@ func (r *userCompletedUnitRepo) Upsert(ctx context.Context, tx *gorm.DB, row *ty
 		}).
 		Create(row).Error
 }
-
-
-
-
-
-
-
-
-
-

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/auth"
+	"github.com/yungbote/neurobridge-backend/internal/domain/chat"
 	"github.com/yungbote/neurobridge-backend/internal/domain/jobs"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/core"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/joins"
@@ -10,7 +11,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/products"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
-	"github.com/yungbote/neurobridge-backend/internal/domain/chat"
 )
 
 const (
@@ -126,6 +126,11 @@ type ChainPrior = products.ChainPrior
 type UserCompletedUnit = products.UserCompletedUnit
 type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
+type LearningNodeDoc = products.LearningNodeDoc
+type LearningNodeFigure = products.LearningNodeFigure
+type LearningNodeVideo = products.LearningNodeVideo
+type LearningDocGenerationRun = products.LearningDocGenerationRun
+type LearningDrillInstance = products.LearningDrillInstance
 
 type ChatThread = chat.ChatThread
 type ChatMessage = chat.ChatMessage
@@ -137,11 +142,3 @@ type ChatEdge = chat.ChatEdge
 type ChatClaim = chat.ChatClaim
 type ChatDoc = chat.ChatDoc
 type ChatTurn = chat.ChatTurn
-
-
-
-
-
-
-
-

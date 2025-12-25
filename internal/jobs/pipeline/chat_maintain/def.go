@@ -44,21 +44,20 @@ func New(
 	claims repos.ChatClaimRepo,
 ) *Pipeline {
 	return &Pipeline{
-		db:       db,
-		log:      baseLog.With("job", "chat_maintain"),
-		ai:       ai,
-		vec:      vec,
-		threads:  threads,
-		messages: messages,
-		state:    state,
+		db:        db,
+		log:       baseLog.With("job", "chat_maintain"),
+		ai:        ai,
+		vec:       vec,
+		threads:   threads,
+		messages:  messages,
+		state:     state,
 		summaries: summaries,
-		docs:     docs,
-		memory:   memory,
-		entities: entities,
-		edges:    edges,
-		claims:   claims,
+		docs:      docs,
+		memory:    memory,
+		entities:  entities,
+		edges:     edges,
+		claims:    claims,
 	}
 }
 
 func (p *Pipeline) Type() string { return "chat_maintain" }
-

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -111,6 +112,9 @@ func (bs *bucketService) UploadFile(ctx context.Context, tx *gorm.DB, category B
 	defer cancel()
 
 	w := bs.storageClient.Bucket(cfg.name).Object(key).NewWriter(ctx)
+	if ct := contentTypeForKey(key); ct != "" {
+		w.ContentType = ct
+	}
 	if _, err := io.Copy(w, file); err != nil {
 		_ = w.Close()
 		return fmt.Errorf("failed to write data to GCS: %w", err)
@@ -119,6 +123,41 @@ func (bs *bucketService) UploadFile(ctx context.Context, tx *gorm.DB, category B
 		return fmt.Errorf("failed to close GCS writer: %w", err)
 	}
 	return nil
+}
+
+func contentTypeForKey(key string) string {
+	s := strings.ToLower(strings.TrimSpace(key))
+	if s == "" {
+		return ""
+	}
+	// Strip query string (defensive; keys typically won't have this).
+	if i := strings.Index(s, "?"); i >= 0 {
+		s = s[:i]
+	}
+	switch {
+	case strings.HasSuffix(s, ".png"):
+		return "image/png"
+	case strings.HasSuffix(s, ".jpg"), strings.HasSuffix(s, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(s, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(s, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(s, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(s, ".mp4"), strings.HasSuffix(s, ".m4v"):
+		return "video/mp4"
+	case strings.HasSuffix(s, ".webm"):
+		return "video/webm"
+	case strings.HasSuffix(s, ".mov"):
+		return "video/quicktime"
+	case strings.HasSuffix(s, ".pdf"):
+		return "application/pdf"
+	case strings.HasSuffix(s, ".json"):
+		return "application/json"
+	default:
+		return ""
+	}
 }
 
 func (bs *bucketService) DeleteFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string) error {

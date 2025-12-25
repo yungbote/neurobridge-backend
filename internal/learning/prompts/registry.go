@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-
 type Template struct {
 	Name       PromptName
 	Version    int
@@ -59,13 +58,3 @@ func Schema(name PromptName) (schemaName string, schema map[string]any, ok bool)
 	}
 	return t.SchemaName, t.Schema(), true
 }
-
-
-
-
-
-
-
-
-
-

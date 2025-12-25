@@ -63,6 +63,12 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		return out, fmt.Errorf("ingest_chunks: missing saga_id")
 	}
 
+	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	if err != nil {
+		return out, err
+	}
+	out.PathID = pathID
+
 	var opt IngestChunksOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -123,15 +129,6 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 
 		fileCtx, cancel := context.WithTimeout(ctx, fileTimeout)
 		err := deps.DB.WithContext(fileCtx).Transaction(func(tx *gorm.DB) error {
-			// Contract: every job derives path_id via bootstrap.
-			pathID, err := deps.Bootstrap.EnsurePath(fileCtx, tx, in.OwnerUserID, in.MaterialSetID)
-			if err != nil {
-				return err
-			}
-			if out.PathID == uuid.Nil {
-				out.PathID = pathID
-			}
-
 			// Idempotency guard (re-check in-tx)
 			chs, err := deps.Chunks.GetByMaterialFileIDs(fileCtx, tx, []uuid.UUID{mf.ID})
 			if err != nil {

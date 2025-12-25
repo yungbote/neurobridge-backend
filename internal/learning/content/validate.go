@@ -1,0 +1,538 @@
+package content
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+var wordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?`)
+
+func WordCount(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	return len(wordRE.FindAllString(s, -1))
+}
+
+func NormalizeConceptKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	seen := map[string]bool{}
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
+}
+
+func NodeDocMetrics(doc NodeDocV1) map[string]any {
+	blocks := doc.Blocks
+	blockCounts := map[string]int{}
+	wordCount := WordCount(doc.Title) + WordCount(doc.Summary)
+
+	concat := []string{doc.Title, doc.Summary}
+
+	for _, b := range blocks {
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		if t == "" {
+			t = "unknown"
+		}
+		blockCounts[t]++
+
+		switch t {
+		case "heading":
+			concat = append(concat, stringFromAny(b["text"]))
+			wordCount += WordCount(stringFromAny(b["text"]))
+		case "paragraph":
+			concat = append(concat, stringFromAny(b["md"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["md"])))
+		case "callout":
+			concat = append(concat, stringFromAny(b["title"]), stringFromAny(b["md"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["title"]) + " " + stringFromAny(b["md"])))
+		case "code":
+			concat = append(concat, stringFromAny(b["filename"]), stringFromAny(b["language"]))
+		case "figure":
+			concat = append(concat, stringFromAny(b["caption"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
+		case "video":
+			concat = append(concat, stringFromAny(b["caption"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
+		case "diagram":
+			concat = append(concat, stringFromAny(b["caption"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
+		case "table":
+			concat = append(concat, stringFromAny(b["caption"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
+		case "quick_check":
+			concat = append(concat, stringFromAny(b["prompt_md"]), stringFromAny(b["answer_md"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["prompt_md"]) + " " + stringFromAny(b["answer_md"])))
+		}
+	}
+
+	return map[string]any{
+		"word_count":   wordCount,
+		"block_counts": blockCounts,
+		"doc_text":     strings.TrimSpace(strings.Join(concat, "\n")),
+	}
+}
+
+type NodeDocRequirements struct {
+	MinWordCount   int
+	MinHeadings    int
+	MinQuickChecks int
+	MinDiagrams    int
+	RequireMedia   bool
+	RequireExample bool
+}
+
+func DefaultNodeDocRequirements() NodeDocRequirements {
+	return NodeDocRequirements{
+		MinWordCount:   700,
+		MinHeadings:    2,
+		MinQuickChecks: 6,
+		MinDiagrams:    1,
+		RequireMedia:   true,
+		RequireExample: true,
+	}
+}
+
+func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeDocRequirements) ([]string, map[string]any) {
+	errs := make([]string, 0)
+
+	if doc.SchemaVersion != 1 {
+		errs = append(errs, fmt.Sprintf("schema_version must be 1 (got %d)", doc.SchemaVersion))
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		errs = append(errs, "title missing")
+	}
+	doc.ConceptKeys = NormalizeConceptKeys(doc.ConceptKeys)
+	if len(doc.ConceptKeys) == 0 {
+		errs = append(errs, "concept_keys missing")
+	}
+	if len(doc.Blocks) == 0 {
+		errs = append(errs, "blocks missing")
+	}
+
+	metrics := NodeDocMetrics(doc)
+	wordCount, _ := metrics["word_count"].(int)
+	if req.MinWordCount > 0 && wordCount < req.MinWordCount {
+		errs = append(errs, fmt.Sprintf("word_count too low (%d < %d)", wordCount, req.MinWordCount))
+	}
+
+	bc, _ := metrics["block_counts"].(map[string]int)
+	headingCount := bc["heading"]
+	if req.MinHeadings > 0 && headingCount < req.MinHeadings {
+		errs = append(errs, fmt.Sprintf("need >=%d headings (got %d)", req.MinHeadings, headingCount))
+	}
+	qcCount := bc["quick_check"]
+	if req.MinQuickChecks > 0 && qcCount < req.MinQuickChecks {
+		errs = append(errs, fmt.Sprintf("need >=%d quick_check blocks (got %d)", req.MinQuickChecks, qcCount))
+	}
+	if req.MinDiagrams > 0 && bc["diagram"] < req.MinDiagrams {
+		errs = append(errs, fmt.Sprintf("need >=%d diagram blocks (got %d)", req.MinDiagrams, bc["diagram"]))
+	}
+	hasMedia := bc["figure"] > 0 || bc["diagram"] > 0 || bc["table"] > 0
+	if req.RequireMedia && !hasMedia {
+		errs = append(errs, "need at least one figure|diagram|table block")
+	}
+
+	if req.RequireExample && !hasWorkedExample(doc) {
+		errs = append(errs, "missing worked example (heading containing 'example' or a tip callout titled 'Worked example')")
+	}
+
+	// Reject meta content in learner-facing text.
+	docText, _ := metrics["doc_text"].(string)
+	if bad := findBannedPhrases(docText); len(bad) > 0 {
+		// Store exact hits in metrics for observability, but avoid echoing banned phrases in
+		// retry feedback (otherwise the model can “learn” the phrase from the error string).
+		metrics["banned_phrases"] = bad
+		errs = append(errs, fmt.Sprintf("contains banned meta phrasing (%d hits)", len(bad)))
+	}
+
+	// Per-block validation (citations + required fields).
+	for i, b := range doc.Blocks {
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch t {
+		case "heading":
+			level := intFromAny(b["level"], 0)
+			if level < 2 || level > 4 {
+				errs = append(errs, fmt.Sprintf("block[%d] heading.level must be 2-4 (got %d)", i, level))
+			}
+			if strings.TrimSpace(stringFromAny(b["text"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] heading.text missing", i))
+			}
+		case "paragraph":
+			if strings.TrimSpace(stringFromAny(b["md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] paragraph.md missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "callout":
+			variant := strings.ToLower(strings.TrimSpace(stringFromAny(b["variant"])))
+			if variant != "info" && variant != "tip" && variant != "warning" {
+				errs = append(errs, fmt.Sprintf("block[%d] callout.variant invalid (%q)", i, variant))
+			}
+			if strings.TrimSpace(stringFromAny(b["md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] callout.md missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "code":
+			if strings.TrimSpace(stringFromAny(b["code"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] code.code missing", i))
+			}
+		case "figure":
+			asset, _ := b["asset"].(map[string]any)
+			url := strings.TrimSpace(stringFromAny(asset["url"]))
+			if url == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] figure.asset.url missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "video":
+			if strings.TrimSpace(stringFromAny(b["url"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] video.url missing", i))
+			}
+		case "diagram":
+			kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"])))
+			if kind != "svg" && kind != "mermaid" {
+				errs = append(errs, fmt.Sprintf("block[%d] diagram.kind invalid (%q)", i, kind))
+			}
+			if strings.TrimSpace(stringFromAny(b["source"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] diagram.source missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "table":
+			cols := stringSliceFromAny(b["columns"])
+			rows := stringMatrixFromAny(b["rows"])
+			if len(cols) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] table.columns missing", i))
+			}
+			if len(rows) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] table.rows missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "quick_check":
+			if strings.TrimSpace(stringFromAny(b["prompt_md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] quick_check.prompt_md missing", i))
+			}
+			if strings.TrimSpace(stringFromAny(b["answer_md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] quick_check.answer_md missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "divider":
+			// ok
+		default:
+			errs = append(errs, fmt.Sprintf("block[%d] unknown type %q", i, t))
+		}
+	}
+
+	return dedupeStrings(errs), metrics
+}
+
+func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, kind string, minCount int, maxCount int) ([]string, map[string]any) {
+	errs := make([]string, 0)
+
+	if p.SchemaVersion != 1 {
+		errs = append(errs, fmt.Sprintf("schema_version must be 1 (got %d)", p.SchemaVersion))
+	}
+	k := strings.ToLower(strings.TrimSpace(p.Kind))
+	if kind != "" && k != strings.ToLower(strings.TrimSpace(kind)) {
+		errs = append(errs, fmt.Sprintf("payload.kind mismatch (got %q want %q)", k, kind))
+	}
+	if k != "flashcards" && k != "quiz" {
+		errs = append(errs, fmt.Sprintf("kind must be flashcards|quiz (got %q)", k))
+	}
+
+	metrics := map[string]any{}
+
+	switch k {
+	case "flashcards":
+		if len(p.Questions) > 0 {
+			errs = append(errs, "flashcards payload must have questions=[]")
+		}
+		n := len(p.Cards)
+		metrics["cards_count"] = n
+		if n == 0 {
+			errs = append(errs, "no cards")
+		}
+		if minCount > 0 && n < minCount {
+			errs = append(errs, fmt.Sprintf("too few cards (%d < %d)", n, minCount))
+		}
+		if maxCount > 0 && n > maxCount {
+			errs = append(errs, fmt.Sprintf("too many cards (%d > %d)", n, maxCount))
+		}
+		for i, c := range p.Cards {
+			if strings.TrimSpace(c.FrontMD) == "" {
+				errs = append(errs, fmt.Sprintf("card[%d] front_md missing", i))
+			}
+			if strings.TrimSpace(c.BackMD) == "" {
+				errs = append(errs, fmt.Sprintf("card[%d] back_md missing", i))
+			}
+			errs = append(errs, validateCitationRefs(fmt.Sprintf("card[%d]", i), c.Citations, allowedChunkIDs)...)
+		}
+	case "quiz":
+		if len(p.Cards) > 0 {
+			errs = append(errs, "quiz payload must have cards=[]")
+		}
+		n := len(p.Questions)
+		metrics["questions_count"] = n
+		if n == 0 {
+			errs = append(errs, "no questions")
+		}
+		if minCount > 0 && n < minCount {
+			errs = append(errs, fmt.Sprintf("too few questions (%d < %d)", n, minCount))
+		}
+		if maxCount > 0 && n > maxCount {
+			errs = append(errs, fmt.Sprintf("too many questions (%d > %d)", n, maxCount))
+		}
+		for i, q := range p.Questions {
+			prefix := fmt.Sprintf("question[%d]", i)
+			if strings.TrimSpace(q.ID) == "" {
+				errs = append(errs, prefix+" id missing")
+			}
+			if strings.TrimSpace(q.PromptMD) == "" {
+				errs = append(errs, prefix+" prompt_md missing")
+			}
+			if strings.TrimSpace(q.ExplanationMD) == "" {
+				errs = append(errs, prefix+" explanation_md missing")
+			}
+			if len(q.Options) < 2 {
+				errs = append(errs, prefix+" needs >=2 options")
+			}
+			optIDs := map[string]bool{}
+			for j, o := range q.Options {
+				if strings.TrimSpace(o.ID) == "" {
+					errs = append(errs, fmt.Sprintf("%s option[%d] id missing", prefix, j))
+				}
+				if strings.TrimSpace(o.Text) == "" {
+					errs = append(errs, fmt.Sprintf("%s option[%d] text missing", prefix, j))
+				}
+				if o.ID != "" {
+					if optIDs[o.ID] {
+						errs = append(errs, fmt.Sprintf("%s option ids must be unique (dup %q)", prefix, o.ID))
+					}
+					optIDs[o.ID] = true
+				}
+			}
+			if strings.TrimSpace(q.AnswerID) == "" {
+				errs = append(errs, prefix+" answer_id missing")
+			} else if !optIDs[q.AnswerID] {
+				errs = append(errs, fmt.Sprintf("%s answer_id %q not in options", prefix, q.AnswerID))
+			}
+			errs = append(errs, validateCitationRefs(prefix, q.Citations, allowedChunkIDs)...)
+		}
+	}
+
+	return dedupeStrings(errs), metrics
+}
+
+func findBannedPhrases(text string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	l := strings.ToLower(text)
+	phrases := []string{
+		"quick check-in",
+		"entry check",
+		"before we dive in",
+		"answer these",
+		"here's the plan",
+		"here is the plan",
+		"plan:",
+		"i can tailor this",
+		"pick one",
+		"what are you using this for",
+		"what's your current",
+		"what is your current",
+		"do you prefer",
+		"any constraints",
+		"while you think about that",
+		"if you want to go deeper",
+		"if you'd like to go deeper",
+		"let me know if you want",
+	}
+	var hit []string
+	for _, p := range phrases {
+		if strings.Contains(l, p) {
+			hit = append(hit, p)
+		}
+	}
+	sort.Strings(hit)
+	return hit
+}
+
+func hasWorkedExample(doc NodeDocV1) bool {
+	for _, b := range doc.Blocks {
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch t {
+		case "heading":
+			txt := strings.ToLower(strings.TrimSpace(stringFromAny(b["text"])))
+			if strings.Contains(txt, "example") {
+				return true
+			}
+		case "callout":
+			variant := strings.ToLower(strings.TrimSpace(stringFromAny(b["variant"])))
+			title := strings.ToLower(strings.TrimSpace(stringFromAny(b["title"])))
+			if variant == "tip" && (title == "worked example" || strings.HasPrefix(title, "worked example")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateCitations(blockIndex int, raw any, allowed map[string]bool) []string {
+	arr, ok := raw.([]any)
+	if !ok {
+		// If missing, treat as empty.
+		arr = nil
+	}
+	refs := make([]CitationRefV1, 0, len(arr))
+	for _, x := range arr {
+		m, ok := x.(map[string]any)
+		if !ok {
+			continue
+		}
+		locAny, _ := m["loc"].(map[string]any)
+		refs = append(refs, CitationRefV1{
+			ChunkID: strings.TrimSpace(stringFromAny(m["chunk_id"])),
+			Quote:   strings.TrimSpace(stringFromAny(m["quote"])),
+			Loc: CitationLocV1{
+				Page:  intFromAny(locAny["page"], 0),
+				Start: intFromAny(locAny["start"], 0),
+				End:   intFromAny(locAny["end"], 0),
+			},
+		})
+	}
+	return validateCitationRefs(fmt.Sprintf("block[%d]", blockIndex), refs, allowed)
+}
+
+func validateCitationRefs(prefix string, refs []CitationRefV1, allowed map[string]bool) []string {
+	errs := make([]string, 0)
+	if len(refs) == 0 {
+		errs = append(errs, prefix+" citations missing")
+		return errs
+	}
+	seen := map[string]bool{}
+	for _, c := range refs {
+		id := strings.TrimSpace(c.ChunkID)
+		if id == "" {
+			errs = append(errs, prefix+" citation.chunk_id missing")
+			continue
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			errs = append(errs, prefix+" citation.chunk_id invalid uuid: "+id)
+			continue
+		}
+		if allowed != nil && len(allowed) > 0 && !allowed[id] {
+			errs = append(errs, prefix+" citation.chunk_id not allowed: "+id)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if len(c.Quote) > 240 {
+			errs = append(errs, prefix+" citation.quote too long")
+		}
+		if c.Loc.Start < 0 || c.Loc.End < 0 || c.Loc.Page < 0 {
+			errs = append(errs, prefix+" citation.loc must be non-negative")
+		}
+		if c.Loc.End > 0 && c.Loc.Start > 0 && c.Loc.End < c.Loc.Start {
+			errs = append(errs, prefix+" citation.loc end < start")
+		}
+	}
+	return errs
+}
+
+func stripMD(s string) string {
+	// Cheaply remove some markdown noise for word counts.
+	s = strings.ReplaceAll(s, "`", " ")
+	s = strings.ReplaceAll(s, "*", " ")
+	s = strings.ReplaceAll(s, "#", " ")
+	return s
+}
+
+func stringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func intFromAny(v any, def int) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case json.Number:
+		i, _ := t.Int64()
+		return int(i)
+	default:
+		return def
+	}
+}
+
+func stringSliceFromAny(v any) []string {
+	if v == nil {
+		return nil
+	}
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			s := strings.TrimSpace(stringFromAny(it))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func stringMatrixFromAny(v any) [][]string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([][]string, 0, len(arr))
+	for _, row := range arr {
+		out = append(out, stringSliceFromAny(row))
+	}
+	return out
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}

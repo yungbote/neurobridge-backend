@@ -3,12 +3,15 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"golang.org/x/sync/errgroup"
 )
 
 type ConceptGraphBuildDeps struct {
@@ -122,6 +126,14 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, fmt.Errorf("concept_graph_build: concept inventory returned 0 concepts")
 	}
 
+	conceptsOut, dupKeys := dedupeConceptInventoryByKey(conceptsOut)
+	if dupKeys > 0 {
+		deps.Log.Warn("concept inventory returned duplicate keys; deduped", "count", dupKeys)
+	}
+	if len(conceptsOut) == 0 {
+		return out, fmt.Errorf("concept_graph_build: concept inventory returned 0 unique concepts")
+	}
+
 	// Stable ordering for deterministic IDs/embeddings batching.
 	sort.Slice(conceptsOut, func(i, j int) bool { return conceptsOut[i].Key < conceptsOut[j].Key })
 
@@ -134,13 +146,8 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if err != nil {
 		return out, err
 	}
-	edgesObj, err := deps.AI.GenerateJSON(ctx, edgesPrompt.System, edgesPrompt.User, edgesPrompt.SchemaName, edgesPrompt.Schema)
-	if err != nil {
-		return out, err
-	}
-	edgesOut := parseConceptEdges(edgesObj)
 
-	// ---- Embed concept docs (before tx) ----
+	// ---- Embed concept docs + generate edges in parallel (before tx) ----
 	conceptDocs := make([]string, 0, len(conceptsOut))
 	for _, c := range conceptsOut {
 		doc := strings.TrimSpace(c.Name + "\n" + c.Summary + "\n" + strings.Join(c.KeyPoints, "\n"))
@@ -150,10 +157,33 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		conceptDocs = append(conceptDocs, doc)
 	}
 
-	embs, err := deps.AI.Embed(ctx, conceptDocs)
-	if err != nil {
+	var (
+		edgesObj map[string]any
+		embs     [][]float32
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		obj, err := deps.AI.GenerateJSON(gctx, edgesPrompt.System, edgesPrompt.User, edgesPrompt.SchemaName, edgesPrompt.Schema)
+		if err != nil {
+			return err
+		}
+		edgesObj = obj
+		return nil
+	})
+	g.Go(func() error {
+		v, err := deps.AI.Embed(gctx, conceptDocs)
+		if err != nil {
+			return err
+		}
+		embs = v
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		return out, err
 	}
+
+	edgesOut := parseConceptEdges(edgesObj)
+
 	if len(embs) != len(conceptsOut) {
 		return out, fmt.Errorf("concept_graph_build: embedding count mismatch (got %d want %d)", len(embs), len(conceptsOut))
 	}
@@ -189,10 +219,27 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 	ns := index.ConceptsNamespace("path", &pathID)
 	const batchSize = 64
-	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	skipped := false
+	txErr := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Ensure only one canonical graph write happens per path (race-safe + avoids unique index errors).
+		if err := advisoryXactLock(tx, "concept_graph_build", pathID); err != nil {
+			return err
+		}
+
 		// EnsurePath inside the tx (no-op if already set).
 		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
+		}
+
+		// Race-safe idempotency guard: if another worker already persisted the canonical graph,
+		// exit without attempting inserts (avoids unique constraint errors).
+		existing, err := deps.Concepts.GetByScope(ctx, tx, "path", &pathID)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			skipped = true
+			return nil
 		}
 
 		// Create concepts (canonical).
@@ -281,8 +328,76 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		}
 
 		return nil
-	}); err != nil {
-		return out, err
+	})
+	if txErr != nil {
+		// If another worker won the race (or older installs have a mismatched unique index),
+		// treat as a no-op as long as a canonical graph exists after the error.
+		if isUniqueViolation(txErr, "") {
+			existingAfter, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+			if err == nil && len(existingAfter) > 0 {
+				deps.Log.Warn("concept graph insert hit unique violation; graph already exists; skipping", "path_id", pathID.String())
+				return out, nil
+			}
+
+			// Recovery path: if concepts were soft-deleted but a non-partial unique index prevents reinsertion,
+			// restore the existing soft-deleted graph so downstream stages can proceed.
+			restored := false
+			_ = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				if err := advisoryXactLock(tx, "concept_graph_build", pathID); err != nil {
+					return err
+				}
+
+				var unscoped []*types.Concept
+				if err := tx.Unscoped().
+					Where("scope = ? AND scope_id IS NOT DISTINCT FROM ?", "path", &pathID).
+					Find(&unscoped).Error; err != nil {
+					return err
+				}
+				if len(unscoped) == 0 {
+					return nil
+				}
+
+				now := time.Now().UTC()
+				if err := tx.Unscoped().
+					Model(&types.Concept{}).
+					Where("scope = ? AND scope_id IS NOT DISTINCT FROM ?", "path", &pathID).
+					Updates(map[string]any{"deleted_at": nil, "updated_at": now}).Error; err != nil {
+					return err
+				}
+				ids := make([]uuid.UUID, 0, len(unscoped))
+				for _, c := range unscoped {
+					if c != nil && c.ID != uuid.Nil {
+						ids = append(ids, c.ID)
+					}
+				}
+				if len(ids) > 0 {
+					_ = tx.Unscoped().
+						Model(&types.ConceptEvidence{}).
+						Where("concept_id IN ?", ids).
+						Updates(map[string]any{"deleted_at": nil, "updated_at": now}).Error
+					_ = tx.Unscoped().
+						Model(&types.ConceptEdge{}).
+						Where("from_concept_id IN ? OR to_concept_id IN ?", ids, ids).
+						Updates(map[string]any{"deleted_at": nil, "updated_at": now}).Error
+				}
+				restored = true
+				return nil
+			})
+
+			if restored {
+				existingAfterRestore, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+				if err == nil && len(existingAfterRestore) > 0 {
+					deps.Log.Warn("concept graph restored after unique violation; continuing", "path_id", pathID.String())
+					return out, nil
+				}
+			}
+		}
+
+		return out, txErr
+	}
+
+	if skipped {
+		return out, nil
 	}
 
 	// ---- Upsert to Pinecone (best-effort; cache only) ----
@@ -321,6 +436,47 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	return out, nil
+}
+
+func advisoryXactLock(tx *gorm.DB, namespace string, id uuid.UUID) error {
+	if tx == nil || namespace == "" || id == uuid.Nil {
+		return nil
+	}
+	key := advisoryKey64(namespace, id)
+	return tx.Exec("SELECT pg_advisory_xact_lock(?)", key).Error
+}
+
+func advisoryKey64(namespace string, id uuid.UUID) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(namespace))
+	_, _ = h.Write([]byte{':'})
+	_, _ = h.Write([]byte(id.String()))
+	return int64(h.Sum64())
+}
+
+func isUniqueViolation(err error, constraint string) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23505" {
+			if strings.TrimSpace(constraint) == "" {
+				return true
+			}
+			return strings.EqualFold(strings.TrimSpace(pgErr.ConstraintName), strings.TrimSpace(constraint))
+		}
+	}
+
+	// Fallback: string match (covers wrapped errors that lose type info).
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "sqlstate 23505") {
+		if strings.TrimSpace(constraint) == "" {
+			return true
+		}
+		return strings.Contains(msg, strings.ToLower(strings.TrimSpace(constraint)))
+	}
+	return false
 }
 
 type conceptInvItem struct {
@@ -378,6 +534,66 @@ func parseConceptInventory(obj map[string]any) ([]conceptInvItem, error) {
 		})
 	}
 	return out, nil
+}
+
+func dedupeConceptInventoryByKey(in []conceptInvItem) ([]conceptInvItem, int) {
+	if len(in) == 0 {
+		return nil, 0
+	}
+
+	seen := make(map[string]conceptInvItem, len(in))
+	dups := 0
+	for _, c := range in {
+		k := strings.TrimSpace(c.Key)
+		if k == "" {
+			continue
+		}
+		c.Key = k
+
+		existing, ok := seen[k]
+		if !ok {
+			seen[k] = c
+			continue
+		}
+
+		dups++
+		if strings.TrimSpace(existing.Name) == "" && strings.TrimSpace(c.Name) != "" {
+			existing.Name = c.Name
+		}
+		if strings.TrimSpace(existing.ParentKey) == "" && strings.TrimSpace(c.ParentKey) != "" {
+			existing.ParentKey = c.ParentKey
+		}
+		if len(strings.TrimSpace(existing.Summary)) < len(strings.TrimSpace(c.Summary)) {
+			existing.Summary = c.Summary
+		}
+		if c.Importance > existing.Importance {
+			existing.Importance = c.Importance
+		}
+
+		// Keep depth consistent with parent linkage when duplicates disagree.
+		if strings.TrimSpace(existing.ParentKey) == "" {
+			existing.Depth = 0
+		} else {
+			if c.Depth > existing.Depth {
+				existing.Depth = c.Depth
+			}
+			if existing.Depth <= 0 {
+				existing.Depth = 1
+			}
+		}
+
+		existing.KeyPoints = dedupeStrings(append(existing.KeyPoints, c.KeyPoints...))
+		existing.Aliases = dedupeStrings(append(existing.Aliases, c.Aliases...))
+		existing.Citations = dedupeStrings(append(existing.Citations, c.Citations...))
+
+		seen[k] = existing
+	}
+
+	out := make([]conceptInvItem, 0, len(seen))
+	for _, v := range seen {
+		out = append(out, v)
+	}
+	return out, dups
 }
 
 func parseConceptEdges(obj map[string]any) []conceptEdgeItem {

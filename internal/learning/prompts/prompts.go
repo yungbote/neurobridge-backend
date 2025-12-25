@@ -7,12 +7,12 @@ import (
 )
 
 type Prompt struct {
-	Name				string
-	Version			int
-	System			string
-	User				string
-	SchemaName	string
-	Schema			map[string]any
+	Name       string
+	Version    int
+	System     string
+	User       string
+	SchemaName string
+	Schema     map[string]any
 }
 
 func (p Prompt) Fingerprint() string {
@@ -47,13 +47,3 @@ func itoa(i int) string {
 	}
 	return string(b[n:])
 }
-
-
-
-
-
-
-
-
-
-

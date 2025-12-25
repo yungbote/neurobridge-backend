@@ -215,13 +215,3 @@ func (r *materialSetSummaryRepo) FullDeleteByMaterialSetIDs(ctx context.Context,
 	}
 	return t.WithContext(ctx).Unscoped().Where("material_set_id IN ?", setIDs).Delete(&types.MaterialSetSummary{}).Error
 }
-
-
-
-
-
-
-
-
-
-

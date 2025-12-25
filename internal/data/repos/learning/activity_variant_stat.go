@@ -152,13 +152,3 @@ func (r *activityVariantStatRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.
 	}
 	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityVariantStat{}).Error
 }
-
-
-
-
-
-
-
-
-
-

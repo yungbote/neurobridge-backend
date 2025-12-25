@@ -16,7 +16,7 @@ type User struct {
 	LastName        string    `gorm:"not null;column:last_name" json:"last_name"`
 	AvatarBucketKey string    `gorm:"column:avatar_bucket_key" json:"avatar_bucket_key"`
 	AvatarURL       string    `gorm:"column:avatar_url" json:"avatar_url"`
-	AvatarColor			string		`gorm:"column:avatar_color" json:"avatar_color"`
+	AvatarColor     string    `gorm:"column:avatar_color" json:"avatar_color"`
 
 	PreferredTheme string `gorm:"column:preferred_theme" json:"preferred_theme"`
 
@@ -42,13 +42,3 @@ type UserProfileVector struct {
 }
 
 func (UserProfileVector) TableName() string { return "user_profile_vector" }
-
-
-
-
-
-
-
-
-
-

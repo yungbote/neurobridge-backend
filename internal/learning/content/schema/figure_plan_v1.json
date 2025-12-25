@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "semantic_type": {
+            "type": "string",
+            "enum": [
+              "setup_illustration",
+              "real_world_example",
+              "intuition_picture",
+              "anatomy_schematic",
+              "graphical_metaphor"
+            ]
+          },
+          "prompt": { "type": "string" },
+          "caption": { "type": "string" },
+          "alt_text": { "type": "string" },
+          "placement_hint": { "type": "string" },
+          "citations": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": [
+          "semantic_type",
+          "prompt",
+          "caption",
+          "alt_text",
+          "placement_hint",
+          "citations"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "figures"],
+  "additionalProperties": false
+}

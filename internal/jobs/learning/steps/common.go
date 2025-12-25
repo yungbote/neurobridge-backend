@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -124,6 +126,18 @@ func decodeEmbedding(emb datatypes.JSON) ([]float32, bool) {
 		out = append(out, float32(f))
 	}
 	return out, true
+}
+
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil || i <= 0 {
+		return def
+	}
+	return i
 }
 
 func cosineSim(a, b []float32) float64 {

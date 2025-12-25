@@ -130,7 +130,6 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
 	return nil
 }
 
-
 func (as *avatarService) GenerateUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) (bytes.Buffer, error) {
 	const size = 512
 	as.ensureUserAvatarColor(user)
@@ -353,13 +352,3 @@ func loadFontFace(fontPath string, size float64) (font.Face, error) {
 	})
 	return face, nil
 }
-
-
-
-
-
-
-
-
-
-

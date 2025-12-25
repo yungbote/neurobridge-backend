@@ -1,10 +1,10 @@
 package materials
 
 import (
-	"time"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"time"
 )
 
 type MaterialSetSummary struct {
@@ -15,7 +15,7 @@ type MaterialSetSummary struct {
 	Subject string `gorm:"column:subject;index" json:"subject,omitempty"`
 	Level   string `gorm:"column:level;index" json:"level,omitempty"`
 
-	SummaryMD string `gorm:"column:summary_md;type:text" json:"summary_md"`
+	SummaryMD string         `gorm:"column:summary_md;type:text" json:"summary_md"`
 	Tags      datatypes.JSON `gorm:"column:tags;type:jsonb" json:"tags"` // []string
 
 	ConceptKeys datatypes.JSON `gorm:"column:concept_keys;type:jsonb" json:"concept_keys"` // []string
@@ -29,13 +29,3 @@ type MaterialSetSummary struct {
 }
 
 func (MaterialSetSummary) TableName() string { return "material_set_summary" }
-
-
-
-
-
-
-
-
-
-

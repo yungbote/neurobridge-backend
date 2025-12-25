@@ -444,8 +444,14 @@ CONCEPT_KEYS: {{.ConceptKeysCSV}}
 EXCERPTS (each line includes chunk_id):
 {{.ActivityExcerpts}}
 
+AVAILABLE_MEDIA_ASSETS_JSON (optional):
+{{.AssetsJSON}}
+
 Rules:
-- Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed
+- Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed|diagram
+- If you use image or video_embed blocks, asset_refs MUST be a URL from AVAILABLE_MEDIA_ASSETS_JSON. Do not invent URLs.
+- If AVAILABLE_MEDIA_ASSETS_JSON is empty, do not include image/video_embed blocks.
+- If AVAILABLE_MEDIA_ASSETS_JSON includes images/videos, prefer including 1-2 relevant image blocks and at most 1 relevant video_embed block.
 - citations must be chunk_id strings actually used.`,
 		Validators: []Validator{
 			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
@@ -633,13 +639,3 @@ Explain why the chosen option won, plus risks and mitigations.`,
 		},
 	})
 }
-
-
-
-
-
-
-
-
-
-

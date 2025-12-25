@@ -17,6 +17,7 @@ type JobRun struct {
 	Stage       string         `gorm:"column:stage;not null;index" json:"stage"`
 	Progress    int            `gorm:"column:progress;not null;default:0" json:"progress"`
 	Attempts    int            `gorm:"column:attempts;not null;default:0" json:"attempts"`
+	Message     string         `gorm:"column:message;type:text" json:"message,omitempty"`
 	Error       string         `gorm:"column:error" json:"error,omitempty"`
 	LockedAt    *time.Time     `gorm:"column:locked_at;index" json:"locked_at,omitempty"`
 	HeartbeatAt *time.Time     `gorm:"column:heartbeat_at;index" json:"heartbeat_at,omitempty"`

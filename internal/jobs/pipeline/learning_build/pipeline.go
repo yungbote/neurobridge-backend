@@ -27,6 +27,11 @@ var stageOrder = []string{
 	"user_profile_refresh",
 	"teaching_patterns_seed",
 	"path_plan_build",
+	"node_figures_plan_build",
+	"node_figures_render",
+	"node_videos_plan_build",
+	"node_videos_render",
+	"node_doc_build",
 	"realize_activities",
 	"coverage_coherence_audit",
 	"progression_compact",
@@ -103,6 +108,10 @@ func resolveMode(jc *jobrt.Context) string {
 }
 
 func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID uuid.UUID) error {
+	if p.isCanceled(jc) {
+		return nil
+	}
+
 	// If we're in a scheduled wait, sleep a bit to reduce polling pressure.
 	if st.WaitUntil != nil && time.Now().Before(*st.WaitUntil) {
 		sleep := clampDuration(st.WaitUntil.Sub(time.Now()), p.minPoll, p.maxPoll)
@@ -114,6 +123,10 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 
 	total := len(stageOrder)
 	for i, jobType := range stageOrder {
+		if p.isCanceled(jc) {
+			return nil
+		}
+
 		ss := st.ensureStage(jobType)
 		if ss.Status == stageStatusSucceeded {
 			continue
@@ -249,9 +262,47 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			}
 			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("%s: %s", jobType, errMsg))
 
+		case "canceled":
+			// Child stage was canceled (likely due to user cancel). Clear linkage so we can re-enqueue on restart.
+			ss.Status = stageStatusPending
+			ss.ChildJobID = ""
+			ss.ChildJobStatus = "canceled"
+			ss.LastError = ""
+			ss.StartedAt = nil
+			ss.FinishedAt = nil
+			st.WaitUntil = ptrTime(time.Now().Add(p.minPoll))
+			_ = p.saveState(jc, nil, st)
+			return p.yield(jc, st, jobType, st.LastProgress)
+
 		default:
-			// Still running/queued; yield.
-			progress := st.setProgress(progressForStage(i, total))
+			// Still running/queued; emit root progress based on child snapshot so the UI
+			// can stay live without frontend polling (SSE has no replay).
+			base := progressForStage(i, total)
+			progress := base
+			if total > 0 && child != nil {
+				cp := child.Progress
+				if cp < 0 {
+					cp = 0
+				}
+				if cp > 100 {
+					cp = 100
+				}
+				// Scale child progress into this stage's slice of the total.
+				intra := int(float64(cp) / float64(total))
+				if intra < 0 {
+					intra = 0
+				}
+				if intra > 99-base {
+					intra = 99 - base
+				}
+				progress = base + intra
+			}
+			msg := strings.TrimSpace(child.Message)
+			if msg == "" {
+				msg = "Running " + jobType
+			}
+			progress = st.setProgress(progress)
+			jc.Progress("waiting_child_"+jobType, progress, msg)
 			st.WaitUntil = ptrTime(time.Now().Add(p.minPoll))
 			_ = p.saveState(jc, nil, st)
 			return p.yield(jc, st, "waiting_child_"+jobType, progress)
@@ -262,6 +313,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
 		return p.path.UpdateFields(jc.Ctx, tx, pathID, map[string]interface{}{
 			"status": "ready",
+			"job_id": nil,
 		})
 	}); err != nil {
 		jc.Fail("finalize", err)
@@ -291,6 +343,10 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	total := len(stageOrder)
 	for i, stageName := range stageOrder {
+		if p.isCanceled(jc) {
+			return nil
+		}
+
 		ss := st.ensureStage(stageName)
 		if ss.Status == stageStatusSucceeded {
 			continue
@@ -410,26 +466,91 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				AI:          p.inline.AI,
 				Bootstrap:   p.bootstrap,
 			}, steps.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "node_figures_plan_build":
+			_, stageErr = steps.NodeFiguresPlanBuild(jc.Ctx, steps.NodeFiguresPlanBuildDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Figures:   p.inline.NodeFigures,
+				GenRuns:   p.inline.DocGenRuns,
+				Files:     p.inline.Files,
+				Chunks:    p.inline.Chunks,
+				AI:        p.inline.AI,
+				Vec:       p.inline.Vec,
+				Bootstrap: p.bootstrap,
+			}, steps.NodeFiguresPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "node_figures_render":
+			_, stageErr = steps.NodeFiguresRender(jc.Ctx, steps.NodeFiguresRenderDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Figures:   p.inline.NodeFigures,
+				Assets:    p.inline.Assets,
+				GenRuns:   p.inline.DocGenRuns,
+				AI:        p.inline.AI,
+				Bucket:    p.inline.Bucket,
+				Bootstrap: p.bootstrap,
+			}, steps.NodeFiguresRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "node_videos_plan_build":
+			_, stageErr = steps.NodeVideosPlanBuild(jc.Ctx, steps.NodeVideosPlanBuildDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Videos:    p.inline.NodeVideos,
+				GenRuns:   p.inline.DocGenRuns,
+				Files:     p.inline.Files,
+				Chunks:    p.inline.Chunks,
+				AI:        p.inline.AI,
+				Vec:       p.inline.Vec,
+				Bootstrap: p.bootstrap,
+			}, steps.NodeVideosPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "node_videos_render":
+			_, stageErr = steps.NodeVideosRender(jc.Ctx, steps.NodeVideosRenderDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Videos:    p.inline.NodeVideos,
+				Assets:    p.inline.Assets,
+				GenRuns:   p.inline.DocGenRuns,
+				AI:        p.inline.AI,
+				Bucket:    p.inline.Bucket,
+				Bootstrap: p.bootstrap,
+			}, steps.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "node_doc_build":
+			_, stageErr = steps.NodeDocBuild(jc.Ctx, steps.NodeDocBuildDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				NodeDocs:  p.inline.NodeDocs,
+				Figures:   p.inline.NodeFigures,
+				Videos:    p.inline.NodeVideos,
+				GenRuns:   p.inline.DocGenRuns,
+				Files:     p.inline.Files,
+				Chunks:    p.inline.Chunks,
+				AI:        p.inline.AI,
+				Vec:       p.inline.Vec,
+				Bucket:    p.inline.Bucket,
+				Bootstrap: p.bootstrap,
+			}, steps.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "realize_activities":
-			_, stageErr = steps.RealizeActivities(jc.Ctx, steps.RealizeActivitiesDeps{
-				DB:                 p.db,
-				Log:                p.log,
-				Path:               p.inline.Path,
-				PathNodes:          p.inline.PathNodes,
-				PathNodeActivities: p.inline.PathNodeActivities,
-				Activities:         p.inline.Activities,
-				Variants:           p.inline.Variants,
-				ActivityConcepts:   p.inline.ActivityConcepts,
-				ActivityCitations:  p.inline.ActivityCitations,
-				Concepts:           p.inline.Concepts,
-				Files:              p.inline.Files,
-				Chunks:             p.inline.Chunks,
-				UserProfile:        p.inline.UserProfile,
-				AI:                 p.inline.AI,
-				Vec:                p.inline.Vec,
-				Saga:               p.saga,
-				Bootstrap:          p.bootstrap,
-			}, steps.RealizeActivitiesInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
+				DB:          p.db,
+				Log:         p.log,
+				Path:        p.inline.Path,
+				PathNodes:   p.inline.PathNodes,
+				Files:       p.inline.Files,
+				Chunks:      p.inline.Chunks,
+				UserProfile: p.inline.UserProfile,
+				AI:          p.inline.AI,
+				Vec:         p.inline.Vec,
+				Bucket:      p.inline.Bucket,
+				Bootstrap:   p.bootstrap,
+			}, steps.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID})
 		case "coverage_coherence_audit":
 			_, stageErr = steps.CoverageCoherenceAudit(jc.Ctx, steps.CoverageCoherenceAuditDeps{
 				DB:         p.db,
@@ -509,7 +630,10 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	// All stages succeeded.
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-		return p.path.UpdateFields(jc.Ctx, tx, pathID, map[string]interface{}{"status": "ready"})
+		return p.path.UpdateFields(jc.Ctx, tx, pathID, map[string]interface{}{
+			"status": "ready",
+			"job_id": nil,
+		})
 	}); err != nil {
 		jc.Fail("finalize", err)
 		return nil
@@ -600,13 +724,14 @@ func (p *Pipeline) yield(jc *jobrt.Context, st *state, stage string, progress in
 	}
 	progress = st.setProgress(progress)
 	_ = p.saveState(jc, nil, st)
-	return jc.Repo.UpdateFields(jc.Ctx, nil, jc.Job.ID, map[string]interface{}{
+	_, err := jc.Repo.UpdateFieldsUnlessStatus(jc.Ctx, nil, jc.Job.ID, []string{"canceled"}, map[string]interface{}{
 		"status":       "queued",
 		"stage":        stage,
 		"progress":     progress,
 		"locked_at":    nil,
 		"heartbeat_at": now,
 	})
+	return err
 }
 
 func progressForStage(i, total int) int {
@@ -633,4 +758,15 @@ func clampDuration(d, min, max time.Duration) time.Duration {
 		return max
 	}
 	return d
+}
+
+func (p *Pipeline) isCanceled(jc *jobrt.Context) bool {
+	if jc == nil || jc.Job == nil || jc.Repo == nil {
+		return false
+	}
+	rows, err := jc.Repo.GetByIDs(jc.Ctx, nil, []uuid.UUID{jc.Job.ID})
+	if err != nil || len(rows) == 0 || rows[0] == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(rows[0].Status), "canceled")
 }

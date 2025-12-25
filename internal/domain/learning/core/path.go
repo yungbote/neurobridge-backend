@@ -14,6 +14,7 @@ type Path struct {
 	Title       string         `gorm:"column:title;not null" json:"title"`
 	Description string         `gorm:"column:description;type:text" json:"description,omitempty"`
 	Status      string         `gorm:"column:status;not null;default:'draft';index" json:"status"`
+	JobID       *uuid.UUID     `gorm:"type:uuid;column:job_id;index" json:"job_id,omitempty"`
 	Metadata    datatypes.JSON `gorm:"column:metadata;type:jsonb" json:"metadata,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
@@ -34,6 +35,7 @@ type PathNode struct {
 	ParentNodeID *uuid.UUID     `gorm:"type:uuid;column:parent_node_id;index" json:"parent_node_id,omitempty"`
 	Gating       datatypes.JSON `gorm:"column:gating;type:jsonb" json:"gating,omitempty"`
 	Metadata     datatypes.JSON `gorm:"column:metadata;type:jsonb" json:"metadata,omitempty"`
+	ContentJSON  datatypes.JSON `gorm:"column:content_json;type:jsonb" json:"content_json,omitempty"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`

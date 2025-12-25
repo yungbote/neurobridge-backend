@@ -11,4 +11,3 @@ import (
 func ChatUserNamespace(userID uuid.UUID) string {
 	return fmt.Sprintf("chat:user:%s", userID.String())
 }
-

@@ -58,13 +58,3 @@ func EnumSchema(values ...string) map[string]any {
 	}
 	return map[string]any{"type": "string", "enum": arr}
 }
-
-
-
-
-
-
-
-
-
-

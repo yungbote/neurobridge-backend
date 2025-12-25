@@ -115,4 +115,3 @@ func (r *chatTurnRepo) UpdateFields(ctx context.Context, tx *gorm.DB, userID uui
 		Where("id = ? AND user_id = ?", turnID, userID).
 		Updates(updates).Error
 }
-

@@ -41,48 +41,48 @@ type AuthService interface {
 }
 
 type authService struct {
-	db								*gorm.DB
-	log								*logger.Logger
-	userRepo					repos.UserRepo
-	avatarService			AvatarService
-	userTokenRepo			repos.UserTokenRepo
-	userIdentityRepo	repos.UserIdentityRepo
-	oauthNonceRepo		repos.OAuthNonceRepo
-	oidcVerifier			OIDCVerifier
-	jwtSecretKey			string
-	accessTTL					time.Duration
-	refreshTTL				time.Duration
-	oauthNonceTTL			time.Duration
+	db               *gorm.DB
+	log              *logger.Logger
+	userRepo         repos.UserRepo
+	avatarService    AvatarService
+	userTokenRepo    repos.UserTokenRepo
+	userIdentityRepo repos.UserIdentityRepo
+	oauthNonceRepo   repos.OAuthNonceRepo
+	oidcVerifier     OIDCVerifier
+	jwtSecretKey     string
+	accessTTL        time.Duration
+	refreshTTL       time.Duration
+	oauthNonceTTL    time.Duration
 }
 
 func NewAuthService(
-	db								*gorm.DB,
-	log								*logger.Logger,
-	userRepo					repos.UserRepo,
-	avatarService			AvatarService,
-	userTokenRepo			repos.UserTokenRepo,
-	userIdentityRepo	repos.UserIdentityRepo,
-	oauthNonceRepo		repos.OAuthNonceRepo,
-	oidcVerifier			OIDCVerifier,
-	jwtSecretKey			string,
-	accessTTL					time.Duration,
-	refreshTTL				time.Duration,
-	oauthNonceTTL			time.Duration,
+	db *gorm.DB,
+	log *logger.Logger,
+	userRepo repos.UserRepo,
+	avatarService AvatarService,
+	userTokenRepo repos.UserTokenRepo,
+	userIdentityRepo repos.UserIdentityRepo,
+	oauthNonceRepo repos.OAuthNonceRepo,
+	oidcVerifier OIDCVerifier,
+	jwtSecretKey string,
+	accessTTL time.Duration,
+	refreshTTL time.Duration,
+	oauthNonceTTL time.Duration,
 ) AuthService {
 	serviceLog := log.With("service", "AuthService")
 	return &authService{
-		db:									db,
-		log:								serviceLog,
-		userRepo:						userRepo,
-		avatarService:			avatarService,
-		userTokenRepo:			userTokenRepo,
-		userIdentityRepo:		userIdentityRepo,
-		oauthNonceRepo:			oauthNonceRepo,
-		oidcVerifier:				oidcVerifier,
-		jwtSecretKey:				jwtSecretKey,
-		accessTTL:					accessTTL,
-		refreshTTL:					refreshTTL,
-		oauthNonceTTL:			oauthNonceTTL,
+		db:               db,
+		log:              serviceLog,
+		userRepo:         userRepo,
+		avatarService:    avatarService,
+		userTokenRepo:    userTokenRepo,
+		userIdentityRepo: userIdentityRepo,
+		oauthNonceRepo:   oauthNonceRepo,
+		oidcVerifier:     oidcVerifier,
+		jwtSecretKey:     jwtSecretKey,
+		accessTTL:        accessTTL,
+		refreshTTL:       refreshTTL,
+		oauthNonceTTL:    oauthNonceTTL,
 	}
 }
 
@@ -517,8 +517,6 @@ func (as *authService) issueSession(ctx context.Context, tx *gorm.DB, user *type
 	return accessToken, refreshToken, nil
 }
 
-
-
 func (as *authService) generateAccessToken(ctx context.Context, tx *gorm.DB, user *types.User) (string, error) {
 	claims := JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -591,13 +589,3 @@ func randomNonce(n int) string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
-
-
-
-
-
-
-
-
-
-

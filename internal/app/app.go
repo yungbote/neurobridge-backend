@@ -79,7 +79,7 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	handlerset := wireHandlers(log, serviceset, reposet, ssehub)
+	handlerset := wireHandlers(log, serviceset, reposet, clientSet, ssehub)
 	middleware := wireMiddleware(log, serviceset)
 	router := wireRouter(handlerset, middleware)
 
@@ -139,13 +139,3 @@ func (a *App) Close() {
 		a.Log.Sync()
 	}
 }
-
-
-
-
-
-
-
-
-
-

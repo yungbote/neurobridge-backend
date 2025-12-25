@@ -73,13 +73,3 @@ func (r *chainPriorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.Cha
 		}).
 		Create(row).Error
 }
-
-
-
-
-
-
-
-
-
-

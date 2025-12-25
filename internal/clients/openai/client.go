@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,24 @@ type ImageInput struct {
 	Detail string // "low" | "high"
 }
 
+type ImageGeneration struct {
+	Bytes         []byte
+	MimeType      string
+	RevisedPrompt string
+}
+
+type VideoGenerationOptions struct {
+	DurationSeconds int
+	Size            string
+}
+
+type VideoGeneration struct {
+	Bytes         []byte
+	MimeType      string
+	RevisedPrompt string
+	URL           string
+}
+
 // Client is the OpenAI API client used by the rest of the backend.
 type Client interface {
 	Embed(ctx context.Context, inputs []string) ([][]float32, error)
@@ -39,6 +58,12 @@ type Client interface {
 
 	// Multimodal: user prompt + images -> plain text
 	GenerateTextWithImages(ctx context.Context, system string, user string, images []ImageInput) (string, error)
+
+	// Image generation (raster). Returns bytes (PNG by default).
+	GenerateImage(ctx context.Context, prompt string) (ImageGeneration, error)
+
+	// Video generation (Sora). Returns bytes (mp4/webm) when possible; may also return a URL.
+	GenerateVideo(ctx context.Context, prompt string, opts VideoGenerationOptions) (VideoGeneration, error)
 
 	// Stream output_text deltas without conversation state. Returns the full text.
 	StreamText(ctx context.Context, system string, user string, onDelta func(delta string)) (string, error)
@@ -67,6 +92,10 @@ type client struct {
 	apiKey     string
 	model      string
 	embedModel string
+	imageModel string
+	imageSize  string
+	videoModel string
+	videoSize  string
 	httpClient *http.Client
 
 	maxRetries int
@@ -94,6 +123,18 @@ func NewClient(log *logger.Logger) (Client, error) {
 		embed = "text-embedding-3-small"
 	}
 
+	imageModel := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL"))
+	imageSize := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_SIZE"))
+	if imageSize == "" {
+		imageSize = "1024x1024"
+	}
+
+	videoModel := strings.TrimSpace(os.Getenv("OPENAI_VIDEO_MODEL"))
+	videoSize := strings.TrimSpace(os.Getenv("OPENAI_VIDEO_SIZE"))
+	if videoSize == "" {
+		videoSize = "1280x720"
+	}
+
 	timeoutSec := 180
 	if v := os.Getenv("OPENAI_TIMEOUT_SECONDS"); v != "" {
 		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && parsed > 0 {
@@ -118,6 +159,10 @@ func NewClient(log *logger.Logger) (Client, error) {
 		apiKey:     apiKey,
 		model:      model,
 		embedModel: embed,
+		imageModel: imageModel,
+		imageSize:  imageSize,
+		videoModel: videoModel,
+		videoSize:  videoSize,
 		httpClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		maxRetries: maxRetries,
 	}, nil
@@ -298,15 +343,9 @@ func (c *client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 		Input: clean,
 	}
 
-	respHTTP, raw, err := c.doOnce(ctx, "POST", "/v1/embeddings", req)
-	if err != nil {
-		_ = respHTTP
-		return nil, err
-	}
-
 	var resp embeddingsResponse
-	if uErr := json.Unmarshal(raw, &resp); uErr != nil {
-		return nil, fmt.Errorf("openai embeddings decode error: %w; raw=%s", uErr, string(raw))
+	if err := c.do(ctx, "POST", "/v1/embeddings", req, &resp); err != nil {
+		return nil, err
 	}
 
 	out := make([][]float32, len(clean))
@@ -342,15 +381,9 @@ func (c *client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 			"model", c.embedModel,
 		)
 
-		respHTTP2, raw2, err2 := c.doOnce(ctx, "POST", "/v1/embeddings", req)
-		if err2 != nil {
-			_ = respHTTP2
-			return nil, err2
-		}
-
 		var resp2 embeddingsResponse
-		if uErr := json.Unmarshal(raw2, &resp2); uErr != nil {
-			return nil, fmt.Errorf("openai embeddings decode error after retry: %w; raw=%s", uErr, string(raw2))
+		if err := c.do(ctx, "POST", "/v1/embeddings", req, &resp2); err != nil {
+			return nil, err
 		}
 
 		out2 := make([][]float32, len(clean))
@@ -378,10 +411,7 @@ func (c *client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 		}
 
 		if hasMissingEmbeddings(out2) {
-			return nil, fmt.Errorf(
-				"openai embeddings missing indices after retry: requested=%d returned=%d model=%s raw=%s",
-				len(clean), len(resp2.Data), c.embedModel, string(raw2),
-			)
+			return nil, fmt.Errorf("openai embeddings missing indices after retry: requested=%d returned=%d model=%s", len(clean), len(resp2.Data), c.embedModel)
 		}
 		return out2, nil
 	}
@@ -398,12 +428,220 @@ func hasMissingEmbeddings(v [][]float32) bool {
 	return false
 }
 
+// -------------------- Images API --------------------
+
+type imagesGenerationRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	N              int    `json:"n,omitempty"`
+	Size           string `json:"size,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // b64_json|url
+}
+
+type imagesGenerationResponse struct {
+	Data []struct {
+		B64JSON       string `json:"b64_json"`
+		URL           string `json:"url"`
+		RevisedPrompt string `json:"revised_prompt"`
+	} `json:"data"`
+}
+
+func (c *client) GenerateImage(ctx context.Context, prompt string) (ImageGeneration, error) {
+	var out ImageGeneration
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return out, errors.New("image prompt required")
+	}
+	if strings.TrimSpace(c.imageModel) == "" {
+		return out, errors.New("missing OPENAI_IMAGE_MODEL")
+	}
+
+	req := imagesGenerationRequest{
+		Model:          c.imageModel,
+		Prompt:         prompt,
+		N:              1,
+		Size:           strings.TrimSpace(c.imageSize),
+		ResponseFormat: "b64_json",
+	}
+
+	var resp imagesGenerationResponse
+	if err := c.do(ctx, "POST", "/v1/images/generations", req, &resp); err != nil {
+		return out, err
+	}
+	if len(resp.Data) == 0 {
+		return out, errors.New("no image returned")
+	}
+	item := resp.Data[0]
+	out.RevisedPrompt = strings.TrimSpace(item.RevisedPrompt)
+	b64 := strings.TrimSpace(item.B64JSON)
+	if b64 == "" {
+		return out, errors.New("image response missing b64_json")
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(raw) == 0 {
+		return out, fmt.Errorf("decode image base64: %w", err)
+	}
+	out.Bytes = raw
+	out.MimeType = "image/png"
+	return out, nil
+}
+
+// -------------------- Videos API (Sora) --------------------
+
+type videosGenerationRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	DurationSec    int    `json:"duration_seconds,omitempty"`
+	Size           string `json:"size,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // b64_json|url
+}
+
+type videosGenerationResponse struct {
+	Data []struct {
+		B64JSON       string `json:"b64_json"`
+		URL           string `json:"url"`
+		RevisedPrompt string `json:"revised_prompt"`
+	} `json:"data"`
+}
+
+func (c *client) GenerateVideo(ctx context.Context, prompt string, opts VideoGenerationOptions) (VideoGeneration, error) {
+	var out VideoGeneration
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return out, errors.New("video prompt required")
+	}
+	if strings.TrimSpace(c.videoModel) == "" {
+		return out, errors.New("missing OPENAI_VIDEO_MODEL")
+	}
+
+	dur := opts.DurationSeconds
+	if dur <= 0 {
+		dur = 8
+	}
+	if dur < 2 {
+		dur = 2
+	}
+	if dur > 30 {
+		dur = 30
+	}
+
+	size := strings.TrimSpace(opts.Size)
+	if size == "" {
+		size = strings.TrimSpace(c.videoSize)
+	}
+	if size == "" {
+		size = "1280x720"
+	}
+
+	// Some deployments expose Sora generation under /v1/videos/generations; keep a fallback.
+	paths := []string{"/v1/videos/generations", "/v1/video/generations"}
+
+	req := videosGenerationRequest{
+		Model:          c.videoModel,
+		Prompt:         prompt,
+		DurationSec:    dur,
+		Size:           size,
+		ResponseFormat: "b64_json",
+	}
+
+	var lastErr error
+	for _, path := range paths {
+		var resp videosGenerationResponse
+		if err := c.do(ctx, "POST", path, req, &resp); err != nil {
+			lastErr = err
+			// Try next endpoint on 404s.
+			if he, ok := err.(*openAIHTTPError); ok && he.StatusCode == 404 {
+				continue
+			}
+			continue
+		}
+		if len(resp.Data) == 0 {
+			lastErr = errors.New("no video returned")
+			continue
+		}
+		item := resp.Data[0]
+		out.RevisedPrompt = strings.TrimSpace(item.RevisedPrompt)
+
+		if b64 := strings.TrimSpace(item.B64JSON); b64 != "" {
+			raw, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil || len(raw) == 0 {
+				return out, fmt.Errorf("decode video base64: %w", err)
+			}
+			out.Bytes = raw
+			out.MimeType = sniffVideoMime(raw)
+			return out, nil
+		}
+
+		if u := strings.TrimSpace(item.URL); u != "" {
+			out.URL = u
+			b, ct, err := c.downloadBytes(ctx, u)
+			if err != nil {
+				return out, fmt.Errorf("download generated video: %w", err)
+			}
+			out.Bytes = b
+			if strings.TrimSpace(ct) != "" {
+				out.MimeType = strings.TrimSpace(strings.Split(ct, ";")[0])
+			}
+			if out.MimeType == "" {
+				out.MimeType = sniffVideoMime(b)
+			}
+			return out, nil
+		}
+
+		lastErr = errors.New("video response missing b64_json and url")
+	}
+
+	if lastErr != nil {
+		return out, lastErr
+	}
+	return out, errors.New("video generation failed")
+}
+
+func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(defaultCtx(ctx), "GET", url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	// Some endpoints may require auth; include it but safe for signed URLs too.
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	raw, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, "", readErr
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
+	}
+	return raw, strings.TrimSpace(resp.Header.Get("Content-Type")), nil
+}
+
+func sniffVideoMime(b []byte) string {
+	if len(b) >= 12 {
+		// MP4 has an ftyp box near the start.
+		if bytes.Contains(b[:12], []byte("ftyp")) {
+			return "video/mp4"
+		}
+	}
+	if len(b) >= 4 {
+		// WebM/Matroska EBML header.
+		if b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3 {
+			return "video/webm"
+		}
+	}
+	return "video/mp4"
+}
+
 // -------------------- Responses API (text + structured + multimodal) --------------------
 
 type responsesRequest struct {
 	Model string `json:"model"`
 
-	Conversation any `json:"conversation,omitempty"`
+	Conversation any    `json:"conversation,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 
 	Input []struct {

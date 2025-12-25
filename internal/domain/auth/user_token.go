@@ -1,10 +1,10 @@
 package auth
 
 import (
-	"time"
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
 	"gorm.io/gorm"
+	"time"
 )
 
 type UserToken struct {
@@ -21,13 +21,3 @@ type UserToken struct {
 }
 
 func (UserToken) TableName() string { return "user_token" }
-
-
-
-
-
-
-
-
-
-

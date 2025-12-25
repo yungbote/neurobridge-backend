@@ -23,6 +23,11 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_plan_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_render"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
@@ -134,7 +139,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	// Shared bootstrap service (used by workflows + learning pipelines).
 	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
 
-	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.ChatThread)
+	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread)
 	courseNotifier := services.NewCourseNotifier(emitter)
 	chatNotifier := services.NewChatNotifier(emitter)
 
@@ -283,6 +288,92 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
+	nodeFiguresPlan := node_figures_plan_build.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeFigure,
+		repos.DocGenerationRun,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeFiguresPlan); err != nil {
+		return Services{}, err
+	}
+
+	nodeFiguresRender := node_figures_render.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeFigure,
+		repos.Asset,
+		repos.DocGenerationRun,
+		clients.OpenaiClient,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeFiguresRender); err != nil {
+		return Services{}, err
+	}
+
+	nodeVideosPlan := node_videos_plan_build.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeVideo,
+		repos.DocGenerationRun,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeVideosPlan); err != nil {
+		return Services{}, err
+	}
+
+	nodeVideosRender := node_videos_render.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeVideo,
+		repos.Asset,
+		repos.DocGenerationRun,
+		clients.OpenaiClient,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeVideosRender); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocs := node_doc_build.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeFigure,
+		repos.LearningNodeVideo,
+		repos.DocGenerationRun,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeDocs); err != nil {
+		return Services{}, err
+	}
+
 	realizeActivities := realize_activities.New(
 		db,
 		log,
@@ -299,6 +390,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.UserProfileVector,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
+		clients.GcpBucket,
 		sagaSvc,
 		bootstrapSvc,
 	)
@@ -370,6 +462,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Extract: extractor,
 			AI:      clients.OpenaiClient,
 			Vec:     clients.PineconeVectorStore,
+			Bucket:  clients.GcpBucket,
 
 			Files:     repos.MaterialFile,
 			Chunks:    repos.MaterialChunk,
@@ -393,6 +486,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Path:               repos.Path,
 			PathNodes:          repos.PathNode,
 			PathNodeActivities: repos.PathNodeActivity,
+			NodeDocs:           repos.LearningNodeDoc,
+			NodeFigures:        repos.LearningNodeFigure,
+			NodeVideos:         repos.LearningNodeVideo,
+			DocGenRuns:         repos.DocGenerationRun,
+			Assets:             repos.Asset,
 
 			Activities:        repos.Activity,
 			Variants:          repos.ActivityVariant,

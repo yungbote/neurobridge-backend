@@ -14,9 +14,9 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	chatIndex "github.com/yungbote/neurobridge-backend/internal/chat/index"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	chatIndex "github.com/yungbote/neurobridge-backend/internal/chat/index"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -35,8 +35,8 @@ type MaintainDeps struct {
 	State     repos.ChatThreadStateRepo
 	Summaries repos.ChatSummaryNodeRepo
 
-	Docs    repos.ChatDocRepo
-	Memory  repos.ChatMemoryItemRepo
+	Docs     repos.ChatDocRepo
+	Memory   repos.ChatMemoryItemRepo
 	Entities repos.ChatEntityRepo
 	Edges    repos.ChatEdgeRepo
 	Claims   repos.ChatClaimRepo
@@ -261,13 +261,13 @@ func updateRaptor(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 			smd = "- (summary unavailable)"
 		}
 		leaf := &types.ChatSummaryNode{
-			ID:          leafID,
-			ThreadID:    thread.ID,
-			ParentID:    nil,
-			Level:       0,
-			StartSeq:    startSeq,
-			EndSeq:      endSeq,
-			SummaryMD:   smd,
+			ID:           leafID,
+			ThreadID:     thread.ID,
+			ParentID:     nil,
+			Level:        0,
+			StartSeq:     startSeq,
+			EndSeq:       endSeq,
+			SummaryMD:    smd,
 			ChildNodeIDs: datatypes.JSON([]byte(`[]`)),
 		}
 		leaves = append(leaves, leaf)
@@ -426,13 +426,13 @@ func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatTh
 		}
 	}
 	parent := &types.ChatSummaryNode{
-		ID:          parentID,
-		ThreadID:    thread.ID,
-		ParentID:    nil,
-		Level:       parentLevel,
-		StartSeq:    start,
-		EndSeq:      end,
-		SummaryMD:   smd,
+		ID:           parentID,
+		ThreadID:     thread.ID,
+		ParentID:     nil,
+		Level:        parentLevel,
+		StartSeq:     start,
+		EndSeq:       end,
+		SummaryMD:    smd,
 		ChildNodeIDs: datatypes.JSON(childIDsJSON),
 	}
 
@@ -459,21 +459,21 @@ func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatTh
 	docID := deterministicUUID("chat_doc|" + DocTypeSummary + "|" + parent.ID.String())
 	seq := parent.EndSeq
 	d := &types.ChatDoc{
-		ID:     docID,
-		UserID: thread.UserID,
-		DocType: DocTypeSummary,
-		Scope:   ScopeThread,
-		ScopeID: &thread.ID,
-		ThreadID: &thread.ID,
-		PathID:   thread.PathID,
-		JobID:    thread.JobID,
-		SourceID:  &parent.ID,
-		SourceSeq: &seq,
-		Text:      parent.SummaryMD,
+		ID:             docID,
+		UserID:         thread.UserID,
+		DocType:        DocTypeSummary,
+		Scope:          ScopeThread,
+		ScopeID:        &thread.ID,
+		ThreadID:       &thread.ID,
+		PathID:         thread.PathID,
+		JobID:          thread.JobID,
+		SourceID:       &parent.ID,
+		SourceSeq:      &seq,
+		Text:           parent.SummaryMD,
 		ContextualText: fmt.Sprintf("RAPTOR summary level %d:\n%s", parentLevel, parent.SummaryMD),
-		VectorID: docID.String(),
-		CreatedAt: parent.CreatedAt,
-		UpdatedAt: nowUTC(),
+		VectorID:       docID.String(),
+		CreatedAt:      parent.CreatedAt,
+		UpdatedAt:      nowUTC(),
 	}
 	embs, err := deps.AI.Embed(ctx, []string{d.ContextualText})
 	if err == nil && len(embs) > 0 {
@@ -538,17 +538,17 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 		aliasesJSON, _ := json.Marshal(m["aliases"])
 
 		row := &types.ChatEntity{
-			UserID:       thread.UserID,
-			Scope:        ScopeThread,
-			ScopeID:      &thread.ID,
-			ThreadID:     &thread.ID,
-			PathID:       thread.PathID,
-			JobID:        thread.JobID,
-			Name:         name,
-			Type:         etype,
-			Description:  desc,
-			Aliases:      datatypes.JSON(aliasesJSON),
-			UpdatedAt:    nowUTC(),
+			UserID:      thread.UserID,
+			Scope:       ScopeThread,
+			ScopeID:     &thread.ID,
+			ThreadID:    &thread.ID,
+			PathID:      thread.PathID,
+			JobID:       thread.JobID,
+			Name:        name,
+			Type:        etype,
+			Description: desc,
+			Aliases:     datatypes.JSON(aliasesJSON),
+			UpdatedAt:   nowUTC(),
 		}
 		up, err := deps.Entities.UpsertByName(ctx, deps.DB, row)
 		if err != nil {
@@ -560,20 +560,20 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 		docID := deterministicUUID("chat_doc|" + DocTypeEntity + "|" + up.ID.String())
 		text := "Entity: " + name + "\nType: " + etype + "\nDescription: " + desc
 		doc := &types.ChatDoc{
-			ID:     docID,
-			UserID: thread.UserID,
-			DocType: DocTypeEntity,
-			Scope:   ScopeThread,
-			ScopeID: &thread.ID,
-			ThreadID: &thread.ID,
-			PathID:   thread.PathID,
-			JobID:    thread.JobID,
-			SourceID: &up.ID,
-			Text:     text,
+			ID:             docID,
+			UserID:         thread.UserID,
+			DocType:        DocTypeEntity,
+			Scope:          ScopeThread,
+			ScopeID:        &thread.ID,
+			ThreadID:       &thread.ID,
+			PathID:         thread.PathID,
+			JobID:          thread.JobID,
+			SourceID:       &up.ID,
+			Text:           text,
 			ContextualText: "Graph entity:\n" + text,
-			VectorID: docID.String(),
-			CreatedAt: nowUTC(),
-			UpdatedAt: nowUTC(),
+			VectorID:       docID.String(),
+			CreatedAt:      nowUTC(),
+			UpdatedAt:      nowUTC(),
 		}
 		embs, err := deps.AI.Embed(ctx, []string{doc.ContextualText})
 		if err == nil && len(embs) > 0 {
@@ -610,16 +610,16 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 		evJSON, _ := json.Marshal(m["evidence_seqs"])
 		edgeID := deterministicUUID(fmt.Sprintf("chat_edge|v%d|user:%s|scope:%s|scope_id:%s|src:%s|dst:%s|rel:%s", ChatGraphVersion, thread.UserID.String(), ScopeThread, thread.ID.String(), srcID.String(), dstID.String(), rel))
 		edge := &types.ChatEdge{
-			ID:          edgeID,
-			UserID:      thread.UserID,
-			Scope:       ScopeThread,
-			ScopeID:     &thread.ID,
-			SrcEntityID: srcID,
-			DstEntityID: dstID,
-			Relation:    rel,
-			Weight:      w,
+			ID:           edgeID,
+			UserID:       thread.UserID,
+			Scope:        ScopeThread,
+			ScopeID:      &thread.ID,
+			SrcEntityID:  srcID,
+			DstEntityID:  dstID,
+			Relation:     rel,
+			Weight:       w,
 			EvidenceSeqs: datatypes.JSON(evJSON),
-			CreatedAt:   nowUTC(),
+			CreatedAt:    nowUTC(),
 		}
 		_ = deps.Edges.Create(ctx, deps.DB, []*types.ChatEdge{edge})
 	}
@@ -636,37 +636,37 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 
 		claimID := deterministicUUID("chat_claim|" + thread.ID.String() + "|" + content)
 		claim := &types.ChatClaim{
-			ID:          claimID,
-			UserID:      thread.UserID,
-			Scope:       ScopeThread,
-			ScopeID:     &thread.ID,
-			ThreadID:    &thread.ID,
-			PathID:      thread.PathID,
-			JobID:       thread.JobID,
-			Content:     content,
-			EntityNames: datatypes.JSON(enJSON),
+			ID:           claimID,
+			UserID:       thread.UserID,
+			Scope:        ScopeThread,
+			ScopeID:      &thread.ID,
+			ThreadID:     &thread.ID,
+			PathID:       thread.PathID,
+			JobID:        thread.JobID,
+			Content:      content,
+			EntityNames:  datatypes.JSON(enJSON),
 			EvidenceSeqs: datatypes.JSON(evJSON),
-			CreatedAt:   nowUTC(),
+			CreatedAt:    nowUTC(),
 		}
 		_ = deps.Claims.InsertIgnore(ctx, deps.DB, []*types.ChatClaim{claim})
 
 		docID := deterministicUUID("chat_doc|" + DocTypeClaim + "|" + claimID.String())
 		text := "Claim: " + content
 		doc := &types.ChatDoc{
-			ID:     docID,
-			UserID: thread.UserID,
-			DocType: DocTypeClaim,
-			Scope:   ScopeThread,
-			ScopeID: &thread.ID,
-			ThreadID: &thread.ID,
-			PathID:   thread.PathID,
-			JobID:    thread.JobID,
-			SourceID: &claimID,
-			Text:     text,
+			ID:             docID,
+			UserID:         thread.UserID,
+			DocType:        DocTypeClaim,
+			Scope:          ScopeThread,
+			ScopeID:        &thread.ID,
+			ThreadID:       &thread.ID,
+			PathID:         thread.PathID,
+			JobID:          thread.JobID,
+			SourceID:       &claimID,
+			Text:           text,
 			ContextualText: "Graph claim:\n" + text,
-			VectorID: docID.String(),
-			CreatedAt: nowUTC(),
-			UpdatedAt: nowUTC(),
+			VectorID:       docID.String(),
+			CreatedAt:      nowUTC(),
+			UpdatedAt:      nowUTC(),
 		}
 		embs, err := deps.AI.Embed(ctx, []string{doc.ContextualText})
 		if err == nil && len(embs) > 0 {
@@ -735,15 +735,15 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 		evJSON, _ := json.Marshal(m["evidence_seqs"])
 
 		row := &types.ChatMemoryItem{
-			UserID:      thread.UserID,
-			Kind:        kind,
-			Scope:       scope,
-			Key:         key,
-			Value:       val,
-			Confidence:  conf,
+			UserID:       thread.UserID,
+			Kind:         kind,
+			Scope:        scope,
+			Key:          key,
+			Value:        val,
+			Confidence:   conf,
 			EvidenceSeqs: datatypes.JSON(evJSON),
-			UpdatedAt:   nowUTC(),
-			CreatedAt:   nowUTC(),
+			UpdatedAt:    nowUTC(),
+			CreatedAt:    nowUTC(),
 		}
 
 		switch scope {
@@ -794,20 +794,20 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 		docID := deterministicUUID("chat_doc|" + DocTypeMemory + "|" + r.ID.String())
 		text := "Memory (" + r.Kind + "): " + r.Key + " = " + r.Value
 		d := &types.ChatDoc{
-			ID:     docID,
-			UserID: thread.UserID,
-			DocType: DocTypeMemory,
-			Scope:   r.Scope,
-			ScopeID: r.ScopeID,
-			ThreadID: r.ThreadID,
-			PathID:   r.PathID,
-			JobID:    r.JobID,
-			SourceID: &r.ID,
-			Text:     text,
+			ID:             docID,
+			UserID:         thread.UserID,
+			DocType:        DocTypeMemory,
+			Scope:          r.Scope,
+			ScopeID:        r.ScopeID,
+			ThreadID:       r.ThreadID,
+			PathID:         r.PathID,
+			JobID:          r.JobID,
+			SourceID:       &r.ID,
+			Text:           text,
 			ContextualText: "Durable memory item:\n" + text,
-			VectorID: docID.String(),
-			CreatedAt: r.UpdatedAt,
-			UpdatedAt: nowUTC(),
+			VectorID:       docID.String(),
+			CreatedAt:      r.UpdatedAt,
+			UpdatedAt:      nowUTC(),
 		}
 		memDocs = append(memDocs, d)
 		memEmbIn = append(memEmbIn, d.ContextualText)

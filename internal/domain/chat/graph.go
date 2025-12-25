@@ -68,4 +68,3 @@ type ChatClaim struct {
 }
 
 func (ChatClaim) TableName() string { return "chat_claim" }
-

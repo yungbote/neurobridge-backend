@@ -7,17 +7,16 @@ import (
 	"text/template"
 )
 
-
 // Spec is the minimal declaration format you want to write
 type Spec struct {
-	Name				PromptName
-	Version			int
-	SchemaName	string
-	Schema			func() map[string]any
+	Name       PromptName
+	Version    int
+	SchemaName string
+	Schema     func() map[string]any
 	// The can be plain strings or go templates using {{.Field}} from input
-	System			string
-	User				string
-	Validators  []Validator
+	System     string
+	User       string
+	Validators []Validator
 }
 
 // MakeTemplate compiles a Spec into a Template (runtime type)
@@ -48,12 +47,12 @@ func MakeTemplate(s Spec) (Template, error) {
 		return strings.TrimSpace(b.String())
 	}
 	tt := Template{
-		Name:				s.Name,
-		Version:		s.Version,
+		Name:       s.Name,
+		Version:    s.Version,
 		SchemaName: s.SchemaName,
-		Schema:			s.Schema,
-		System:			func(in Input) string { return render(sysT, in) },
-		User:				func(in Input) string { return render(userT, in) },
+		Schema:     s.Schema,
+		System:     func(in Input) string { return render(sysT, in) },
+		User:       func(in Input) string { return render(userT, in) },
 	}
 	if len(s.Validators) > 0 {
 		tt.Validate = func(in Input) error {
@@ -74,18 +73,8 @@ func MakeTemplate(s Spec) (Template, error) {
 // RegisterSpec is the one-liner to call in RegisterAll().
 func RegisterSpec(s Spec) {
 	t, err := MakeTemplate(s)
-	if err !=  nil {
+	if err != nil {
 		panic(err)
 	}
 	Register(t)
 }
-
-
-
-
-
-
-
-
-
-

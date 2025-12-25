@@ -2,10 +2,10 @@ package auth
 
 import (
 	"context"
-	"gorm.io/gorm"
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"gorm.io/gorm"
 )
 
 type UserIdentityRepo interface {
@@ -15,14 +15,14 @@ type UserIdentityRepo interface {
 }
 
 type userIdentityRepo struct {
-	db					*gorm.DB
-	log					*logger.Logger
+	db  *gorm.DB
+	log *logger.Logger
 }
 
 func NewUserIdentityRepo(db *gorm.DB, baseLog *logger.Logger) UserIdentityRepo {
 	return &userIdentityRepo{
-		db:				db,
-		log:			baseLog.With("repo", "UserIdentityRepo"),
+		db:  db,
+		log: baseLog.With("repo", "UserIdentityRepo"),
 	}
 }
 
@@ -60,13 +60,3 @@ func (r *userIdentityRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userID
 	}
 	return out, nil
 }
-
-
-
-
-
-
-
-
-
-

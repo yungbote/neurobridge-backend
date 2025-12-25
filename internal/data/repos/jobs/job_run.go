@@ -17,6 +17,7 @@ type JobRunRepo interface {
 	GetLatestByEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
 	ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error)
 	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error)
 	Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) error
 	HasRunnableForEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error)
 	ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error)
@@ -162,6 +163,37 @@ func (r *jobRunRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID
 		Model(&types.JobRun{}).
 		Where("id = ?", id).
 		Updates(updates).Error
+}
+
+func (r *jobRunRepo) UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error) {
+	transaction := tx
+	if transaction == nil {
+		transaction = r.db
+	}
+	if id == uuid.Nil {
+		return false, nil
+	}
+	if updates == nil {
+		updates = map[string]interface{}{}
+	}
+	if _, ok := updates["updated_at"]; !ok {
+		updates["updated_at"] = time.Now()
+	}
+
+	q := transaction.WithContext(ctx).
+		Model(&types.JobRun{}).
+		Where("id = ?", id)
+	if len(disallowedStatuses) == 1 {
+		q = q.Where("status <> ?", disallowedStatuses[0])
+	} else if len(disallowedStatuses) > 1 {
+		q = q.Where("status NOT IN ?", disallowedStatuses)
+	}
+
+	res := q.Updates(updates)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (r *jobRunRepo) Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) error {

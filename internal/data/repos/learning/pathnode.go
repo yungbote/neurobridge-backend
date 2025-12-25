@@ -143,6 +143,7 @@ func (r *pathNodeRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.PathN
 				"parent_node_id",
 				"gating",
 				"metadata",
+				"content_json",
 				"updated_at",
 			}),
 		}).

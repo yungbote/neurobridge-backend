@@ -11,6 +11,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,8 @@ type JobService interface {
 	EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
 	GetLatestForEntityForRequestUser(ctx context.Context, tx *gorm.DB, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
+	CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
+	RestartForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
 }
 
 type jobService struct {
@@ -67,6 +70,7 @@ func (s *jobService) Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.
 		Stage:       "queued",
 		Progress:    0,
 		Attempts:    0,
+		Message:     "Queued",
 		Payload:     payloadJSON,
 		Result:      datatypes.JSON([]byte(`{}`)),
 		CreatedAt:   now,
@@ -175,4 +179,249 @@ func (s *jobService) GetLatestForEntityForRequestUser(ctx context.Context, tx *g
 		transaction = s.db
 	}
 	return s.repo.GetLatestByEntity(ctx, transaction, rd.UserID, entityType, entityID, jobType)
+}
+
+func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(ctx)
+	if rd == nil || rd.UserID == uuid.Nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+	if jobID == uuid.Nil {
+		return nil, fmt.Errorf("missing job id")
+	}
+	transaction := tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	var updated *types.JobRun
+	shouldNotify := false
+
+	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+		job, err := s.GetByIDForRequestUser(ctx, txx, jobID)
+		if err != nil {
+			return err
+		}
+		if job == nil {
+			return fmt.Errorf("job not found")
+		}
+
+		status := strings.ToLower(strings.TrimSpace(job.Status))
+		if status == "succeeded" || status == "failed" || status == "canceled" {
+			updated = job
+			return nil
+		}
+
+		now := time.Now().UTC()
+		if err := s.repo.UpdateFields(ctx, txx, jobID, map[string]interface{}{
+			"status":       "canceled",
+			"message":      "Canceled",
+			"locked_at":    nil,
+			"heartbeat_at": now,
+			"updated_at":   now,
+		}); err != nil {
+			return err
+		}
+
+		job.Status = "canceled"
+		job.Message = "Canceled"
+		job.LockedAt = nil
+		job.HeartbeatAt = &now
+		job.UpdatedAt = now
+		updated = job
+		shouldNotify = true
+
+		// Best-effort: if this is a learning_build root job, cancel any child stage jobs.
+		if strings.EqualFold(strings.TrimSpace(job.JobType), "learning_build") {
+			childIDs := extractLearningBuildChildJobIDs(job.Result)
+			for _, cid := range childIDs {
+				if cid == uuid.Nil {
+					continue
+				}
+				// Only cancel jobs that haven't already completed.
+				if err := txx.WithContext(ctx).
+					Model(&types.JobRun{}).
+					Where("id = ? AND status NOT IN ?", cid, []string{"succeeded", "failed", "canceled"}).
+					Updates(map[string]interface{}{
+						"status":       "canceled",
+						"locked_at":    nil,
+						"heartbeat_at": now,
+						"updated_at":   now,
+					}).Error; err != nil {
+					// don't fail cancel for partial child cancellation
+					s.log.Warn("Cancel child job failed", "job_id", jobID, "child_job_id", cid, "error", err)
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if shouldNotify && s.notify != nil && updated != nil {
+		s.notify.JobCanceled(rd.UserID, updated)
+	}
+	return updated, nil
+}
+
+func (s *jobService) RestartForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(ctx)
+	if rd == nil || rd.UserID == uuid.Nil {
+		return nil, fmt.Errorf("not authenticated")
+	}
+	if jobID == uuid.Nil {
+		return nil, fmt.Errorf("missing job id")
+	}
+	transaction := tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	var updated *types.JobRun
+	shouldNotify := false
+
+	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+		job, err := s.GetByIDForRequestUser(ctx, txx, jobID)
+		if err != nil {
+			return err
+		}
+		if job == nil {
+			return fmt.Errorf("job not found")
+		}
+
+		status := strings.ToLower(strings.TrimSpace(job.Status))
+		if status != "canceled" && status != "failed" {
+			return fmt.Errorf("job not restartable")
+		}
+
+		now := time.Now().UTC()
+		nextResult := job.Result
+		if strings.EqualFold(strings.TrimSpace(job.JobType), "learning_build") {
+			nextResult = resetLearningBuildStateForRestart(nextResult)
+		}
+
+		if err := s.repo.UpdateFields(ctx, txx, jobID, map[string]interface{}{
+			"status":        "queued",
+			"stage":         "queued",
+			"progress":      0,
+			"message":       "Restarting…",
+			"error":         "",
+			"last_error_at": nil,
+			"result":        nextResult,
+			"locked_at":     nil,
+			"heartbeat_at":  now,
+			"updated_at":    now,
+		}); err != nil {
+			return err
+		}
+
+		job.Status = "queued"
+		job.Stage = "queued"
+		job.Progress = 0
+		job.Message = "Restarting…"
+		job.Error = ""
+		job.LastErrorAt = nil
+		job.Result = nextResult
+		job.LockedAt = nil
+		job.HeartbeatAt = &now
+		job.UpdatedAt = now
+
+		updated = job
+		shouldNotify = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if shouldNotify && s.notify != nil && updated != nil {
+		s.notify.JobRestarted(rd.UserID, updated)
+	}
+	return updated, nil
+}
+
+func extractLearningBuildChildJobIDs(result datatypes.JSON) []uuid.UUID {
+	if len(result) == 0 || string(result) == "null" {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(result, &obj); err != nil {
+		return nil
+	}
+	rawStages, ok := obj["stages"]
+	if !ok || rawStages == nil {
+		return nil
+	}
+	stageMap, ok := rawStages.(map[string]any)
+	if !ok || len(stageMap) == 0 {
+		return nil
+	}
+
+	seen := make(map[uuid.UUID]bool, len(stageMap))
+	out := make([]uuid.UUID, 0, len(stageMap))
+	for _, v := range stageMap {
+		m, ok := v.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		idStr := strings.TrimSpace(fmt.Sprint(m["child_job_id"]))
+		if idStr == "" {
+			continue
+		}
+		id, err := uuid.Parse(idStr)
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func resetLearningBuildStateForRestart(result datatypes.JSON) datatypes.JSON {
+	if len(result) == 0 || string(result) == "null" {
+		return result
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(result, &obj); err != nil {
+		return result
+	}
+
+	// Avoid honoring a previous wait window.
+	obj["wait_until"] = nil
+	obj["last_progress"] = 0
+
+	rawStages, ok := obj["stages"]
+	if ok && rawStages != nil {
+		if stageMap, ok := rawStages.(map[string]any); ok {
+			for _, v := range stageMap {
+				m, ok := v.(map[string]any)
+				if !ok || m == nil {
+					continue
+				}
+				st := strings.ToLower(strings.TrimSpace(fmt.Sprint(m["status"])))
+				if st == "succeeded" {
+					continue
+				}
+				m["status"] = "pending"
+				delete(m, "child_job_id")
+				delete(m, "child_job_status")
+				delete(m, "last_error")
+				delete(m, "started_at")
+				delete(m, "finished_at")
+				delete(m, "child_result")
+			}
+		}
+	}
+
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return result
+	}
+	return datatypes.JSON(b)
 }
