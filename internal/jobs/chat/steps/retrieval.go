@@ -147,7 +147,7 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 					scoreByID[uid] = m.Score
 				}
 				if len(docIDs) > 0 {
-					rows, err := deps.Docs.GetByIDs(ctx, deps.DB, thread.UserID, docIDs)
+					rows, err := deps.Docs.GetByIDs(dbctx.Context{Ctx: ctx, Tx: deps.DB}, thread.UserID, docIDs)
 					if err != nil {
 						return err
 					}
@@ -226,7 +226,7 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 		// Lexical (Postgres FTS over contextual_text).
 		lexStart := time.Now()
 		lexCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		hits, lerr := deps.Docs.LexicalSearchHits(lexCtx, deps.DB, chatrepo.ChatLexicalQuery{
+		hits, lerr := deps.Docs.LexicalSearchHits(dbctx.Context{Ctx: lexCtx, Tx: deps.DB}, chatrepo.ChatLexicalQuery{
 			UserID:   thread.UserID,
 			Scope:    scope,
 			ScopeID:  scopeID,

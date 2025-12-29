@@ -9,6 +9,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -85,7 +86,8 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "could_not_read_files", nil)
 		return
 	}
-	set, pathID, thread, job, err := h.workflow.UploadMaterialsAndStartLearningBuildWithChat(c.Request.Context(), nil, userID, uploaded)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	set, pathID, thread, job, err := h.workflow.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded)
 	if err != nil {
 		response.RespondError(c, http.StatusInternalServerError, "workflow_failed", err)
 		return

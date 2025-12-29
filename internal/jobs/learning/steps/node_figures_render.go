@@ -198,7 +198,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 				row.Slot,
 				strings.TrimSpace(row.PromptHash),
 			)
-			if err := deps.Bucket.UploadFile(gdbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(img.Bytes)); err != nil {
+			if err := deps.Bucket.UploadFile(dbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(img.Bytes)); err != nil {
 				_ = markFigureFailed(gctx, deps, row, "upload_failed: "+err.Error(), latency)
 				atomic.AddInt32(&failed, 1)
 				return nil
@@ -239,7 +239,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 					CreatedAt:  time.Now().UTC(),
 					UpdatedAt:  time.Now().UTC(),
 				}
-				if _, err := deps.Assets.Create(gdbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
+				if _, err := deps.Assets.Create(dbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
 					assetID = &aid
 				}
 			}
@@ -264,7 +264,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 				CreatedAt:       row.CreatedAt,
 				UpdatedAt:       now,
 			}
-			_ = deps.Figures.Upsert(gdbctx.Context{Ctx: ctx}, update)
+			_ = deps.Figures.Upsert(dbctx.Context{Ctx: ctx}, update)
 
 			if deps.GenRuns != nil {
 				metrics := map[string]any{
@@ -272,7 +272,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 					"url":         publicURL,
 					"byte_len":    len(img.Bytes),
 				}
-				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_figure_asset", &update.ID, in.OwnerUserID, pathID, row.PathNodeID, "succeeded", nodeFigureAssetPromptVersion, 1, latency, nil, metrics),
 				})
 			}

@@ -322,7 +322,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				return fmt.Errorf("node_content_build: empty content_json returned")
 			}
 
-			if err := deps.PathNodes.UpdateFields(gdbctx.Context{Ctx: ctx}, w.Node.ID, map[string]interface{}{
+			if err := deps.PathNodes.UpdateFields(dbctx.Context{Ctx: ctx}, w.Node.ID, map[string]interface{}{
 				"content_json": datatypes.JSON(content),
 				"updated_at":   now,
 			}); err != nil {

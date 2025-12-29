@@ -14,6 +14,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -65,7 +66,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		sagaID = id
 	}
 
-	pathID, err := p.bootstrap.EnsurePath(jc.Ctx, nil, jc.Job.OwnerUserID, setID)
+	pathID, err := p.bootstrap.EnsurePath(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, setID)
 	if err != nil {
 		jc.Fail("bootstrap", err)
 		return nil
@@ -145,7 +146,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			now := time.Now().UTC()
 
 			err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-				child, err := p.jobs.Enqueue(jc.Ctx, tx, jc.Job.OwnerUserID, jobType, "material_set", &entityID, payload)
+				child, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, jc.Job.OwnerUserID, jobType, "material_set", &entityID, payload)
 				if err != nil {
 					return err
 				}
@@ -159,7 +160,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 
 				// Persist state in the same transaction as child job creation to avoid duplicate enqueues.
 				b, _ := json.Marshal(st)
-				return jc.Repo.UpdateFields(jc.Ctx, tx, jc.Job.ID, map[string]interface{}{
+				return jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, jc.Job.ID, map[string]interface{}{
 					"result": datatypes.JSON(b),
 				})
 			})
@@ -179,7 +180,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("invalid child_job_id %q", ss.ChildJobID))
 		}
 
-		rows, err := jc.Repo.GetByIDs(jc.Ctx, nil, []uuid.UUID{childID})
+		rows, err := jc.Repo.GetByIDs(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, []uuid.UUID{childID})
 		if err != nil || len(rows) == 0 || rows[0] == nil {
 			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("load child job %s: %w", childID.String(), err))
 		}
@@ -194,7 +195,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		// Hard stop: if a child stage takes too long, fail the root saga so we don't wait forever.
 		if ss.StartedAt != nil && p.childMaxWait > 0 && time.Since(*ss.StartedAt) > p.childMaxWait {
 			now := time.Now().UTC()
-			_ = jc.Repo.UpdateFields(jc.Ctx, nil, childID, map[string]interface{}{
+			_ = jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, childID, map[string]interface{}{
 				"status":        "failed",
 				"stage":         "timeout",
 				"error":         fmt.Sprintf("timed out after %s waiting for parent stage %s", p.childMaxWait.String(), jobType),
@@ -222,7 +223,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			}
 			if stale {
 				now := time.Now().UTC()
-				_ = jc.Repo.UpdateFields(jc.Ctx, nil, childID, map[string]interface{}{
+				_ = jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, childID, map[string]interface{}{
 					"status":        "failed",
 					"stage":         "stale_heartbeat",
 					"error":         fmt.Sprintf("stale heartbeat (> %s) while running; treated as stuck by learning_build", p.childStaleRunning.String()),
@@ -311,7 +312,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 
 	// All stages succeeded.
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-		return p.path.UpdateFields(jc.Ctx, tx, pathID, map[string]interface{}{
+		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
 			"status": "ready",
 			"job_id": nil,
 		})
@@ -630,7 +631,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	// All stages succeeded.
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-		return p.path.UpdateFields(jc.Ctx, tx, pathID, map[string]interface{}{
+		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
 			"status": "ready",
 			"job_id": nil,
 		})
@@ -694,7 +695,7 @@ func (p *Pipeline) enqueueChatPathIndex(jc *jobrt.Context, pathID uuid.UUID) {
 	}
 	payload := map[string]any{"path_id": pathID.String()}
 	entityID := pathID
-	if _, err := p.jobs.Enqueue(jc.Ctx, nil, jc.Job.OwnerUserID, "chat_path_index", "path", &entityID, payload); err != nil {
+	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "chat_path_index", "path", &entityID, payload); err != nil {
 		p.log.Warn("Failed to enqueue chat_path_index", "error", err, "path_id", pathID.String())
 	}
 }
@@ -704,7 +705,7 @@ func (p *Pipeline) saveState(jc *jobrt.Context, tx *gorm.DB, st *state) error {
 		return nil
 	}
 	b, _ := json.Marshal(st)
-	if err := jc.Repo.UpdateFields(jc.Ctx, tx, jc.Job.ID, map[string]interface{}{"result": datatypes.JSON(b)}); err != nil {
+	if err := jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, jc.Job.ID, map[string]interface{}{"result": datatypes.JSON(b)}); err != nil {
 		return err
 	}
 	jc.Job.Result = b
@@ -724,7 +725,7 @@ func (p *Pipeline) yield(jc *jobrt.Context, st *state, stage string, progress in
 	}
 	progress = st.setProgress(progress)
 	_ = p.saveState(jc, nil, st)
-	_, err := jc.Repo.UpdateFieldsUnlessStatus(jc.Ctx, nil, jc.Job.ID, []string{"canceled"}, map[string]interface{}{
+	_, err := jc.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.ID, []string{"canceled"}, map[string]interface{}{
 		"status":       "queued",
 		"stage":        stage,
 		"progress":     progress,
@@ -764,7 +765,7 @@ func (p *Pipeline) isCanceled(jc *jobrt.Context) bool {
 	if jc == nil || jc.Job == nil || jc.Repo == nil {
 		return false
 	}
-	rows, err := jc.Repo.GetByIDs(jc.Ctx, nil, []uuid.UUID{jc.Job.ID})
+	rows, err := jc.Repo.GetByIDs(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, []uuid.UUID{jc.Job.ID})
 	if err != nil || len(rows) == 0 || rows[0] == nil {
 		return false
 	}

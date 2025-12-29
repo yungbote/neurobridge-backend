@@ -56,7 +56,8 @@ func MaintainThread(ctx context.Context, deps MaintainDeps, in MaintainInput) er
 		return fmt.Errorf("chat maintain: missing ids")
 	}
 
-	threadRows, err := deps.Threads.GetByIDs(ctx, deps.DB, []uuid.UUID{in.ThreadID})
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	threadRows, err := deps.Threads.GetByIDs(dbc, []uuid.UUID{in.ThreadID})
 	if err != nil {
 		return err
 	}
@@ -68,7 +69,7 @@ func MaintainThread(ctx context.Context, deps MaintainDeps, in MaintainInput) er
 		return fmt.Errorf("thread not found")
 	}
 
-	state, err := deps.State.GetOrCreate(ctx, deps.DB, in.ThreadID)
+	state, err := deps.State.GetOrCreate(dbc, in.ThreadID)
 	if err != nil {
 		return err
 	}
@@ -90,7 +91,8 @@ func MaintainThread(ctx context.Context, deps MaintainDeps, in MaintainInput) er
 }
 
 func indexNewMessages(ctx context.Context, deps MaintainDeps, thread *types.ChatThread, state *types.ChatThreadState) error {
-	msgs, err := deps.Messages.ListSinceSeq(ctx, deps.DB, thread.ID, state.LastIndexedSeq, 500)
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	msgs, err := deps.Messages.ListSinceSeq(dbc, thread.ID, state.LastIndexedSeq, 500)
 	if err != nil {
 		return err
 	}
@@ -99,7 +101,7 @@ func indexNewMessages(ctx context.Context, deps MaintainDeps, thread *types.Chat
 	}
 
 	// Hot context for contextualization.
-	recentMsgs, _ := deps.Messages.ListRecent(ctx, deps.DB, thread.ID, 16)
+	recentMsgs, _ := deps.Messages.ListRecent(dbc, thread.ID, 16)
 	recent := formatRecent(recentMsgs, 12)
 
 	chunkChars := 2200
@@ -183,7 +185,7 @@ func indexNewMessages(ctx context.Context, deps MaintainDeps, thread *types.Chat
 
 	if len(units) == 0 {
 		state.LastIndexedSeq = msgs[len(msgs)-1].Seq
-		return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+		return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 			"last_indexed_seq": state.LastIndexedSeq,
 		})
 	}
@@ -195,7 +197,7 @@ func indexNewMessages(ctx context.Context, deps MaintainDeps, thread *types.Chat
 		embs = append(embs, nonNilEmb(u.emb))
 	}
 
-	if err := deps.Docs.Upsert(ctx, deps.DB, docs); err != nil {
+	if err := deps.Docs.Upsert(dbc, docs); err != nil {
 		return err
 	}
 	// Best-effort Pinecone upsert (retrieval cache).
@@ -204,7 +206,7 @@ func indexNewMessages(ctx context.Context, deps MaintainDeps, thread *types.Chat
 	}
 
 	state.LastIndexedSeq = msgs[len(msgs)-1].Seq
-	return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+	return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 		"last_indexed_seq": state.LastIndexedSeq,
 	})
 }
@@ -214,7 +216,8 @@ func updateRaptor(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 		return nil
 	}
 
-	msgs, err := deps.Messages.ListSinceSeq(ctx, deps.DB, thread.ID, state.LastSummarizedSeq, 1000)
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	msgs, err := deps.Messages.ListSinceSeq(dbc, thread.ID, state.LastSummarizedSeq, 1000)
 	if err != nil {
 		return err
 	}
@@ -275,7 +278,7 @@ func updateRaptor(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 		i = end
 	}
 
-	if err := deps.Summaries.Create(ctx, deps.DB, leaves); err != nil {
+	if err := deps.Summaries.Create(dbc, leaves); err != nil {
 		return err
 	}
 
@@ -323,7 +326,7 @@ func updateRaptor(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	for i := range leafDocs {
 		leafDocs[i].Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON(nonNilEmb(leafEmb[i])))
 	}
-	if err := deps.Docs.Upsert(ctx, deps.DB, leafDocs); err != nil {
+	if err := deps.Docs.Upsert(dbc, leafDocs); err != nil {
 		return err
 	}
 	if deps.Vec != nil {
@@ -336,17 +339,18 @@ func updateRaptor(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	}
 
 	state.LastSummarizedSeq = msgs[len(msgs)-1].Seq
-	return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+	return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 		"last_summarized_seq": state.LastSummarizedSeq,
 	})
 }
 
 func buildUpperRaptorLevels(ctx context.Context, deps MaintainDeps, thread *types.ChatThread) error {
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
 	const maxLevels = 12
 	clusterSize := 8
 
 	for level := 0; level < maxLevels; level++ {
-		nodes, err := deps.Summaries.ListOrphansByLevel(ctx, deps.DB, thread.ID, level)
+		nodes, err := deps.Summaries.ListOrphansByLevel(dbc, thread.ID, level)
 		if err != nil {
 			return err
 		}
@@ -389,6 +393,7 @@ func buildUpperRaptorLevels(ctx context.Context, deps MaintainDeps, thread *type
 }
 
 func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatThread, parentLevel int, children []*types.ChatSummaryNode) error {
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
 	sort.Slice(children, func(i, j int) bool { return children[i].StartSeq < children[j].StartSeq })
 	start := children[0].StartSeq
 	end := children[len(children)-1].EndSeq
@@ -483,7 +488,7 @@ func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatTh
 	} else {
 		d.Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON([]float32{}))
 	}
-	if err := deps.Docs.Upsert(ctx, deps.DB, []*types.ChatDoc{d}); err != nil {
+	if err := deps.Docs.Upsert(dbc, []*types.ChatDoc{d}); err != nil {
 		return err
 	}
 	if deps.Vec != nil && len(embs) > 0 {
@@ -496,7 +501,8 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 	if deps.Entities == nil || deps.Edges == nil || deps.Claims == nil {
 		return nil
 	}
-	msgs, err := deps.Messages.ListSinceSeq(ctx, deps.DB, thread.ID, state.LastGraphSeq, 300)
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	msgs, err := deps.Messages.ListSinceSeq(dbc, thread.ID, state.LastGraphSeq, 300)
 	if err != nil {
 		return err
 	}
@@ -510,7 +516,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 	if err != nil {
 		// Graph extraction is derived; avoid blocking maintenance if the model misbehaves.
 		state.LastGraphSeq = msgs[len(msgs)-1].Seq
-		if err := deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+		if err := deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 			"last_graph_seq": state.LastGraphSeq,
 		}); err != nil {
 			return err
@@ -552,7 +558,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 			Aliases:     datatypes.JSON(aliasesJSON),
 			UpdatedAt:   nowUTC(),
 		}
-		up, err := deps.Entities.UpsertByName(ctx, deps.DB, row)
+		up, err := deps.Entities.UpsertByName(dbc, row)
 		if err != nil {
 			return err
 		}
@@ -583,7 +589,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 		} else {
 			doc.Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON([]float32{}))
 		}
-		if err := deps.Docs.Upsert(ctx, deps.DB, []*types.ChatDoc{doc}); err != nil {
+		if err := deps.Docs.Upsert(dbc, []*types.ChatDoc{doc}); err != nil {
 			return err
 		}
 		if deps.Vec != nil && len(embs) > 0 {
@@ -623,7 +629,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 			EvidenceSeqs: datatypes.JSON(evJSON),
 			CreatedAt:    nowUTC(),
 		}
-		_ = deps.Edges.Create(ctx, deps.DB, []*types.ChatEdge{edge})
+		_ = deps.Edges.Create(dbc, []*types.ChatEdge{edge})
 	}
 
 	// Claims -> rows + docs.
@@ -650,7 +656,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 			EvidenceSeqs: datatypes.JSON(evJSON),
 			CreatedAt:    nowUTC(),
 		}
-		_ = deps.Claims.InsertIgnore(ctx, deps.DB, []*types.ChatClaim{claim})
+		_ = deps.Claims.InsertIgnore(dbc, []*types.ChatClaim{claim})
 
 		docID := deterministicUUID("chat_doc|" + DocTypeClaim + "|" + claimID.String())
 		text := "Claim: " + content
@@ -676,7 +682,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 		} else {
 			doc.Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON([]float32{}))
 		}
-		if err := deps.Docs.Upsert(ctx, deps.DB, []*types.ChatDoc{doc}); err != nil {
+		if err := deps.Docs.Upsert(dbc, []*types.ChatDoc{doc}); err != nil {
 			return err
 		}
 		if deps.Vec != nil && len(embs) > 0 {
@@ -685,7 +691,7 @@ func updateGraph(ctx context.Context, deps MaintainDeps, thread *types.ChatThrea
 	}
 
 	state.LastGraphSeq = msgs[len(msgs)-1].Seq
-	return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+	return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 		"last_graph_seq": state.LastGraphSeq,
 	})
 }
@@ -695,7 +701,8 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 		return nil
 	}
 
-	msgs, err := deps.Messages.ListSinceSeq(ctx, deps.DB, thread.ID, state.LastMemorySeq, 250)
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	msgs, err := deps.Messages.ListSinceSeq(dbc, thread.ID, state.LastMemorySeq, 250)
 	if err != nil {
 		return err
 	}
@@ -708,7 +715,7 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	obj, err := deps.AI.GenerateJSON(ctx, sys, usr, "chat_memory_extract", schemaMemoryExtract())
 	if err != nil {
 		state.LastMemorySeq = msgs[len(msgs)-1].Seq
-		if err := deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+		if err := deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 			"last_memory_seq": state.LastMemorySeq,
 		}); err != nil {
 			return err
@@ -718,7 +725,7 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	itemsAny, _ := obj["items"].([]any)
 	if len(itemsAny) == 0 {
 		state.LastMemorySeq = msgs[len(msgs)-1].Seq
-		return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+		return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 			"last_memory_seq": state.LastMemorySeq,
 		})
 	}
@@ -776,12 +783,12 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 
 	if len(rows) == 0 {
 		state.LastMemorySeq = msgs[len(msgs)-1].Seq
-		return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+		return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 			"last_memory_seq": state.LastMemorySeq,
 		})
 	}
 
-	if err := deps.Memory.UpsertMany(ctx, deps.DB, rows); err != nil {
+	if err := deps.Memory.UpsertMany(dbc, rows); err != nil {
 		return err
 	}
 
@@ -822,7 +829,7 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	for i := range memDocs {
 		memDocs[i].Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON(nonNilEmb(memEmb[i])))
 	}
-	if err := deps.Docs.Upsert(ctx, deps.DB, memDocs); err != nil {
+	if err := deps.Docs.Upsert(dbc, memDocs); err != nil {
 		return err
 	}
 	if deps.Vec != nil {
@@ -830,7 +837,7 @@ func updateMemory(ctx context.Context, deps MaintainDeps, thread *types.ChatThre
 	}
 
 	state.LastMemorySeq = msgs[len(msgs)-1].Seq
-	return deps.State.UpdateFields(ctx, deps.DB, thread.ID, map[string]interface{}{
+	return deps.State.UpdateFields(dbc, thread.ID, map[string]interface{}{
 		"last_memory_seq": state.LastMemorySeq,
 	})
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -85,7 +86,8 @@ func (h *EventHandler) Ingest(c *gin.Context) {
 		}
 		inputs = arr
 	}
-	n, err := h.events.Ingest(c.Request.Context(), nil, inputs)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	n, err := h.events.Ingest(dbc, inputs)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "event_ingest_failed", err)
 		return
@@ -101,7 +103,7 @@ func (h *EventHandler) Ingest(c *gin.Context) {
 	}
 	enqueued := false
 	if meaningful {
-		_, ok, _ := h.jobs.EnqueueUserModelUpdateIfNeeded(c.Request.Context(), nil, rd.UserID, trigger)
+		_, ok, _ := h.jobs.EnqueueUserModelUpdateIfNeeded(dbc, rd.UserID, trigger)
 		enqueued = ok
 	}
 	response.RespondOK(c, gin.H{

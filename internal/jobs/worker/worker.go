@@ -10,6 +10,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -59,7 +60,7 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			w.log.Info("Worker loop stopped", "worker_id", workerID)
 			return
 		case <-ticker.C:
-			job, err := w.repo.ClaimNextRunnable(ctx, w.db, maxAttempts, retryDelay, staleRunning)
+			job, err := w.repo.ClaimNextRunnable(dbctx.Context{Ctx: ctx, Tx: w.db}, maxAttempts, retryDelay, staleRunning)
 			if err != nil {
 				w.log.Warn("ClaimNextRunnable failed", "worker_id", workerID, "error", err)
 				continue

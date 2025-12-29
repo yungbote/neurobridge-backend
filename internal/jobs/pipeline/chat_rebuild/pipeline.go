@@ -7,6 +7,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -34,11 +35,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	// Enqueue maintenance to rebuild derived artifacts from SQL truth.
 	if p.jobs != nil && p.jobRuns != nil {
-		has, _ := p.jobRuns.HasRunnableForEntity(jc.Ctx, p.db, jc.Job.OwnerUserID, "chat_thread", threadID, "chat_maintain")
+		dbc := dbctx.Context{Ctx: jc.Ctx, Tx: p.db}
+		has, _ := p.jobRuns.HasRunnableForEntity(dbc, jc.Job.OwnerUserID, "chat_thread", threadID, "chat_maintain")
 		if !has {
 			payload := map[string]any{"thread_id": threadID.String()}
 			entityID := threadID
-			_, _ = p.jobs.Enqueue(jc.Ctx, p.db, jc.Job.OwnerUserID, "chat_maintain", "chat_thread", &entityID, payload)
+			_, _ = p.jobs.Enqueue(dbc, jc.Job.OwnerUserID, "chat_maintain", "chat_thread", &entityID, payload)
 		}
 	}
 

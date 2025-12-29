@@ -71,10 +71,11 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 		return out, fmt.Errorf("chat context plan: missing ids")
 	}
 
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
 	b := DefaultBudget()
 
 	// Hot window (last ~N msgs).
-	history, err := deps.Messages.ListRecent(ctx, deps.DB, in.Thread.ID, 30)
+	history, err := deps.Messages.ListRecent(dbc, in.Thread.ID, 30)
 	if err != nil {
 		return out, err
 	}
@@ -98,7 +99,7 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 
 	// RAPTOR root summary.
 	rootText := ""
-	if root, err := deps.Summaries.GetRoot(ctx, deps.DB, in.Thread.ID); err == nil && root != nil {
+	if root, err := deps.Summaries.GetRoot(dbc, in.Thread.ID); err == nil && root != nil {
 		rootText = strings.TrimSpace(root.SummaryMD)
 	}
 
@@ -160,7 +161,7 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 	if len(retrieved) == 0 {
 		fbTrace := map[string]any{}
 		start := time.Now()
-		hits, err := deps.Messages.LexicalSearchHits(ctx, deps.DB, chatrepo.ChatMessageLexicalQuery{
+		hits, err := deps.Messages.LexicalSearchHits(dbc, chatrepo.ChatMessageLexicalQuery{
 			UserID:   in.UserID,
 			ThreadID: in.Thread.ID,
 			Query:    ctxQuery,
@@ -224,7 +225,7 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 	}
 
 	// Graph context (always-on, budgeted).
-	graphCtx, _ := graphContext(dbctx.Context{Ctx: ctx, Tx: deps.DB}, in.UserID, retrieved, b.GraphTokens)
+	graphCtx, _ := graphContext(dbc, in.UserID, retrieved, b.GraphTokens)
 
 	// Token budgeting: truncate blocks to budgets.
 	hot = trimToTokens(hot, b.HotTokens)

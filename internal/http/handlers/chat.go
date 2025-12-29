@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -33,7 +34,8 @@ func (h *ChatHandler) CreateThread(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	thread, err := h.chat.CreateThread(c.Request.Context(), nil, req.Title, req.PathID, req.JobID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	thread, err := h.chat.CreateThread(dbc, req.Title, req.PathID, req.JobID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "create_thread_failed", err)
 		return
@@ -49,7 +51,8 @@ func (h *ChatHandler) ListThreads(c *gin.Context) {
 			limit = n
 		}
 	}
-	threads, err := h.chat.ListThreads(c.Request.Context(), nil, limit)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	threads, err := h.chat.ListThreads(dbc, limit)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "list_threads_failed", err)
 		return
@@ -70,7 +73,8 @@ func (h *ChatHandler) GetThread(c *gin.Context) {
 			limit = n
 		}
 	}
-	thread, msgs, err := h.chat.GetThread(c.Request.Context(), nil, threadID, limit)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	thread, msgs, err := h.chat.GetThread(dbc, threadID, limit)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "thread_not_found", err)
 		return
@@ -97,7 +101,8 @@ func (h *ChatHandler) ListMessages(c *gin.Context) {
 			before = &n
 		}
 	}
-	msgs, err := h.chat.ListMessages(c.Request.Context(), nil, threadID, limit, before)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	msgs, err := h.chat.ListMessages(dbc, threadID, limit, before)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "list_messages_failed", err)
 		return
@@ -112,7 +117,8 @@ func (h *ChatHandler) RebuildThread(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_thread_id", err)
 		return
 	}
-	job, err := h.chat.RebuildThread(c.Request.Context(), nil, threadID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.chat.RebuildThread(dbc, threadID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "rebuild_thread_failed", err)
 		return
@@ -127,7 +133,8 @@ func (h *ChatHandler) DeleteThread(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_thread_id", err)
 		return
 	}
-	job, err := h.chat.DeleteThread(c.Request.Context(), nil, threadID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.chat.DeleteThread(dbc, threadID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "delete_thread_failed", err)
 		return
@@ -158,7 +165,8 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 		idem = hdr
 	}
 
-	userMsg, asstMsg, job, err := h.chat.SendMessage(c.Request.Context(), nil, threadID, req.Content, idem)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	userMsg, asstMsg, job, err := h.chat.SendMessage(dbc, threadID, req.Content, idem)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "send_message_failed", err)
 		return
@@ -191,7 +199,8 @@ func (h *ChatHandler) UpdateMessage(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
-	job, err := h.chat.UpdateMessage(c.Request.Context(), nil, threadID, messageID, req.Content)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.chat.UpdateMessage(dbc, threadID, messageID, req.Content)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "update_message_failed", err)
 		return
@@ -211,7 +220,8 @@ func (h *ChatHandler) DeleteMessage(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_message_id", err)
 		return
 	}
-	job, err := h.chat.DeleteMessage(c.Request.Context(), nil, threadID, messageID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.chat.DeleteMessage(dbc, threadID, messageID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "delete_message_failed", err)
 		return
@@ -226,7 +236,8 @@ func (h *ChatHandler) GetTurn(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_turn_id", err)
 		return
 	}
-	turn, err := h.chat.GetTurn(c.Request.Context(), nil, turnID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	turn, err := h.chat.GetTurn(dbc, turnID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "get_turn_failed", err)
 		return

@@ -288,7 +288,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 				}
 			}
 
-			lexIDs, _ := lexicalChunkIDs(gctx, deps.DB, fileIDs, w.QueryText, lexicalK)
+			lexIDs, _ := lexicalChunkIDs(dbctx.Context{Ctx: gctx, Tx: deps.DB}, fileIDs, w.QueryText, lexicalK)
 			retrieved = append(retrieved, lexIDs...)
 			chunkIDs := dedupeUUIDsPreserveOrder(retrieved)
 
@@ -378,7 +378,7 @@ Task:
 				if genErr != nil {
 					lastErrs = []string{"generate_failed: " + genErr.Error()}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, lastErrs, nil),
 						})
 					}
@@ -390,7 +390,7 @@ Task:
 				if err := json.Unmarshal(raw, &tmp); err != nil {
 					lastErrs = []string{"schema_unmarshal_failed"}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, lastErrs, nil),
 						})
 					}
@@ -402,7 +402,7 @@ Task:
 				if len(errs) > 0 {
 					lastErrs = errs
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, errs, qm),
 						})
 					}
@@ -440,7 +440,7 @@ Task:
 					CreatedAt:     now,
 					UpdatedAt:     now,
 				}
-				_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
+				_ = deps.Videos.Upsert(dbctx.Context{Ctx: ctx}, row)
 				atomic.AddInt32(&nodesPlanned, 1)
 				return nil
 			}
@@ -462,7 +462,7 @@ Task:
 					CreatedAt:     now,
 					UpdatedAt:     now,
 				}
-				_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
+				_ = deps.Videos.Upsert(dbctx.Context{Ctx: ctx}, row)
 				atomic.AddInt32(&nodesPlanned, 1)
 			} else {
 				for i := range plan.Videos {
@@ -482,14 +482,14 @@ Task:
 						CreatedAt:     now,
 						UpdatedAt:     now,
 					}
-					_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
+					_ = deps.Videos.Upsert(dbctx.Context{Ctx: ctx}, row)
 					atomic.AddInt32(&vidsPlanned, 1)
 				}
 				atomic.AddInt32(&nodesPlanned, 1)
 			}
 
 			if deps.GenRuns != nil {
-				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeVideoPlanPromptVersion, succAttempt, latency, nil, metrics),
 				})
 			}

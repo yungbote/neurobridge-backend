@@ -17,6 +17,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -57,7 +58,8 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		return out, fmt.Errorf("chat path index: missing ids")
 	}
 
-	path, err := deps.Path.GetByID(ctx, deps.DB, in.PathID)
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	path, err := deps.Path.GetByID(dbc, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -65,7 +67,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		return out, fmt.Errorf("path not found")
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, deps.DB, []uuid.UUID{in.PathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbc, []uuid.UUID{in.PathID})
 	if err != nil {
 		return out, err
 	}
@@ -80,7 +82,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 			}
 		}
 		if len(nodeIDs) > 0 {
-			joins, _ = deps.NodeActs.GetByPathNodeIDs(ctx, deps.DB, nodeIDs)
+			joins, _ = deps.NodeActs.GetByPathNodeIDs(dbc, nodeIDs)
 		}
 	}
 
@@ -99,7 +101,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 			}
 		}
 		if len(actIDs) > 0 {
-			rows, _ := deps.Activities.GetByIDs(ctx, deps.DB, actIDs)
+			rows, _ := deps.Activities.GetByIDs(dbc, actIDs)
 			for _, a := range rows {
 				if a != nil && a.ID != uuid.Nil {
 					activityByID[a.ID] = a
@@ -111,7 +113,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 	// Load concepts (optional enrichment).
 	var concepts []*types.Concept
 	if deps.Concepts != nil {
-		concepts, _ = deps.Concepts.GetByScope(ctx, deps.DB, "path", &in.PathID)
+		concepts, _ = deps.Concepts.GetByScope(dbc, "path", &in.PathID)
 	}
 
 	now := time.Now().UTC()
@@ -251,7 +253,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		docs[i].Embedding = datatypes.JSON(chatrepo.MustEmbeddingJSON(nonNilEmb(embs[i])))
 	}
 
-	if err := deps.Docs.Upsert(ctx, deps.DB, docs); err != nil {
+	if err := deps.Docs.Upsert(dbc, docs); err != nil {
 		return out, err
 	}
 	out.DocsUpserted = len(docs)

@@ -223,7 +223,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 }
 
 func bulkUpdateChunkEmbeddings(dbc dbctx.Context, batch []*types.MaterialChunk, vecs [][]float32) error {
-	if tx == nil {
+	if dbc.Tx == nil {
 		return fmt.Errorf("bulkUpdateChunkEmbeddings: tx required")
 	}
 	if len(batch) == 0 {
@@ -265,5 +265,5 @@ func bulkUpdateChunkEmbeddings(dbc dbctx.Context, batch []*types.MaterialChunk, 
 		strings.Join(caseParts, " "),
 	)
 	args = append(args, now, ids)
-	return tx.WithContext(ctx).Exec(query, args...).Error
+	return dbc.Tx.WithContext(dbc.Ctx).Exec(query, args...).Error
 }

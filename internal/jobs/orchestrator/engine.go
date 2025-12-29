@@ -15,6 +15,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 // -------------------- Public API --------------------
@@ -48,7 +49,7 @@ type Stage struct {
 }
 
 type ChildEnqueuer interface {
-	Enqueue(ctx context.Context, tx any, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
+	Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
 }
 
 type Engine struct {
@@ -235,7 +236,8 @@ func (e *Engine) enqueueChildAndYield(ctx *jobrt.Context, st *OrchestratorState,
 		}
 		payload = p
 	}
-	j, err := e.ChildJobs.Enqueue(ctx.Ctx, nil, owner, def.ChildJobType, entityType, entityID, payload)
+	dbc := dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}
+	j, err := e.ChildJobs.Enqueue(dbc, owner, def.ChildJobType, entityType, entityID, payload)
 	if err != nil {
 		e.handleStageErr(ctx, st, ss, def, err)
 		return true
@@ -378,7 +380,7 @@ func loadJobByID(ctx *jobrt.Context, id uuid.UUID) (*types.JobRun, error) {
 	if ctx == nil || ctx.Repo == nil {
 		return nil, fmt.Errorf("missing job repo")
 	}
-	rows, err := ctx.Repo.GetByIDs(ctx.Ctx, nil, []uuid.UUID{id})
+	rows, err := ctx.Repo.GetByIDs(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +395,7 @@ func yieldToQueue(ctx *jobrt.Context, stage string, progress int) error {
 		return nil
 	}
 	now := time.Now()
-	return ctx.Repo.UpdateFields(ctx.Ctx, nil, ctx.Job.ID, map[string]interface{}{
+	return ctx.Repo.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, ctx.Job.ID, map[string]interface{}{
 		"status":       "queued",
 		"stage":        stage,
 		"progress":     progress,

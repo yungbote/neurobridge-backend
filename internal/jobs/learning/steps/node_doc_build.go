@@ -761,7 +761,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					}
 					lastErrors = []string{"generate_failed: " + genErr.Error()}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -774,7 +774,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if uErr := json.Unmarshal(rawDoc, &gen); uErr != nil {
 					lastErrors = []string{"schema_unmarshal_failed"}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -785,7 +785,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if len(convErrs) > 0 {
 					lastErrors = append([]string{"convert_failed"}, convErrs...)
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -855,7 +855,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if len(errs) > 0 {
 					lastErrors = errs
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, errs, metrics),
 						})
 					}
@@ -887,12 +887,12 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					CreatedAt:     time.Now().UTC(),
 					UpdatedAt:     time.Now().UTC(),
 				}
-				if err := deps.NodeDocs.Upsert(gdbctx.Context{Ctx: ctx}, row); err != nil {
+				if err := deps.NodeDocs.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
 					return err
 				}
 
 				if deps.GenRuns != nil {
-					_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+					_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 						makeGenRun("node_doc", &docID, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeDocPromptVersion, attempt, latency, nil, metrics),
 					})
 				}

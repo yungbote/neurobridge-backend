@@ -15,6 +15,7 @@ import (
 	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -63,7 +64,8 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 		return out, fmt.Errorf("chat respond: missing ids")
 	}
 
-	threads, err := deps.Threads.GetByIDs(ctx, deps.DB, []uuid.UUID{in.ThreadID})
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	threads, err := deps.Threads.GetByIDs(dbc, []uuid.UUID{in.ThreadID})
 	if err != nil {
 		return out, err
 	}
@@ -74,7 +76,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 
 	// Mark turn as running.
 	now := time.Now().UTC()
-	_ = deps.Turns.UpdateFields(ctx, deps.DB, in.UserID, in.TurnID, map[string]interface{}{
+	_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 		"status":     "running",
 		"attempt":    in.Attempt,
 		"job_id":     in.JobID,
@@ -83,7 +85,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 
 	// If this is a retry, reset the assistant placeholder so clients can safely restart streaming.
 	if in.Attempt > 0 {
-		_ = deps.Messages.UpdateFields(ctx, deps.DB, in.AssistantMessageID, map[string]interface{}{
+		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 			"content":    "",
 			"status":     MessageStatusStreaming,
 			"updated_at": time.Now().UTC(),
@@ -118,7 +120,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	// Ensure thread state + OpenAI conversation.
-	state, err := deps.State.GetOrCreate(ctx, deps.DB, in.ThreadID)
+state, err := deps.State.GetOrCreate(dbc, in.ThreadID)
 	if err != nil {
 		return out, err
 	}
@@ -130,7 +132,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 		// Conversations are an optimization; proceed without them if creation fails.
 		if cid, err := deps.AI.CreateConversation(ctx); err == nil && strings.TrimSpace(cid) != "" {
 			conversationID = strings.TrimSpace(cid)
-			_ = deps.State.UpdateFields(ctx, deps.DB, in.ThreadID, map[string]interface{}{
+			_ = deps.State.UpdateFields(dbc, in.ThreadID, map[string]interface{}{
 				"openai_conversation_id": conversationID,
 			})
 			state.OpenAIConversationID = &conversationID
@@ -157,7 +159,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	// Persist the retrieval decision trace early for debuggability (even if streaming fails later).
 	if len(plan.Trace) > 0 {
 		if b, err := json.Marshal(plan.Trace); err == nil {
-			_ = deps.Turns.UpdateFields(ctx, deps.DB, in.UserID, in.TurnID, map[string]interface{}{
+			_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 				"retrieval_trace": datatypes.JSON(b),
 			})
 		}
@@ -182,7 +184,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 		txt := full.String()
 		lastFlushAt = time.Now()
 		lastFlushSize = len(txt)
-		_ = deps.Messages.UpdateFields(ctx, deps.DB, in.AssistantMessageID, map[string]interface{}{
+		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 			"content":    txt,
 			"status":     MessageStatusStreaming,
 			"updated_at": time.Now().UTC(),
@@ -234,7 +236,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 	if err != nil {
 		flushNotify()
-		_ = deps.Messages.UpdateFields(ctx, deps.DB, in.AssistantMessageID, map[string]interface{}{
+		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 			"status":     MessageStatusError,
 			"updated_at": time.Now().UTC(),
 		})
@@ -245,7 +247,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 			})
 		}
 		doneAt := time.Now().UTC()
-		_ = deps.Turns.UpdateFields(ctx, deps.DB, in.UserID, in.TurnID, map[string]interface{}{
+		_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 			"status":       "error",
 			"completed_at": &doneAt,
 		})
@@ -260,7 +262,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	out.AssistantText = text
 
 	// Persist final message content + status.
-	if err := deps.Messages.UpdateFields(ctx, deps.DB, in.AssistantMessageID, map[string]interface{}{
+if err := deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 		"content":    text,
 		"status":     MessageStatusDone,
 		"updated_at": time.Now().UTC(),
@@ -279,7 +281,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	doneAt := time.Now().UTC()
-	_ = deps.Turns.UpdateFields(ctx, deps.DB, in.UserID, in.TurnID, map[string]interface{}{
+_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 		"status":                 "done",
 		"completed_at":           &doneAt,
 		"openai_conversation_id": state.OpenAIConversationID,
@@ -287,13 +289,13 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 
 	// Enqueue maintenance job (debounced per thread).
 	if deps.Jobs != nil && deps.JobRuns != nil {
-		has, _ := deps.JobRuns.HasRunnableForEntity(ctx, deps.DB, in.UserID, "chat_thread", in.ThreadID, "chat_maintain")
+		has, _ := deps.JobRuns.HasRunnableForEntity(dbc, in.UserID, "chat_thread", in.ThreadID, "chat_maintain")
 		if !has {
 			payload := map[string]any{
 				"thread_id": in.ThreadID.String(),
 			}
 			entityID := in.ThreadID
-			_, _ = deps.Jobs.Enqueue(ctx, deps.DB, in.UserID, "chat_maintain", "chat_thread", &entityID, payload)
+			_, _ = deps.Jobs.Enqueue(dbc, in.UserID, "chat_maintain", "chat_thread", &entityID, payload)
 		}
 	}
 

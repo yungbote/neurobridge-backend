@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -26,7 +27,7 @@ func NewUserHandler(userService services.UserService, hub *realtime.SSEHub) *Use
 
 // GET /me
 func (uh *UserHandler) GetMe(c *gin.Context) {
-	me, err := uh.userService.GetMe(c.Request.Context(), nil)
+	me, err := uh.userService.GetMe(dbctx.Context{Ctx: c.Request.Context()})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

@@ -1,12 +1,15 @@
 package handlers
 
 import (
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/http/response"
-	"github.com/yungbote/neurobridge-backend/internal/services"
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type JobHandler struct {
@@ -24,7 +27,8 @@ func (h *JobHandler) GetJob(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_job_id", err)
 		return
 	}
-	job, err := h.jobs.GetByIDForRequestUser(c.Request.Context(), nil, jobID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.jobs.GetByIDForRequestUser(dbc, jobID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "job_not_found", err)
 		return
@@ -40,7 +44,8 @@ func (h *JobHandler) CancelJob(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_job_id", err)
 		return
 	}
-	job, err := h.jobs.CancelForRequestUser(c.Request.Context(), nil, jobID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.jobs.CancelForRequestUser(dbc, jobID)
 	if err != nil {
 		response.RespondError(c, http.StatusBadRequest, "cancel_job_failed", err)
 		return
@@ -55,7 +60,8 @@ func (h *JobHandler) RestartJob(c *gin.Context) {
 		response.RespondError(c, http.StatusBadRequest, "invalid_job_id", err)
 		return
 	}
-	job, err := h.jobs.RestartForRequestUser(c.Request.Context(), nil, jobID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	job, err := h.jobs.RestartForRequestUser(dbc, jobID)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "not restartable") {

@@ -9,6 +9,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -51,7 +52,8 @@ func (h *ActivityHandler) GetActivity(c *gin.Context) {
 		return
 	}
 
-	act, err := h.activities.GetByID(c.Request.Context(), nil, activityID)
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	act, err := h.activities.GetByID(dbc, activityID)
 	if err != nil {
 		h.log.Error("GetActivity failed (load activity)", "error", err, "activity_id", activityID)
 		response.RespondError(c, http.StatusInternalServerError, "load_activity_failed", err)
@@ -63,7 +65,7 @@ func (h *ActivityHandler) GetActivity(c *gin.Context) {
 	}
 
 	pathID := *act.OwnerID
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, pathID)
+	pathRow, err := h.path.GetByID(dbc, pathID)
 	if err != nil {
 		h.log.Error("GetActivity failed (load path)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -74,7 +76,7 @@ func (h *ActivityHandler) GetActivity(c *gin.Context) {
 		return
 	}
 
-	joins, err := h.pathNodeActivity.GetByActivityIDs(c.Request.Context(), nil, []uuid.UUID{activityID})
+	joins, err := h.pathNodeActivity.GetByActivityIDs(dbc, []uuid.UUID{activityID})
 	if err != nil {
 		h.log.Error("GetActivity failed (load joins)", "error", err, "activity_id", activityID)
 		response.RespondError(c, http.StatusInternalServerError, "load_activity_joins_failed", err)
@@ -88,7 +90,7 @@ func (h *ActivityHandler) GetActivity(c *gin.Context) {
 	if len(joins) > 0 && joins[0] != nil {
 		nodeID = joins[0].PathNodeID
 		if nodeID != uuid.Nil {
-			n, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+			n, err := h.pathNodes.GetByID(dbc, nodeID)
 			if err != nil {
 				h.log.Error("GetActivity failed (load node)", "error", err, "path_node_id", nodeID)
 				response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)

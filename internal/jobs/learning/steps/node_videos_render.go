@@ -212,7 +212,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				strings.TrimSpace(row.PromptHash),
 				ext,
 			)
-			if err := deps.Bucket.UploadFile(gdbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(vid.Bytes)); err != nil {
+			if err := deps.Bucket.UploadFile(dbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(vid.Bytes)); err != nil {
 				_ = markVideoFailed(gctx, deps, row, "upload_failed: "+err.Error(), latency)
 				atomic.AddInt32(&failed, 1)
 				return nil
@@ -254,7 +254,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 					CreatedAt:  time.Now().UTC(),
 					UpdatedAt:  time.Now().UTC(),
 				}
-				if _, err := deps.Assets.Create(gdbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
+				if _, err := deps.Assets.Create(dbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
 					assetID = &aid
 				}
 			}
@@ -279,7 +279,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				CreatedAt:       row.CreatedAt,
 				UpdatedAt:       now,
 			}
-			_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, update)
+			_ = deps.Videos.Upsert(dbctx.Context{Ctx: ctx}, update)
 
 			if deps.GenRuns != nil {
 				metrics := map[string]any{
@@ -289,7 +289,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 					"byte_len":     len(vid.Bytes),
 					"duration_sec": dur,
 				}
-				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_video_asset", &update.ID, in.OwnerUserID, pathID, row.PathNodeID, "succeeded", nodeVideoAssetPromptVersion, 1, latency, nil, metrics),
 				})
 			}
