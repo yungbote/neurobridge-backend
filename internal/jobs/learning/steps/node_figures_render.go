@@ -174,9 +174,9 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 				return markFigureFailed(gctx, deps, row, "empty_prompt", 0)
 			}
 
-			// Guardrails: reinforce that figures are photorealistic, not diagram-like, and must avoid text/logos.
+			// Guardrails: keep outputs clean and learner-safe without forcing a specific visual style.
 			// We append (rather than replace) to preserve the planner's domain-specific content.
-			constraints := "Hard constraints: photorealistic / high-resolution / realistic lighting (or high-fidelity 3D render); NOT a diagram/schematic/infographic; NO arrows/callouts; NO text or labels in the image; no watermarks; no logos; no brand names; avoid identifiable people/faces."
+			constraints := "Hard constraints: no watermarks; no logos; no brand names; avoid identifiable people/faces."
 			prompt = prompt + "\n\n" + constraints
 
 			img, err := deps.AI.GenerateImage(gctx, prompt)

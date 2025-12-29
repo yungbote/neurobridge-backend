@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	chatIndex "github.com/yungbote/neurobridge-backend/internal/chat/index"
 	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"

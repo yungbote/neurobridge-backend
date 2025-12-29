@@ -21,7 +21,7 @@
           "caption": { "type": "string" },
           "alt_text": { "type": "string" },
           "placement_hint": { "type": "string" },
-          "duration_sec": { "type": "integer" },
+          "duration_sec": { "type": "integer", "enum": [4, 8, 12] },
           "citations": { "type": "array", "items": { "type": "string" } }
         },
         "required": [

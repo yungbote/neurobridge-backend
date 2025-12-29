@@ -327,8 +327,7 @@ Hard rules:
 - Return ONLY valid JSON matching the schema (no surrounding text).
 - Plan 0–1 videos total (max 1).
 - Every plan item must include citations referencing ONLY provided chunk_ids.
-- Video prompt MUST include: NO text / NO subtitles / NO captions / no watermarks / no logos / no brand names.
-- Video prompt MUST avoid identifiable people/faces.
+- Video prompt MUST include: no watermarks; no logos; no brand names; avoid identifiable people/faces.
 `
 
 			user := fmt.Sprintf(`
@@ -346,10 +345,11 @@ Task:
 - If a video would add motion/spatial intuition/realistic setup value, output exactly 1 plan.
 - Otherwise output videos: [].
 - Each video prompt/caption MUST mention at least one subject from VIDEO_SUBJECT_CANDIDATES (verbatim).
-- Choose duration_sec based on what you're showing:
-  - 3–6s: single simple idea (one action/one change)
-  - 7–12s: short multi-step process
-  - 13–20s: longer sequence with 2–3 phases
+- On-screen labels/subtitles are OK when they help; include them explicitly in the prompt if needed.
+- Choose duration_sec from {4, 8, 12} only:
+  - 4s: single simple idea (one action/one change)
+  - 8s: short multi-step process
+  - 12s: longer sequence with 2–3 phases
 `,
 				w.Node.Title,
 				w.Goal,

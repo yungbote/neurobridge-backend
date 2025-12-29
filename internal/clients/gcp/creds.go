@@ -1,9 +1,10 @@
 package gcp
 
 import (
-	"google.golang.org/api/option"
 	"os"
 	"strings"
+
+	"google.golang.org/api/option"
 )
 
 func ClientOptionsFromEnv() []option.ClientOption {
@@ -11,16 +12,13 @@ func ClientOptionsFromEnv() []option.ClientOption {
 	if creds == "" {
 		creds = strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	}
-	opts := []option.ClientOption{}
 	if creds == "" {
-		return opts
+		return nil
 	}
 	if strings.HasPrefix(creds, "{") {
-		opts = append(opts, option.WithCredentialsJSON([]byte(creds)))
-	} else {
-		opts = append(opts, option.WithCredentialsFile(creds))
+		return []option.ClientOption{option.WithCredentialsJSON([]byte(creds))}
 	}
-	return opts
+	return []option.ClientOption{option.WithCredentialsFile(creds)}
 }
 
 // ---------- shared helpers (package-wide) ----------

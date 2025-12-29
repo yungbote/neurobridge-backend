@@ -322,15 +322,13 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 MODE: FIGURE_PLANNER
 
 You decide whether a raster "figure" (image) would meaningfully help this node.
-Figures are realistic, high-fidelity visuals (real-world setup/scene/intuition) and must NOT be diagram-like.
-If labels/equations are needed, prefer diagrams in the NodeDoc (SVG/Mermaid), not text-in-image.
+Figures can be photos, illustrations, or diagrams; choose the style that best conveys the concept.
+Labels/equations are OK when they help; include them explicitly in the prompt if needed.
 
 Hard rules:
 - Return ONLY valid JSON matching the schema (no surrounding text).
 - Plan 0–2 figures total (max 2).
 - Every plan item must include citations referencing ONLY provided chunk_ids.
-- Image prompt MUST include: photorealistic / high-resolution / realistic lighting (looks like a real photo or high-fidelity 3D render).
-- Image prompt MUST include: NOT a diagram / schematic / infographic; NO arrows/callouts; NO text or labels in the image.
 - Image prompt MUST include: no watermarks; no logos; no brand names; avoid identifiable people/faces.
 `
 

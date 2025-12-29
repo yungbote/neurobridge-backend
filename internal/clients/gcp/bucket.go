@@ -61,19 +61,10 @@ func NewBucketService(log *logger.Logger) (BucketService, error) {
 	avatarCDN := os.Getenv("AVATAR_CDN_DOMAIN")
 	materialCDN := os.Getenv("MATERIAL_CDN_DOMAIN")
 
-	saPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-	if saPath == "" {
-		serviceLog.Warn("The storage client may rely on other ADC or fail because GOOGLE_APPLICATION_CREDENTIALS_JSON env var missing...")
-	}
-
 	ctx := context.Background()
-	var stClient *storage.Client
-	var err error
-	if saPath != "" {
-		stClient, err = storage.NewClient(ctx, option.WithCredentialsFile(saPath), option.WithScopes(storage.ScopeReadWrite))
-	} else {
-		stClient, err = storage.NewClient(ctx, option.WithScopes(storage.ScopeReadWrite))
-	}
+	opts := ClientOptionsFromEnv()
+	opts = append(opts, option.WithScopes(storage.ScopeReadWrite))
+	stClient, err := storage.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage client: %w", err)
 	}
@@ -266,7 +257,6 @@ func (bs *bucketService) DownloadFile(ctx context.Context, category BucketCatego
 	if err != nil {
 		return nil, err
 	}
-
 	// Create a context that stays alive for the life of the reader.
 	// Cancel only after the reader is closed.
 	ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)

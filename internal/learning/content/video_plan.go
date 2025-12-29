@@ -42,6 +42,11 @@ func ValidateVideoPlanV1(doc VideoPlanDocV1, allowedChunkIDs map[string]bool, su
 		"spatial_walkthrough": true,
 		"before_after":        true,
 	}
+	allowedDurations := map[int]bool{
+		4:  true,
+		8:  true,
+		12: true,
+	}
 
 	containsAny := func(haystack string, needles []string) bool {
 		for _, n := range needles {
@@ -74,12 +79,6 @@ func ValidateVideoPlanV1(doc VideoPlanDocV1, allowedChunkIDs map[string]bool, su
 		} else {
 			prompts++
 			lp := strings.ToLower(v.Prompt)
-			if !containsAny(lp, []string{"no text", "no on-screen text", "no onscreen text"}) {
-				errs = append(errs, prefix+".prompt must include 'no text' (avoid overlays/subtitles)")
-			}
-			if !containsAny(lp, []string{"no subtitles", "no caption text", "no captions"}) {
-				errs = append(errs, prefix+".prompt must forbid subtitles/captions/text overlays")
-			}
 			if !strings.Contains(lp, "no watermarks") {
 				errs = append(errs, prefix+".prompt must include 'no watermarks'")
 			}
@@ -125,8 +124,8 @@ func ValidateVideoPlanV1(doc VideoPlanDocV1, allowedChunkIDs map[string]bool, su
 			errs = append(errs, prefix+".placement_hint missing")
 		}
 
-		if v.DurationSec < 2 || v.DurationSec > 30 {
-			errs = append(errs, prefix+".duration_sec must be 2-30")
+		if !allowedDurations[v.DurationSec] {
+			errs = append(errs, prefix+".duration_sec must be 4, 8, or 12")
 		} else {
 			durationTotal += v.DurationSec
 		}

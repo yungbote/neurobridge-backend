@@ -35,12 +35,20 @@ type Config struct {
 func ConfigFromEnv() Config {
 	timeoutSec := envutil.Int("SENDGRID_TIMEOUT_SECONDS", 30)
 	maxRetries := envutil.Int("SENDGRID_MAX_RETRIES", 4)
+	apiKey := strings.TrimSpace(os.Getenv("SENDGRID_API_KEY"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("SENGRID_API_KEY"))
+	}
+	fromName := strings.TrimSpace(os.Getenv("SENDGRID_FROM_NAME"))
+	if fromName == "" {
+		fromName = strings.TrimSpace(os.Getenv("SENGRID_FROM_NAME"))
+	}
 
 	return Config{
-		APIKey:						strings.TrimSpace(os.Getenv("SENGRID_API_KEY")),
+		APIKey:						apiKey,
 		BaseURL:					strings.TrimSpace(os.Getenv("SENDGRID_BASE_URL")),
 		DefaultFromEmail:	strings.TrimSpace(os.Getenv("SENDGRID_FROM_EMAIL")),
-		DefaultFromName:  strings.TrimSpace(os.Getenv("SENDGRID_FROM_NAME")),
+		DefaultFromName:  fromName,
 		Timeout:					time.Duration(timeoutSec) * time.Second,
 		MaxRetries:				maxRetries,
 	}

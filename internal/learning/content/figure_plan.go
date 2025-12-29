@@ -41,18 +41,6 @@ func ValidateFigurePlanV1(doc FigurePlanDocV1, allowedChunkIDs map[string]bool, 
 		"graphical_metaphor":  true,
 	}
 
-	containsAny := func(haystack string, needles []string) bool {
-		for _, n := range needles {
-			if n == "" {
-				continue
-			}
-			if strings.Contains(haystack, n) {
-				return true
-			}
-		}
-		return false
-	}
-
 	prompts := 0
 	subjectHints = NormalizeConceptKeys(subjectHints)
 	subjectHits := 0
@@ -68,17 +56,7 @@ func ValidateFigurePlanV1(doc FigurePlanDocV1, allowedChunkIDs map[string]bool, 
 			errs = append(errs, prefix+".prompt missing")
 		} else {
 			prompts++
-			// Planner should produce photorealistic (non-diagram) prompts with explicit guardrails.
 			lp := strings.ToLower(f.Prompt)
-			if !strings.Contains(lp, "no text") {
-				errs = append(errs, prefix+".prompt must include 'no text' (labels go in captions, not in-image)")
-			}
-			if !containsAny(lp, []string{"not a diagram", "not diagram", "not a schematic", "not schematic", "not an infographic", "not infographic"}) {
-				errs = append(errs, prefix+".prompt must state it's NOT a diagram/schematic/infographic")
-			}
-			if !containsAny(lp, []string{"photorealistic", "photograph", "photo", "realistic lighting", "high-resolution", "high resolution", "stock photo", "dslr", "macro"}) {
-				errs = append(errs, prefix+".prompt must request a photorealistic/high-fidelity style (photo-like)")
-			}
 			if !strings.Contains(lp, "no watermarks") {
 				errs = append(errs, prefix+".prompt must include 'no watermarks'")
 			}

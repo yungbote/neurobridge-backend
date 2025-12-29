@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -396,6 +397,14 @@ type imagesGenerationResponse struct {
 	} `json:"data"`
 }
 
+func isUnknownResponseFormatParam(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unknown parameter") && strings.Contains(msg, "response_format")
+}
+
 func (c *client) GenerateImage(ctx context.Context, prompt string) (ImageGeneration, error) {
 	var out ImageGeneration
 	prompt = strings.TrimSpace(prompt)
@@ -406,17 +415,28 @@ func (c *client) GenerateImage(ctx context.Context, prompt string) (ImageGenerat
 		return out, errors.New("missing OPENAI_IMAGE_MODEL")
 	}
 
+	responseFormat := "b64_json"
+	if strings.HasPrefix(strings.ToLower(c.imageModel), "gpt-image-") {
+		responseFormat = ""
+	}
 	req := imagesGenerationRequest{
 		Model:          c.imageModel,
 		Prompt:         prompt,
 		N:              1,
 		Size:           strings.TrimSpace(c.imageSize),
-		ResponseFormat: "b64_json",
+		ResponseFormat: responseFormat,
 	}
 
 	var resp imagesGenerationResponse
 	if err := c.do(ctx, "POST", "/v1/images/generations", req, &resp); err != nil {
-		return out, err
+		if isUnknownResponseFormatParam(err) {
+			req.ResponseFormat = ""
+			if err2 := c.do(ctx, "POST", "/v1/images/generations", req, &resp); err2 != nil {
+				return out, err2
+			}
+		} else {
+			return out, err
+		}
 	}
 	if len(resp.Data) == 0 {
 		return out, errors.New("no image returned")
@@ -425,7 +445,21 @@ func (c *client) GenerateImage(ctx context.Context, prompt string) (ImageGenerat
 	out.RevisedPrompt = strings.TrimSpace(item.RevisedPrompt)
 	b64 := strings.TrimSpace(item.B64JSON)
 	if b64 == "" {
-		return out, errors.New("image response missing b64_json")
+		if u := strings.TrimSpace(item.URL); u != "" {
+			b, ct, err := c.downloadBytes(ctx, u)
+			if err != nil {
+				return out, fmt.Errorf("download generated image: %w", err)
+			}
+			out.Bytes = b
+			if strings.TrimSpace(ct) != "" {
+				out.MimeType = strings.TrimSpace(strings.Split(ct, ";")[0])
+			}
+			if out.MimeType == "" {
+				out.MimeType = "image/png"
+			}
+			return out, nil
+		}
+		return out, errors.New("image response missing b64_json and url")
 	}
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil || len(raw) == 0 {
@@ -438,20 +472,77 @@ func (c *client) GenerateImage(ctx context.Context, prompt string) (ImageGenerat
 
 // -------------------- Videos API (Sora) --------------------
 
-type videosGenerationRequest struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	DurationSec    int    `json:"duration_seconds,omitempty"`
-	Size           string `json:"size,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // b64_json|url
+type videoJobResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
-type videosGenerationResponse struct {
-	Data []struct {
-		B64JSON       string `json:"b64_json"`
-		URL           string `json:"url"`
-		RevisedPrompt string `json:"revised_prompt"`
-	} `json:"data"`
+func normalizeVideoDurationSeconds(dur int) int {
+	if dur <= 0 {
+		return 8
+	}
+	allowed := []int{4, 8, 12}
+	best := allowed[0]
+	bestDiff := absInt(dur - best)
+	for _, v := range allowed[1:] {
+		diff := absInt(dur - v)
+		if diff < bestDiff {
+			best = v
+			bestDiff = diff
+		}
+	}
+	return best
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func (c *client) createVideoJob(ctx context.Context, prompt, model, size string, seconds int) (videoJobResponse, error) {
+	var out videoJobResponse
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("prompt", prompt)
+	_ = writer.WriteField("model", model)
+	if strings.TrimSpace(size) != "" {
+		_ = writer.WriteField("size", size)
+	}
+	if seconds > 0 {
+		_ = writer.WriteField("seconds", strconv.Itoa(seconds))
+	}
+	_ = writer.Close()
+
+	payload := buf.Bytes()
+	contentType := writer.FormDataContentType()
+	if err := c.doMultipart(ctx, "POST", "/v1/videos", payload, contentType, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *client) getVideoJob(ctx context.Context, id string) (videoJobResponse, error) {
+	var out videoJobResponse
+	if strings.TrimSpace(id) == "" {
+		return out, errors.New("video id required")
+	}
+	if err := c.do(ctx, "GET", "/v1/videos/"+id, nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *client) downloadVideoContent(ctx context.Context, id string) ([]byte, string, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, "", errors.New("video id required")
+	}
+	url := c.baseURL + "/v1/videos/" + id + "/content"
+	return c.downloadBytes(ctx, url)
 }
 
 func (c *client) GenerateVideo(ctx context.Context, prompt string, opts VideoGenerationOptions) (VideoGeneration, error) {
@@ -464,16 +555,7 @@ func (c *client) GenerateVideo(ctx context.Context, prompt string, opts VideoGen
 		return out, errors.New("missing OPENAI_VIDEO_MODEL")
 	}
 
-	dur := opts.DurationSeconds
-	if dur <= 0 {
-		dur = 8
-	}
-	if dur < 2 {
-		dur = 2
-	}
-	if dur > 30 {
-		dur = 30
-	}
+	dur := normalizeVideoDurationSeconds(opts.DurationSeconds)
 
 	size := strings.TrimSpace(opts.Size)
 	if size == "" {
@@ -483,68 +565,61 @@ func (c *client) GenerateVideo(ctx context.Context, prompt string, opts VideoGen
 		size = "1280x720"
 	}
 
-	// Some deployments expose Sora generation under /v1/videos/generations; keep a fallback.
-	paths := []string{"/v1/videos/generations", "/v1/video/generations"}
-
-	req := videosGenerationRequest{
-		Model:          c.videoModel,
-		Prompt:         prompt,
-		DurationSec:    dur,
-		Size:           size,
-		ResponseFormat: "b64_json",
+	job, err := c.createVideoJob(ctx, prompt, c.videoModel, size, dur)
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(job.ID) == "" {
+		return out, errors.New("video create missing id")
 	}
 
-	var lastErr error
-	for _, path := range paths {
-		var resp videosGenerationResponse
-		if err := c.do(ctx, "POST", path, req, &resp); err != nil {
-			lastErr = err
-			// Try next endpoint on 404s.
-			if he, ok := err.(*openAIHTTPError); ok && he.StatusCode == 404 {
-				continue
-			}
-			continue
-		}
-		if len(resp.Data) == 0 {
-			lastErr = errors.New("no video returned")
-			continue
-		}
-		item := resp.Data[0]
-		out.RevisedPrompt = strings.TrimSpace(item.RevisedPrompt)
-
-		if b64 := strings.TrimSpace(item.B64JSON); b64 != "" {
-			raw, err := base64.StdEncoding.DecodeString(b64)
-			if err != nil || len(raw) == 0 {
-				return out, fmt.Errorf("decode video base64: %w", err)
-			}
-			out.Bytes = raw
-			out.MimeType = sniffVideoMime(raw)
-			return out, nil
-		}
-
-		if u := strings.TrimSpace(item.URL); u != "" {
-			out.URL = u
-			b, ct, err := c.downloadBytes(ctx, u)
-			if err != nil {
-				return out, fmt.Errorf("download generated video: %w", err)
-			}
-			out.Bytes = b
-			if strings.TrimSpace(ct) != "" {
-				out.MimeType = strings.TrimSpace(strings.Split(ct, ";")[0])
-			}
-			if out.MimeType == "" {
-				out.MimeType = sniffVideoMime(b)
-			}
-			return out, nil
-		}
-
-		lastErr = errors.New("video response missing b64_json and url")
+	status := strings.ToLower(strings.TrimSpace(job.Status))
+	if status == "" {
+		status = "queued"
+	}
+	deadline := time.Now().Add(20 * time.Minute)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
 	}
 
-	if lastErr != nil {
-		return out, lastErr
+	for {
+		if status == "completed" || status == "succeeded" {
+			break
+		}
+		if status == "failed" || status == "canceled" {
+			msg := "video generation failed"
+			if job.Error != nil && strings.TrimSpace(job.Error.Message) != "" {
+				msg = job.Error.Message
+			}
+			return out, errors.New(msg)
+		}
+		if time.Now().After(deadline) {
+			return out, errors.New("video generation timeout")
+		}
+
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+
+		job, err = c.getVideoJob(ctx, job.ID)
+		if err != nil {
+			return out, err
+		}
+		status = strings.ToLower(strings.TrimSpace(job.Status))
 	}
-	return out, errors.New("video generation failed")
+
+	b, ct, err := c.downloadVideoContent(ctx, job.ID)
+	if err != nil {
+		return out, err
+	}
+	out.Bytes = b
+	out.MimeType = strings.TrimSpace(strings.Split(ct, ";")[0])
+	if out.MimeType == "" {
+		out.MimeType = sniffVideoMime(b)
+	}
+	return out, nil
 }
 
 func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
@@ -568,6 +643,50 @@ func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string,
 		return nil, "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	return raw, strings.TrimSpace(resp.Header.Get("Content-Type")), nil
+}
+
+func (c *client) doMultipart(ctx context.Context, method, path string, payload []byte, contentType string, out any) error {
+	backoff := 1 * time.Second
+
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		req, err := http.NewRequestWithContext(ctxutil.Default(ctx), method, c.baseURL+path, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", contentType)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if attempt < c.maxRetries {
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+			return err
+		}
+
+		raw, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
+		}
+		if out == nil {
+			return nil
+		}
+		if err := json.Unmarshal(raw, out); err != nil {
+			return err
+		}
+		return nil
+	}
+	return errors.New("openai multipart request failed")
 }
 
 func sniffVideoMime(b []byte) string {

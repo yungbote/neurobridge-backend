@@ -179,8 +179,8 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				dur = 8
 			}
 
-			// Guardrails: keep videos clean and learner-safe (no text overlays, no branding).
-			constraints := "Hard constraints: short educational video; NO text / NO subtitles / NO captions; no watermarks; no logos; no brand names; avoid identifiable people/faces; keep it faithful to the described concept."
+			// Guardrails: keep videos clean and learner-safe without forcing a specific visual style.
+			constraints := "Hard constraints: short educational video; no watermarks; no logos; no brand names; avoid identifiable people/faces; keep it faithful to the described concept."
 			prompt = prompt + "\n\n" + constraints
 
 			vid, err := deps.AI.GenerateVideo(gctx, prompt, openai.VideoGenerationOptions{DurationSeconds: dur})
