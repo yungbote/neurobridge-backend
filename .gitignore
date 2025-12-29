@@ -1,7 +1,7 @@
 # .gitignore
 
 
-json/serviceaccounts/*.json
+json/gcp/serviceaccounts/*.json
 
 .cache/
 
@@ -16,5 +16,5 @@ json/serviceaccounts/*.json
 
 
 # secrets
-json/serviceaccounts/*.json
-json/serviceaccounts/*.json
+json/gcp/serviceaccounts/*.json
+json/gcp/serviceaccounts/*.json

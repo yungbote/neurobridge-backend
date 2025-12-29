@@ -3,13 +3,13 @@ package sendgrid
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -47,7 +47,7 @@ func ConfigFromEnv() Config {
 }
 
 func NewFromEnv(log *logger.Logger) (Client, error) {
-	return Nxew(log, ConfigFromEnv())
+	return New(log, ConfigFromEnv())
 }
 
 func New(log *logger.Logger, cfg Config) (Client, error) {

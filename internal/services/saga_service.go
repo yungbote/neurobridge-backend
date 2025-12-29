@@ -268,7 +268,7 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 		if prefix == "" {
 			return nil
 		}
-		return s.bucket.DeletePrefix(dbctx.Context{Ctx: ctx}, cat, prefix)
+		return s.bucket.DeletePrefix(ctx, cat, prefix)
 
 	case SagaActionKindPineconeDeleteIDs:
 		if s.vec == nil {

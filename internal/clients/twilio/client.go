@@ -64,7 +64,7 @@ func New(log *logger.Logger, cfg Config) (Client, error) {
 	}
 
 	cfg.AccountSID = strings.TrimSpace(cfg.AccountSID)
-	if cfg.AccoundSID == "" {
+	if cfg.AccountSID == "" {
 		return nil, fmt.Errorf("missing TWILIO_ACCOUNT_SID")
 	}
 
@@ -351,4 +351,3 @@ func doFormOnce[T any](c *client, ctx context.Context, method, urlStr string, fo
 	}
 	return &out, resp, nil
 }
-
