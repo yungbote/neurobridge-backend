@@ -14,6 +14,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -52,20 +53,20 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 		return out, fmt.Errorf("coverage_coherence_audit: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 
-	concepts, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
-	acts, err := deps.Activities.ListByOwner(ctx, nil, "path", &pathID)
+	acts, err := deps.Activities.ListByOwner(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -75,7 +76,7 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 			activityIDs = append(activityIDs, a.ID)
 		}
 	}
-	variants, _ := deps.Variants.GetByActivityIDs(ctx, nil, activityIDs)
+	variants, _ := deps.Variants.GetByActivityIDs(dbctx.Context{Ctx: ctx}, activityIDs)
 
 	conceptsJSON, _ := json.Marshal(map[string]any{"concepts": concepts})
 	nodesJSON, _ := json.Marshal(map[string]any{"nodes": nodes})
@@ -100,7 +101,8 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 
 	now := time.Now().UTC()
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		pr, err := deps.Path.GetByID(ctx, tx, pathID)
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		pr, err := deps.Path.GetByID(dbc, pathID)
 		if err != nil {
 			return err
 		}
@@ -110,7 +112,7 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 		}
 		meta["audit"] = obj
 		meta["audit_updated_at"] = now.Format(time.RFC3339Nano)
-		return deps.Path.UpdateFields(ctx, tx, pathID, map[string]interface{}{"metadata": datatypes.JSON(mustJSON(meta))})
+		return deps.Path.UpdateFields(dbc, pathID, map[string]interface{}{"metadata": datatypes.JSON(mustJSON(meta))})
 	}); err != nil {
 		return out, err
 	}

@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,12 +9,13 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserCompletedUnitRepo interface {
-	Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, chainKey string) (*types.UserCompletedUnit, error)
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.UserCompletedUnit) error
-	ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID, limit int) ([]*types.UserCompletedUnit, error)
+	Get(dbc dbctx.Context, userID uuid.UUID, chainKey string) (*types.UserCompletedUnit, error)
+	Upsert(dbc dbctx.Context, row *types.UserCompletedUnit) error
+	ListByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserCompletedUnit, error)
 }
 
 type userCompletedUnitRepo struct {
@@ -27,8 +27,8 @@ func NewUserCompletedUnitRepo(db *gorm.DB, baseLog *logger.Logger) UserCompleted
 	return &userCompletedUnitRepo{db: db, log: baseLog.With("repo", "UserCompletedUnitRepo")}
 }
 
-func (r *userCompletedUnitRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, chainKey string) (*types.UserCompletedUnit, error) {
-	t := tx
+func (r *userCompletedUnitRepo) Get(dbc dbctx.Context, userID uuid.UUID, chainKey string) (*types.UserCompletedUnit, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -36,7 +36,7 @@ func (r *userCompletedUnitRepo) Get(ctx context.Context, tx *gorm.DB, userID uui
 		return nil, nil
 	}
 	var row types.UserCompletedUnit
-	err := t.WithContext(ctx).
+	err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND chain_key = ?", userID, chainKey).
 		Limit(1).
 		Find(&row).Error
@@ -49,8 +49,8 @@ func (r *userCompletedUnitRepo) Get(ctx context.Context, tx *gorm.DB, userID uui
 	return &row, nil
 }
 
-func (r *userCompletedUnitRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID, limit int) ([]*types.UserCompletedUnit, error) {
-	t := tx
+func (r *userCompletedUnitRepo) ListByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserCompletedUnit, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -64,7 +64,7 @@ func (r *userCompletedUnitRepo) ListByUser(ctx context.Context, tx *gorm.DB, use
 	if limit > 2000 {
 		limit = 2000
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		Order("updated_at DESC").
 		Limit(limit).
@@ -74,8 +74,8 @@ func (r *userCompletedUnitRepo) ListByUser(ctx context.Context, tx *gorm.DB, use
 	return out, nil
 }
 
-func (r *userCompletedUnitRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.UserCompletedUnit) error {
-	t := tx
+func (r *userCompletedUnitRepo) Upsert(dbc dbctx.Context, row *types.UserCompletedUnit) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -87,7 +87,7 @@ func (r *userCompletedUnitRepo) Upsert(ctx context.Context, tx *gorm.DB, row *ty
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "chain_key"}},
 			DoUpdates: clause.AssignmentColumns([]string{

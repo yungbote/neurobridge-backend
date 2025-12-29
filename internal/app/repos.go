@@ -18,16 +18,9 @@ type Repos struct {
 	MaterialChunk        repos.MaterialChunkRepo
 	MaterialAsset        repos.MaterialAssetRepo
 	MaterialSetSummary   repos.MaterialSetSummaryRepo
-	Course               repos.CourseRepo
-	CourseModule         repos.CourseModuleRepo
-	CourseTag            repos.CourseTagRepo
-	Lesson               repos.LessonRepo
-	QuizQuestion         repos.QuizQuestionRepo
-	CourseBlueprint      repos.CourseBlueprintRepo
 	JobRun               repos.JobRunRepo
 	SagaRun              repos.SagaRunRepo
 	SagaAction           repos.SagaActionRepo
-	QuizAttempt          repos.QuizAttemptRepo
 	TopicMastery         repos.TopicMasteryRepo
 	TopicStylePreference repos.TopicStylePreferenceRepo
 	UserEvent            repos.UserEventRepo
@@ -86,16 +79,9 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		MaterialChunk:        repos.NewMaterialChunkRepo(db, log),
 		MaterialAsset:        repos.NewMaterialAssetRepo(db, log),
 		MaterialSetSummary:   repos.NewMaterialSetSummaryRepo(db, log),
-		Course:               repos.NewCourseRepo(db, log),
-		CourseModule:         repos.NewCourseModuleRepo(db, log),
-		CourseTag:            repos.NewCourseTagRepo(db, log),
-		Lesson:               repos.NewLessonRepo(db, log),
-		QuizQuestion:         repos.NewQuizQuestionRepo(db, log),
-		CourseBlueprint:      repos.NewCourseBlueprintRepo(db, log),
 		JobRun:               repos.NewJobRunRepo(db, log),
 		SagaRun:              repos.NewSagaRunRepo(db, log),
 		SagaAction:           repos.NewSagaActionRepo(db, log),
-		QuizAttempt:          repos.NewQuizAttemptRepo(db, log),
 		TopicMastery:         repos.NewTopicMasteryRepo(db, log),
 		TopicStylePreference: repos.NewTopicStylePreferenceRepo(db, log),
 		UserEvent:            repos.NewUserEventRepo(db, log),

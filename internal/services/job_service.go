@@ -1,28 +1,30 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
-	"strings"
-	"time"
 )
 
 type JobService interface {
-	Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
-	EnqueueDebouncedUserModelUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.JobRun, bool, error)
-	EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
-	GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
-	GetLatestForEntityForRequestUser(ctx context.Context, tx *gorm.DB, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
-	CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
-	RestartForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error)
+	Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
+	EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error)
+	EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	GetByIDForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
+	GetLatestForEntityForRequestUser(dbc dbctx.Context, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
+	CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
+	RestartForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
 }
 
 type jobService struct {
@@ -41,14 +43,14 @@ func NewJobService(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, n
 	}
 }
 
-func (s *jobService) Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error) {
+func (s *jobService) Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error) {
 	if ownerUserID == uuid.Nil {
 		return nil, fmt.Errorf("missing owner_user_id")
 	}
 	if jobType == "" {
 		return nil, fmt.Errorf("missing job_type")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
@@ -76,7 +78,7 @@ func (s *jobService) Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if _, err := s.repo.Create(ctx, transaction, []*types.JobRun{job}); err != nil {
+	if _, err := s.repo.Create(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, []*types.JobRun{job}); err != nil {
 		return nil, fmt.Errorf("create job: %w", err)
 	}
 	// Notify immediately (request-time)
@@ -84,16 +86,17 @@ func (s *jobService) Enqueue(ctx context.Context, tx *gorm.DB, ownerUserID uuid.
 	return job, nil
 }
 
-func (s *jobService) EnqueueDebouncedUserModelUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.JobRun, bool, error) {
+func (s *jobService) EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error) {
 	if userID == uuid.Nil {
 		return nil, false, fmt.Errorf("missing user_id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
 	// If a user_model_update job is already queued/running for this user, do nothing.
-	has, err := s.repo.HasRunnableForEntity(ctx, transaction, userID, "user", userID, "user_model_update")
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	has, err := s.repo.HasRunnableForEntity(repoCtx, userID, "user", userID, "user_model_update")
 	if err != nil {
 		return nil, false, err
 	}
@@ -105,24 +108,25 @@ func (s *jobService) EnqueueDebouncedUserModelUpdate(ctx context.Context, tx *go
 		"user_id": userID.String(),
 	}
 	entityID := userID
-	job, err := s.Enqueue(ctx, transaction, userID, "user_model_update", "user", &entityID, payload)
+	job, err := s.Enqueue(repoCtx, userID, "user_model_update", "user", &entityID, payload)
 	if err != nil {
 		return nil, false, err
 	}
 	return job, true, nil
 }
 
-func (s *jobService) EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+func (s *jobService) EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
 	if ownerUserID == uuid.Nil {
 		return nil, false, fmt.Errorf("missing owner_user_id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
 
 	entityID := ownerUserID
-	exists, err := s.repo.ExistsRunnable(ctx, transaction, ownerUserID, "user_model_update", "user", &entityID)
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "user_model_update", "user", &entityID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -133,27 +137,27 @@ func (s *jobService) EnqueueUserModelUpdateIfNeeded(ctx context.Context, tx *gor
 	payload := map[string]any{
 		"trigger": trigger,
 	}
-	job, err := s.Enqueue(ctx, transaction, ownerUserID, "user_model_update", "user", &entityID, payload)
+	job, err := s.Enqueue(repoCtx, ownerUserID, "user_model_update", "user", &entityID, payload)
 	if err != nil {
 		return nil, false, err
 	}
 	return job, true, nil
 }
 
-func (s *jobService) GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *jobService) GetByIDForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if jobID == uuid.Nil {
 		return nil, fmt.Errorf("missing job id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
 
-	rows, err := s.repo.GetByIDs(ctx, transaction, []uuid.UUID{jobID})
+	rows, err := s.repo.GetByIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, []uuid.UUID{jobID})
 	if err != nil {
 		return nil, err
 	}
@@ -166,30 +170,30 @@ func (s *jobService) GetByIDForRequestUser(ctx context.Context, tx *gorm.DB, job
 	return rows[0], nil
 }
 
-func (s *jobService) GetLatestForEntityForRequestUser(ctx context.Context, tx *gorm.DB, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *jobService) GetLatestForEntityForRequestUser(dbc dbctx.Context, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if entityType == "" || entityID == uuid.Nil || jobType == "" {
 		return nil, fmt.Errorf("missing entity/job info")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
-	return s.repo.GetLatestByEntity(ctx, transaction, rd.UserID, entityType, entityID, jobType)
+	return s.repo.GetLatestByEntity(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, rd.UserID, entityType, entityID, jobType)
 }
 
-func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *jobService) CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if jobID == uuid.Nil {
 		return nil, fmt.Errorf("missing job id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
@@ -197,8 +201,9 @@ func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobI
 	var updated *types.JobRun
 	shouldNotify := false
 
-	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
-		job, err := s.GetByIDForRequestUser(ctx, txx, jobID)
+	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
+		job, err := s.GetByIDForRequestUser(inner, jobID)
 		if err != nil {
 			return err
 		}
@@ -213,7 +218,7 @@ func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobI
 		}
 
 		now := time.Now().UTC()
-		if err := s.repo.UpdateFields(ctx, txx, jobID, map[string]interface{}{
+		if err := s.repo.UpdateFields(inner, jobID, map[string]interface{}{
 			"status":       "canceled",
 			"message":      "Canceled",
 			"locked_at":    nil,
@@ -239,7 +244,7 @@ func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobI
 					continue
 				}
 				// Only cancel jobs that haven't already completed.
-				if err := txx.WithContext(ctx).
+				if err := txx.WithContext(dbc.Ctx).
 					Model(&types.JobRun{}).
 					Where("id = ? AND status NOT IN ?", cid, []string{"succeeded", "failed", "canceled"}).
 					Updates(map[string]interface{}{
@@ -266,15 +271,15 @@ func (s *jobService) CancelForRequestUser(ctx context.Context, tx *gorm.DB, jobI
 	return updated, nil
 }
 
-func (s *jobService) RestartForRequestUser(ctx context.Context, tx *gorm.DB, jobID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *jobService) RestartForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if jobID == uuid.Nil {
 		return nil, fmt.Errorf("missing job id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
@@ -282,8 +287,9 @@ func (s *jobService) RestartForRequestUser(ctx context.Context, tx *gorm.DB, job
 	var updated *types.JobRun
 	shouldNotify := false
 
-	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
-		job, err := s.GetByIDForRequestUser(ctx, txx, jobID)
+	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
+		job, err := s.GetByIDForRequestUser(inner, jobID)
 		if err != nil {
 			return err
 		}
@@ -302,7 +308,7 @@ func (s *jobService) RestartForRequestUser(ctx context.Context, tx *gorm.DB, job
 			nextResult = resetLearningBuildStateForRestart(nextResult)
 		}
 
-		if err := s.repo.UpdateFields(ctx, txx, jobID, map[string]interface{}{
+		if err := s.repo.UpdateFields(inner, jobID, map[string]interface{}{
 			"status":        "queued",
 			"stage":         "queued",
 			"progress":      0,

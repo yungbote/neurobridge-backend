@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -11,11 +10,12 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningDrillInstanceRepo interface {
-	GetByKey(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathNodeID uuid.UUID, kind string, count int, sourcesHash string) (*types.LearningDrillInstance, error)
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningDrillInstance) error
+	GetByKey(dbc dbctx.Context, userID uuid.UUID, pathNodeID uuid.UUID, kind string, count int, sourcesHash string) (*types.LearningDrillInstance, error)
+	Upsert(dbc dbctx.Context, row *types.LearningDrillInstance) error
 }
 
 type learningDrillInstanceRepo struct {
@@ -27,8 +27,8 @@ func NewLearningDrillInstanceRepo(db *gorm.DB, baseLog *logger.Logger) LearningD
 	return &learningDrillInstanceRepo{db: db, log: baseLog.With("repo", "LearningDrillInstanceRepo")}
 }
 
-func (r *learningDrillInstanceRepo) GetByKey(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathNodeID uuid.UUID, kind string, count int, sourcesHash string) (*types.LearningDrillInstance, error) {
-	t := tx
+func (r *learningDrillInstanceRepo) GetByKey(dbc dbctx.Context, userID uuid.UUID, pathNodeID uuid.UUID, kind string, count int, sourcesHash string) (*types.LearningDrillInstance, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -38,7 +38,7 @@ func (r *learningDrillInstanceRepo) GetByKey(ctx context.Context, tx *gorm.DB, u
 		return nil, nil
 	}
 	var row types.LearningDrillInstance
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND path_node_id = ? AND kind = ? AND count = ? AND sources_hash = ?", userID, pathNodeID, kind, count, sourcesHash).
 		Limit(1).
 		Find(&row).Error; err != nil {
@@ -50,8 +50,8 @@ func (r *learningDrillInstanceRepo) GetByKey(ctx context.Context, tx *gorm.DB, u
 	return &row, nil
 }
 
-func (r *learningDrillInstanceRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningDrillInstance) error {
-	t := tx
+func (r *learningDrillInstanceRepo) Upsert(dbc dbctx.Context, row *types.LearningDrillInstance) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -72,7 +72,7 @@ func (r *learningDrillInstanceRepo) Upsert(ctx context.Context, tx *gorm.DB, row
 		row.CreatedAt = now
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "user_id"},

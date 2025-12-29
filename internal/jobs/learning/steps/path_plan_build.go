@@ -16,6 +16,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -56,14 +57,14 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, fmt.Errorf("path_plan_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
 	// Idempotency: if nodes already exist, don't rebuild structure (preserve stable IDs/ranks).
-	existingNodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	existingNodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -72,17 +73,17 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, nil
 	}
 
-	up, err := deps.UserProfile.GetByUserID(ctx, nil, in.OwnerUserID)
+	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
 	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
 		return out, fmt.Errorf("path_plan_build: missing user_profile_doc (run user_profile_refresh first)")
 	}
 
 	var summaryText string
-	if rows, err := deps.Summaries.GetByMaterialSetIDs(ctx, nil, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
+	if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
 		summaryText = strings.TrimSpace(rows[0].SummaryMD)
 	}
 
-	concepts, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -90,7 +91,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, fmt.Errorf("path_plan_build: no concepts for path (run concept_graph_build first)")
 	}
 
-	edges, err := deps.Edges.GetByConceptIDs(ctx, nil, conceptIDs(concepts))
+	edges, err := deps.Edges.GetByConceptIDs(dbctx.Context{Ctx: ctx}, conceptIDs(concepts))
 	if err != nil {
 		return out, err
 	}
@@ -171,12 +172,13 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	now := time.Now().UTC()
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
 		// Update path title/description + metadata.
-		pRow, err := deps.Path.GetByID(ctx, tx, pathID)
+		pRow, err := deps.Path.GetByID(dbc, pathID)
 		if err != nil {
 			return err
 		}
@@ -187,7 +189,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		meta["charter"] = charterObj
 		meta["structure"] = structObj
 		meta["updated_at"] = now.Format(time.RFC3339Nano)
-		if err := deps.Path.UpdateFields(ctx, tx, pathID, map[string]interface{}{
+		if err := deps.Path.UpdateFields(dbc, pathID, map[string]interface{}{
 			"title":       stringsOr(title, "Learning Path"),
 			"description": desc,
 			"metadata":    datatypes.JSON(mustJSON(meta)),
@@ -214,7 +216,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 				CreatedAt:    now,
 				UpdatedAt:    now,
 			}
-			if err := deps.PathNodes.Upsert(ctx, tx, row); err != nil {
+			if err := deps.PathNodes.Upsert(dbc, row); err != nil {
 				return err
 			}
 			out.Nodes++

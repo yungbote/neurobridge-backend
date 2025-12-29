@@ -1,19 +1,21 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 var eventTypeRe = regexp.MustCompile(`^[a-z0-9_\.]{3,64}$`)
@@ -32,7 +34,7 @@ type EventInput struct {
 }
 
 type EventService interface {
-	Ingest(ctx context.Context, tx *gorm.DB, inputs []EventInput) (int, error)
+	Ingest(dbc dbctx.Context, inputs []EventInput) (int, error)
 }
 
 type eventService struct {
@@ -49,8 +51,8 @@ func NewEventService(db *gorm.DB, baseLog *logger.Logger, repo repos.UserEventRe
 	}
 }
 
-func (s *eventService) Ingest(ctx context.Context, tx *gorm.DB, inputs []EventInput) (int, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *eventService) Ingest(dbc dbctx.Context, inputs []EventInput) (int, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return 0, fmt.Errorf("not authenticated")
 	}
@@ -139,11 +141,11 @@ func (s *eventService) Ingest(ctx context.Context, tx *gorm.DB, inputs []EventIn
 			UpdatedAt:       now,
 		})
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
-	n, err := s.repo.CreateIgnoreDuplicates(ctx, transaction, rows)
+	n, err := s.repo.CreateIgnoreDuplicates(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, rows)
 	if err != nil {
 		s.log.Warn("event ingest failed", "error", err)
 		return 0, err

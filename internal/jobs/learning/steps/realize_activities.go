@@ -18,6 +18,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -77,18 +78,18 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, fmt.Errorf("realize_activities: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	up, err := deps.UserProfile.GetByUserID(ctx, nil, in.OwnerUserID)
+	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
 	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
 		return out, fmt.Errorf("realize_activities: missing user_profile_doc (run user_profile_refresh first)")
 	}
 
-	pathRow, err := deps.Path.GetByID(ctx, nil, pathID)
+	pathRow, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
 	if err != nil {
 		return out, err
 	}
@@ -104,7 +105,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		}
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -119,7 +120,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			nodeIDs = append(nodeIDs, n.ID)
 		}
 	}
-	existingJoins, err := deps.PathNodeActivities.GetByPathNodeIDs(ctx, nil, nodeIDs)
+	existingJoins, err := deps.PathNodeActivities.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 	if err != nil {
 		return out, err
 	}
@@ -135,7 +136,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 	}
 
 	// Concepts for joins (key -> id)
-	concepts, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -148,7 +149,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 	}
 
 	// Chunks for grounding (Pinecone preferred; local fallback needs embeddings)
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -158,7 +159,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	allChunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	allChunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -315,7 +316,8 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 			// Persist canonical activity + joins.
 			if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+				dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+				if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 					return err
 				}
 
@@ -336,7 +338,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					CreatedAt: time.Now().UTC(),
 					UpdatedAt: time.Now().UTC(),
 				}
-				if _, err := deps.Activities.Create(ctx, tx, []*types.Activity{act}); err != nil {
+				if _, err := deps.Activities.Create(dbc, []*types.Activity{act}); err != nil {
 					return err
 				}
 				out.ActivitiesMade++
@@ -350,7 +352,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					CreatedAt:   time.Now().UTC(),
 					UpdatedAt:   time.Now().UTC(),
 				}
-				if err := deps.Variants.Upsert(ctx, tx, varRow); err != nil {
+				if err := deps.Variants.Upsert(dbc, varRow); err != nil {
 					return err
 				}
 				out.VariantsMade++
@@ -361,7 +363,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					if cid == uuid.Nil {
 						continue
 					}
-					_ = deps.ActivityConcepts.Upsert(ctx, tx, &types.ActivityConcept{
+					_ = deps.ActivityConcepts.Upsert(dbc, &types.ActivityConcept{
 						ID:         uuid.New(),
 						ActivityID: activityID,
 						ConceptID:  cid,
@@ -376,7 +378,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					if err != nil || id == uuid.Nil {
 						continue
 					}
-					_ = deps.ActivityCitations.Upsert(ctx, tx, &types.ActivityCitation{
+					_ = deps.ActivityCitations.Upsert(dbc, &types.ActivityCitation{
 						ID:                uuid.New(),
 						ActivityVariantID: variantID,
 						MaterialChunkID:   id,
@@ -385,7 +387,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				}
 
 				// Link activity to node (rank=slot).
-				_ = deps.PathNodeActivities.Upsert(ctx, tx, &types.PathNodeActivity{
+				_ = deps.PathNodeActivities.Upsert(dbc, &types.PathNodeActivity{
 					ID:         uuid.New(),
 					PathNodeID: node.ID,
 					ActivityID: activityID,
@@ -395,7 +397,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 				// Pinecone compensation for variant vector (if configured).
 				if deps.Vec != nil {
-					if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 						"namespace": actNS,
 						"ids":       []string{vectorID},
 					}); err != nil {

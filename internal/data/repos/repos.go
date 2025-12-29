@@ -24,16 +24,6 @@ type MaterialChunkRepo = materials.MaterialChunkRepo
 type MaterialAssetRepo = materials.MaterialAssetRepo
 type MaterialSetSummaryRepo = materials.MaterialSetSummaryRepo
 
-type CourseRepo = learning.CourseRepo
-type CourseModuleRepo = learning.CourseModuleRepo
-type CourseTagRepo = learning.CourseTagRepo
-type CourseBlueprintRepo = learning.CourseBlueprintRepo
-
-type LessonRepo = learning.LessonRepo
-
-type QuizQuestionRepo = learning.QuizQuestionRepo
-type QuizAttemptRepo = learning.QuizAttemptRepo
-
 type LearningProfileRepo = learning.LearningProfileRepo
 type TopicMasteryRepo = learning.TopicMasteryRepo
 type TopicStylePreferenceRepo = learning.TopicStylePreferenceRepo
@@ -119,30 +109,6 @@ func NewMaterialAssetRepo(db *gorm.DB, baseLog *logger.Logger) MaterialAssetRepo
 }
 func NewMaterialSetSummaryRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetSummaryRepo {
 	return materials.NewMaterialSetSummaryRepo(db, baseLog)
-}
-
-func NewCourseRepo(db *gorm.DB, baseLog *logger.Logger) CourseRepo {
-	return learning.NewCourseRepo(db, baseLog)
-}
-func NewCourseModuleRepo(db *gorm.DB, baseLog *logger.Logger) CourseModuleRepo {
-	return learning.NewCourseModuleRepo(db, baseLog)
-}
-func NewCourseTagRepo(db *gorm.DB, baseLog *logger.Logger) CourseTagRepo {
-	return learning.NewCourseTagRepo(db, baseLog)
-}
-func NewCourseBlueprintRepo(db *gorm.DB, baseLog *logger.Logger) CourseBlueprintRepo {
-	return learning.NewCourseBlueprintRepo(db, baseLog)
-}
-
-func NewLessonRepo(db *gorm.DB, baseLog *logger.Logger) LessonRepo {
-	return learning.NewLessonRepo(db, baseLog)
-}
-
-func NewQuizQuestionRepo(db *gorm.DB, baseLog *logger.Logger) QuizQuestionRepo {
-	return learning.NewQuizQuestionRepo(db, baseLog)
-}
-func NewQuizAttemptRepo(db *gorm.DB, baseLog *logger.Logger) QuizAttemptRepo {
-	return learning.NewQuizAttemptRepo(db, baseLog)
 }
 
 func NewLearningProfileRepo(db *gorm.DB, baseLog *logger.Logger) LearningProfileRepo {

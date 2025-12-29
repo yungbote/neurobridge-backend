@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,14 +11,15 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatDocRepo interface {
-	Upsert(ctx context.Context, tx *gorm.DB, rows []*types.ChatDoc) error
-	GetByIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, ids []uuid.UUID) ([]*types.ChatDoc, error)
-	LexicalSearch(ctx context.Context, tx *gorm.DB, q ChatLexicalQuery) ([]*types.ChatDoc, error)
-	LexicalSearchHits(ctx context.Context, tx *gorm.DB, q ChatLexicalQuery) ([]ChatLexicalHit, error)
+	Upsert(dbc dbctx.Context, rows []*types.ChatDoc) error
+	GetByIDs(dbc dbctx.Context, userID uuid.UUID, ids []uuid.UUID) ([]*types.ChatDoc, error)
+	LexicalSearch(dbc dbctx.Context, q ChatLexicalQuery) ([]*types.ChatDoc, error)
+	LexicalSearchHits(dbc dbctx.Context, q ChatLexicalQuery) ([]ChatLexicalHit, error)
 }
 
 type chatDocRepo struct {
@@ -34,11 +34,11 @@ func NewChatDocRepo(db *gorm.DB, log *logger.Logger) ChatDocRepo {
 	}
 }
 
-func (r *chatDocRepo) Upsert(ctx context.Context, tx *gorm.DB, rows []*types.ChatDoc) error {
+func (r *chatDocRepo) Upsert(dbc dbctx.Context, rows []*types.ChatDoc) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -52,7 +52,7 @@ func (r *chatDocRepo) Upsert(ctx context.Context, tx *gorm.DB, rows []*types.Cha
 			row.CreatedAt = now
 		}
 	}
-	return transaction.WithContext(ctx).Clauses(clause.OnConflict{
+	return transaction.WithContext(dbc.Ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"doc_type",
@@ -73,19 +73,19 @@ func (r *chatDocRepo) Upsert(ctx context.Context, tx *gorm.DB, rows []*types.Cha
 	}).Create(&rows).Error
 }
 
-func (r *chatDocRepo) GetByIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, ids []uuid.UUID) ([]*types.ChatDoc, error) {
+func (r *chatDocRepo) GetByIDs(dbc dbctx.Context, userID uuid.UUID, ids []uuid.UUID) ([]*types.ChatDoc, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("missing user_id")
 	}
 	if len(ids) == 0 {
 		return []*types.ChatDoc{}, nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	var out []*types.ChatDoc
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatDoc{}).
 		Where("user_id = ? AND id IN ?", userID, ids).
 		Find(&out).Error; err != nil {
@@ -108,8 +108,8 @@ type ChatLexicalHit struct {
 	Rank float64
 }
 
-func (r *chatDocRepo) LexicalSearch(ctx context.Context, tx *gorm.DB, q ChatLexicalQuery) ([]*types.ChatDoc, error) {
-	hits, err := r.LexicalSearchHits(ctx, tx, q)
+func (r *chatDocRepo) LexicalSearch(dbc dbctx.Context, q ChatLexicalQuery) ([]*types.ChatDoc, error) {
+	hits, err := r.LexicalSearchHits(dbc, q)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func (r *chatDocRepo) LexicalSearch(ctx context.Context, tx *gorm.DB, q ChatLexi
 	return out, nil
 }
 
-func (r *chatDocRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q ChatLexicalQuery) ([]ChatLexicalHit, error) {
+func (r *chatDocRepo) LexicalSearchHits(dbc dbctx.Context, q ChatLexicalQuery) ([]ChatLexicalHit, error) {
 	if q.UserID == uuid.Nil {
 		return nil, fmt.Errorf("missing user_id")
 	}
@@ -136,7 +136,7 @@ func (r *chatDocRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q Chat
 		return nil, fmt.Errorf("missing scope")
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -174,7 +174,7 @@ func (r *chatDocRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q Chat
 		Rank float64 `gorm:"column:rank"`
 	}
 	var rows []row
-	if err := transaction.WithContext(ctx).Raw(sql, args...).Scan(&rows).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Raw(sql, args...).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 

@@ -23,6 +23,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -82,7 +83,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, fmt.Errorf("node_doc_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -94,7 +95,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, nil
 	}
 
-	pathRow, err := deps.Path.GetByID(ctx, nil, pathID)
+	pathRow, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
 	if err != nil {
 		return out, err
 	}
@@ -115,7 +116,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		}
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -131,7 +132,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		}
 	}
 
-	existingDocs, err := deps.NodeDocs.GetByPathNodeIDs(ctx, nil, nodeIDs)
+	existingDocs, err := deps.NodeDocs.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 	if err != nil {
 		return out, err
 	}
@@ -146,7 +147,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	figChunkIDsByNode := map[uuid.UUID][]uuid.UUID{}
 	figAssetsByNode := map[uuid.UUID][]*mediaAssetCandidate{}
 	if deps.Figures != nil && deps.DB.Migrator().HasTable(&types.LearningNodeFigure{}) {
-		rows, ferr := deps.Figures.GetByPathNodeIDs(ctx, nil, nodeIDs)
+		rows, ferr := deps.Figures.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 		if ferr == nil && len(rows) > 0 {
 			for _, r := range rows {
 				if r == nil || r.PathNodeID == uuid.Nil || r.Slot <= 0 {
@@ -223,7 +224,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	vidChunkIDsByNode := map[uuid.UUID][]uuid.UUID{}
 	vidAssetsByNode := map[uuid.UUID][]*mediaAssetCandidate{}
 	if deps.Videos != nil && deps.DB.Migrator().HasTable(&types.LearningNodeVideo{}) {
-		rows, verr := deps.Videos.GetByPathNodeIDs(ctx, nil, nodeIDs)
+		rows, verr := deps.Videos.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 		if verr == nil && len(rows) > 0 {
 			for _, r := range rows {
 				if r == nil || r.PathNodeID == uuid.Nil || r.Slot <= 0 {
@@ -295,7 +296,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		}
 	}
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -305,7 +306,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	allChunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	allChunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -598,7 +599,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				}
 			}
 
-			lexIDs, _ := lexicalChunkIDs(gctx, deps.DB, fileIDs, w.QueryText, lexicalK)
+			lexIDs, _ := lexicalChunkIDs(dbctx.Context{Ctx: gctx, Tx: deps.DB}, fileIDs, w.QueryText, lexicalK)
 			retrieved = append(retrieved, lexIDs...)
 			retrieved = dedupeUUIDsPreserveOrder(retrieved)
 
@@ -760,7 +761,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					}
 					lastErrors = []string{"generate_failed: " + genErr.Error()}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -773,7 +774,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if uErr := json.Unmarshal(rawDoc, &gen); uErr != nil {
 					lastErrors = []string{"schema_unmarshal_failed"}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -784,7 +785,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if len(convErrs) > 0 {
 					lastErrors = append([]string{"convert_failed"}, convErrs...)
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
 						})
 					}
@@ -854,7 +855,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if len(errs) > 0 {
 					lastErrors = errs
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, errs, metrics),
 						})
 					}
@@ -886,12 +887,12 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					CreatedAt:     time.Now().UTC(),
 					UpdatedAt:     time.Now().UTC(),
 				}
-				if err := deps.NodeDocs.Upsert(gctx, nil, row); err != nil {
+				if err := deps.NodeDocs.Upsert(gdbctx.Context{Ctx: ctx}, row); err != nil {
 					return err
 				}
 
 				if deps.GenRuns != nil {
-					_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+					_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 						makeGenRun("node_doc", &docID, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeDocPromptVersion, attempt, latency, nil, metrics),
 					})
 				}
@@ -1295,14 +1296,15 @@ func escapeXML(s string) string {
 	return s
 }
 
-func lexicalChunkIDs(ctx context.Context, db *gorm.DB, fileIDs []uuid.UUID, query string, limit int) ([]uuid.UUID, error) {
-	if db == nil || limit <= 0 || len(fileIDs) == 0 || strings.TrimSpace(query) == "" {
+func lexicalChunkIDs(dbc dbctx.Context, fileIDs []uuid.UUID, query string, limit int) ([]uuid.UUID, error) {
+	transaction := dbc.Tx
+	if transaction == nil || limit <= 0 || len(fileIDs) == 0 || strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
 	// Conservative: keep query short; plainto_tsquery struggles with huge input.
 	query = shorten(query, 220)
 	var ids []uuid.UUID
-	err := db.WithContext(ctx).Raw(`
+	err := transaction.WithContext(dbc.Ctx).Raw(`
 		SELECT id
 		FROM material_chunk
 		WHERE deleted_at IS NULL

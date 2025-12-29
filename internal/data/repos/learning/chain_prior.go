@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,11 +9,12 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ChainPriorRepo interface {
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ChainPrior) error
-	GetByChainKeys(ctx context.Context, tx *gorm.DB, chainKeys []string) ([]*types.ChainPrior, error)
+	Upsert(dbc dbctx.Context, row *types.ChainPrior) error
+	GetByChainKeys(dbc dbctx.Context, chainKeys []string) ([]*types.ChainPrior, error)
 }
 
 type chainPriorRepo struct {
@@ -26,8 +26,8 @@ func NewChainPriorRepo(db *gorm.DB, baseLog *logger.Logger) ChainPriorRepo {
 	return &chainPriorRepo{db: db, log: baseLog.With("repo", "ChainPriorRepo")}
 }
 
-func (r *chainPriorRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, chainKeys []string) ([]*types.ChainPrior, error) {
-	t := tx
+func (r *chainPriorRepo) GetByChainKeys(dbc dbctx.Context, chainKeys []string) ([]*types.ChainPrior, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -35,7 +35,7 @@ func (r *chainPriorRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, chainK
 	if len(chainKeys) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("chain_key IN ?", chainKeys).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -43,8 +43,8 @@ func (r *chainPriorRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, chainK
 	return out, nil
 }
 
-func (r *chainPriorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ChainPrior) error {
-	t := tx
+func (r *chainPriorRepo) Upsert(dbc dbctx.Context, row *types.ChainPrior) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -57,7 +57,7 @@ func (r *chainPriorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.Cha
 	now := time.Now().UTC()
 	row.UpdatedAt = now
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "chain_key"},

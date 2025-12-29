@@ -14,7 +14,6 @@ type UserLibraryIndex struct {
 	UserID        uuid.UUID `gorm:"type:uuid;not null;index:idx_user_library,unique,priority:1" json:"user_id"`
 	MaterialSetID uuid.UUID `gorm:"type:uuid;not null;index:idx_user_library,unique,priority:2" json:"material_set_id"`
 
-	CourseID *uuid.UUID `gorm:"type:uuid;index" json:"course_id,omitempty"`
 	PathID   *uuid.UUID `gorm:"type:uuid;index" json:"path_id,omitempty"`
 
 	Tags              datatypes.JSON `gorm:"column:tags;type:jsonb" json:"tags"`

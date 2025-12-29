@@ -12,6 +12,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -78,7 +79,7 @@ func (c *Context) Update(updates map[string]any) error {
 	if c.Job == nil || c.Job.ID == uuid.Nil {
 		return nil
 	}
-	_, err := c.Repo.UpdateFieldsUnlessStatus(c.Ctx, nil, c.Job.ID, []string{"canceled"}, toIfaceMap(updates))
+	_, err := c.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: c.Ctx}, c.Job.ID, []string{"canceled"}, toIfaceMap(updates))
 	return err
 }
 
@@ -93,7 +94,7 @@ func (c *Context) Progress(stage string, pct int, msg string) {
 	now := time.Now()
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: ctx}, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"stage":        stage,
 			"progress":     pct,
 			"message":      msg,
@@ -134,7 +135,7 @@ func (c *Context) Fail(stage string, err error) {
 	}
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: ctx}, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"status":        "failed",
 			"stage":         stage,
 			"message":       "",
@@ -179,7 +180,7 @@ func (c *Context) Succeed(finalStage string, result any) {
 	}
 
 	if c.Repo != nil && c.Job != nil && c.Job.ID != uuid.Nil {
-		ok, _ := c.Repo.UpdateFieldsUnlessStatus(ctx, nil, c.Job.ID, []string{"canceled"}, map[string]interface{}{
+		ok, _ := c.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: ctx}, c.Job.ID, []string{"canceled"}, map[string]interface{}{
 			"status":       "succeeded",
 			"stage":        finalStage,
 			"progress":     100,

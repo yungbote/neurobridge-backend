@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -11,11 +10,12 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type LearningBuildBootstrapService interface {
-	EnsurePath(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error)
+	EnsurePath(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error)
 }
 
 type learningBuildBootstrapService struct {
@@ -39,7 +39,7 @@ func NewLearningBuildBootstrapService(
 	}
 }
 
-func (s *learningBuildBootstrapService) EnsurePath(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error) {
+func (s *learningBuildBootstrapService) EnsurePath(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error) {
 	if s == nil || s.path == nil || s.uli == nil {
 		return uuid.Nil, fmt.Errorf("bootstrap service not configured")
 	}
@@ -50,16 +50,16 @@ func (s *learningBuildBootstrapService) EnsurePath(ctx context.Context, tx *gorm
 		return uuid.Nil, fmt.Errorf("missing material_set_id")
 	}
 
-	if tx != nil {
-		return s.ensurePathInTx(ctx, tx, userID, materialSetID)
+	if dbc.Tx != nil {
+		return s.ensurePathInTx(dbc, userID, materialSetID)
 	}
 	if s.db == nil {
 		return uuid.Nil, fmt.Errorf("db missing")
 	}
 
 	var out uuid.UUID
-	err := s.db.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
-		id, err := s.ensurePathInTx(ctx, txx, userID, materialSetID)
+	err := s.db.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		id, err := s.ensurePathInTx(dbctx.Context{Ctx: dbc.Ctx, Tx: txx}, userID, materialSetID)
 		if err != nil {
 			return err
 		}
@@ -69,9 +69,9 @@ func (s *learningBuildBootstrapService) EnsurePath(ctx context.Context, tx *gorm
 	return out, err
 }
 
-func (s *learningBuildBootstrapService) ensurePathInTx(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error) {
+func (s *learningBuildBootstrapService) ensurePathInTx(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (uuid.UUID, error) {
 	// Lock the index row for (user, material_set) to be race-safe.
-	idx, err := s.uli.GetByUserAndMaterialSetForUpdate(ctx, tx, userID, materialSetID)
+	idx, err := s.uli.GetByUserAndMaterialSetForUpdate(dbc, userID, materialSetID)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -90,10 +90,10 @@ func (s *learningBuildBootstrapService) ensurePathInTx(ctx context.Context, tx *
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if _, err := s.path.Create(ctx, tx, []*types.Path{path}); err != nil {
+	if _, err := s.path.Create(dbc, []*types.Path{path}); err != nil {
 		return uuid.Nil, fmt.Errorf("create path: %w", err)
 	}
-	if err := s.uli.UpsertPathID(ctx, tx, userID, materialSetID, path.ID); err != nil {
+	if err := s.uli.UpsertPathID(dbc, userID, materialSetID, path.ID); err != nil {
 		return uuid.Nil, fmt.Errorf("upsert user_library_index.path_id: %w", err)
 	}
 	return path.ID, nil

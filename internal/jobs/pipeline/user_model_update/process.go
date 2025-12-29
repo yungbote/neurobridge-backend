@@ -1,7 +1,6 @@
 package user_model_update
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -9,18 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
-func (p *Pipeline) applyQuestionAnswered(
-	ctx context.Context,
-	tx *gorm.DB,
-	userID uuid.UUID,
-	ev *types.UserEvent,
-	data map[string]any,
-) error {
+func (p *Pipeline) applyQuestionAnswered(dbc dbctx.Context, userID uuid.UUID, ev *types.UserEvent, data map[string]any) error {
 	if p == nil || p.conceptState == nil {
 		return nil
 	}
@@ -49,7 +42,7 @@ func (p *Pipeline) applyQuestionAnswered(
 			continue
 		}
 
-		prev, _ := p.conceptState.Get(ctx, tx, userID, cid)
+		prev, _ := p.conceptState.Get(dbc, userID, cid)
 
 		m := 0.0
 		c := 0.0
@@ -75,7 +68,7 @@ func (p *Pipeline) applyQuestionAnswered(
 		m = clamp01(m)
 		c = clamp01(c)
 
-		_ = p.conceptState.UpsertDelta(ctx, tx, userID, cid, m, c, &seenAt)
+		_ = p.conceptState.UpsertDelta(dbc, userID, cid, m, c, &seenAt)
 	}
 
 	return nil

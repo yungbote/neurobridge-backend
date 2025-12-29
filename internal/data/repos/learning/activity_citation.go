@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,28 +9,29 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ActivityCitationRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityCitation) ([]*types.ActivityCitation, error)
-	CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ActivityCitation) (int, error)
+	Create(dbc dbctx.Context, rows []*types.ActivityCitation) ([]*types.ActivityCitation, error)
+	CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ActivityCitation) (int, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityCitation, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityCitation, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityCitation, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityCitation, error)
 
-	GetByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) ([]*types.ActivityCitation, error)
-	GetByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) ([]*types.ActivityCitation, error)
+	GetByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) ([]*types.ActivityCitation, error)
+	GetByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) ([]*types.ActivityCitation, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityCitation) error
-	Update(ctx context.Context, tx *gorm.DB, row *types.ActivityCitation) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	Upsert(dbc dbctx.Context, row *types.ActivityCitation) error
+	Update(dbc dbctx.Context, row *types.ActivityCitation) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) error
-	SoftDeleteByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) error
-	FullDeleteByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) error
+	SoftDeleteByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) error
+	FullDeleteByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) error
 }
 
 type activityCitationRepo struct {
@@ -43,29 +43,29 @@ func NewActivityCitationRepo(db *gorm.DB, baseLog *logger.Logger) ActivityCitati
 	return &activityCitationRepo{db: db, log: baseLog.With("repo", "ActivityCitationRepo")}
 }
 
-func (r *activityCitationRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityCitation) ([]*types.ActivityCitation, error) {
-	t := tx
+func (r *activityCitationRepo) Create(dbc dbctx.Context, rows []*types.ActivityCitation) ([]*types.ActivityCitation, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ActivityCitation{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *activityCitationRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ActivityCitation) (int, error) {
-	t := tx
+func (r *activityCitationRepo) CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ActivityCitation) (int, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	res := t.WithContext(ctx).
+	res := t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "activity_variant_id"}, {Name: "material_chunk_id"}},
 			DoNothing: true,
@@ -77,8 +77,8 @@ func (r *activityCitationRepo) CreateIgnoreDuplicates(ctx context.Context, tx *g
 	return int(res.RowsAffected), nil
 }
 
-func (r *activityCitationRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityCitation, error) {
-	t := tx
+func (r *activityCitationRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityCitation, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -86,7 +86,7 @@ func (r *activityCitationRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("id IN ?", ids).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -94,11 +94,11 @@ func (r *activityCitationRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []
 	return out, nil
 }
 
-func (r *activityCitationRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityCitation, error) {
+func (r *activityCitationRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityCitation, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -108,8 +108,8 @@ func (r *activityCitationRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid
 	return rows[0], nil
 }
 
-func (r *activityCitationRepo) GetByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) ([]*types.ActivityCitation, error) {
-	t := tx
+func (r *activityCitationRepo) GetByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) ([]*types.ActivityCitation, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -117,7 +117,7 @@ func (r *activityCitationRepo) GetByActivityVariantIDs(ctx context.Context, tx *
 	if len(variantIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("activity_variant_id IN ?", variantIDs).
 		Order("activity_variant_id ASC, created_at ASC").
 		Find(&out).Error; err != nil {
@@ -126,8 +126,8 @@ func (r *activityCitationRepo) GetByActivityVariantIDs(ctx context.Context, tx *
 	return out, nil
 }
 
-func (r *activityCitationRepo) GetByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) ([]*types.ActivityCitation, error) {
-	t := tx
+func (r *activityCitationRepo) GetByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) ([]*types.ActivityCitation, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -135,7 +135,7 @@ func (r *activityCitationRepo) GetByMaterialChunkIDs(ctx context.Context, tx *go
 	if len(chunkIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("material_chunk_id IN ?", chunkIDs).
 		Order("material_chunk_id ASC, created_at ASC").
 		Find(&out).Error; err != nil {
@@ -144,8 +144,8 @@ func (r *activityCitationRepo) GetByMaterialChunkIDs(ctx context.Context, tx *go
 	return out, nil
 }
 
-func (r *activityCitationRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityCitation) error {
-	t := tx
+func (r *activityCitationRepo) Upsert(dbc dbctx.Context, row *types.ActivityCitation) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -157,7 +157,7 @@ func (r *activityCitationRepo) Upsert(ctx context.Context, tx *gorm.DB, row *typ
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "activity_variant_id"}, {Name: "material_chunk_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -168,19 +168,19 @@ func (r *activityCitationRepo) Upsert(ctx context.Context, tx *gorm.DB, row *typ
 		Create(row).Error
 }
 
-func (r *activityCitationRepo) Update(ctx context.Context, tx *gorm.DB, row *types.ActivityCitation) error {
-	t := tx
+func (r *activityCitationRepo) Update(dbc dbctx.Context, row *types.ActivityCitation) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if row == nil {
 		return nil
 	}
-	return t.WithContext(ctx).Save(row).Error
+	return t.WithContext(dbc.Ctx).Save(row).Error
 }
 
-func (r *activityCitationRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *activityCitationRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -193,74 +193,74 @@ func (r *activityCitationRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.ActivityCitation{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *activityCitationRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.ActivityCitation{}).Error
 }
 
-func (r *activityCitationRepo) SoftDeleteByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) SoftDeleteByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(variantIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("activity_variant_id IN ?", variantIDs).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Where("activity_variant_id IN ?", variantIDs).Delete(&types.ActivityCitation{}).Error
 }
 
-func (r *activityCitationRepo) SoftDeleteByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) SoftDeleteByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(chunkIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("material_chunk_id IN ?", chunkIDs).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Where("material_chunk_id IN ?", chunkIDs).Delete(&types.ActivityCitation{}).Error
 }
 
-func (r *activityCitationRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityCitation{}).Error
 }
 
-func (r *activityCitationRepo) FullDeleteByActivityVariantIDs(ctx context.Context, tx *gorm.DB, variantIDs []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) FullDeleteByActivityVariantIDs(dbc dbctx.Context, variantIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(variantIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("activity_variant_id IN ?", variantIDs).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("activity_variant_id IN ?", variantIDs).Delete(&types.ActivityCitation{}).Error
 }
 
-func (r *activityCitationRepo) FullDeleteByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) error {
-	t := tx
+func (r *activityCitationRepo) FullDeleteByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(chunkIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("material_chunk_id IN ?", chunkIDs).Delete(&types.ActivityCitation{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("material_chunk_id IN ?", chunkIDs).Delete(&types.ActivityCitation{}).Error
 }

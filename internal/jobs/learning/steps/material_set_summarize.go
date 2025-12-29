@@ -16,6 +16,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -60,7 +61,7 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 
 	// Idempotency: if we already have a stable summary + embedding, don't regenerate.
 	var existing *types.MaterialSetSummary
-	if rows, err := deps.Summaries.GetByMaterialSetIDs(ctx, nil, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 {
+	if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 {
 		existing = rows[0]
 	}
 	if existing != nil && strings.TrimSpace(existing.SummaryMD) != "" && !embeddingMissing(existing.Embedding) && strings.TrimSpace(existing.VectorID) != "" {
@@ -69,7 +70,7 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 		return out, nil
 	}
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -79,7 +80,7 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	chunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	chunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -146,17 +147,18 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 	}
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		// Contract: derive/ensure path_id via bootstrap.
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
-		if err := deps.Summaries.UpsertByMaterialSetID(ctx, tx, row); err != nil {
+		if err := deps.Summaries.UpsertByMaterialSetID(dbc, row); err != nil {
 			return err
 		}
 
 		if deps.Vec != nil {
-			if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 				"namespace": ns,
 				"ids":       []string{vectorID},
 			}); err != nil {

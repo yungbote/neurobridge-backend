@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -76,7 +77,7 @@ func (c *client) DescribeIndex(ctx context.Context, indexName string) (*IndexDes
 	}
 
 	u := strings.TrimRight(c.cfg.BaseURL, "/") + "/indexes/" + indexName
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +179,7 @@ func doJSON[T any](c *client, ctx context.Context, method, url string, body any)
 		}
 	}
 
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), method, url, &buf)
+	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), method, url, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -202,13 +203,6 @@ func doJSON[T any](c *client, ctx context.Context, method, url string, body any)
 		return nil, fmt.Errorf("pinecone decode error: %w; raw=%s", err, string(raw))
 	}
 	return &out, nil
-}
-
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
 }
 
 type DeleteRequest struct {

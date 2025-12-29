@@ -1,25 +1,27 @@
 package chat
 
 import (
-	"context"
 	"fmt"
-	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
-	"gorm.io/gorm"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatMessageRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatMessage) ([]*types.ChatMessage, error)
-	GetMaxSeq(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (int64, error)
-	ListRecent(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error)
-	ListByThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error)
-	ListSinceSeq(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, afterSeq int64, limit int) ([]*types.ChatMessage, error)
+	Create(dbc dbctx.Context, rows []*types.ChatMessage) ([]*types.ChatMessage, error)
+	GetMaxSeq(dbc dbctx.Context, threadID uuid.UUID) (int64, error)
+	ListRecent(dbc dbctx.Context, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error)
+	ListByThread(dbc dbctx.Context, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error)
+	ListSinceSeq(dbc dbctx.Context, threadID uuid.UUID, afterSeq int64, limit int) ([]*types.ChatMessage, error)
 	// LexicalSearchHits provides a SQL-only fallback when projections are empty or external indexes are degraded.
-	LexicalSearchHits(ctx context.Context, tx *gorm.DB, q ChatMessageLexicalQuery) ([]ChatMessageLexicalHit, error)
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	LexicalSearchHits(dbc dbctx.Context, q ChatMessageLexicalQuery) ([]ChatMessageLexicalHit, error)
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 }
 
 type chatMessageRepo struct {
@@ -31,30 +33,30 @@ func NewChatMessageRepo(db *gorm.DB, log *logger.Logger) ChatMessageRepo {
 	return &chatMessageRepo{db: db, log: log.With("repo", "ChatMessageRepo")}
 }
 
-func (r *chatMessageRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatMessage) ([]*types.ChatMessage, error) {
+func (r *chatMessageRepo) Create(dbc dbctx.Context, rows []*types.ChatMessage) ([]*types.ChatMessage, error) {
 	if len(rows) == 0 {
 		return []*types.ChatMessage{}, nil
 	}
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
-	if err := txx.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := txx.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *chatMessageRepo) GetMaxSeq(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (int64, error) {
+func (r *chatMessageRepo) GetMaxSeq(dbc dbctx.Context, threadID uuid.UUID) (int64, error) {
 	if threadID == uuid.Nil {
 		return 0, fmt.Errorf("missing thread_id")
 	}
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var maxSeq int64
-	if err := txx.WithContext(ctx).
+	if err := txx.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Select("COALESCE(MAX(seq), 0)").
 		Where("thread_id = ?", threadID).
@@ -64,19 +66,19 @@ func (r *chatMessageRepo) GetMaxSeq(ctx context.Context, tx *gorm.DB, threadID u
 	return maxSeq, nil
 }
 
-func (r *chatMessageRepo) ListRecent(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error) {
+func (r *chatMessageRepo) ListRecent(dbc dbctx.Context, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error) {
 	if threadID == uuid.Nil {
 		return nil, fmt.Errorf("missing thread_id")
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var out []*types.ChatMessage
-	if err := txx.WithContext(ctx).
+	if err := txx.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("thread_id = ?", threadID).
 		Order("seq DESC").
@@ -87,19 +89,19 @@ func (r *chatMessageRepo) ListRecent(ctx context.Context, tx *gorm.DB, threadID 
 	return out, nil
 }
 
-func (r *chatMessageRepo) ListByThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error) {
+func (r *chatMessageRepo) ListByThread(dbc dbctx.Context, threadID uuid.UUID, limit int) ([]*types.ChatMessage, error) {
 	if threadID == uuid.Nil {
 		return nil, fmt.Errorf("missing thread_id")
 	}
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var out []*types.ChatMessage
-	if err := txx.WithContext(ctx).
+	if err := txx.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("thread_id = ?", threadID).
 		Order("seq DESC").
@@ -114,19 +116,19 @@ func (r *chatMessageRepo) ListByThread(ctx context.Context, tx *gorm.DB, threadI
 	return out, nil
 }
 
-func (r *chatMessageRepo) ListSinceSeq(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, afterSeq int64, limit int) ([]*types.ChatMessage, error) {
+func (r *chatMessageRepo) ListSinceSeq(dbc dbctx.Context, threadID uuid.UUID, afterSeq int64, limit int) ([]*types.ChatMessage, error) {
 	if threadID == uuid.Nil {
 		return nil, fmt.Errorf("missing thread_id")
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 300
 	}
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var out []*types.ChatMessage
-	if err := txx.WithContext(ctx).
+	if err := txx.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("thread_id = ? AND seq > ?", threadID, afterSeq).
 		Order("seq ASC").
@@ -149,7 +151,7 @@ type ChatMessageLexicalHit struct {
 	Rank float64
 }
 
-func (r *chatMessageRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q ChatMessageLexicalQuery) ([]ChatMessageLexicalHit, error) {
+func (r *chatMessageRepo) LexicalSearchHits(dbc dbctx.Context, q ChatMessageLexicalQuery) ([]ChatMessageLexicalHit, error) {
 	if q.UserID == uuid.Nil {
 		return nil, fmt.Errorf("missing user_id")
 	}
@@ -163,7 +165,7 @@ func (r *chatMessageRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q 
 		q.Limit = 30
 	}
 
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
@@ -185,7 +187,7 @@ func (r *chatMessageRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q 
 		Rank float64 `gorm:"column:rank"`
 	}
 	var rows []row
-	if err := txx.WithContext(ctx).Raw(sql, q.Query, q.UserID, q.ThreadID, q.Query).Scan(&rows).Error; err != nil {
+	if err := txx.WithContext(dbc.Ctx).Raw(sql, q.Query, q.UserID, q.ThreadID, q.Query).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
@@ -197,7 +199,7 @@ func (r *chatMessageRepo) LexicalSearchHits(ctx context.Context, tx *gorm.DB, q 
 	return out, nil
 }
 
-func (r *chatMessageRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
+func (r *chatMessageRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
 	if id == uuid.Nil {
 		return fmt.Errorf("missing_id")
 	}
@@ -205,11 +207,11 @@ func (r *chatMessageRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid
 		updates = map[string]interface{}{}
 	}
 	updates["updated_at"] = time.Now().UTC()
-	txx := tx
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
-	return txx.WithContext(ctx).
+	return txx.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("id = ?", id).
 		Updates(updates).Error

@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,13 +9,14 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningNodeVideoRepo interface {
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.LearningNodeVideo, error)
-	GetByPathNodeIDs(ctx context.Context, tx *gorm.DB, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeVideo, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.LearningNodeVideo, error)
+	GetByPathNodeIDs(dbc dbctx.Context, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeVideo, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningNodeVideo) error
+	Upsert(dbc dbctx.Context, row *types.LearningNodeVideo) error
 }
 
 type learningNodeVideoRepo struct {
@@ -28,11 +28,11 @@ func NewLearningNodeVideoRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeV
 	return &learningNodeVideoRepo{db: db, log: baseLog.With("repo", "LearningNodeVideoRepo")}
 }
 
-func (r *learningNodeVideoRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.LearningNodeVideo, error) {
+func (r *learningNodeVideoRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.LearningNodeVideo, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.getByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.getByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +42,8 @@ func (r *learningNodeVideoRepo) GetByID(ctx context.Context, tx *gorm.DB, id uui
 	return rows[0], nil
 }
 
-func (r *learningNodeVideoRepo) getByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.LearningNodeVideo, error) {
-	t := tx
+func (r *learningNodeVideoRepo) getByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.LearningNodeVideo, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -51,14 +51,14 @@ func (r *learningNodeVideoRepo) getByIDs(ctx context.Context, tx *gorm.DB, ids [
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *learningNodeVideoRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.DB, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeVideo, error) {
-	t := tx
+func (r *learningNodeVideoRepo) GetByPathNodeIDs(dbc dbctx.Context, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeVideo, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -66,7 +66,7 @@ func (r *learningNodeVideoRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.D
 	if len(pathNodeIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("path_node_id IN ?", pathNodeIDs).
 		Order("path_node_id ASC, slot ASC, updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -75,8 +75,8 @@ func (r *learningNodeVideoRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.D
 	return out, nil
 }
 
-func (r *learningNodeVideoRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningNodeVideo) error {
-	t := tx
+func (r *learningNodeVideoRepo) Upsert(dbc dbctx.Context, row *types.LearningNodeVideo) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -92,7 +92,7 @@ func (r *learningNodeVideoRepo) Upsert(ctx context.Context, tx *gorm.DB, row *ty
 		row.CreatedAt = now
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "path_node_id"}, {Name: "slot"}},
 			DoUpdates: clause.AssignmentColumns([]string{

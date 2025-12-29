@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func TestUserRepo(t *testing.T) {
@@ -15,8 +16,9 @@ func TestUserRepo(t *testing.T) {
 
 	repo := NewUserRepo(db, testutil.Logger(t))
 	ctx := context.Background()
+	dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 
-	created, err := repo.Create(ctx, tx, []*types.User{
+	created, err := repo.Create(dbc, []*types.User{
 		{
 			ID:        uuid.New(),
 			Email:     "userrepo@example.com",
@@ -32,7 +34,7 @@ func TestUserRepo(t *testing.T) {
 		t.Fatalf("Create: expected 1 user, got %d", len(created))
 	}
 
-	gotByIDs, err := repo.GetByIDs(ctx, tx, []uuid.UUID{created[0].ID})
+	gotByIDs, err := repo.GetByIDs(dbc, []uuid.UUID{created[0].ID})
 	if err != nil {
 		t.Fatalf("GetByIDs: %v", err)
 	}
@@ -40,7 +42,7 @@ func TestUserRepo(t *testing.T) {
 		t.Fatalf("GetByIDs: unexpected result: %+v", gotByIDs)
 	}
 
-	gotByEmails, err := repo.GetByEmails(ctx, tx, []string{created[0].Email})
+	gotByEmails, err := repo.GetByEmails(dbc, []string{created[0].Email})
 	if err != nil {
 		t.Fatalf("GetByEmails: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestUserRepo(t *testing.T) {
 		t.Fatalf("GetByEmails: unexpected result: %+v", gotByEmails)
 	}
 
-	exists, err := repo.EmailExists(ctx, tx, created[0].Email)
+	exists, err := repo.EmailExists(dbc, created[0].Email)
 	if err != nil {
 		t.Fatalf("EmailExists: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestUserRepo(t *testing.T) {
 		t.Fatalf("EmailExists: expected true")
 	}
 
-	exists, err = repo.EmailExists(ctx, tx, "does-not-exist@example.com")
+	exists, err = repo.EmailExists(dbc, "does-not-exist@example.com")
 	if err != nil {
 		t.Fatalf("EmailExists (missing): %v", err)
 	}

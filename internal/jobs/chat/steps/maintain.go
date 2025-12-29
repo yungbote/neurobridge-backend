@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -438,7 +439,8 @@ func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatTh
 
 	// Atomically ensure parent exists and children are linked.
 	if err := deps.DB.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
-		if err := deps.Summaries.Create(ctx, txx, []*types.ChatSummaryNode{parent}); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: txx}
+		if err := deps.Summaries.Create(dbc, []*types.ChatSummaryNode{parent}); err != nil {
 			return err
 		}
 		childUUIDs := make([]uuid.UUID, 0, len(children))
@@ -447,7 +449,7 @@ func makeParentNode(ctx context.Context, deps MaintainDeps, thread *types.ChatTh
 				childUUIDs = append(childUUIDs, c.ID)
 			}
 		}
-		if err := deps.Summaries.SetParent(ctx, txx, childUUIDs, parent.ID); err != nil {
+		if err := deps.Summaries.SetParent(dbc, childUUIDs, parent.ID); err != nil {
 			return err
 		}
 		return nil

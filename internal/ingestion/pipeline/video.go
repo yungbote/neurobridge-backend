@@ -11,6 +11,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, videoPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -106,7 +107,7 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 		}
 		frameIdx := i + 1
 		key := fmt.Sprintf("%s/derived/frames/frame_%06d.jpg", mf.StorageKey, frameIdx)
-		if err := s.ex.UploadLocalToGCS(ctx, nil, key, fp); err != nil {
+		if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, key, fp); err != nil {
 			warnings = append(warnings, fmt.Sprintf("upload frame %d failed: %v", frameIdx, err))
 			continue
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/normalize"
 	"github.com/yungbote/neurobridge-backend/internal/utils"
@@ -31,12 +32,12 @@ type AuthService interface {
 	LogoutUser(ctx context.Context) error
 	SetContextFromToken(ctx context.Context, tokenString string) (context.Context, error)
 	GetAccessTTL() time.Duration
-	generateAccessToken(ctx context.Context, tx *gorm.DB, user *types.User) (string, error)
+	generateAccessToken(dbc dbctx.Context, user *types.User) (string, error)
 	CreateOAuthNonce(ctx context.Context, provider string) (nonceID uuid.UUID, nonce string, expiresInSeconds int, err error)
 	OAuthLoginGoogle(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
 	OAuthLoginApple(ctx context.Context, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
-	issueSession(ctx context.Context, tx *gorm.DB, user *types.User) (string, string, error)
-	findOrCreateUserForExternalIdentity(ctx context.Context, tx *gorm.DB, provider string, ext *ExternalIdentity, fallbackFirst string, fallbackLast string) (*types.User, error)
+	issueSession(dbc dbctx.Context, user *types.User) (string, string, error)
+	findOrCreateUserForExternalIdentity(dbc dbctx.Context, provider string, ext *ExternalIdentity, fallbackFirst string, fallbackLast string) (*types.User, error)
 	oauthLogin(ctx context.Context, provider string, idToken string, nonceID uuid.UUID, firstName, lastName string) (string, string, error)
 }
 
@@ -95,11 +96,12 @@ func (as *authService) RegisterUser(ctx context.Context, user *types.User) error
 		return hErr
 	}
 	return as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		user.ID = uuid.New()
-		if ucaErr := as.avatarService.CreateAndUploadUserAvatar(ctx, tx, user); ucaErr != nil {
+		if ucaErr := as.avatarService.CreateAndUploadUserAvatar(dbc, user); ucaErr != nil {
 			return fmt.Errorf("failed to create and upload user avatar: %w", ucaErr)
 		}
-		if _, ucErr := as.userRepo.Create(ctx, tx, []*types.User{user}); ucErr != nil {
+		if _, ucErr := as.userRepo.Create(dbc, []*types.User{user}); ucErr != nil {
 			return fmt.Errorf("failed to create user in postgres: %w", ucErr)
 		}
 		return nil
@@ -114,7 +116,7 @@ func (as *authService) LoginUser(ctx context.Context, email, password string) (s
 		return "", "", vErr
 	}
 
-	users, usErr := as.userRepo.GetByEmails(ctx, nil, []string{email})
+	users, usErr := as.userRepo.GetByEmails(dbctx.Context{Ctx: ctx}, []string{email})
 	if usErr != nil {
 		return "", "", fmt.Errorf("error retrieving user by email: %w", usErr)
 	}
@@ -132,7 +134,8 @@ func (as *authService) LoginUser(ctx context.Context, email, password string) (s
 
 	// IMPORTANT: allow multiple tokens per user; just clean up expired ones.
 	if err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		foundTokens, ftErr := as.userTokenRepo.GetByUserIDs(ctx, tx, []uuid.UUID{user.ID})
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		foundTokens, ftErr := as.userTokenRepo.GetByUserIDs(dbc, []uuid.UUID{user.ID})
 		if ftErr != nil {
 			as.log.Warn("Failed to check user tokens", "error", ftErr)
 			return fmt.Errorf("failed to check user tokens: %w", ftErr)
@@ -147,14 +150,14 @@ func (as *authService) LoginUser(ctx context.Context, email, password string) (s
 			}
 		}
 		if len(expired) > 0 {
-			if dtErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, expired); dtErr != nil {
+			if dtErr := as.userTokenRepo.FullDeleteByTokens(dbc, expired); dtErr != nil {
 				as.log.Warn("Failed to delete expired user tokens", "error", dtErr)
 				return fmt.Errorf("failed to delete expired user tokens: %w", dtErr)
 			}
 		}
 
 		// Generate new access token + refresh token
-		tok, genErr := as.generateAccessToken(ctx, tx, user)
+		tok, genErr := as.generateAccessToken(dbc, user)
 		if genErr != nil {
 			return fmt.Errorf("generate access token error: %w", genErr)
 		}
@@ -169,7 +172,7 @@ func (as *authService) LoginUser(ctx context.Context, email, password string) (s
 			RefreshToken: refreshToken,
 			ExpiresAt:    expiresAt,
 		}
-		if _, ctErr := as.userTokenRepo.Create(ctx, tx, []*types.UserToken{&userToken}); ctErr != nil {
+		if _, ctErr := as.userTokenRepo.Create(dbc, []*types.UserToken{&userToken}); ctErr != nil {
 			as.log.Warn("Create User Token Error", "error", ctErr)
 			return fmt.Errorf("create user token error: %w", ctErr)
 		}
@@ -200,7 +203,8 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 	var newRefreshTokenStr string
 
 	err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		foundTokens, ftErr := as.userTokenRepo.GetByRefreshTokens(ctx, tx, []string{rd.RefreshToken})
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		foundTokens, ftErr := as.userTokenRepo.GetByRefreshTokens(dbc, []string{rd.RefreshToken})
 		if ftErr != nil {
 			as.log.Warn("Error fetching refresh token", "error", ftErr)
 			return fmt.Errorf("error fetching refresh token: %w", ftErr)
@@ -214,7 +218,7 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 		// Small buffer: consider really expired if it's been expired for more than 5 minutes
 		buffer := 5 * time.Minute
 		if existingToken.ExpiresAt.Add(buffer).Before(time.Now()) {
-			if dtErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, []*types.UserToken{existingToken}); dtErr != nil {
+			if dtErr := as.userTokenRepo.FullDeleteByTokens(dbc, []*types.UserToken{existingToken}); dtErr != nil {
 				as.log.Warn("Refresh token expired, error deleting", "error", dtErr)
 				return fmt.Errorf("refresh token expired, error deleting: %w", dtErr)
 			}
@@ -222,7 +226,7 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 			return fmt.Errorf("refresh token expired")
 		}
 
-		users, uErr := as.userRepo.GetByIDs(ctx, tx, []uuid.UUID{existingToken.UserID})
+		users, uErr := as.userRepo.GetByIDs(dbc, []uuid.UUID{existingToken.UserID})
 		if uErr != nil {
 			as.log.Warn("Failed to load user for refresh", "error", uErr)
 			return fmt.Errorf("failed to load user for refresh: %w", uErr)
@@ -233,7 +237,7 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 		}
 		user := users[0]
 
-		tok, genErr := as.generateAccessToken(ctx, tx, user)
+		tok, genErr := as.generateAccessToken(dbc, user)
 		if genErr != nil {
 			as.log.Warn("Failed to generate new access token", "error", genErr)
 			return fmt.Errorf("failed to generate new access token: %w", genErr)
@@ -249,11 +253,11 @@ func (as *authService) RefreshUser(ctx context.Context) (string, string, error) 
 			RefreshToken: newRefreshTokenStr,
 			ExpiresAt:    newExpiresAt,
 		}
-		if _, cErr := as.userTokenRepo.Create(ctx, tx, []*types.UserToken{&newUserToken}); cErr != nil {
+		if _, cErr := as.userTokenRepo.Create(dbc, []*types.UserToken{&newUserToken}); cErr != nil {
 			as.log.Warn("Failed to create new user token", "error", cErr)
 			return fmt.Errorf("failed to create new user token: %w", cErr)
 		}
-		if dErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, []*types.UserToken{existingToken}); dErr != nil {
+		if dErr := as.userTokenRepo.FullDeleteByTokens(dbc, []*types.UserToken{existingToken}); dErr != nil {
 			as.log.Warn("Failed to remove old refresh token", "error", dErr)
 			return fmt.Errorf("failed to remove old refresh token: %w", dErr)
 		}
@@ -277,7 +281,8 @@ func (as *authService) LogoutUser(ctx context.Context) error {
 		return fmt.Errorf("token string in request data empty")
 	}
 	return as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		foundTokens, ftErr := as.userTokenRepo.GetByAccessTokens(ctx, tx, []string{rd.TokenString})
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		foundTokens, ftErr := as.userTokenRepo.GetByAccessTokens(dbc, []string{rd.TokenString})
 		if ftErr != nil {
 			as.log.Warn("Error finding user token from token string", "error", ftErr)
 			return fmt.Errorf("error finding user token from token string: %w", ftErr)
@@ -285,7 +290,7 @@ func (as *authService) LogoutUser(ctx context.Context) error {
 		if len(foundTokens) == 0 || foundTokens[0] == nil {
 			return nil
 		}
-		if tdErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, []*types.UserToken{foundTokens[0]}); tdErr != nil {
+		if tdErr := as.userTokenRepo.FullDeleteByTokens(dbc, []*types.UserToken{foundTokens[0]}); tdErr != nil {
 			as.log.Warn("Error deleting user token", "error", tdErr)
 			return fmt.Errorf("error deleting user token: %w", tdErr)
 		}
@@ -308,7 +313,7 @@ func (as *authService) CreateOAuthNonce(ctx context.Context, provider string) (u
 		ExpiresAt: expiresAt,
 	}
 	if err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		_, err := as.oauthNonceRepo.Create(ctx, tx, []*types.OAuthNonce{n})
+		_, err := as.oauthNonceRepo.Create(dbctx.Context{Ctx: ctx, Tx: tx}, []*types.OAuthNonce{n})
 		return err
 	}); err != nil {
 		return uuid.Nil, "", 0, fmt.Errorf("failed to create oauth nonce: %w", err)
@@ -330,8 +335,9 @@ func (as *authService) oauthLogin(ctx context.Context, provider string, idToken 
 	}
 	var accessToken, refreshToken string
 	err := as.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		// 1) Load nonce record
-		nonces, err := as.oauthNonceRepo.GetByIDs(ctx, tx, []uuid.UUID{nonceID})
+		nonces, err := as.oauthNonceRepo.GetByIDs(dbc, []uuid.UUID{nonceID})
 		if err != nil {
 			return fmt.Errorf("failed to load oauth nonce: %w", err)
 		}
@@ -362,16 +368,16 @@ func (as *authService) oauthLogin(ctx context.Context, provider string, idToken 
 			return fmt.Errorf("id_token verification failed: %w", err)
 		}
 		// 3) Consume nonce (single-use) AFTER verification but BEFORE issuing session
-		if err := as.oauthNonceRepo.MarkUsed(ctx, tx, n.ID); err != nil {
+		if err := as.oauthNonceRepo.MarkUsed(dbc, n.ID); err != nil {
 			return fmt.Errorf("failed to consume nonce: %w", err)
 		}
 		// 4) Find or create user (this is signup+login in one)
-		user, err := as.findOrCreateUserForExternalIdentity(ctx, tx, provider, ext, firstName, lastName)
+		user, err := as.findOrCreateUserForExternalIdentity(dbc, provider, ext, firstName, lastName)
 		if err != nil {
 			return err
 		}
 		// 5) Issue your normal session (JWT + refresh)
-		a, r, err := as.issueSession(ctx, tx, user)
+		a, r, err := as.issueSession(dbc, user)
 		if err != nil {
 			return err
 		}
@@ -385,8 +391,7 @@ func (as *authService) oauthLogin(ctx context.Context, provider string, idToken 
 }
 
 func (as *authService) findOrCreateUserForExternalIdentity(
-	ctx context.Context,
-	tx *gorm.DB,
+	dbc dbctx.Context,
 	provider string,
 	ext *ExternalIdentity,
 	fallbackFirst string,
@@ -396,12 +401,12 @@ func (as *authService) findOrCreateUserForExternalIdentity(
 		return nil, fmt.Errorf("invalid external identity")
 	}
 	// 1) lookup by (provider, sub)
-	ids, err := as.userIdentityRepo.GetByProviderSubs(ctx, tx, provider, []string{ext.Sub})
+	ids, err := as.userIdentityRepo.GetByProviderSubs(dbc, provider, []string{ext.Sub})
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup identity: %w", err)
 	}
 	if len(ids) > 0 && ids[0] != nil {
-		users, uErr := as.userRepo.GetByIDs(ctx, tx, []uuid.UUID{ids[0].UserID})
+		users, uErr := as.userRepo.GetByIDs(dbc, []uuid.UUID{ids[0].UserID})
 		if uErr != nil {
 			return nil, fmt.Errorf("failed to load user for identity: %w", uErr)
 		}
@@ -413,7 +418,7 @@ func (as *authService) findOrCreateUserForExternalIdentity(
 	// 2) OPTIONAL: link to existing user by verified email to avoid dup accounts
 	var existingUser *types.User
 	if ext.EmailVerified && strings.TrimSpace(ext.Email) != "" {
-		found, err := as.userRepo.GetByEmails(ctx, tx, []string{ext.Email})
+		found, err := as.userRepo.GetByEmails(dbc, []string{ext.Email})
 		if err != nil {
 			return nil, fmt.Errorf("failed to lookup user by email: %w", err)
 		}
@@ -454,10 +459,10 @@ func (as *authService) findOrCreateUserForExternalIdentity(
 			return nil, fmt.Errorf("failed to hash generated password: %w", err)
 		}
 		u.Password = string(hashed)
-		if ucaErr := as.avatarService.CreateAndUploadUserAvatar(ctx, tx, u); ucaErr != nil {
+		if ucaErr := as.avatarService.CreateAndUploadUserAvatar(dbc, u); ucaErr != nil {
 			return nil, fmt.Errorf("failed to create and upload user avatar: %w", ucaErr)
 		}
-		if _, err := as.userRepo.Create(ctx, tx, []*types.User{u}); err != nil {
+		if _, err := as.userRepo.Create(dbc, []*types.User{u}); err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
 		existingUser = u
@@ -471,15 +476,15 @@ func (as *authService) findOrCreateUserForExternalIdentity(
 		Email:         ext.Email,
 		EmailVerified: ext.EmailVerified,
 	}
-	if _, err := as.userIdentityRepo.Create(ctx, tx, []*types.UserIdentity{ui}); err != nil {
+	if _, err := as.userIdentityRepo.Create(dbc, []*types.UserIdentity{ui}); err != nil {
 		return nil, fmt.Errorf("failed to create user identity: %w", err)
 	}
 	return existingUser, nil
 }
 
-func (as *authService) issueSession(ctx context.Context, tx *gorm.DB, user *types.User) (string, string, error) {
+func (as *authService) issueSession(dbc dbctx.Context, user *types.User) (string, string, error) {
 	// clean expired tokens
-	foundTokens, ftErr := as.userTokenRepo.GetByUserIDs(ctx, tx, []uuid.UUID{user.ID})
+	foundTokens, ftErr := as.userTokenRepo.GetByUserIDs(dbc, []uuid.UUID{user.ID})
 	if ftErr != nil {
 		as.log.Warn("Failed to check user tokens", "error", ftErr)
 		return "", "", fmt.Errorf("failed to check user tokens: %w", ftErr)
@@ -492,12 +497,12 @@ func (as *authService) issueSession(ctx context.Context, tx *gorm.DB, user *type
 		}
 	}
 	if len(expired) > 0 {
-		if dtErr := as.userTokenRepo.FullDeleteByTokens(ctx, tx, expired); dtErr != nil {
+		if dtErr := as.userTokenRepo.FullDeleteByTokens(dbc, expired); dtErr != nil {
 			as.log.Warn("Failed to delete expired user tokens", "error", dtErr)
 			return "", "", fmt.Errorf("failed to delete expired user tokens: %w", dtErr)
 		}
 	}
-	accessToken, err := as.generateAccessToken(ctx, tx, user)
+	accessToken, err := as.generateAccessToken(dbc, user)
 	if err != nil {
 		return "", "", fmt.Errorf("generate access token error: %w", err)
 	}
@@ -510,14 +515,14 @@ func (as *authService) issueSession(ctx context.Context, tx *gorm.DB, user *type
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
 	}
-	if _, err := as.userTokenRepo.Create(ctx, tx, []*types.UserToken{&userToken}); err != nil {
+	if _, err := as.userTokenRepo.Create(dbc, []*types.UserToken{&userToken}); err != nil {
 		as.log.Warn("Create User Token Error", "error", err)
 		return "", "", fmt.Errorf("create user token error: %w", err)
 	}
 	return accessToken, refreshToken, nil
 }
 
-func (as *authService) generateAccessToken(ctx context.Context, tx *gorm.DB, user *types.User) (string, error) {
+func (as *authService) generateAccessToken(dbc dbctx.Context, user *types.User) (string, error) {
 	claims := JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID.String(),
@@ -548,7 +553,7 @@ func (as *authService) SetContextFromToken(ctx context.Context, tokenString stri
 		return ctx, fmt.Errorf("invalid user id in token: %w", err)
 	}
 
-	foundTokens, ftErr := as.userTokenRepo.GetByAccessTokens(ctx, nil, []string{tokenString})
+	foundTokens, ftErr := as.userTokenRepo.GetByAccessTokens(dbctx.Context{Ctx: ctx}, []string{tokenString})
 	if ftErr != nil {
 		as.log.Warn("Error fetching user token by access token", "error", ftErr)
 		return ctx, fmt.Errorf("failed to fetch user token by access token: %w", ftErr)

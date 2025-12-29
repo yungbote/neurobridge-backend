@@ -6,7 +6,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/jobs"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/core"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/joins"
-	"github.com/yungbote/neurobridge-backend/internal/domain/learning/legacy_course"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/personalization"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/products"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
@@ -88,20 +87,6 @@ type UserStylePreference = personalization.UserStylePreference
 type UserEvent = personalization.UserEvent
 type UserEventCursor = personalization.UserEventCursor
 type UserProgressionEvent = personalization.UserProgressionEvent
-
-type Course = legacy_course.Course
-type CourseModule = legacy_course.CourseModule
-type CourseTag = legacy_course.CourseTag
-type CourseBlueprint = legacy_course.CourseBlueprint
-
-type Lesson = legacy_course.Lesson
-
-type QuizQuestion = legacy_course.QuizQuestion
-type QuizAttempt = legacy_course.QuizAttempt
-
-type StyleSpec = legacy_course.StyleSpec
-type LessonBlock = legacy_course.LessonBlock
-type LessonContentV1 = legacy_course.LessonContentV1
 
 type Concept = core.Concept
 type Activity = core.Activity

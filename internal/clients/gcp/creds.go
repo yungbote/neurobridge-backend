@@ -1,7 +1,6 @@
 package gcp
 
 import (
-	"context"
 	"google.golang.org/api/option"
 	"os"
 	"strings"
@@ -25,12 +24,6 @@ func ClientOptionsFromEnv() []option.ClientOption {
 }
 
 // ---------- shared helpers (package-wide) ----------
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
 func ptrFloat(v float64) *float64 { return &v }
 func minInt(a, b int) int {
 	if a < b {

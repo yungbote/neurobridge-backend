@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,20 +9,20 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserEventRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, events []*types.UserEvent) ([]*types.UserEvent, error)
-	CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, events []*types.UserEvent) (int, error)
+	Create(dbc dbctx.Context, events []*types.UserEvent) ([]*types.UserEvent, error)
+	CreateIgnoreDuplicates(dbc dbctx.Context, events []*types.UserEvent) (int, error)
 
-	ListAfterCursor(ctx context.Context, tx *gorm.DB, userID uuid.UUID, afterCreatedAt *time.Time, afterID *uuid.UUID, limit int) ([]*types.UserEvent, error)
+	ListAfterCursor(dbc dbctx.Context, userID uuid.UUID, afterCreatedAt *time.Time, afterID *uuid.UUID, limit int) ([]*types.UserEvent, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserEvent, error)
-	GetByUserID(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserEvent, error)
-	GetByUserAndCourseID(ctx context.Context, tx *gorm.DB, userID, courseID uuid.UUID) ([]*types.UserEvent, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.UserEvent, error)
+	GetByUserID(dbc dbctx.Context, userID uuid.UUID) ([]*types.UserEvent, error)
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
 }
 
 type userEventRepo struct {
@@ -35,29 +34,29 @@ func NewUserEventRepo(db *gorm.DB, baseLog *logger.Logger) UserEventRepo {
 	return &userEventRepo{db: db, log: baseLog.With("repo", "UserEventRepo")}
 }
 
-func (r *userEventRepo) Create(ctx context.Context, tx *gorm.DB, events []*types.UserEvent) ([]*types.UserEvent, error) {
-	t := tx
+func (r *userEventRepo) Create(dbc dbctx.Context, events []*types.UserEvent) ([]*types.UserEvent, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(events) == 0 {
 		return []*types.UserEvent{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&events).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&events).Error; err != nil {
 		return nil, err
 	}
 	return events, nil
 }
 
-func (r *userEventRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, events []*types.UserEvent) (int, error) {
-	t := tx
+func (r *userEventRepo) CreateIgnoreDuplicates(dbc dbctx.Context, events []*types.UserEvent) (int, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(events) == 0 {
 		return 0, nil
 	}
-	res := t.WithContext(ctx).
+	res := t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "user_id"}, {Name: "client_event_id"}},
 			DoNothing: true,
@@ -70,8 +69,8 @@ func (r *userEventRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB,
 	return int(res.RowsAffected), nil
 }
 
-func (r *userEventRepo) ListAfterCursor(ctx context.Context, tx *gorm.DB, userID uuid.UUID, afterCreatedAt *time.Time, afterID *uuid.UUID, limit int) ([]*types.UserEvent, error) {
-	t := tx
+func (r *userEventRepo) ListAfterCursor(dbc dbctx.Context, userID uuid.UUID, afterCreatedAt *time.Time, afterID *uuid.UUID, limit int) ([]*types.UserEvent, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -85,7 +84,7 @@ func (r *userEventRepo) ListAfterCursor(ctx context.Context, tx *gorm.DB, userID
 		limit = 1000
 	}
 
-	q := t.WithContext(ctx).Model(&types.UserEvent{}).Where("user_id = ?", userID)
+	q := t.WithContext(dbc.Ctx).Model(&types.UserEvent{}).Where("user_id = ?", userID)
 
 	// tie-safe cursor: (created_at, id)
 	if afterCreatedAt != nil {
@@ -103,8 +102,8 @@ func (r *userEventRepo) ListAfterCursor(ctx context.Context, tx *gorm.DB, userID
 	return out, nil
 }
 
-func (r *userEventRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserEvent, error) {
-	t := tx
+func (r *userEventRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.UserEvent, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -112,14 +111,14 @@ func (r *userEventRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UU
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *userEventRepo) GetByUserID(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserEvent, error) {
-	t := tx
+func (r *userEventRepo) GetByUserID(dbc dbctx.Context, userID uuid.UUID) ([]*types.UserEvent, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -127,7 +126,7 @@ func (r *userEventRepo) GetByUserID(ctx context.Context, tx *gorm.DB, userID uui
 	if userID == uuid.Nil {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		Order("created_at DESC").
 		Find(&out).Error; err != nil {
@@ -136,51 +135,33 @@ func (r *userEventRepo) GetByUserID(ctx context.Context, tx *gorm.DB, userID uui
 	return out, nil
 }
 
-func (r *userEventRepo) GetByUserAndCourseID(ctx context.Context, tx *gorm.DB, userID, courseID uuid.UUID) ([]*types.UserEvent, error) {
-	t := tx
-	if t == nil {
-		t = r.db
-	}
-	var out []*types.UserEvent
-	if userID == uuid.Nil || courseID == uuid.Nil {
-		return out, nil
-	}
-	if err := t.WithContext(ctx).
-		Where("user_id = ? AND course_id = ?", userID, courseID).
-		Order("created_at DESC").
-		Find(&out).Error; err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (r *userEventRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *userEventRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.UserEvent{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.UserEvent{}).Error
 }
 
-func (r *userEventRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *userEventRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.UserEvent{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.UserEvent{}).Error
 }
 
 // -------------------- Cursor repo (per consumer) --------------------
 
 type UserEventCursorRepo interface {
-	Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, consumer string) (*types.UserEventCursor, error)
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.UserEventCursor) error
+	Get(dbc dbctx.Context, userID uuid.UUID, consumer string) (*types.UserEventCursor, error)
+	Upsert(dbc dbctx.Context, row *types.UserEventCursor) error
 }
 
 type userEventCursorRepo struct {
@@ -195,8 +176,8 @@ func NewUserEventCursorRepo(db *gorm.DB, baseLog *logger.Logger) UserEventCursor
 	}
 }
 
-func (r *userEventCursorRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, consumer string) (*types.UserEventCursor, error) {
-	t := tx
+func (r *userEventCursorRepo) Get(dbc dbctx.Context, userID uuid.UUID, consumer string) (*types.UserEventCursor, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -205,7 +186,7 @@ func (r *userEventCursorRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid.
 	}
 
 	var row types.UserEventCursor
-	err := t.WithContext(ctx).
+	err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND consumer = ?", userID, consumer).
 		First(&row).Error
 	if err != nil {
@@ -214,8 +195,8 @@ func (r *userEventCursorRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid.
 	return &row, nil
 }
 
-func (r *userEventCursorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.UserEventCursor) error {
-	t := tx
+func (r *userEventCursorRepo) Upsert(dbc dbctx.Context, row *types.UserEventCursor) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -223,7 +204,7 @@ func (r *userEventCursorRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		return nil
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "consumer"}},
 			DoUpdates: clause.AssignmentColumns([]string{

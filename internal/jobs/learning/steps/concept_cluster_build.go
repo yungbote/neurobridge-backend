@@ -17,6 +17,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -61,13 +62,13 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 		return out, fmt.Errorf("concept_cluster_build: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	existing, err := deps.Clusters.GetByScope(ctx, nil, "path", &pathID)
+	existing, err := deps.Clusters.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -75,7 +76,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 		return out, nil
 	}
 
-	concepts, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -156,7 +157,8 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 	const batchSize = 64
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
@@ -164,7 +166,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 		for _, r := range rows {
 			toCreate = append(toCreate, r.Row)
 		}
-		if _, err := deps.Clusters.Create(ctx, tx, toCreate); err != nil {
+		if _, err := deps.Clusters.Create(dbc, toCreate); err != nil {
 			return err
 		}
 		out.ClustersMade = len(toCreate)
@@ -185,7 +187,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 				})
 			}
 		}
-		if n, _ := deps.Members.CreateIgnoreDuplicates(ctx, tx, members); n > 0 {
+		if n, _ := deps.Members.CreateIgnoreDuplicates(dbc, members); n > 0 {
 			out.MembersMade = n
 		}
 
@@ -204,7 +206,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {

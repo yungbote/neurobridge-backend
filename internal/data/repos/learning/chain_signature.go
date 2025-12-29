@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -11,16 +10,17 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ChainSignatureRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ChainSignature) ([]*types.ChainSignature, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ChainSignature, error)
-	GetByChainKeys(ctx context.Context, tx *gorm.DB, keys []string) ([]*types.ChainSignature, error)
-	ListByScope(ctx context.Context, tx *gorm.DB, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error)
+	Create(dbc dbctx.Context, rows []*types.ChainSignature) ([]*types.ChainSignature, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ChainSignature, error)
+	GetByChainKeys(dbc dbctx.Context, keys []string) ([]*types.ChainSignature, error)
+	ListByScope(dbc dbctx.Context, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error)
 
-	UpsertByChainKey(ctx context.Context, tx *gorm.DB, row *types.ChainSignature) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	UpsertByChainKey(dbc dbctx.Context, row *types.ChainSignature) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 }
 
 type chainSignatureRepo struct {
@@ -32,22 +32,22 @@ func NewChainSignatureRepo(db *gorm.DB, baseLog *logger.Logger) ChainSignatureRe
 	return &chainSignatureRepo{db: db, log: baseLog.With("repo", "ChainSignatureRepo")}
 }
 
-func (r *chainSignatureRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ChainSignature) ([]*types.ChainSignature, error) {
-	t := tx
+func (r *chainSignatureRepo) Create(dbc dbctx.Context, rows []*types.ChainSignature) ([]*types.ChainSignature, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ChainSignature{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *chainSignatureRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ChainSignature, error) {
-	t := tx
+func (r *chainSignatureRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ChainSignature, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -55,14 +55,14 @@ func (r *chainSignatureRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uu
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *chainSignatureRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, keys []string) ([]*types.ChainSignature, error) {
-	t := tx
+func (r *chainSignatureRepo) GetByChainKeys(dbc dbctx.Context, keys []string) ([]*types.ChainSignature, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -70,14 +70,14 @@ func (r *chainSignatureRepo) GetByChainKeys(ctx context.Context, tx *gorm.DB, ke
 	if len(keys) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("chain_key IN ?", keys).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("chain_key IN ?", keys).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *chainSignatureRepo) ListByScope(ctx context.Context, tx *gorm.DB, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error) {
-	t := tx
+func (r *chainSignatureRepo) ListByScope(dbc dbctx.Context, scope string, scopeID *uuid.UUID) ([]*types.ChainSignature, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -86,7 +86,7 @@ func (r *chainSignatureRepo) ListByScope(ctx context.Context, tx *gorm.DB, scope
 	if scope == "" {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("scope = ? AND scope_id IS NOT DISTINCT FROM ?", scope, scopeID).
 		Order("chain_key ASC").
 		Find(&out).Error; err != nil {
@@ -95,8 +95,8 @@ func (r *chainSignatureRepo) ListByScope(ctx context.Context, tx *gorm.DB, scope
 	return out, nil
 }
 
-func (r *chainSignatureRepo) UpsertByChainKey(ctx context.Context, tx *gorm.DB, row *types.ChainSignature) error {
-	t := tx
+func (r *chainSignatureRepo) UpsertByChainKey(dbc dbctx.Context, row *types.ChainSignature) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -108,7 +108,7 @@ func (r *chainSignatureRepo) UpsertByChainKey(ctx context.Context, tx *gorm.DB, 
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "chain_key"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -120,8 +120,8 @@ func (r *chainSignatureRepo) UpsertByChainKey(ctx context.Context, tx *gorm.DB, 
 		Create(row).Error
 }
 
-func (r *chainSignatureRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *chainSignatureRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -134,5 +134,5 @@ func (r *chainSignatureRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id u
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).Model(&types.ChainSignature{}).Where("id = ?", id).Updates(updates).Error
+	return t.WithContext(dbc.Ctx).Model(&types.ChainSignature{}).Where("id = ?", id).Updates(updates).Error
 }

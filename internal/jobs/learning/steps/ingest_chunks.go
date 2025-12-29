@@ -12,6 +12,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -63,7 +64,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		return out, fmt.Errorf("ingest_chunks: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -82,7 +83,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		report = func(string, int, string) {}
 	}
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -98,7 +99,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		}
 	}
 
-	existing, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	existing, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -129,8 +130,9 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 
 		fileCtx, cancel := context.WithTimeout(ctx, fileTimeout)
 		err := deps.DB.WithContext(fileCtx).Transaction(func(tx *gorm.DB) error {
+			dbc := dbctx.Context{Ctx: fileCtx, Tx: tx}
 			// Idempotency guard (re-check in-tx)
-			chs, err := deps.Chunks.GetByMaterialFileIDs(fileCtx, tx, []uuid.UUID{mf.ID})
+			chs, err := deps.Chunks.GetByMaterialFileIDs(dbc, []uuid.UUID{mf.ID})
 			if err != nil {
 				return err
 			}
@@ -141,7 +143,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 			// Conservative compensation: delete derived prefix (never the original upload key).
 			if strings.TrimSpace(mf.StorageKey) != "" {
 				derivedPrefix := strings.TrimRight(mf.StorageKey, "/") + "/derived/"
-				if err := deps.Saga.AppendAction(fileCtx, tx, in.SagaID, services.SagaActionKindGCSDeletePrefix, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindGCSDeletePrefix, map[string]any{
 					"category": "material",
 					"prefix":   derivedPrefix,
 				}); err != nil {
@@ -149,7 +151,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 				}
 			}
 
-			summary, err := deps.Extract.ExtractAndPersist(fileCtx, tx, mf)
+			summary, err := deps.Extract.ExtractAndPersist(dbc, mf)
 			if err != nil {
 				return err
 			}
@@ -163,7 +165,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 					if a.Kind == "original" || a.Key == mf.StorageKey {
 						continue
 					}
-					if err := deps.Saga.AppendAction(fileCtx, tx, in.SagaID, services.SagaActionKindGCSDeleteKey, map[string]any{
+					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindGCSDeleteKey, map[string]any{
 						"category": "material",
 						"key":      a.Key,
 					}); err != nil {
@@ -203,7 +205,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		report("ingest", ingestProgress(done, out.FilesTotal), fmt.Sprintf("Processed %d/%d", done, out.FilesTotal))
 	}
 
-	after, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	after, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}

@@ -17,6 +17,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -59,13 +60,13 @@ func UserProfileRefresh(ctx context.Context, deps UserProfileRefreshDeps, in Use
 	}
 
 	// Contract: derive/ensure path_id via bootstrap (ties this profile refresh to the build bundle).
-	_, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	_, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 
-	style, _ := deps.StylePrefs.ListGlobalByUser(ctx, nil, in.OwnerUserID)
-	recent, _ := deps.ProgEvents.ListRecentByUser(ctx, nil, in.OwnerUserID, 200)
+	style, _ := deps.StylePrefs.ListGlobalByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
+	recent, _ := deps.ProgEvents.ListRecentByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID, 200)
 
 	userFacts := map[string]any{
 		"user_id":                  in.OwnerUserID.String(),
@@ -128,14 +129,15 @@ func UserProfileRefresh(ctx context.Context, deps UserProfileRefreshDeps, in Use
 	}
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
-		if err := deps.UserProfile.Upsert(ctx, tx, row); err != nil {
+		if err := deps.UserProfile.Upsert(dbc, row); err != nil {
 			return err
 		}
 		if deps.Vec != nil {
-			if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 				"namespace": ns,
 				"ids":       []string{vectorID},
 			}); err != nil {

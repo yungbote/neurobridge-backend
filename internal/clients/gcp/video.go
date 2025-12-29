@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -84,7 +85,7 @@ func (s *videoService) Close() error {
 }
 
 func (s *videoService) AnnotateVideoGCS(ctx context.Context, gcsURI string, cfg VideoAIConfig) (*VideoAIResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 

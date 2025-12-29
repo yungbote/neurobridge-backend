@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,13 +8,14 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserProgressionEventRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.UserProgressionEvent) ([]*types.UserProgressionEvent, error)
-	ListRecentByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
-	ListRecentAll(ctx context.Context, tx *gorm.DB, limit int) ([]*types.UserProgressionEvent, error)
-	ListByUserAndPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
+	Create(dbc dbctx.Context, rows []*types.UserProgressionEvent) ([]*types.UserProgressionEvent, error)
+	ListRecentByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
+	ListRecentAll(dbc dbctx.Context, limit int) ([]*types.UserProgressionEvent, error)
+	ListByUserAndPathID(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error)
 }
 
 type userProgressionEventRepo struct {
@@ -27,15 +27,15 @@ func NewUserProgressionEventRepo(db *gorm.DB, baseLog *logger.Logger) UserProgre
 	return &userProgressionEventRepo{db: db, log: baseLog.With("repo", "UserProgressionEventRepo")}
 }
 
-func (r *userProgressionEventRepo) dbx(tx *gorm.DB) *gorm.DB {
-	if tx != nil {
-		return tx
+func (r *userProgressionEventRepo) dbx(dbc dbctx.Context) *gorm.DB {
+	if dbc.Tx != nil {
+		return dbc.Tx
 	}
 	return r.db
 }
 
-func (r *userProgressionEventRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.UserProgressionEvent) ([]*types.UserProgressionEvent, error) {
-	t := r.dbx(tx)
+func (r *userProgressionEventRepo) Create(dbc dbctx.Context, rows []*types.UserProgressionEvent) ([]*types.UserProgressionEvent, error) {
+	t := r.dbx(dbc)
 	if len(rows) == 0 {
 		return []*types.UserProgressionEvent{}, nil
 	}
@@ -53,14 +53,14 @@ func (r *userProgressionEventRepo) Create(ctx context.Context, tx *gorm.DB, rows
 		x.CreatedAt = now
 		x.UpdatedAt = now
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *userProgressionEventRepo) ListRecentByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error) {
-	t := r.dbx(tx)
+func (r *userProgressionEventRepo) ListRecentByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error) {
+	t := r.dbx(dbc)
 	out := []*types.UserProgressionEvent{}
 	if userID == uuid.Nil {
 		return out, nil
@@ -68,7 +68,7 @@ func (r *userProgressionEventRepo) ListRecentByUser(ctx context.Context, tx *gor
 	if limit <= 0 {
 		limit = 500
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		Order("occurred_at DESC").
 		Limit(limit).
@@ -78,13 +78,13 @@ func (r *userProgressionEventRepo) ListRecentByUser(ctx context.Context, tx *gor
 	return out, nil
 }
 
-func (r *userProgressionEventRepo) ListRecentAll(ctx context.Context, tx *gorm.DB, limit int) ([]*types.UserProgressionEvent, error) {
-	t := r.dbx(tx)
+func (r *userProgressionEventRepo) ListRecentAll(dbc dbctx.Context, limit int) ([]*types.UserProgressionEvent, error) {
+	t := r.dbx(dbc)
 	out := []*types.UserProgressionEvent{}
 	if limit <= 0 {
 		limit = 50000
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Order("occurred_at DESC").
 		Limit(limit).
 		Find(&out).Error; err != nil {
@@ -93,8 +93,8 @@ func (r *userProgressionEventRepo) ListRecentAll(ctx context.Context, tx *gorm.D
 	return out, nil
 }
 
-func (r *userProgressionEventRepo) ListByUserAndPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error) {
-	t := r.dbx(tx)
+func (r *userProgressionEventRepo) ListByUserAndPathID(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID, limit int) ([]*types.UserProgressionEvent, error) {
+	t := r.dbx(dbc)
 	out := []*types.UserProgressionEvent{}
 	if userID == uuid.Nil || pathID == uuid.Nil {
 		return out, nil
@@ -105,7 +105,7 @@ func (r *userProgressionEventRepo) ListByUserAndPathID(ctx context.Context, tx *
 	if limit > 50000 {
 		limit = 50000
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND path_id = ?", userID, pathID).
 		Order("occurred_at DESC").
 		Limit(limit).

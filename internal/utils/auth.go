@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/normalize"
 	"golang.org/x/crypto/bcrypt"
@@ -35,7 +36,7 @@ func handleRegisterInputValidation(ctx context.Context, userRepo repos.UserRepo,
 	if user.Email == "" {
 		return fmt.Errorf("An email is required to register")
 	}
-	emailExists, err := userRepo.EmailExists(ctx, nil, user.Email)
+	emailExists, err := userRepo.EmailExists(dbctx.Context{Ctx: ctx}, user.Email)
 	if err != nil {
 		return fmt.Errorf("Failed to check user email")
 	}

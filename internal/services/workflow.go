@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -12,12 +11,13 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type WorkflowService interface {
-	UploadMaterialsAndStartLearningBuild(ctx context.Context, tx *gorm.DB, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, *types.JobRun, error)
-	UploadMaterialsAndStartLearningBuildWithChat(ctx context.Context, tx *gorm.DB, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error)
+	UploadMaterialsAndStartLearningBuild(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, *types.JobRun, error)
+	UploadMaterialsAndStartLearningBuildWithChat(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error)
 }
 
 type workflowService struct {
@@ -52,18 +52,16 @@ func NewWorkflowService(
 }
 
 func (w *workflowService) UploadMaterialsAndStartLearningBuild(
-	ctx context.Context,
-	tx *gorm.DB,
+	dbc dbctx.Context,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
 ) (*types.MaterialSet, *types.JobRun, error) {
-	set, _, _, job, err := w.UploadMaterialsAndStartLearningBuildWithChat(ctx, tx, userID, uploaded)
+	set, _, _, job, err := w.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded)
 	return set, job, err
 }
 
 func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
-	ctx context.Context,
-	tx *gorm.DB,
+	dbc dbctx.Context,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
 ) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error) {
@@ -74,7 +72,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		return nil, uuid.Nil, nil, nil, fmt.Errorf("no files")
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = w.db
 	}
@@ -89,16 +87,18 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		job    *types.JobRun
 	)
 
-	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
+
 		// 1) Persist materials (set + file rows + upload blobs)
-		createdSet, _, err := w.materials.UploadMaterialFiles(ctx, txx, userID, uploaded)
+		createdSet, _, err := w.materials.UploadMaterialFiles(inner, userID, uploaded)
 		if err != nil {
 			return err
 		}
 		set = createdSet
 
 		// 2) Ensure canonical path exists (race-safe via user_library_index lock).
-		pid, err := w.bootstrap.EnsurePath(ctx, txx, userID, set.ID)
+		pid, err := w.bootstrap.EnsurePath(inner, userID, set.ID)
 		if err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
-		created, err := w.threads.Create(ctx, txx, []*types.ChatThread{t})
+		created, err := w.threads.Create(inner, []*types.ChatThread{t})
 		if err != nil {
 			return err
 		}
@@ -143,14 +143,14 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 			"thread_id":       thread.ID.String(),
 		}
 		entityID := set.ID
-		createdJob, err := w.jobs.Enqueue(ctx, txx, userID, "learning_build", "material_set", &entityID, payload)
+		createdJob, err := w.jobs.Enqueue(inner, userID, "learning_build", "material_set", &entityID, payload)
 		if err != nil {
 			return err
 		}
 		job = createdJob
 
 		// 5) Backlink job onto thread (non-authoritative, but useful for UI).
-		if err := w.threads.UpdateFields(ctx, txx, thread.ID, map[string]interface{}{
+		if err := w.threads.UpdateFields(inner, thread.ID, map[string]interface{}{
 			"job_id": job.ID,
 		}); err != nil {
 			return err
@@ -158,7 +158,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		thread.JobID = &job.ID
 
 		// 6) Persist path↔job linkage so frontend can recover state after refresh.
-		if err := w.paths.UpdateFields(ctx, txx, pathID, map[string]interface{}{
+		if err := w.paths.UpdateFields(inner, pathID, map[string]interface{}{
 			"job_id": job.ID,
 		}); err != nil {
 			return err

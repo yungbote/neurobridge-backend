@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -68,7 +69,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, fmt.Errorf("node_figures_render: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -90,7 +91,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, nil
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -106,7 +107,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		}
 	}
 
-	rows, err := deps.Figures.GetByPathNodeIDs(ctx, nil, nodeIDs)
+	rows, err := deps.Figures.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 	if err != nil {
 		return out, err
 	}
@@ -197,7 +198,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 				row.Slot,
 				strings.TrimSpace(row.PromptHash),
 			)
-			if err := deps.Bucket.UploadFile(gctx, nil, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(img.Bytes)); err != nil {
+			if err := deps.Bucket.UploadFile(gdbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(img.Bytes)); err != nil {
 				_ = markFigureFailed(gctx, deps, row, "upload_failed: "+err.Error(), latency)
 				atomic.AddInt32(&failed, 1)
 				return nil
@@ -238,7 +239,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 					CreatedAt:  time.Now().UTC(),
 					UpdatedAt:  time.Now().UTC(),
 				}
-				if _, err := deps.Assets.Create(gctx, nil, []*types.Asset{a}); err == nil {
+				if _, err := deps.Assets.Create(gdbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
 					assetID = &aid
 				}
 			}
@@ -263,7 +264,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 				CreatedAt:       row.CreatedAt,
 				UpdatedAt:       now,
 			}
-			_ = deps.Figures.Upsert(gctx, nil, update)
+			_ = deps.Figures.Upsert(gdbctx.Context{Ctx: ctx}, update)
 
 			if deps.GenRuns != nil {
 				metrics := map[string]any{
@@ -271,7 +272,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 					"url":         publicURL,
 					"byte_len":    len(img.Bytes),
 				}
-				_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_figure_asset", &update.ID, in.OwnerUserID, pathID, row.PathNodeID, "succeeded", nodeFigureAssetPromptVersion, 1, latency, nil, metrics),
 				})
 			}
@@ -319,10 +320,10 @@ func markFigureFailed(ctx context.Context, deps NodeFiguresRenderDeps, row *type
 		CreatedAt:       row.CreatedAt,
 		UpdatedAt:       now,
 	}
-	_ = deps.Figures.Upsert(ctx, nil, update)
+	_ = deps.Figures.Upsert(dbctx.Context{Ctx: ctx}, update)
 
 	if deps.GenRuns != nil {
-		_, _ = deps.GenRuns.Create(ctx, nil, []*types.LearningDocGenerationRun{
+		_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 			makeGenRun("node_figure_asset", &update.ID, row.UserID, row.PathID, row.PathNodeID, "failed", nodeFigureAssetPromptVersion, 1, latencyMS, []string{errMsg}, nil),
 		})
 	}

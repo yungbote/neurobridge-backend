@@ -11,8 +11,8 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -29,9 +29,9 @@ type bucketConfig struct {
 }
 
 type BucketService interface {
-	UploadFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, file io.Reader) error
-	DeleteFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string) error
-	ReplaceFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, newFile io.Reader) error
+	UploadFile(dbc dbctx.Context, category BucketCategory, key string, file io.Reader) error
+	DeleteFile(dbc dbctx.Context, category BucketCategory, key string) error
+	ReplaceFile(dbc dbctx.Context, category BucketCategory, key string, newFile io.Reader) error
 	DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error)
 	CopyObject(ctx context.Context, category BucketCategory, srcKey, dstKey string) error
 	ListKeys(ctx context.Context, category BucketCategory, prefix string) ([]string, error)
@@ -103,12 +103,12 @@ func (bs *bucketService) getBucketConfig(category BucketCategory) (bucketConfig,
 	}
 }
 
-func (bs *bucketService) UploadFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, file io.Reader) error {
+func (bs *bucketService) UploadFile(dbc dbctx.Context, category BucketCategory, key string, file io.Reader) error {
 	cfg, err := bs.getBucketConfig(category)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(dbc.Ctx, 2*time.Minute)
 	defer cancel()
 
 	w := bs.storageClient.Bucket(cfg.name).Object(key).NewWriter(ctx)
@@ -160,12 +160,12 @@ func contentTypeForKey(key string) string {
 	}
 }
 
-func (bs *bucketService) DeleteFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string) error {
+func (bs *bucketService) DeleteFile(dbc dbctx.Context, category BucketCategory, key string) error {
 	cfg, err := bs.getBucketConfig(category)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbc.Ctx, 30*time.Second)
 	defer cancel()
 	o := bs.storageClient.Bucket(cfg.name).Object(key)
 	if err := o.Delete(ctx); err != nil {
@@ -174,11 +174,11 @@ func (bs *bucketService) DeleteFile(ctx context.Context, tx *gorm.DB, category B
 	return nil
 }
 
-func (bs *bucketService) ReplaceFile(ctx context.Context, tx *gorm.DB, category BucketCategory, key string, newFile io.Reader) error {
-	if err := bs.DeleteFile(ctx, tx, category, key); err != nil {
+func (bs *bucketService) ReplaceFile(dbc dbctx.Context, category BucketCategory, key string, newFile io.Reader) error {
+	if err := bs.DeleteFile(dbc, category, key); err != nil {
 		return fmt.Errorf("failed deleting old file: %w", err)
 	}
-	if err := bs.UploadFile(ctx, tx, category, key, newFile); err != nil {
+	if err := bs.UploadFile(dbc, category, key, newFile); err != nil {
 		return fmt.Errorf("failed uploading new file: %w", err)
 	}
 	return nil
@@ -228,7 +228,7 @@ func (bs *bucketService) DeletePrefix(ctx context.Context, category BucketCatego
 		return err
 	}
 	for _, k := range keys {
-		_ = bs.DeleteFile(ctx, nil, category, k)
+		_ = bs.DeleteFile(dbctx.Context{Ctx: ctx}, category, k)
 	}
 	return nil
 }

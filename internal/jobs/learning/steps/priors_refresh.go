@@ -15,6 +15,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/keys"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -177,12 +178,13 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 	}
 
 	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		pathID, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID)
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		pathID, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID)
 		if err != nil {
 			return err
 		}
 
-		activities, err := deps.Activities.ListByOwner(ctx, tx, "path", &pathID)
+		activities, err := deps.Activities.ListByOwner(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -203,7 +205,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 			return nil
 		}
 
-		variants, err := deps.Variants.GetByActivityIDs(ctx, tx, activityIDs)
+		variants, err := deps.Variants.GetByActivityIDs(dbc, activityIDs)
 		if err != nil {
 			return err
 		}
@@ -218,7 +220,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 			}
 			variantIDs = append(variantIDs, v.ID)
 		}
-		stats, err := deps.VariantStats.GetByVariantIDs(ctx, tx, variantIDs)
+		stats, err := deps.VariantStats.GetByVariantIDs(dbc, variantIDs)
 		if err != nil {
 			return err
 		}
@@ -231,7 +233,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 		}
 
 		// Activity -> concept keys
-		acRows, err := deps.ActConcepts.GetByActivityIDs(ctx, tx, activityIDs)
+		acRows, err := deps.ActConcepts.GetByActivityIDs(dbc, activityIDs)
 		if err != nil {
 			return err
 		}
@@ -248,7 +250,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 
 		conceptKeyByID := map[uuid.UUID]string{}
 		if len(allConceptIDs) > 0 {
-			concepts, err := deps.Concepts.GetByIDs(ctx, tx, allConceptIDs)
+			concepts, err := deps.Concepts.GetByIDs(dbc, allConceptIDs)
 			if err != nil {
 				return err
 			}
@@ -261,7 +263,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 		}
 
 		// Load chain signatures (if missing, we can still compute chain_key set-based as a fallback).
-		chainRows, err := deps.Chains.ListByScope(ctx, tx, "path", &pathID)
+		chainRows, err := deps.Chains.ListByScope(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -414,7 +416,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 				LastObservedAt:   a.LastObservedAt,
 				UpdatedAt:        now,
 			}
-			if err := deps.CohortPriors.Upsert(ctx, tx, row); err != nil {
+			if err := deps.CohortPriors.Upsert(dbc, row); err != nil {
 				return err
 			}
 			out.CohortPriorsUpserted++
@@ -462,7 +464,7 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 				LastObservedAt:    a.LastObservedAt,
 				UpdatedAt:         now,
 			}
-			if err := deps.ChainPriors.Upsert(ctx, tx, row); err != nil {
+			if err := deps.ChainPriors.Upsert(dbc, row); err != nil {
 				return err
 			}
 			out.ChainPriorsUpserted++

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/api/iterator"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -110,7 +111,7 @@ func (s *visionService) OCRImageBytes(ctx context.Context, img []byte, mimeType 
 		return &VisionOCRResult{Provider: "gcp_vision", MimeType: mimeType, PrimaryText: ""}, nil
 	}
 
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -207,7 +208,7 @@ func (s *visionService) OCRImageBytes(ctx context.Context, img []byte, mimeType 
 }
 
 func (s *visionService) OCRFileInGCS(ctx context.Context, gcsSourceURI string, mimeType string, gcsOutputPrefix string, maxPages int) (*VisionOCRResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 

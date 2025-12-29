@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"gorm.io/datatypes"
 )
 
@@ -15,6 +16,7 @@ func TestMaterialChunkRepo(t *testing.T) {
 	tx := testutil.Tx(t, db)
 
 	ctx := context.Background()
+	dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 	repo := NewMaterialChunkRepo(db, testutil.Logger(t))
 
 	u := &types.User{
@@ -52,15 +54,15 @@ func TestMaterialChunkRepo(t *testing.T) {
 		Embedding:      datatypes.JSON([]byte("[]")),
 		Metadata:       datatypes.JSON([]byte("{}")),
 	}
-	if _, err := repo.Create(ctx, tx, []*types.MaterialChunk{c1, c2}); err != nil {
+	if _, err := repo.Create(dbc, []*types.MaterialChunk{c1, c2}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if rows, err := repo.GetByMaterialFileIDs(ctx, tx, []uuid.UUID{mf.ID}); err != nil || len(rows) != 2 {
+	if rows, err := repo.GetByMaterialFileIDs(dbc, []uuid.UUID{mf.ID}); err != nil || len(rows) != 2 {
 		t.Fatalf("GetByMaterialFileIDs: err=%v len=%d", err, len(rows))
 	}
 
-	if rows, err := repo.GetByIDs(ctx, tx, []uuid.UUID{c1.ID, c2.ID}); err != nil || len(rows) != 2 {
+	if rows, err := repo.GetByIDs(dbc, []uuid.UUID{c1.ID, c2.ID}); err != nil || len(rows) != 2 {
 		t.Fatalf("GetByIDs: err=%v len=%d", err, len(rows))
 	}
 }

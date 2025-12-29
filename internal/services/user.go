@@ -9,12 +9,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
 )
 
 type UserService interface {
-	GetMe(ctx context.Context, tx *gorm.DB) (*types.User, error)
+	GetMe(dbc dbctx.Context) (*types.User, error)
 
 	// NEW
 	UpdatePreferredTheme(ctx context.Context, preferredTheme string) (*types.User, error)
@@ -40,8 +41,8 @@ func NewUserService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, av
 	}
 }
 
-func (us *userService) GetMe(ctx context.Context, tx *gorm.DB) (*types.User, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (us *userService) GetMe(dbc dbctx.Context) (*types.User, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil {
 		us.log.Warn("Request data not set in context")
 		return nil, fmt.Errorf("request data not set in context")
@@ -51,8 +52,8 @@ func (us *userService) GetMe(ctx context.Context, tx *gorm.DB) (*types.User, err
 		return nil, fmt.Errorf("user id not set in request data")
 	}
 
-	getUser := func(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.User, error) {
-		found, err := us.userRepo.GetByIDs(ctx, tx, []uuid.UUID{userID})
+	getUser := func(dbc dbctx.Context, userID uuid.UUID) (*types.User, error) {
+		found, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{userID})
 		if err != nil {
 			return nil, fmt.Errorf("error fetching user: %w", err)
 		}
@@ -62,13 +63,14 @@ func (us *userService) GetMe(ctx context.Context, tx *gorm.DB) (*types.User, err
 		return found[0], nil
 	}
 
-	if tx != nil {
-		return getUser(ctx, tx, rd.UserID)
+	if dbc.Tx != nil {
+		return getUser(dbc, rd.UserID)
 	}
 
 	var theUser *types.User
-	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		u, err := getUser(ctx, tx, rd.UserID)
+	if err := us.db.WithContext(dbc.Ctx).Transaction(func(tx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: tx}
+		u, err := getUser(inner, rd.UserID)
 		if err != nil {
 			return err
 		}
@@ -94,10 +96,11 @@ func (us *userService) UpdatePreferredTheme(ctx context.Context, preferredTheme 
 
 	var out *types.User
 	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := us.userRepo.UpdatePreferredTheme(ctx, tx, rd.UserID, preferredTheme); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if err := us.userRepo.UpdatePreferredTheme(dbc, rd.UserID, preferredTheme); err != nil {
 			return err
 		}
-		u, err := us.userRepo.GetByIDs(ctx, tx, []uuid.UUID{rd.UserID})
+		u, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{rd.UserID})
 		if err != nil || len(u) == 0 {
 			return fmt.Errorf("failed to reload user")
 		}
@@ -123,15 +126,16 @@ func (us *userService) UpdateName(ctx context.Context, firstName, lastName strin
 
 	var out *types.User
 	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		// Load user so we preserve color
-		found, err := us.userRepo.GetByIDs(ctx, tx, []uuid.UUID{rd.UserID})
+		found, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{rd.UserID})
 		if err != nil || len(found) == 0 || found[0] == nil {
 			return fmt.Errorf("user not found")
 		}
 		u := found[0]
 
 		// Update name
-		if err := us.userRepo.UpdateName(ctx, tx, rd.UserID, firstName, lastName); err != nil {
+		if err := us.userRepo.UpdateName(dbc, rd.UserID, firstName, lastName); err != nil {
 			return err
 		}
 
@@ -140,12 +144,12 @@ func (us *userService) UpdateName(ctx context.Context, firstName, lastName strin
 		u.LastName = lastName
 
 		// Regenerate initials avatar (keeps existing AvatarColor)
-		if err := us.avatarService.CreateAndUploadUserAvatar(ctx, tx, u); err != nil {
+		if err := us.avatarService.CreateAndUploadUserAvatar(dbc, u); err != nil {
 			return err
 		}
 
 		// Persist avatar fields
-		if err := us.userRepo.UpdateAvatarFields(ctx, tx, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
+		if err := us.userRepo.UpdateAvatarFields(dbc, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
 			return err
 		}
 
@@ -171,23 +175,24 @@ func (us *userService) UpdateAvatarColor(ctx context.Context, avatarColor string
 
 	var out *types.User
 	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		found, err := us.userRepo.GetByIDs(ctx, tx, []uuid.UUID{rd.UserID})
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		found, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{rd.UserID})
 		if err != nil || len(found) == 0 || found[0] == nil {
 			return fmt.Errorf("user not found")
 		}
 		u := found[0]
 
 		// Update avatar_color in DB first
-		if err := us.userRepo.UpdateAvatarColor(ctx, tx, rd.UserID, avatarColor); err != nil {
+		if err := us.userRepo.UpdateAvatarColor(dbc, rd.UserID, avatarColor); err != nil {
 			return err
 		}
 		u.AvatarColor = avatarColor
 
 		// Regenerate initials avatar with new color
-		if err := us.avatarService.CreateAndUploadUserAvatar(ctx, tx, u); err != nil {
+		if err := us.avatarService.CreateAndUploadUserAvatar(dbc, u); err != nil {
 			return err
 		}
-		if err := us.userRepo.UpdateAvatarFields(ctx, tx, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
+		if err := us.userRepo.UpdateAvatarFields(dbc, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
 			return err
 		}
 
@@ -210,18 +215,19 @@ func (us *userService) UploadAvatarImage(ctx context.Context, raw []byte) (*type
 
 	var out *types.User
 	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		found, err := us.userRepo.GetByIDs(ctx, tx, []uuid.UUID{rd.UserID})
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		found, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{rd.UserID})
 		if err != nil || len(found) == 0 || found[0] == nil {
 			return fmt.Errorf("user not found")
 		}
 		u := found[0]
 
 		// Upload processed image (512 circle)
-		if err := us.avatarService.CreateAndUploadUserAvatarFromImage(ctx, tx, u, raw); err != nil {
+		if err := us.avatarService.CreateAndUploadUserAvatarFromImage(dbc, u, raw); err != nil {
 			return err
 		}
 
-		if err := us.userRepo.UpdateAvatarFields(ctx, tx, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
+		if err := us.userRepo.UpdateAvatarFields(dbc, rd.UserID, u.AvatarBucketKey, u.AvatarURL); err != nil {
 			return err
 		}
 

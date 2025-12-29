@@ -22,6 +22,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -73,7 +74,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		return out, fmt.Errorf("node_videos_plan_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -96,7 +97,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		return out, err
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -112,7 +113,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		}
 	}
 
-	existingRows, err := deps.Videos.GetByPathNodeIDs(ctx, nil, nodeIDs)
+	existingRows, err := deps.Videos.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 	if err != nil {
 		return out, err
 	}
@@ -124,7 +125,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		existingByNode[r.PathNodeID] = append(existingByNode[r.PathNodeID], r)
 	}
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -134,7 +135,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	allChunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	allChunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -377,7 +378,7 @@ Task:
 				if genErr != nil {
 					lastErrs = []string{"generate_failed: " + genErr.Error()}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, lastErrs, nil),
 						})
 					}
@@ -389,7 +390,7 @@ Task:
 				if err := json.Unmarshal(raw, &tmp); err != nil {
 					lastErrs = []string{"schema_unmarshal_failed"}
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, lastErrs, nil),
 						})
 					}
@@ -401,7 +402,7 @@ Task:
 				if len(errs) > 0 {
 					lastErrs = errs
 					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+						_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 							makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeVideoPlanPromptVersion, attempt, latency, errs, qm),
 						})
 					}
@@ -439,7 +440,7 @@ Task:
 					CreatedAt:     now,
 					UpdatedAt:     now,
 				}
-				_ = deps.Videos.Upsert(gctx, nil, row)
+				_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
 				atomic.AddInt32(&nodesPlanned, 1)
 				return nil
 			}
@@ -461,7 +462,7 @@ Task:
 					CreatedAt:     now,
 					UpdatedAt:     now,
 				}
-				_ = deps.Videos.Upsert(gctx, nil, row)
+				_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
 				atomic.AddInt32(&nodesPlanned, 1)
 			} else {
 				for i := range plan.Videos {
@@ -481,14 +482,14 @@ Task:
 						CreatedAt:     now,
 						UpdatedAt:     now,
 					}
-					_ = deps.Videos.Upsert(gctx, nil, row)
+					_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, row)
 					atomic.AddInt32(&vidsPlanned, 1)
 				}
 				atomic.AddInt32(&nodesPlanned, 1)
 			}
 
 			if deps.GenRuns != nil {
-				_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_video_plan", nil, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeVideoPlanPromptVersion, succAttempt, latency, nil, metrics),
 				})
 			}

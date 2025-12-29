@@ -1,12 +1,12 @@
 package personalization
 
 import (
+	"time"
+
 	"github.com/google/uuid"
-	"github.com/yungbote/neurobridge-backend/internal/domain/learning/legacy_course"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-	"time"
 )
 
 const (
@@ -66,11 +66,6 @@ type UserEvent struct {
 	OccurredAt time.Time `gorm:"column:occurred_at;not null;index" json:"occurred_at"`
 	// Correlate to a session (your UserToken.ID is perfect)
 	SessionID uuid.UUID `gorm:"type:uuid;column:session_id;index" json:"session_id"`
-	// Legacy pointers (keep while old APIs still exist)
-	CourseID *uuid.UUID            `gorm:"type:uuid;index" json:"course_id,omitempty"`
-	Course   *legacy_course.Course `gorm:"constraint:OnDelete:SET NULL;foreignKey:CourseID;references:ID" json:"course,omitempty"`
-	LessonID *uuid.UUID            `gorm:"type:uuid;index" json:"lesson_id,omitempty"`
-	Lesson   *legacy_course.Lesson `gorm:"constraint:OnDelete:SET NULL;foreignKey:LessonID;references:ID" json:"lesson,omitempty"`
 	// New model pointers (queryable)
 	PathID          *uuid.UUID `gorm:"type:uuid;column:path_id;index" json:"path_id,omitempty"`
 	PathNodeID      *uuid.UUID `gorm:"type:uuid;column:path_node_id;index" json:"path_node_id,omitempty"`

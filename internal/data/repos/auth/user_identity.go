@@ -1,17 +1,18 @@
 package auth
 
 import (
-	"context"
 	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type UserIdentityRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, ids []*types.UserIdentity) ([]*types.UserIdentity, error)
-	GetByProviderSubs(ctx context.Context, tx *gorm.DB, provider string, subs []string) ([]*types.UserIdentity, error)
-	GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserIdentity, error)
+	Create(dbc dbctx.Context, ids []*types.UserIdentity) ([]*types.UserIdentity, error)
+	GetByProviderSubs(dbc dbctx.Context, provider string, subs []string) ([]*types.UserIdentity, error)
+	GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserIdentity, error)
 }
 
 type userIdentityRepo struct {
@@ -26,36 +27,36 @@ func NewUserIdentityRepo(db *gorm.DB, baseLog *logger.Logger) UserIdentityRepo {
 	}
 }
 
-func (r *userIdentityRepo) Create(ctx context.Context, tx *gorm.DB, ids []*types.UserIdentity) ([]*types.UserIdentity, error) {
-	txx := tx
+func (r *userIdentityRepo) Create(dbc dbctx.Context, ids []*types.UserIdentity) ([]*types.UserIdentity, error) {
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
-	if err := txx.WithContext(ctx).Create(&ids).Error; err != nil {
+	if err := txx.WithContext(dbc.Ctx).Create(&ids).Error; err != nil {
 		return nil, err
 	}
 	return ids, nil
 }
 
-func (r *userIdentityRepo) GetByProviderSubs(ctx context.Context, tx *gorm.DB, provider string, subs []string) ([]*types.UserIdentity, error) {
-	txx := tx
+func (r *userIdentityRepo) GetByProviderSubs(dbc dbctx.Context, provider string, subs []string) ([]*types.UserIdentity, error) {
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var out []*types.UserIdentity
-	if err := txx.WithContext(ctx).Where("provider = ? AND provider_sub IN ?", provider, subs).Find(&out).Error; err != nil {
+	if err := txx.WithContext(dbc.Ctx).Where("provider = ? AND provider_sub IN ?", provider, subs).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *userIdentityRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserIdentity, error) {
-	txx := tx
+func (r *userIdentityRepo) GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserIdentity, error) {
+	txx := dbc.Tx
 	if txx == nil {
 		txx = r.db
 	}
 	var out []*types.UserIdentity
-	if err := txx.WithContext(ctx).Where("user_id IN ?", userIDs).Find(&out).Error; err != nil {
+	if err := txx.WithContext(dbc.Ctx).Where("user_id IN ?", userIDs).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil

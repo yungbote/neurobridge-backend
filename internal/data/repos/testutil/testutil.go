@@ -98,13 +98,6 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.MaterialChunk{},
 		&types.MaterialAsset{},
 
-		&types.Course{},
-		&types.CourseTag{},
-		&types.CourseModule{},
-		&types.Lesson{},
-		&types.QuizQuestion{},
-		&types.CourseBlueprint{},
-
 		&types.Concept{},
 		&types.Activity{},
 		&types.ActivityVariant{},
@@ -123,8 +116,6 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.LearningProfile{},
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
-		&types.QuizAttempt{},
-
 		&types.JobRun{},
 	)
 }

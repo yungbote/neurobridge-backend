@@ -15,6 +15,7 @@ import (
 	pc "github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type HybridRetrieveOutput struct {
@@ -533,7 +534,8 @@ func looksLikePromptInjection(s string) bool {
 	return false
 }
 
-func graphContext(ctx context.Context, db *gorm.DB, userID uuid.UUID, retrieved []*types.ChatDoc, tokenBudget int) (string, error) {
+func graphContext(dbc dbctx.Context, userID uuid.UUID, retrieved []*types.ChatDoc, tokenBudget int) (string, error) {
+	db := dbc.Tx
 	if db == nil || userID == uuid.Nil || len(retrieved) == 0 {
 		return "", nil
 	}
@@ -562,7 +564,7 @@ func graphContext(ctx context.Context, db *gorm.DB, userID uuid.UUID, retrieved 
 	}
 
 	var entities []*types.ChatEntity
-	_ = db.WithContext(ctx).
+	_ = db.WithContext(dbc.Ctx).
 		Model(&types.ChatEntity{}).
 		Where("user_id = ? AND id IN ?", userID, entityIDs).
 		Find(&entities).Error
@@ -574,7 +576,7 @@ func graphContext(ctx context.Context, db *gorm.DB, userID uuid.UUID, retrieved 
 	}
 
 	var edges []*types.ChatEdge
-	_ = db.WithContext(ctx).
+	_ = db.WithContext(dbc.Ctx).
 		Model(&types.ChatEdge{}).
 		Where("user_id = ? AND (src_entity_id IN ? OR dst_entity_id IN ?)", userID, entityIDs, entityIDs).
 		Order("created_at DESC").

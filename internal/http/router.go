@@ -16,9 +16,6 @@ type RouterConfig struct {
 	ChatHandler     *httpH.ChatHandler
 	PathHandler     *httpH.PathHandler
 	ActivityHandler *httpH.ActivityHandler
-	CourseHandler   *httpH.CourseHandler
-	ModuleHandler   *httpH.ModuleHandler
-	LessonHandler   *httpH.LessonHandler
 	EventHandler    *httpH.EventHandler
 	JobHandler      *httpH.JobHandler
 
@@ -113,22 +110,6 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 		if cfg.ActivityHandler != nil {
 			protected.GET("/activities/:id", cfg.ActivityHandler.GetActivity)
-		}
-
-		// Course
-		if cfg.CourseHandler != nil {
-			protected.GET("/courses", cfg.CourseHandler.ListUserCourses)
-		}
-
-		// Module
-		if cfg.ModuleHandler != nil {
-			protected.GET("/courses/:id/modules", cfg.ModuleHandler.ListCourseModules)
-		}
-
-		// Lesson
-		if cfg.LessonHandler != nil {
-			protected.GET("modules/:id/lessons", cfg.LessonHandler.ListModuleLessons)
-			protected.GET("/lessons/:id", cfg.LessonHandler.GetLesson)
 		}
 
 		// User Event

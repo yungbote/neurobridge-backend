@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"gorm.io/gorm"
 )
 
@@ -17,11 +18,12 @@ func TestUserEventCursorRepo(t *testing.T) {
 	tx := testutil.Tx(t, db)
 
 	ctx := context.Background()
+	dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 	repo := NewUserEventCursorRepo(db, testutil.Logger(t))
 
-	u := testutil.SeedUser(t, ctx, tx, "usereventcursorrepo@example.com")
+	u := testutil.SeedUser(t, dbc, "usereventcursorrepo@example.com")
 
-	_, err := repo.Get(ctx, tx, u.ID, "missing")
+	_, err := repo.Get(dbc, u.ID, "missing")
 	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("Get(missing): expected ErrRecordNotFound, got %v", err)
 	}
@@ -35,11 +37,11 @@ func TestUserEventCursorRepo(t *testing.T) {
 		LastEventID:   testutil.PtrUUID(uuid.New()),
 		UpdatedAt:     now,
 	}
-	if err := repo.Upsert(ctx, tx, row); err != nil {
+	if err := repo.Upsert(dbc, row); err != nil {
 		t.Fatalf("Upsert(create): %v", err)
 	}
 
-	got, err := repo.Get(ctx, tx, u.ID, "consumer-a")
+	got, err := repo.Get(dbc, u.ID, "consumer-a")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -49,10 +51,10 @@ func TestUserEventCursorRepo(t *testing.T) {
 
 	now2 := now.Add(1 * time.Minute)
 	row.LastCreatedAt = &now2
-	if err := repo.Upsert(ctx, tx, row); err != nil {
+	if err := repo.Upsert(dbc, row); err != nil {
 		t.Fatalf("Upsert(update): %v", err)
 	}
-	got2, err := repo.Get(ctx, tx, u.ID, "consumer-a")
+	got2, err := repo.Get(dbc, u.ID, "consumer-a")
 	if err != nil {
 		t.Fatalf("Get(after update): %v", err)
 	}

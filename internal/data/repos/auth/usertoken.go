@@ -1,26 +1,27 @@
 package auth
 
 import (
-	"context"
 	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type UserTokenRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) ([]*types.UserToken, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) ([]*types.UserToken, error)
-	GetByUsers(ctx context.Context, tx *gorm.DB, users []*types.User) ([]*types.UserToken, error)
-	GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserToken, error)
-	GetByAccessTokens(ctx context.Context, tx *gorm.DB, accessTokens []string) ([]*types.UserToken, error)
-	GetByRefreshTokens(ctx context.Context, tx *gorm.DB, refreshTokens []string) ([]*types.UserToken, error)
-	SoftDeleteByTokens(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) error
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) error
-	SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error
-	FullDeleteByTokens(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) error
-	FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error
+	Create(dbc dbctx.Context, userTokens []*types.UserToken) ([]*types.UserToken, error)
+	GetByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) ([]*types.UserToken, error)
+	GetByUsers(dbc dbctx.Context, users []*types.User) ([]*types.UserToken, error)
+	GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserToken, error)
+	GetByAccessTokens(dbc dbctx.Context, accessTokens []string) ([]*types.UserToken, error)
+	GetByRefreshTokens(dbc dbctx.Context, refreshTokens []string) ([]*types.UserToken, error)
+	SoftDeleteByTokens(dbc dbctx.Context, userTokens []*types.UserToken) error
+	SoftDeleteByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) error
+	SoftDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error
+	FullDeleteByTokens(dbc dbctx.Context, userTokens []*types.UserToken) error
+	FullDeleteByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) error
+	FullDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error
 }
 
 type userTokenRepo struct {
@@ -33,8 +34,8 @@ func NewUserTokenRepo(db *gorm.DB, baseLog *logger.Logger) UserTokenRepo {
 	return &userTokenRepo{db: db, log: repoLog}
 }
 
-func (utr *userTokenRepo) Create(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) Create(dbc dbctx.Context, userTokens []*types.UserToken) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -43,15 +44,15 @@ func (utr *userTokenRepo) Create(ctx context.Context, tx *gorm.DB, userTokens []
 		return []*types.UserToken{}, nil
 	}
 
-	if err := transaction.WithContext(ctx).Create(&userTokens).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(&userTokens).Error; err != nil {
 		return nil, err
 	}
 
 	return userTokens, nil
 }
 
-func (utr *userTokenRepo) GetByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) GetByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -62,7 +63,7 @@ func (utr *userTokenRepo) GetByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", tokenIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -71,8 +72,8 @@ func (utr *userTokenRepo) GetByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []
 	return results, nil
 }
 
-func (utr *userTokenRepo) GetByUsers(ctx context.Context, tx *gorm.DB, users []*types.User) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) GetByUsers(dbc dbctx.Context, users []*types.User) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -86,11 +87,11 @@ func (utr *userTokenRepo) GetByUsers(ctx context.Context, tx *gorm.DB, users []*
 		userIDs = append(userIDs, u.ID)
 	}
 
-	return utr.GetByUserIDs(ctx, transaction, userIDs)
+	return utr.GetByUserIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, userIDs)
 }
 
-func (utr *userTokenRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -101,7 +102,7 @@ func (utr *userTokenRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("user_id IN ?", userIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -110,8 +111,8 @@ func (utr *userTokenRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs
 	return results, nil
 }
 
-func (utr *userTokenRepo) GetByAccessTokens(ctx context.Context, tx *gorm.DB, accessTokens []string) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) GetByAccessTokens(dbc dbctx.Context, accessTokens []string) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -122,7 +123,7 @@ func (utr *userTokenRepo) GetByAccessTokens(ctx context.Context, tx *gorm.DB, ac
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("access_token IN ?", accessTokens).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -131,8 +132,8 @@ func (utr *userTokenRepo) GetByAccessTokens(ctx context.Context, tx *gorm.DB, ac
 	return results, nil
 }
 
-func (utr *userTokenRepo) GetByRefreshTokens(ctx context.Context, tx *gorm.DB, refreshTokens []string) ([]*types.UserToken, error) {
-	transaction := tx
+func (utr *userTokenRepo) GetByRefreshTokens(dbc dbctx.Context, refreshTokens []string) ([]*types.UserToken, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -143,7 +144,7 @@ func (utr *userTokenRepo) GetByRefreshTokens(ctx context.Context, tx *gorm.DB, r
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("refresh_token IN ?", refreshTokens).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -152,8 +153,8 @@ func (utr *userTokenRepo) GetByRefreshTokens(ctx context.Context, tx *gorm.DB, r
 	return results, nil
 }
 
-func (utr *userTokenRepo) SoftDeleteByTokens(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) error {
-	transaction := tx
+func (utr *userTokenRepo) SoftDeleteByTokens(dbc dbctx.Context, userTokens []*types.UserToken) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -167,11 +168,11 @@ func (utr *userTokenRepo) SoftDeleteByTokens(ctx context.Context, tx *gorm.DB, u
 		tokenIDs = append(tokenIDs, t.ID)
 	}
 
-	return utr.SoftDeleteByIDs(ctx, transaction, tokenIDs)
+	return utr.SoftDeleteByIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, tokenIDs)
 }
 
-func (utr *userTokenRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) error {
-	transaction := tx
+func (utr *userTokenRepo) SoftDeleteByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -180,7 +181,7 @@ func (utr *userTokenRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, toke
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN (?)", tokenIDs).
 		Delete(&types.UserToken{}).Error; err != nil {
 		return err
@@ -189,8 +190,8 @@ func (utr *userTokenRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, toke
 	return nil
 }
 
-func (utr *userTokenRepo) SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error {
-	transaction := tx
+func (utr *userTokenRepo) SoftDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -199,7 +200,7 @@ func (utr *userTokenRepo) SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, 
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("user_id IN (?)", userIDs).
 		Delete(&types.UserToken{}).Error; err != nil {
 		return err
@@ -208,8 +209,8 @@ func (utr *userTokenRepo) SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, 
 	return nil
 }
 
-func (utr *userTokenRepo) FullDeleteByTokens(ctx context.Context, tx *gorm.DB, userTokens []*types.UserToken) error {
-	transaction := tx
+func (utr *userTokenRepo) FullDeleteByTokens(dbc dbctx.Context, userTokens []*types.UserToken) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -223,11 +224,11 @@ func (utr *userTokenRepo) FullDeleteByTokens(ctx context.Context, tx *gorm.DB, u
 		tokenIDs = append(tokenIDs, t.ID)
 	}
 
-	return utr.FullDeleteByIDs(ctx, transaction, tokenIDs)
+	return utr.FullDeleteByIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, tokenIDs)
 }
 
-func (utr *userTokenRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, tokenIDs []uuid.UUID) error {
-	transaction := tx
+func (utr *userTokenRepo) FullDeleteByIDs(dbc dbctx.Context, tokenIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -236,7 +237,7 @@ func (utr *userTokenRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, toke
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("id IN (?)", tokenIDs).
 		Delete(&types.UserToken{}).Error; err != nil {
@@ -246,8 +247,8 @@ func (utr *userTokenRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, toke
 	return nil
 }
 
-func (utr *userTokenRepo) FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error {
-	transaction := tx
+func (utr *userTokenRepo) FullDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = utr.db
 	}
@@ -256,7 +257,7 @@ func (utr *userTokenRepo) FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, 
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("user_id IN (?)", userIDs).
 		Delete(&types.UserToken{}).Error; err != nil {

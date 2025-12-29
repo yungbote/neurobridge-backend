@@ -10,6 +10,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/clients/twilio"
+	"github.com/yungbote/neurobridge-backend/internal/clients/sendgrid"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 )
@@ -19,19 +21,25 @@ type Clients struct {
 	SSEBus bus.Bus
 
 	// OpenAI
-	OpenaiClient  openai.Client
-	OpenaiCaption openai.Caption
+	OpenaiClient				openai.Client
+	OpenaiCaption				openai.Caption
 
 	// Pinecone
 	PineconeClient      pinecone.Client
 	PineconeVectorStore pinecone.VectorStore
 
 	// GCP
-	GcpBucket   gcp.BucketService
-	GcpDocument gcp.Document
-	GcpSpeech   gcp.Speech
-	GcpVideo    gcp.Video
-	GcpVision   gcp.Vision
+	GcpBucket						gcp.BucketService
+	GcpDocument					gcp.Document
+	GcpSpeech						gcp.Speech
+	GcpVideo						gcp.Video
+	GcpVision						gcp.Vision
+
+	// Twilio
+	TwilioClient				twilio.Client
+
+	// Sendgrid
+	SendgridClient			sendgrid.Client
 
 	// Local Media
 	LMTools localmedia.MediaToolsService
@@ -130,6 +138,31 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	// ---------------- Local Media Tools ----------------
 	out.LMTools = localmedia.New(log)
 
+	// ----------------------- Twilio -------------------
+	if strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID")) != "" {
+		tw, err := twilio.NewFromEnv(log)
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init twilio client: %w", err)
+		}
+		out.TwilioClient = tw
+	} else {
+		log.Warn("TWILIO_ACCOUNT_SID not set; SMS disabled")
+	}
+
+	// ---------------- SendGrid -------------------------
+	if strings.TrimSpace(os.Getenv("SENDGRID_API_KEY")) != "" {
+		sg, err := sendgrid.NewFromEnv(log)
+		if err != nil {
+			out.Close()
+			return Clients{}, fmt.Errorf("init sendgrid client: %w", err)
+		}
+		out.SendgridClient = sg
+	} else {
+		log.Warn("SENDGRID_API_KEY not set; email disabled")
+	}
+
+
 	return out, nil
 }
 
@@ -158,8 +191,13 @@ func (c *Clients) Close() {
 		c.GcpVision = nil
 	}
 
+	c.TwilioClient = nil
+	c.SendgridClient = nil
+
 	c.PineconeClient = nil
 	c.PineconeVectorStore = nil
 	c.OpenaiClient = nil
 	c.OpenaiCaption = nil
+
+	c.LMTools = nil
 }

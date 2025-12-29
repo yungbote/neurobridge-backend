@@ -9,14 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/httpx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -177,49 +177,11 @@ func (e *openAIHTTPError) Error() string {
 	return fmt.Sprintf("openai http %d: %s", e.StatusCode, e.Body)
 }
 
-func isRetryableHTTP(code int) bool {
-	if code == 408 || code == 429 {
-		return true
-	}
-	if code >= 500 && code <= 599 {
-		return true
-	}
-	return false
-}
-
-func isRetryableErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		if netErr.Timeout() || netErr.Temporary() {
-			return true
-		}
-	}
-	var httpErr *openAIHTTPError
-	if errors.As(err, &httpErr) {
-		return isRetryableHTTP(httpErr.StatusCode)
-	}
-	return false
-}
-
-func jitterSleep(base time.Duration) time.Duration {
-	if base <= 0 {
+func (e *openAIHTTPError) HTTPStatusCode() int {
+	if e == nil {
 		return 0
 	}
-	j := 0.2
-	delta := base.Seconds() * j
-	low := base.Seconds() - delta
-	high := base.Seconds() + delta
-	if low < 0 {
-		low = 0
-	}
-	v := low + rand.Float64()*(high-low)
-	return time.Duration(v * float64(time.Second))
+	return e.StatusCode
 }
 
 func (c *client) doOnce(ctx context.Context, method, path string, body any) (*http.Response, []byte, error) {
@@ -273,27 +235,15 @@ func (c *client) do(ctx context.Context, method, path string, body any, out any)
 			return nil
 		}
 
-		if !isRetryableErr(err) {
+		if !httpx.IsRetryableError(err) {
 			return err
 		}
 		if attempt == c.maxRetries {
 			return err
 		}
 
-		sleepFor := backoff
-		if resp != nil {
-			ra := strings.TrimSpace(resp.Header.Get("Retry-After"))
-			if ra != "" {
-				if secs, parseErr := strconv.Atoi(ra); parseErr == nil && secs > 0 {
-					sleepFor = time.Duration(secs) * time.Second
-				}
-			}
-		}
-
-		if sleepFor > 10*time.Second {
-			sleepFor = 10 * time.Second
-		}
-		sleepFor = jitterSleep(sleepFor)
+		sleepFor := httpx.RetryAfterDuration(resp, backoff, 10*time.Second)
+		sleepFor = httpx.JitterSleep(sleepFor)
 
 		c.log.Warn("OpenAI request retrying",
 			"path", path,
@@ -598,7 +548,7 @@ func (c *client) GenerateVideo(ctx context.Context, prompt string, opts VideoGen
 }
 
 func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "GET", url, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -810,13 +760,6 @@ func (c *client) GenerateTextWithImages(ctx context.Context, system string, user
 	return text, nil
 }
 
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
-
 // StreamText streams output_text deltas from the Responses API (no conversation state).
 // It is best-effort: any non-empty delta is forwarded to onDelta and accumulated into the returned text.
 func (c *client) StreamText(ctx context.Context, system string, user string, onDelta func(delta string)) (string, error) {
@@ -838,7 +781,7 @@ func (c *client) StreamText(ctx context.Context, system string, user string, onD
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
 	if err != nil {
 		return "", err
 	}
@@ -979,7 +922,7 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(defaultCtx(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
 	if err != nil {
 		return "", err
 	}

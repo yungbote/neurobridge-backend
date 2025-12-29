@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,32 +13,33 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatService interface {
-	CreateThread(ctx context.Context, tx *gorm.DB, title string, pathID *uuid.UUID, jobID *uuid.UUID) (*types.ChatThread, error)
-	ListThreads(ctx context.Context, tx *gorm.DB, limit int) ([]*types.ChatThread, error)
-	GetThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) (*types.ChatThread, []*types.ChatMessage, error)
-	ListMessages(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int, beforeSeq *int64) ([]*types.ChatMessage, error)
+	CreateThread(dbc dbctx.Context, title string, pathID *uuid.UUID, jobID *uuid.UUID) (*types.ChatThread, error)
+	ListThreads(dbc dbctx.Context, limit int) ([]*types.ChatThread, error)
+	GetThread(dbc dbctx.Context, threadID uuid.UUID, limit int) (*types.ChatThread, []*types.ChatMessage, error)
+	ListMessages(dbc dbctx.Context, threadID uuid.UUID, limit int, beforeSeq *int64) ([]*types.ChatMessage, error)
 
 	// SendMessage persists a user message, creates an assistant placeholder message, and enqueues a "chat_respond" job.
-	SendMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, content string, idempotencyKey string) (*types.ChatMessage, *types.ChatMessage, *types.JobRun, error)
+	SendMessage(dbc dbctx.Context, threadID uuid.UUID, content string, idempotencyKey string) (*types.ChatMessage, *types.ChatMessage, *types.JobRun, error)
 
 	// RebuildThread enqueues a deterministic rebuild of derived chat artifacts (docs/summaries/graph/memory).
-	RebuildThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.JobRun, error)
+	RebuildThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error)
 
 	// DeleteThread soft-deletes the thread/messages and enqueues a purge of derived artifacts + vectors.
-	DeleteThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.JobRun, error)
+	DeleteThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error)
 
 	// UpdateMessage updates a message (user-only) and enqueues a rebuild to keep projections consistent.
-	UpdateMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, messageID uuid.UUID, content string) (*types.JobRun, error)
+	UpdateMessage(dbc dbctx.Context, threadID uuid.UUID, messageID uuid.UUID, content string) (*types.JobRun, error)
 
 	// DeleteMessage soft-deletes a message (user-only) and enqueues a rebuild to keep projections consistent.
-	DeleteMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, messageID uuid.UUID) (*types.JobRun, error)
+	DeleteMessage(dbc dbctx.Context, threadID uuid.UUID, messageID uuid.UUID) (*types.JobRun, error)
 
 	// GetTurn fetches a single turn (includes retrieval_trace) for debugging.
-	GetTurn(ctx context.Context, tx *gorm.DB, turnID uuid.UUID) (*types.ChatTurn, error)
+	GetTurn(dbc dbctx.Context, turnID uuid.UUID) (*types.ChatTurn, error)
 }
 
 type chatService struct {
@@ -80,8 +80,8 @@ func NewChatService(
 	}
 }
 
-func (s *chatService) CreateThread(ctx context.Context, tx *gorm.DB, title string, pathID *uuid.UUID, jobID *uuid.UUID) (*types.ChatThread, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) CreateThread(dbc dbctx.Context, title string, pathID *uuid.UUID, jobID *uuid.UUID) (*types.ChatThread, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -94,13 +94,14 @@ func (s *chatService) CreateThread(ctx context.Context, tx *gorm.DB, title strin
 		title = "New chat"
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
 	if pathID != nil && *pathID != uuid.Nil && s.paths != nil {
-		p, err := s.paths.GetByID(ctx, transaction, *pathID)
+		p, err := s.paths.GetByID(repoCtx, *pathID)
 		if err != nil || p == nil || p.UserID == nil || *p.UserID != rd.UserID {
 			return nil, fmt.Errorf("path not found")
 		}
@@ -108,7 +109,7 @@ func (s *chatService) CreateThread(ctx context.Context, tx *gorm.DB, title strin
 
 	// Optional: link to an existing job (e.g., a path build job).
 	if jobID != nil && *jobID != uuid.Nil && s.jobRuns != nil {
-		rows, err := s.jobRuns.GetByIDs(ctx, transaction, []uuid.UUID{*jobID})
+		rows, err := s.jobRuns.GetByIDs(repoCtx, []uuid.UUID{*jobID})
 		if err != nil || len(rows) == 0 || rows[0] == nil || rows[0].OwnerUserID != rd.UserID {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -130,7 +131,7 @@ func (s *chatService) CreateThread(ctx context.Context, tx *gorm.DB, title strin
 		UpdatedAt:     now,
 	}
 
-	created, err := s.threads.Create(ctx, transaction, []*types.ChatThread{thread})
+	created, err := s.threads.Create(repoCtx, []*types.ChatThread{thread})
 	if err != nil {
 		return nil, err
 	}
@@ -145,23 +146,24 @@ func (s *chatService) CreateThread(ctx context.Context, tx *gorm.DB, title strin
 	return created[0], nil
 }
 
-func (s *chatService) ListThreads(ctx context.Context, tx *gorm.DB, limit int) ([]*types.ChatThread, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) ListThreads(dbc dbctx.Context, limit int) ([]*types.ChatThread, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if s.threads == nil {
 		return nil, fmt.Errorf("chat threads repo not wired")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
-	return s.threads.ListByUser(ctx, transaction, rd.UserID, limit)
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	return s.threads.ListByUser(repoCtx, rd.UserID, limit)
 }
 
-func (s *chatService) GetThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int) (*types.ChatThread, []*types.ChatMessage, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) GetThread(dbc dbctx.Context, threadID uuid.UUID, limit int) (*types.ChatThread, []*types.ChatMessage, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, nil, fmt.Errorf("not authenticated")
 	}
@@ -171,12 +173,13 @@ func (s *chatService) GetThread(ctx context.Context, tx *gorm.DB, threadID uuid.
 	if s.threads == nil || s.messages == nil {
 		return nil, nil, fmt.Errorf("chat repos not wired")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
-	rows, err := s.threads.GetByIDs(ctx, transaction, []uuid.UUID{threadID})
+	rows, err := s.threads.GetByIDs(repoCtx, []uuid.UUID{threadID})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -184,15 +187,15 @@ func (s *chatService) GetThread(ctx context.Context, tx *gorm.DB, threadID uuid.
 		return nil, nil, fmt.Errorf("thread not found")
 	}
 
-	msgs, err := s.messages.ListByThread(ctx, transaction, threadID, limit)
+	msgs, err := s.messages.ListByThread(repoCtx, threadID, limit)
 	if err != nil {
 		return nil, nil, err
 	}
 	return rows[0], msgs, nil
 }
 
-func (s *chatService) ListMessages(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, limit int, beforeSeq *int64) ([]*types.ChatMessage, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) ListMessages(dbc dbctx.Context, threadID uuid.UUID, limit int, beforeSeq *int64) ([]*types.ChatMessage, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -205,12 +208,13 @@ func (s *chatService) ListMessages(ctx context.Context, tx *gorm.DB, threadID uu
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
-	rows, err := s.threads.GetByIDs(ctx, transaction, []uuid.UUID{threadID})
+	rows, err := s.threads.GetByIDs(repoCtx, []uuid.UUID{threadID})
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +224,7 @@ func (s *chatService) ListMessages(ctx context.Context, tx *gorm.DB, threadID uu
 
 	// Cursor-based paging by seq (monotonic).
 	var msgs []*types.ChatMessage
-	q := transaction.WithContext(ctx).
+	q := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("thread_id = ?", threadID)
 	if beforeSeq != nil {
@@ -235,8 +239,8 @@ func (s *chatService) ListMessages(ctx context.Context, tx *gorm.DB, threadID uu
 	return msgs, nil
 }
 
-func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, content string, idempotencyKey string) (*types.ChatMessage, *types.ChatMessage, *types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content string, idempotencyKey string) (*types.ChatMessage, *types.ChatMessage, *types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, nil, nil, fmt.Errorf("not authenticated")
 	}
@@ -259,10 +263,11 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 		return nil, nil, nil, fmt.Errorf("chat service not fully wired")
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
 	var (
 		userMsg    *types.ChatMessage
@@ -274,7 +279,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 	// Fast-path idempotency (no lock): let clients safely retry while a response is still running.
 	if idempotencyKey != "" {
 		var existing types.ChatMessage
-		err := transaction.WithContext(ctx).
+		err := transaction.WithContext(dbc.Ctx).
 			Model(&types.ChatMessage{}).
 			Where("thread_id = ? AND user_id = ? AND role = ? AND idempotency_key = ? AND deleted_at IS NULL",
 				threadID, rd.UserID, "user", idempotencyKey,
@@ -284,7 +289,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 			userMsg = &existing
 
 			var existingAsst types.ChatMessage
-			_ = transaction.WithContext(ctx).
+			_ = transaction.WithContext(dbc.Ctx).
 				Model(&types.ChatMessage{}).
 				Where("thread_id = ? AND user_id = ? AND seq = ? AND role = ? AND deleted_at IS NULL",
 					threadID, rd.UserID, existing.Seq+1, "assistant",
@@ -294,9 +299,9 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 				asstMsg = &existingAsst
 			}
 
-			turn, _ := s.turns.GetByUserMessageID(ctx, transaction, rd.UserID, threadID, existing.ID)
+			turn, _ := s.turns.GetByUserMessageID(repoCtx, rd.UserID, threadID, existing.ID)
 			if turn != nil && turn.JobID != nil && s.jobRuns != nil {
-				rows, _ := s.jobRuns.GetByIDs(ctx, transaction, []uuid.UUID{*turn.JobID})
+				rows, _ := s.jobRuns.GetByIDs(repoCtx, []uuid.UUID{*turn.JobID})
 				if len(rows) > 0 && rows[0] != nil {
 					job = rows[0]
 				}
@@ -309,7 +314,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 	}
 
 	// For now, enforce a single runnable chat_respond per thread (keeps OpenAI conversation ordering sane).
-	has, err := s.jobRuns.HasRunnableForEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_respond")
+	has, err := s.jobRuns.HasRunnableForEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_respond")
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -317,9 +322,10 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 		return nil, nil, nil, fmt.Errorf("thread is busy")
 	}
 
-	err = transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+	err = transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
 		// Lock thread for concurrency-safe sequencing.
-		th, err := s.threads.LockByID(ctx, txx, threadID)
+		th, err := s.threads.LockByID(inner, threadID)
 		if err != nil {
 			return err
 		}
@@ -330,7 +336,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 		// Idempotency: if the client retries the same message, return the existing turn.
 		if idempotencyKey != "" {
 			var existing types.ChatMessage
-			err := txx.WithContext(ctx).
+			err := txx.WithContext(dbc.Ctx).
 				Model(&types.ChatMessage{}).
 				Where("thread_id = ? AND user_id = ? AND role = ? AND idempotency_key = ? AND deleted_at IS NULL",
 					threadID, rd.UserID, "user", idempotencyKey,
@@ -341,7 +347,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 
 				// Assistant placeholder is always seq+1.
 				var existingAsst types.ChatMessage
-				_ = txx.WithContext(ctx).
+				_ = txx.WithContext(dbc.Ctx).
 					Model(&types.ChatMessage{}).
 					Where("thread_id = ? AND user_id = ? AND seq = ? AND role = ? AND deleted_at IS NULL",
 						threadID, rd.UserID, existing.Seq+1, "assistant",
@@ -351,9 +357,9 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 					asstMsg = &existingAsst
 				}
 
-				turn, _ := s.turns.GetByUserMessageID(ctx, txx, rd.UserID, threadID, existing.ID)
+				turn, _ := s.turns.GetByUserMessageID(inner, rd.UserID, threadID, existing.ID)
 				if turn != nil && turn.JobID != nil && s.jobRuns != nil {
-					rows, _ := s.jobRuns.GetByIDs(ctx, txx, []uuid.UUID{*turn.JobID})
+					rows, _ := s.jobRuns.GetByIDs(inner, []uuid.UUID{*turn.JobID})
 					if len(rows) > 0 && rows[0] != nil {
 						job = rows[0]
 					}
@@ -367,7 +373,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 		}
 
 		// Re-check inside the thread lock to avoid races between concurrent requests.
-		has, err := s.jobRuns.HasRunnableForEntity(ctx, txx, rd.UserID, "chat_thread", threadID, "chat_respond")
+		has, err := s.jobRuns.HasRunnableForEntity(inner, rd.UserID, "chat_thread", threadID, "chat_respond")
 		if err != nil {
 			return err
 		}
@@ -407,13 +413,13 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 			UpdatedAt: now,
 		}
 
-		if _, err := s.messages.Create(ctx, txx, []*types.ChatMessage{userMsg, asstMsg}); err != nil {
+		if _, err := s.messages.Create(inner, []*types.ChatMessage{userMsg, asstMsg}); err != nil {
 			return err
 		}
 		createdNew = true
 
 		// Advance thread seq + timestamps.
-		if err := s.threads.UpdateFields(ctx, txx, threadID, map[string]interface{}{
+		if err := s.threads.UpdateFields(inner, threadID, map[string]interface{}{
 			"next_seq":        seqAsst,
 			"last_message_at": now,
 			"last_viewed_at":  now,
@@ -430,7 +436,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 			"turn_id":              turnID.String(),
 		}
 		entityID := threadID
-		enqueued, err := s.jobs.Enqueue(ctx, txx, rd.UserID, "chat_respond", "chat_thread", &entityID, payload)
+		enqueued, err := s.jobs.Enqueue(inner, rd.UserID, "chat_respond", "chat_thread", &entityID, payload)
 		if err != nil {
 			return err
 		}
@@ -450,7 +456,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 			CreatedAt:          now,
 			UpdatedAt:          now,
 		}
-		if err := s.turns.Create(ctx, txx, turn); err != nil {
+		if err := s.turns.Create(inner, turn); err != nil {
 			return err
 		}
 
@@ -460,7 +466,7 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 			"turn_id": turnID.String(),
 		}
 		if b, err := json.Marshal(meta); err == nil {
-			_ = s.messages.UpdateFields(ctx, txx, asstMsg.ID, map[string]interface{}{
+			_ = s.messages.UpdateFields(inner, asstMsg.ID, map[string]interface{}{
 				"metadata":   datatypes.JSON(b),
 				"updated_at": now,
 			})
@@ -486,8 +492,8 @@ func (s *chatService) SendMessage(ctx context.Context, tx *gorm.DB, threadID uui
 	return userMsg, asstMsg, job, nil
 }
 
-func (s *chatService) RebuildThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) RebuildThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -497,12 +503,13 @@ func (s *chatService) RebuildThread(ctx context.Context, tx *gorm.DB, threadID u
 	if s.jobs == nil || s.jobRuns == nil || s.threads == nil {
 		return nil, fmt.Errorf("chat service not fully wired")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
-	threads, err := s.threads.GetByIDs(ctx, transaction, []uuid.UUID{threadID})
+	threads, err := s.threads.GetByIDs(repoCtx, []uuid.UUID{threadID})
 	if err != nil {
 		return nil, err
 	}
@@ -511,13 +518,13 @@ func (s *chatService) RebuildThread(ctx context.Context, tx *gorm.DB, threadID u
 	}
 
 	// Avoid rebuilding while a response is in-flight; let it retry later.
-	if has, _ := s.jobRuns.HasRunnableForEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_respond"); has {
+	if has, _ := s.jobRuns.HasRunnableForEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_respond"); has {
 		return nil, fmt.Errorf("thread is busy")
 	}
 
 	// Debounce rebuild jobs.
-	if has, _ := s.jobRuns.HasRunnableForEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_rebuild"); has {
-		if latest, _ := s.jobRuns.GetLatestByEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_rebuild"); latest != nil {
+	if has, _ := s.jobRuns.HasRunnableForEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_rebuild"); has {
+		if latest, _ := s.jobRuns.GetLatestByEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_rebuild"); latest != nil {
 			return latest, nil
 		}
 		return nil, fmt.Errorf("rebuild already queued")
@@ -525,11 +532,11 @@ func (s *chatService) RebuildThread(ctx context.Context, tx *gorm.DB, threadID u
 
 	payload := map[string]any{"thread_id": threadID.String()}
 	entityID := threadID
-	return s.jobs.Enqueue(ctx, transaction, rd.UserID, "chat_rebuild", "chat_thread", &entityID, payload)
+	return s.jobs.Enqueue(repoCtx, rd.UserID, "chat_rebuild", "chat_thread", &entityID, payload)
 }
 
-func (s *chatService) DeleteThread(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) DeleteThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -539,28 +546,30 @@ func (s *chatService) DeleteThread(ctx context.Context, tx *gorm.DB, threadID uu
 	if s.jobs == nil || s.jobRuns == nil || s.db == nil {
 		return nil, fmt.Errorf("chat service not fully wired")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
 	// Avoid deleting while a response is in-flight.
-	if has, _ := s.jobRuns.HasRunnableForEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_respond"); has {
+	if has, _ := s.jobRuns.HasRunnableForEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_respond"); has {
 		return nil, fmt.Errorf("thread is busy")
 	}
 	// Debounce purge jobs.
-	if has, _ := s.jobRuns.HasRunnableForEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_purge"); has {
-		if latest, _ := s.jobRuns.GetLatestByEntity(ctx, transaction, rd.UserID, "chat_thread", threadID, "chat_purge"); latest != nil {
+	if has, _ := s.jobRuns.HasRunnableForEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_purge"); has {
+		if latest, _ := s.jobRuns.GetLatestByEntity(repoCtx, rd.UserID, "chat_thread", threadID, "chat_purge"); latest != nil {
 			return latest, nil
 		}
 		return nil, fmt.Errorf("purge already queued")
 	}
 
 	var job *types.JobRun
-	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
 		// Ensure thread exists + belongs to user.
 		var thread types.ChatThread
-		if err := txx.WithContext(ctx).
+		if err := txx.WithContext(dbc.Ctx).
 			Model(&types.ChatThread{}).
 			Where("id = ? AND user_id = ?", threadID, rd.UserID).
 			First(&thread).Error; err != nil {
@@ -568,12 +577,12 @@ func (s *chatService) DeleteThread(ctx context.Context, tx *gorm.DB, threadID uu
 		}
 
 		// Soft-delete messages + thread (canonical).
-		if err := txx.WithContext(ctx).
+		if err := txx.WithContext(dbc.Ctx).
 			Where("thread_id = ? AND user_id = ?", threadID, rd.UserID).
 			Delete(&types.ChatMessage{}).Error; err != nil {
 			return err
 		}
-		if err := txx.WithContext(ctx).
+		if err := txx.WithContext(dbc.Ctx).
 			Where("id = ? AND user_id = ?", threadID, rd.UserID).
 			Delete(&types.ChatThread{}).Error; err != nil {
 			return err
@@ -582,7 +591,7 @@ func (s *chatService) DeleteThread(ctx context.Context, tx *gorm.DB, threadID uu
 		// Enqueue purge to remove derived artifacts + vector cache.
 		payload := map[string]any{"thread_id": threadID.String()}
 		entityID := threadID
-		enq, err := s.jobs.Enqueue(ctx, txx, rd.UserID, "chat_purge", "chat_thread", &entityID, payload)
+		enq, err := s.jobs.Enqueue(inner, rd.UserID, "chat_purge", "chat_thread", &entityID, payload)
 		if err != nil {
 			return err
 		}
@@ -595,8 +604,8 @@ func (s *chatService) DeleteThread(ctx context.Context, tx *gorm.DB, threadID uu
 	return job, nil
 }
 
-func (s *chatService) UpdateMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, messageID uuid.UUID, content string) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) UpdateMessage(dbc dbctx.Context, threadID uuid.UUID, messageID uuid.UUID, content string) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -610,13 +619,14 @@ func (s *chatService) UpdateMessage(ctx context.Context, tx *gorm.DB, threadID u
 	if len(content) > 20000 {
 		return nil, fmt.Errorf("message too large")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
 	// Only allow editing user messages.
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatMessage{}).
 		Where("id = ? AND thread_id = ? AND user_id = ? AND role = ?", messageID, threadID, rd.UserID, "user").
 		Updates(map[string]interface{}{
@@ -627,34 +637,35 @@ func (s *chatService) UpdateMessage(ctx context.Context, tx *gorm.DB, threadID u
 	}
 
 	// Rebuild projections to ensure all derived artifacts are consistent.
-	return s.RebuildThread(ctx, transaction, threadID)
+	return s.RebuildThread(repoCtx, threadID)
 }
 
-func (s *chatService) DeleteMessage(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, messageID uuid.UUID) (*types.JobRun, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) DeleteMessage(dbc dbctx.Context, threadID uuid.UUID, messageID uuid.UUID) (*types.JobRun, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
 	if threadID == uuid.Nil || messageID == uuid.Nil {
 		return nil, fmt.Errorf("missing ids")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 
 	// Only allow deleting user messages.
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id = ? AND thread_id = ? AND user_id = ? AND role = ?", messageID, threadID, rd.UserID, "user").
 		Delete(&types.ChatMessage{}).Error; err != nil {
 		return nil, err
 	}
 
-	return s.RebuildThread(ctx, transaction, threadID)
+	return s.RebuildThread(repoCtx, threadID)
 }
 
-func (s *chatService) GetTurn(ctx context.Context, tx *gorm.DB, turnID uuid.UUID) (*types.ChatTurn, error) {
-	rd := ctxutil.GetRequestData(ctx)
+func (s *chatService) GetTurn(dbc dbctx.Context, turnID uuid.UUID) (*types.ChatTurn, error) {
+	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
@@ -664,9 +675,10 @@ func (s *chatService) GetTurn(ctx context.Context, tx *gorm.DB, turnID uuid.UUID
 	if s.turns == nil {
 		return nil, fmt.Errorf("chat turns repo not wired")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db
 	}
-	return s.turns.GetByID(ctx, transaction, rd.UserID, turnID)
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	return s.turns.GetByID(repoCtx, rd.UserID, turnID)
 }

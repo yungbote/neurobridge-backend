@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -9,11 +8,12 @@ import (
 	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatMemoryItemRepo interface {
-	UpsertMany(ctx context.Context, tx *gorm.DB, rows []*types.ChatMemoryItem) error
+	UpsertMany(dbc dbctx.Context, rows []*types.ChatMemoryItem) error
 }
 
 type chatMemoryItemRepo struct {
@@ -28,11 +28,11 @@ func NewChatMemoryItemRepo(db *gorm.DB, log *logger.Logger) ChatMemoryItemRepo {
 	}
 }
 
-func (r *chatMemoryItemRepo) UpsertMany(ctx context.Context, tx *gorm.DB, rows []*types.ChatMemoryItem) error {
+func (r *chatMemoryItemRepo) UpsertMany(dbc dbctx.Context, rows []*types.ChatMemoryItem) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -49,7 +49,7 @@ func (r *chatMemoryItemRepo) UpsertMany(ctx context.Context, tx *gorm.DB, rows [
 		}
 
 		// Manual upsert to handle nullable scope_id safely (user scope uses NULL).
-		q := transaction.WithContext(ctx).Model(&types.ChatMemoryItem{}).
+		q := transaction.WithContext(dbc.Ctx).Model(&types.ChatMemoryItem{}).
 			Where("user_id = ? AND scope = ? AND kind = ? AND key = ? AND deleted_at IS NULL",
 				row.UserID, strings.TrimSpace(row.Scope), strings.TrimSpace(row.Kind), strings.TrimSpace(row.Key),
 			)
@@ -62,7 +62,7 @@ func (r *chatMemoryItemRepo) UpsertMany(ctx context.Context, tx *gorm.DB, rows [
 		var existing types.ChatMemoryItem
 		err := q.First(&existing).Error
 		if err == nil && existing.ID != uuid.Nil {
-			if err := transaction.WithContext(ctx).
+			if err := transaction.WithContext(dbc.Ctx).
 				Model(&types.ChatMemoryItem{}).
 				Where("id = ?", existing.ID).
 				Updates(map[string]interface{}{
@@ -86,7 +86,7 @@ func (r *chatMemoryItemRepo) UpsertMany(ctx context.Context, tx *gorm.DB, rows [
 		if row.ID == uuid.Nil {
 			row.ID = uuid.New()
 		}
-		if err := transaction.WithContext(ctx).Create(row).Error; err != nil {
+		if err := transaction.WithContext(dbc.Ctx).Create(row).Error; err != nil {
 			return err
 		}
 	}

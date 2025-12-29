@@ -17,7 +17,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/completed_unit_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_cluster_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
-	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/course_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
@@ -56,9 +55,6 @@ type Services struct {
 
 	User     services.UserService
 	Material services.MaterialService
-	Course   services.CourseService
-	Module   services.ModuleService
-	Lesson   services.LessonService
 
 	// User Event Ingestion (raw user_event log)
 	Events services.EventService
@@ -67,7 +63,6 @@ type Services struct {
 	JobNotifier    services.JobNotifier
 	JobService     services.JobService
 	Workflow       services.WorkflowService
-	CourseNotifier services.CourseNotifier
 	ChatNotifier   services.ChatNotifier
 	Chat           services.ChatService
 
@@ -113,9 +108,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	userService := services.NewUserService(db, log, repos.User, avatarService)
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
-	courseService := services.NewCourseService(db, log, repos.Course, repos.MaterialSet)
-	moduleService := services.NewModuleService(db, log, repos.Course, repos.CourseModule)
-	lessonService := services.NewLessonService(db, log, repos.Course, repos.CourseModule, repos.Lesson)
 	eventService := services.NewEventService(db, log, repos.UserEvent)
 
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
@@ -140,7 +132,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
 
 	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread)
-	courseNotifier := services.NewCourseNotifier(emitter)
 	chatNotifier := services.NewChatNotifier(emitter)
 
 	extractor := ingestion.NewContentExtractionService(
@@ -511,26 +502,6 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	courseBuild := course_build.NewCourseBuildPipeline(
-		db,
-		log,
-		repos.Course,
-		repos.MaterialFile,
-		repos.CourseModule,
-		repos.Lesson,
-		repos.QuizQuestion,
-		repos.CourseBlueprint,
-		repos.MaterialChunk,
-		clients.GcpBucket,
-		clients.OpenaiClient,
-		courseNotifier,
-		extractor,
-		clients.PineconeVectorStore,
-	)
-	if err := jobRegistry.Register(courseBuild); err != nil {
-		return Services{}, err
-	}
-
 	userModel := user_model_update.New(
 		db,
 		log,
@@ -567,14 +538,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Auth:             authService,
 		User:             userService,
 		Material:         materialService,
-		Course:           courseService,
-		Module:           moduleService,
-		Lesson:           lessonService,
 		Events:           eventService,
 		JobNotifier:      jobNotifier,
 		JobService:       jobService,
 		Workflow:         workflow,
-		CourseNotifier:   courseNotifier,
 		ChatNotifier:     chatNotifier,
 		Chat:             chatService,
 		ContentExtractor: extractor,

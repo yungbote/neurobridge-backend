@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,28 +9,29 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ActivityVariantRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityVariant) ([]*types.ActivityVariant, error)
+	Create(dbc dbctx.Context, rows []*types.ActivityVariant) ([]*types.ActivityVariant, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityVariant, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityVariant, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityVariant, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityVariant, error)
 
-	GetByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) ([]*types.ActivityVariant, error)
-	GetByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) ([]*types.ActivityVariant, error)
-	GetByActivityAndVariant(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variant string) (*types.ActivityVariant, error)
+	GetByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) ([]*types.ActivityVariant, error)
+	GetByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) ([]*types.ActivityVariant, error)
+	GetByActivityAndVariant(dbc dbctx.Context, activityID uuid.UUID, variant string) (*types.ActivityVariant, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityVariant) error
-	Update(ctx context.Context, tx *gorm.DB, row *types.ActivityVariant) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	Upsert(dbc dbctx.Context, row *types.ActivityVariant) error
+	Update(dbc dbctx.Context, row *types.ActivityVariant) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error
-	SoftDeleteByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error
-	FullDeleteByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error
+	SoftDeleteByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error
+	FullDeleteByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) error
 }
 
 type activityVariantRepo struct {
@@ -43,22 +43,22 @@ func NewActivityVariantRepo(db *gorm.DB, baseLog *logger.Logger) ActivityVariant
 	return &activityVariantRepo{db: db, log: baseLog.With("repo", "ActivityVariantRepo")}
 }
 
-func (r *activityVariantRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityVariant) ([]*types.ActivityVariant, error) {
-	t := tx
+func (r *activityVariantRepo) Create(dbc dbctx.Context, rows []*types.ActivityVariant) ([]*types.ActivityVariant, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ActivityVariant{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *activityVariantRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityVariant, error) {
-	t := tx
+func (r *activityVariantRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityVariant, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -66,7 +66,7 @@ func (r *activityVariantRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("id IN ?", ids).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -74,11 +74,11 @@ func (r *activityVariantRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	return out, nil
 }
 
-func (r *activityVariantRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityVariant, error) {
+func (r *activityVariantRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityVariant, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +88,8 @@ func (r *activityVariantRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.
 	return rows[0], nil
 }
 
-func (r *activityVariantRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) ([]*types.ActivityVariant, error) {
-	t := tx
+func (r *activityVariantRepo) GetByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) ([]*types.ActivityVariant, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -97,7 +97,7 @@ func (r *activityVariantRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB,
 	if len(activityIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("activity_id IN ?", activityIDs).
 		Order("activity_id ASC, variant ASC").
 		Find(&out).Error; err != nil {
@@ -106,8 +106,8 @@ func (r *activityVariantRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB,
 	return out, nil
 }
 
-func (r *activityVariantRepo) GetByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) ([]*types.ActivityVariant, error) {
-	t := tx
+func (r *activityVariantRepo) GetByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) ([]*types.ActivityVariant, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -115,7 +115,7 @@ func (r *activityVariantRepo) GetByActivityAndVariants(ctx context.Context, tx *
 	if activityID == uuid.Nil || len(variants) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("activity_id = ? AND variant IN ?", activityID, variants).
 		Order("variant ASC").
 		Find(&out).Error; err != nil {
@@ -124,11 +124,11 @@ func (r *activityVariantRepo) GetByActivityAndVariants(ctx context.Context, tx *
 	return out, nil
 }
 
-func (r *activityVariantRepo) GetByActivityAndVariant(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variant string) (*types.ActivityVariant, error) {
+func (r *activityVariantRepo) GetByActivityAndVariant(dbc dbctx.Context, activityID uuid.UUID, variant string) (*types.ActivityVariant, error) {
 	if activityID == uuid.Nil || variant == "" {
 		return nil, nil
 	}
-	rows, err := r.GetByActivityAndVariants(ctx, tx, activityID, []string{variant})
+	rows, err := r.GetByActivityAndVariants(dbc, activityID, []string{variant})
 	if err != nil {
 		return nil, err
 	}
@@ -138,8 +138,8 @@ func (r *activityVariantRepo) GetByActivityAndVariant(ctx context.Context, tx *g
 	return rows[0], nil
 }
 
-func (r *activityVariantRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityVariant) error {
-	t := tx
+func (r *activityVariantRepo) Upsert(dbc dbctx.Context, row *types.ActivityVariant) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -153,7 +153,7 @@ func (r *activityVariantRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		row.UpdatedAt = time.Now().UTC()
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "activity_id"}, {Name: "variant"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -166,19 +166,19 @@ func (r *activityVariantRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		Create(row).Error
 }
 
-func (r *activityVariantRepo) Update(ctx context.Context, tx *gorm.DB, row *types.ActivityVariant) error {
-	t := tx
+func (r *activityVariantRepo) Update(dbc dbctx.Context, row *types.ActivityVariant) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if row == nil {
 		return nil
 	}
-	return t.WithContext(ctx).Save(row).Error
+	return t.WithContext(dbc.Ctx).Save(row).Error
 }
 
-func (r *activityVariantRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *activityVariantRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -191,78 +191,78 @@ func (r *activityVariantRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id 
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.ActivityVariant{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *activityVariantRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityVariantRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.ActivityVariant{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.ActivityVariant{}).Error
 }
 
-func (r *activityVariantRepo) SoftDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error {
-	t := tx
+func (r *activityVariantRepo) SoftDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(activityIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("activity_id IN ?", activityIDs).Delete(&types.ActivityVariant{}).Error
+	return t.WithContext(dbc.Ctx).Where("activity_id IN ?", activityIDs).Delete(&types.ActivityVariant{}).Error
 }
 
-func (r *activityVariantRepo) SoftDeleteByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) error {
-	t := tx
+func (r *activityVariantRepo) SoftDeleteByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if activityID == uuid.Nil || len(variants) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Where("activity_id = ? AND variant IN ?", activityID, variants).
 		Delete(&types.ActivityVariant{}).Error
 }
 
-func (r *activityVariantRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityVariantRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityVariant{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityVariant{}).Error
 }
 
-func (r *activityVariantRepo) FullDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error {
-	t := tx
+func (r *activityVariantRepo) FullDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(activityIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("activity_id IN ?", activityIDs).Delete(&types.ActivityVariant{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("activity_id IN ?", activityIDs).Delete(&types.ActivityVariant{}).Error
 }
 
-func (r *activityVariantRepo) FullDeleteByActivityAndVariants(ctx context.Context, tx *gorm.DB, activityID uuid.UUID, variants []string) error {
-	t := tx
+func (r *activityVariantRepo) FullDeleteByActivityAndVariants(dbc dbctx.Context, activityID uuid.UUID, variants []string) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if activityID == uuid.Nil || len(variants) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("activity_id = ? AND variant IN ?", activityID, variants).
 		Delete(&types.ActivityVariant{}).Error

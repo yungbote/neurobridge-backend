@@ -21,6 +21,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -70,13 +71,13 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, fmt.Errorf("concept_graph_build: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	existing, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	existing, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -86,7 +87,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Build prompts inputs (grounded excerpts) ----
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -96,7 +97,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	chunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	chunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -221,19 +222,20 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	const batchSize = 64
 	skipped := false
 	txErr := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		// Ensure only one canonical graph write happens per path (race-safe + avoids unique index errors).
 		if err := advisoryXactLock(tx, "concept_graph_build", pathID); err != nil {
 			return err
 		}
 
 		// EnsurePath inside the tx (no-op if already set).
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
 		// Race-safe idempotency guard: if another worker already persisted the canonical graph,
 		// exit without attempting inserts (avoids unique constraint errors).
-		existing, err := deps.Concepts.GetByScope(ctx, tx, "path", &pathID)
+		existing, err := deps.Concepts.GetByScope(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -247,7 +249,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		for _, r := range rows {
 			toCreate = append(toCreate, r.Row)
 		}
-		if _, err := deps.Concepts.Create(ctx, tx, toCreate); err != nil {
+		if _, err := deps.Concepts.Create(dbc, toCreate); err != nil {
 			return err
 		}
 		out.ConceptsMade = len(toCreate)
@@ -262,7 +264,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			if childID == uuid.Nil || parentID == uuid.Nil {
 				continue
 			}
-			_ = deps.Concepts.UpdateFields(ctx, tx, childID, map[string]interface{}{"parent_id": parentID})
+			_ = deps.Concepts.UpdateFields(dbc, childID, map[string]interface{}{"parent_id": parentID})
 		}
 
 		// Create evidences (canonical).
@@ -281,7 +283,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				})
 			}
 		}
-		_, _ = deps.Evidence.CreateIgnoreDuplicates(ctx, tx, evRows)
+		_, _ = deps.Evidence.CreateIgnoreDuplicates(dbc, evRows)
 
 		// Create edges (canonical).
 		for _, e := range edgesOut {
@@ -298,7 +300,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				Strength:      e.Strength,
 				Evidence:      datatypes.JSON(mustJSON(map[string]any{"rationale": e.Rationale, "citations": e.Citations})),
 			}
-			_ = deps.Edges.Upsert(ctx, tx, edge)
+			_ = deps.Edges.Upsert(dbc, edge)
 			out.EdgesMade++
 		}
 
@@ -318,7 +320,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {
@@ -333,7 +335,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		// If another worker won the race (or older installs have a mismatched unique index),
 		// treat as a no-op as long as a canonical graph exists after the error.
 		if isUniqueViolation(txErr, "") {
-			existingAfter, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+			existingAfter, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 			if err == nil && len(existingAfter) > 0 {
 				deps.Log.Warn("concept graph insert hit unique violation; graph already exists; skipping", "path_id", pathID.String())
 				return out, nil
@@ -385,7 +387,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			})
 
 			if restored {
-				existingAfterRestore, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+				existingAfterRestore, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 				if err == nil && len(existingAfterRestore) > 0 {
 					deps.Log.Warn("concept graph restored after unique violation; continuing", "path_id", pathID.String())
 					return out, nil

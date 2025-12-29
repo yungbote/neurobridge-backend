@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,11 +9,12 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type TopicMasteryRepo interface {
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicMastery) error
-	ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicMastery, error)
+	Upsert(dbc dbctx.Context, row *types.TopicMastery) error
+	ListByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.TopicMastery, error)
 }
 
 type topicMasteryRepo struct {
@@ -26,19 +26,19 @@ func NewTopicMasteryRepo(db *gorm.DB, baseLog *logger.Logger) TopicMasteryRepo {
 	return &topicMasteryRepo{db: db, log: baseLog.With("repo", "TopicMasteryRepo")}
 }
 
-func (r *topicMasteryRepo) dbx(tx *gorm.DB) *gorm.DB {
-	if tx != nil {
-		return tx
+func (r *topicMasteryRepo) dbx(dbc dbctx.Context) *gorm.DB {
+	if dbc.Tx != nil {
+		return dbc.Tx
 	}
 	return r.db
 }
 
-func (r *topicMasteryRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicMastery, error) {
+func (r *topicMasteryRepo) ListByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.TopicMastery, error) {
 	out := []*types.TopicMastery{}
 	if userID == uuid.Nil {
 		return out, nil
 	}
-	if err := r.dbx(tx).WithContext(ctx).
+	if err := r.dbx(dbc).WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		Order("updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -47,7 +47,7 @@ func (r *topicMasteryRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID u
 	return out, nil
 }
 
-func (r *topicMasteryRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicMastery) error {
+func (r *topicMasteryRepo) Upsert(dbc dbctx.Context, row *types.TopicMastery) error {
 	if row == nil || row.UserID == uuid.Nil || row.Topic == "" {
 		return nil
 	}
@@ -57,7 +57,7 @@ func (r *topicMasteryRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.T
 		row.CreatedAt = now
 	}
 
-	return r.dbx(tx).WithContext(ctx).
+	return r.dbx(dbc).WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "user_id"},

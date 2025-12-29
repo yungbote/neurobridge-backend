@@ -10,6 +10,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (p *Pipeline) Run(ctx *jobrt.Context) error {
@@ -29,7 +30,9 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 	var afterAt *time.Time
 	var afterID *uuid.UUID
 
-	cur, err := p.cursors.Get(ctx.Ctx, nil, userID, consumer)
+	dbc := dbctx.Context{Ctx: ctx.Ctx}
+
+	cur, err := p.cursors.Get(dbc, userID, consumer)
 	if err == nil && cur != nil {
 		afterAt = cur.LastCreatedAt
 		afterID = cur.LastEventID
@@ -42,7 +45,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 	ctx.Progress("scan", 1, "Scanning user events")
 
 	for {
-		events, err := p.events.ListAfterCursor(ctx.Ctx, nil, userID, afterAt, afterID, pageSize)
+		events, err := p.events.ListAfterCursor(dbc, userID, afterAt, afterID, pageSize)
 		if err != nil {
 			ctx.Fail("scan", err)
 			return nil
@@ -65,7 +68,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 			// ---- Concept mastery updates (question_answered) ----
 			if strings.TrimSpace(ev.Type) == types.EventQuestionAnswered {
-				_ = p.applyQuestionAnswered(ctx.Ctx, nil, userID, ev, d)
+				_ = p.applyQuestionAnswered(dbc, userID, ev, d)
 			}
 
 			// ---- Style preference updates (EMA) ----
@@ -90,7 +93,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 
 				if modality != "" && variant != "" {
-					_ = p.stylePrefs.UpsertEMA(ctx.Ctx, nil, userID, conceptID, modality, variant, reward, binary)
+					_ = p.stylePrefs.UpsertEMA(dbc, userID, conceptID, modality, variant, reward, binary)
 				}
 			}
 
@@ -122,7 +125,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 			LastEventID:   afterID,
 			UpdatedAt:     time.Now(),
 		}
-		_ = p.cursors.Upsert(ctx.Ctx, nil, curRow)
+		_ = p.cursors.Upsert(dbc, curRow)
 	}
 
 	ctx.Succeed("done", map[string]any{"processed": processed})

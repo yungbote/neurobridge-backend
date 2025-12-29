@@ -27,16 +27,6 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.MaterialSetSummary{},
 
 		// =========================
-		// Course (legacy centerpiece)
-		// =========================
-		&types.Course{},
-		&types.CourseTag{},
-		&types.CourseModule{},
-		&types.Lesson{},
-		&types.QuizQuestion{},
-		&types.CourseBlueprint{},
-
-		// =========================
 		// Graph-centric learning (new centerpiece: Path)
 		// =========================
 		// Concepts + Graph Products
@@ -89,7 +79,6 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.LearningProfile{},
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
-		&types.QuizAttempt{},
 
 		// =========================
 		// Jobs / worker

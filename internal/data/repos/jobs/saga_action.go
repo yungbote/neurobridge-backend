@@ -1,25 +1,25 @@
 package jobs
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type SagaActionRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.SagaAction) ([]*types.SagaAction, error)
+	Create(dbc dbctx.Context, rows []*types.SagaAction) ([]*types.SagaAction, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.SagaAction, error)
-	ListBySagaIDDesc(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID) ([]*types.SagaAction, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.SagaAction, error)
+	ListBySagaIDDesc(dbc dbctx.Context, sagaID uuid.UUID) ([]*types.SagaAction, error)
 
-	GetMaxSeq(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID) (int64, error)
+	GetMaxSeq(dbc dbctx.Context, sagaID uuid.UUID) (int64, error)
 
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 }
 
 type sagaActionRepo struct {
@@ -31,22 +31,22 @@ func NewSagaActionRepo(db *gorm.DB, baseLog *logger.Logger) SagaActionRepo {
 	return &sagaActionRepo{db: db, log: baseLog.With("repo", "SagaActionRepo")}
 }
 
-func (r *sagaActionRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.SagaAction) ([]*types.SagaAction, error) {
-	t := tx
+func (r *sagaActionRepo) Create(dbc dbctx.Context, rows []*types.SagaAction) ([]*types.SagaAction, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.SagaAction{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *sagaActionRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.SagaAction, error) {
-	t := tx
+func (r *sagaActionRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.SagaAction, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -54,14 +54,14 @@ func (r *sagaActionRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.U
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *sagaActionRepo) ListBySagaIDDesc(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID) ([]*types.SagaAction, error) {
-	t := tx
+func (r *sagaActionRepo) ListBySagaIDDesc(dbc dbctx.Context, sagaID uuid.UUID) ([]*types.SagaAction, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -69,7 +69,7 @@ func (r *sagaActionRepo) ListBySagaIDDesc(ctx context.Context, tx *gorm.DB, saga
 	if sagaID == uuid.Nil {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("saga_id = ?", sagaID).
 		Order("seq DESC").
 		Find(&out).Error; err != nil {
@@ -78,8 +78,8 @@ func (r *sagaActionRepo) ListBySagaIDDesc(ctx context.Context, tx *gorm.DB, saga
 	return out, nil
 }
 
-func (r *sagaActionRepo) GetMaxSeq(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID) (int64, error) {
-	t := tx
+func (r *sagaActionRepo) GetMaxSeq(dbc dbctx.Context, sagaID uuid.UUID) (int64, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -87,7 +87,7 @@ func (r *sagaActionRepo) GetMaxSeq(ctx context.Context, tx *gorm.DB, sagaID uuid
 		return 0, nil
 	}
 	var max int64
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Model(&types.SagaAction{}).
 		Select("COALESCE(MAX(seq), 0)").
 		Where("saga_id = ?", sagaID).
@@ -97,8 +97,8 @@ func (r *sagaActionRepo) GetMaxSeq(ctx context.Context, tx *gorm.DB, sagaID uuid
 	return max, nil
 }
 
-func (r *sagaActionRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *sagaActionRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -111,7 +111,7 @@ func (r *sagaActionRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.SagaAction{}).
 		Where("id = ?", id).
 		Updates(updates).Error

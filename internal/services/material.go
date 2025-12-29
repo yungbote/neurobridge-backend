@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"time"
@@ -11,14 +10,15 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type MaterialService interface {
-	CreateMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.MaterialSet, error)
-	AddMaterialFile(ctx context.Context, tx *gorm.DB, setID uuid.UUID, originalName, mimeType string, sizeBytes int64) (*types.MaterialFile, error)
-	AddMaterialFiles(ctx context.Context, tx *gorm.DB, setID uuid.UUID, inputs []MaterialFileInput) ([]*types.MaterialFile, error)
-	UploadMaterialFiles(ctx context.Context, tx *gorm.DB, userID uuid.UUID, files []UploadedFileInfo) (*types.MaterialSet, []*types.MaterialFile, error)
+	CreateMaterialSet(dbc dbctx.Context, userID uuid.UUID) (*types.MaterialSet, error)
+	AddMaterialFile(dbc dbctx.Context, setID uuid.UUID, originalName, mimeType string, sizeBytes int64) (*types.MaterialFile, error)
+	AddMaterialFiles(dbc dbctx.Context, setID uuid.UUID, inputs []MaterialFileInput) ([]*types.MaterialFile, error)
+	UploadMaterialFiles(dbc dbctx.Context, userID uuid.UUID, files []UploadedFileInfo) (*types.MaterialSet, []*types.MaterialFile, error)
 }
 
 type UploadedFileInfo struct {
@@ -63,8 +63,8 @@ func NewMaterialService(
 // Core DB ops
 // =====================================
 
-func (ms *materialService) CreateMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.MaterialSet, error) {
-	transaction := tx
+func (ms *materialService) CreateMaterialSet(dbc dbctx.Context, userID uuid.UUID) (*types.MaterialSet, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ms.db
 	}
@@ -76,20 +76,20 @@ func (ms *materialService) CreateMaterialSet(ctx context.Context, tx *gorm.DB, u
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	if _, err := ms.materialSetRepo.Create(ctx, transaction, []*types.MaterialSet{set}); err != nil {
+	if _, err := ms.materialSetRepo.Create(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, []*types.MaterialSet{set}); err != nil {
 		ms.log.Error("CreateMaterialSet failed", "error", err)
 		return nil, fmt.Errorf("create material set: %w", err)
 	}
 	return set, nil
 }
 
-func (ms *materialService) AddMaterialFile(ctx context.Context, tx *gorm.DB, setID uuid.UUID, originalName, mimeType string, sizeBytes int64) (*types.MaterialFile, error) {
+func (ms *materialService) AddMaterialFile(dbc dbctx.Context, setID uuid.UUID, originalName, mimeType string, sizeBytes int64) (*types.MaterialFile, error) {
 	inputs := []MaterialFileInput{{
 		OriginalName: originalName,
 		MimeType:     mimeType,
 		SizeBytes:    sizeBytes,
 	}}
-	files, err := ms.AddMaterialFiles(ctx, tx, setID, inputs)
+	files, err := ms.AddMaterialFiles(dbc, setID, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +99,8 @@ func (ms *materialService) AddMaterialFile(ctx context.Context, tx *gorm.DB, set
 	return files[0], nil
 }
 
-func (ms *materialService) AddMaterialFiles(ctx context.Context, tx *gorm.DB, setID uuid.UUID, inputs []MaterialFileInput) ([]*types.MaterialFile, error) {
-	transaction := tx
+func (ms *materialService) AddMaterialFiles(dbc dbctx.Context, setID uuid.UUID, inputs []MaterialFileInput) ([]*types.MaterialFile, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ms.db
 	}
@@ -125,7 +125,7 @@ func (ms *materialService) AddMaterialFiles(ctx context.Context, tx *gorm.DB, se
 			UpdatedAt:     now,
 		}
 	}
-	created, err := ms.materialFileRepo.Create(ctx, transaction, files)
+	created, err := ms.materialFileRepo.Create(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, files)
 	if err != nil {
 		ms.log.Error("AddMaterialFiles failed", "error", err)
 		return nil, fmt.Errorf("add material files: %w", err)
@@ -138,8 +138,7 @@ func (ms *materialService) AddMaterialFiles(ctx context.Context, tx *gorm.DB, se
 // =====================================
 
 func (ms *materialService) UploadMaterialFiles(
-	ctx context.Context,
-	tx *gorm.DB,
+	dbc dbctx.Context,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
 ) (*types.MaterialSet, []*types.MaterialFile, error) {
@@ -147,7 +146,7 @@ func (ms *materialService) UploadMaterialFiles(
 		return nil, nil, fmt.Errorf("no files provided")
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	createdTx := false
 	if transaction == nil {
 		createdTx = true
@@ -175,7 +174,7 @@ func (ms *materialService) UploadMaterialFiles(
 	}()
 
 	// 1) MaterialSet
-	set, err = ms.CreateMaterialSet(ctx, transaction, userID)
+	set, err = ms.CreateMaterialSet(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -190,7 +189,7 @@ func (ms *materialService) UploadMaterialFiles(
 		}
 	}
 
-	files, err = ms.AddMaterialFiles(ctx, transaction, set.ID, inputs)
+	files, err = ms.AddMaterialFiles(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, set.ID, inputs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -205,7 +204,7 @@ func (ms *materialService) UploadMaterialFiles(
 		readers[i] = uploaded[i].Reader
 	}
 
-	if err = ms.fileService.UploadMaterialFiles(ctx, transaction, files, readers); err != nil {
+	if err = ms.fileService.UploadMaterialFiles(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, files, readers); err != nil {
 		return nil, nil, err
 	}
 

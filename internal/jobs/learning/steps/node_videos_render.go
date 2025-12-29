@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -68,7 +69,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, fmt.Errorf("node_videos_render: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -90,7 +91,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, nil
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -106,7 +107,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		}
 	}
 
-	rows, err := deps.Videos.GetByPathNodeIDs(ctx, nil, nodeIDs)
+	rows, err := deps.Videos.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs)
 	if err != nil {
 		return out, err
 	}
@@ -211,7 +212,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				strings.TrimSpace(row.PromptHash),
 				ext,
 			)
-			if err := deps.Bucket.UploadFile(gctx, nil, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(vid.Bytes)); err != nil {
+			if err := deps.Bucket.UploadFile(gdbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(vid.Bytes)); err != nil {
 				_ = markVideoFailed(gctx, deps, row, "upload_failed: "+err.Error(), latency)
 				atomic.AddInt32(&failed, 1)
 				return nil
@@ -253,7 +254,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 					CreatedAt:  time.Now().UTC(),
 					UpdatedAt:  time.Now().UTC(),
 				}
-				if _, err := deps.Assets.Create(gctx, nil, []*types.Asset{a}); err == nil {
+				if _, err := deps.Assets.Create(gdbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
 					assetID = &aid
 				}
 			}
@@ -278,7 +279,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				CreatedAt:       row.CreatedAt,
 				UpdatedAt:       now,
 			}
-			_ = deps.Videos.Upsert(gctx, nil, update)
+			_ = deps.Videos.Upsert(gdbctx.Context{Ctx: ctx}, update)
 
 			if deps.GenRuns != nil {
 				metrics := map[string]any{
@@ -288,7 +289,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 					"byte_len":     len(vid.Bytes),
 					"duration_sec": dur,
 				}
-				_, _ = deps.GenRuns.Create(gctx, nil, []*types.LearningDocGenerationRun{
+				_, _ = deps.GenRuns.Create(gdbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 					makeGenRun("node_video_asset", &update.ID, in.OwnerUserID, pathID, row.PathNodeID, "succeeded", nodeVideoAssetPromptVersion, 1, latency, nil, metrics),
 				})
 			}
@@ -336,10 +337,10 @@ func markVideoFailed(ctx context.Context, deps NodeVideosRenderDeps, row *types.
 		CreatedAt:       row.CreatedAt,
 		UpdatedAt:       now,
 	}
-	_ = deps.Videos.Upsert(ctx, nil, update)
+	_ = deps.Videos.Upsert(dbctx.Context{Ctx: ctx}, update)
 
 	if deps.GenRuns != nil {
-		_, _ = deps.GenRuns.Create(ctx, nil, []*types.LearningDocGenerationRun{
+		_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
 			makeGenRun("node_video_asset", &row.ID, row.UserID, row.PathID, row.PathNodeID, "failed", nodeVideoAssetPromptVersion, 1, latencyMS, []string{errMsg}, nil),
 		})
 	}

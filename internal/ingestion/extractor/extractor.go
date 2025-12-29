@@ -23,6 +23,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -102,6 +103,8 @@ func New(
 		DocAIProcessorID:   strings.TrimSpace(os.Getenv("DOCUMENTAI_PROCESSOR_ID")),
 		DocAIProcessorVer:  strings.TrimSpace(os.Getenv("DOCUMENTAI_PROCESSOR_VERSION")),
 
+
+		// TODO: Get rid of infile hardcode values
 		MaxBytesDownload:          1024 * 1024 * 1024,
 		MaxPDFPagesRender:         200,
 		MaxPDFPagesCaption:        60,
@@ -206,17 +209,17 @@ func (e *Extractor) DownloadMaterialToTemp(ctx context.Context, mf *types.Materi
 	return path, cleanup, b, nil
 }
 
-func (e *Extractor) UploadLocalToGCS(ctx context.Context, tx *gorm.DB, key string, localPath string) error {
+func (e *Extractor) UploadLocalToGCS(dbc dbctx.Context, key string, localPath string) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return e.Bucket.UploadFile(ctx, tx, gcp.BucketCategoryMaterial, key, f)
+	return e.Bucket.UploadFile(dbc, gcp.BucketCategoryMaterial, key, f)
 }
 
-func (e *Extractor) PersistSegmentsAsChunks(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile, segs []Segment) error {
-	transaction := tx
+func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.MaterialFile, segs []Segment) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = e.DB
 	}
@@ -286,14 +289,14 @@ func (e *Extractor) PersistSegmentsAsChunks(ctx context.Context, tx *gorm.DB, mf
 		})
 	}
 
-	if _, err := e.MaterialChunkRepo.Create(ctx, transaction, chunks); err != nil {
+	if _, err := e.MaterialChunkRepo.Create(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, chunks); err != nil {
 		return fmt.Errorf("create material chunks: %w", err)
 	}
 	return nil
 }
 
-func (e *Extractor) UpdateMaterialFileExtractionStatus(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile, kind string, warnings []string, diag map[string]any) error {
-	transaction := tx
+func (e *Extractor) UpdateMaterialFileExtractionStatus(dbc dbctx.Context, mf *types.MaterialFile, kind string, warnings []string, diag map[string]any) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = e.DB
 	}
@@ -311,7 +314,7 @@ func (e *Extractor) UpdateMaterialFileExtractionStatus(ctx context.Context, tx *
 		"ai_topics":  datatypes.JSON(b),
 		"updated_at": time.Now(),
 	}
-	if err := transaction.WithContext(ctx).Model(&types.MaterialFile{}).
+	if err := transaction.WithContext(dbc.Ctx).Model(&types.MaterialFile{}).
 		Where("id = ?", mf.ID).
 		Updates(updates).Error; err != nil {
 		return fmt.Errorf("update material_file extraction status: %w", err)

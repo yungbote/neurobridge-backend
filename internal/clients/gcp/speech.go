@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -86,7 +87,7 @@ func (s *speechService) Close() error {
 }
 
 func (s *speechService) TranscribeAudioBytes(ctx context.Context, audio []byte, mimeType string, cfg SpeechConfig) (*SpeechResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -115,7 +116,7 @@ func (s *speechService) TranscribeAudioBytes(ctx context.Context, audio []byte, 
 }
 
 func (s *speechService) TranscribeAudioGCS(ctx context.Context, gcsURI string, cfg SpeechConfig) (*SpeechResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 

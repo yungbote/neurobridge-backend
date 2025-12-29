@@ -1,17 +1,17 @@
 package learning
 
 import (
-	"context"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningDocGenerationRunRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.LearningDocGenerationRun) ([]*types.LearningDocGenerationRun, error)
+	Create(dbc dbctx.Context, rows []*types.LearningDocGenerationRun) ([]*types.LearningDocGenerationRun, error)
 }
 
 type learningDocGenerationRunRepo struct {
@@ -23,8 +23,8 @@ func NewLearningDocGenerationRunRepo(db *gorm.DB, baseLog *logger.Logger) Learni
 	return &learningDocGenerationRunRepo{db: db, log: baseLog.With("repo", "LearningDocGenerationRunRepo")}
 }
 
-func (r *learningDocGenerationRunRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.LearningDocGenerationRun) ([]*types.LearningDocGenerationRun, error) {
-	t := tx
+func (r *learningDocGenerationRunRepo) Create(dbc dbctx.Context, rows []*types.LearningDocGenerationRun) ([]*types.LearningDocGenerationRun, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -37,7 +37,7 @@ func (r *learningDocGenerationRunRepo) Create(ctx context.Context, tx *gorm.DB, 
 			row.ID = uuid.New()
 		}
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

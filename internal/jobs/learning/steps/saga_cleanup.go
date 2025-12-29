@@ -13,6 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -57,7 +58,7 @@ func SagaCleanup(ctx context.Context, deps SagaCleanupDeps, in SagaCleanupInput)
 
 	cutoff := time.Now().UTC().Add(-time.Duration(olderHours) * time.Hour)
 
-	sagas, err := deps.Sagas.ListByStatusBefore(ctx, nil, []string{
+	sagas, err := deps.Sagas.ListByStatusBefore(dbctx.Context{Ctx: ctx}, []string{
 		services.SagaStatusFailed,
 		services.SagaStatusCompensated,
 	}, cutoff, limit)

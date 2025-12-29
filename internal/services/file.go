@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"time"
@@ -12,14 +11,15 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type FileService interface {
-	UploadMaterialFile(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile, file io.Reader) error
-	DeleteMaterialFile(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile) error
-	UploadMaterialFiles(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile, readers []io.Reader) error
-	DeleteMaterialFiles(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile) error
+	UploadMaterialFile(dbc dbctx.Context, mf *types.MaterialFile, file io.Reader) error
+	DeleteMaterialFile(dbc dbctx.Context, mf *types.MaterialFile) error
+	UploadMaterialFiles(dbc dbctx.Context, files []*types.MaterialFile, readers []io.Reader) error
+	DeleteMaterialFiles(dbc dbctx.Context, files []*types.MaterialFile) error
 }
 
 type fileService struct {
@@ -44,16 +44,17 @@ func NewFileService(
 	}
 }
 
-func (fs *fileService) UploadMaterialFile(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile, file io.Reader) error {
-	return fs.UploadMaterialFiles(ctx, tx, []*types.MaterialFile{mf}, []io.Reader{file})
+func (fs *fileService) UploadMaterialFile(dbc dbctx.Context, mf *types.MaterialFile, file io.Reader) error {
+	return fs.UploadMaterialFiles(dbc, []*types.MaterialFile{mf}, []io.Reader{file})
 }
 
-func (fs *fileService) DeleteMaterialFile(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile) error {
-	return fs.DeleteMaterialFiles(ctx, tx, []*types.MaterialFile{mf})
+func (fs *fileService) DeleteMaterialFile(dbc dbctx.Context, mf *types.MaterialFile) error {
+	return fs.DeleteMaterialFiles(dbc, []*types.MaterialFile{mf})
 }
 
-func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile, readers []io.Reader) error {
-	if tx == nil {
+func (fs *fileService) UploadMaterialFiles(dbc dbctx.Context, files []*types.MaterialFile, readers []io.Reader) error {
+	transaction := dbc.Tx
+	if transaction == nil {
 		return fmt.Errorf("UploadMaterialFiles requires non-nil transaction")
 	}
 	if len(files) == 0 {
@@ -86,13 +87,13 @@ func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, fil
 			"storage_key", key,
 		)
 
-		if err := fs.bucketService.UploadFile(ctx, tx, gcp.BucketCategoryMaterial, key, reader); err != nil {
+		if err := fs.bucketService.UploadFile(dbc, gcp.BucketCategoryMaterial, key, reader); err != nil {
 			fs.log.Error("UploadFile failed",
 				"error", err,
 				"material_file_id", mf.ID,
 				"storage_key", key,
 			)
-			if uErr := tx.Model(&types.MaterialFile{}).
+			if uErr := transaction.Model(&types.MaterialFile{}).
 				Where("id = ?", mf.ID).
 				Updates(map[string]interface{}{
 					"status":     "upload_failed",
@@ -111,7 +112,7 @@ func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, fil
 			"file_url":    fileURL,
 		}
 
-		if err := tx.Model(&types.MaterialFile{}).
+		if err := transaction.Model(&types.MaterialFile{}).
 			Where("id = ?", mf.ID).
 			Updates(updates).Error; err != nil {
 			fs.log.Error("failed to update material file after upload", "error", err, "material_file_id", mf.ID)
@@ -126,8 +127,9 @@ func (fs *fileService) UploadMaterialFiles(ctx context.Context, tx *gorm.DB, fil
 	return nil
 }
 
-func (fs *fileService) DeleteMaterialFiles(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile) error {
-	if tx == nil {
+func (fs *fileService) DeleteMaterialFiles(dbc dbctx.Context, files []*types.MaterialFile) error {
+	transaction := dbc.Tx
+	if transaction == nil {
 		return fmt.Errorf("DeleteMaterialFiles requires a non-nil transaction")
 	}
 	if len(files) == 0 {
@@ -151,7 +153,7 @@ func (fs *fileService) DeleteMaterialFiles(ctx context.Context, tx *gorm.DB, fil
 				"material_file_id", mf.ID,
 				"storage_key", mf.StorageKey,
 			)
-			if err := fs.bucketService.DeleteFile(ctx, tx, gcp.BucketCategoryMaterial, mf.StorageKey); err != nil {
+			if err := fs.bucketService.DeleteFile(dbc, gcp.BucketCategoryMaterial, mf.StorageKey); err != nil {
 				fs.log.Error("DeleteFile failed",
 					"error", err,
 					"material_file_id", mf.ID,
@@ -162,7 +164,7 @@ func (fs *fileService) DeleteMaterialFiles(ctx context.Context, tx *gorm.DB, fil
 		}
 	}
 
-	if err := fs.materialFileRepo.SoftDeleteByIDs(ctx, tx, ids); err != nil {
+	if err := fs.materialFileRepo.SoftDeleteByIDs(dbc, ids); err != nil {
 		fs.log.Error("SoftDeleteByIDs failed for material files", "error", err)
 		return fmt.Errorf("DeleteMaterialFiles: failed to soft-delete material files: %w", err)
 	}

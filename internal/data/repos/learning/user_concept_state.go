@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,12 +9,13 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserConceptStateRepo interface {
-	UpsertDelta(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error
-	Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error)
-	ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error)
+	UpsertDelta(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error
+	Get(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error)
+	ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error)
 }
 
 type userConceptStateRepo struct {
@@ -30,8 +30,8 @@ func NewUserConceptStateRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptSta
 	}
 }
 
-func (r *userConceptStateRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error) {
-	transaction := tx
+func (r *userConceptStateRepo) Get(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -39,7 +39,7 @@ func (r *userConceptStateRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid
 		return nil, nil
 	}
 	var row types.UserConceptState
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id = ?", userID, conceptID).
 		Limit(1).
 		Find(&row).Error
@@ -52,8 +52,8 @@ func (r *userConceptStateRepo) Get(ctx context.Context, tx *gorm.DB, userID uuid
 	return &row, nil
 }
 
-func (r *userConceptStateRepo) UpsertDelta(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error {
-	transaction := tx
+func (r *userConceptStateRepo) UpsertDelta(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -72,7 +72,7 @@ func (r *userConceptStateRepo) UpsertDelta(ctx context.Context, tx *gorm.DB, use
 		UpdatedAt:  now,
 	}
 	// On conflict, overwrite mastery/confidence/last_seen/updated_at
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "concept_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -82,8 +82,8 @@ func (r *userConceptStateRepo) UpsertDelta(ctx context.Context, tx *gorm.DB, use
 		Create(row).Error
 }
 
-func (r *userConceptStateRepo) ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error) {
-	transaction := tx
+func (r *userConceptStateRepo) ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -91,7 +91,7 @@ func (r *userConceptStateRepo) ListByUserAndConceptIDs(ctx context.Context, tx *
 	if userID == uuid.Nil || len(conceptIDs) == 0 {
 		return out, nil
 	}
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id IN ?", userID, conceptIDs).
 		Find(&out).Error; err != nil {
 		return nil, err

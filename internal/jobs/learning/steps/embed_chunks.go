@@ -16,6 +16,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -62,13 +63,13 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 	}
 
 	// Contract: derive/ensure path_id (even if this stage doesn't use it further).
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -78,7 +79,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	chunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	chunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -150,8 +151,9 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 
 			// 1) Write embeddings to Postgres + append compensations in the same tx.
 			if err := deps.DB.WithContext(gctx).Transaction(func(tx *gorm.DB) error {
+				dbc := dbctx.Context{Ctx: gctx, Tx: tx}
 				// Bulk update is significantly faster than per-row updates.
-				if err := bulkUpdateChunkEmbeddings(gctx, tx, batch, vecs); err != nil {
+				if err := bulkUpdateChunkEmbeddings(dbc, batch, vecs); err != nil {
 					return err
 				}
 
@@ -176,7 +178,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 				}
 
 				if deps.Vec != nil && len(ids) > 0 {
-					if err := deps.Saga.AppendAction(gctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 						"namespace": ns,
 						"ids":       ids,
 					}); err != nil {
@@ -220,7 +222,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 	return out, nil
 }
 
-func bulkUpdateChunkEmbeddings(ctx context.Context, tx *gorm.DB, batch []*types.MaterialChunk, vecs [][]float32) error {
+func bulkUpdateChunkEmbeddings(dbc dbctx.Context, batch []*types.MaterialChunk, vecs [][]float32) error {
 	if tx == nil {
 		return fmt.Errorf("bulkUpdateChunkEmbeddings: tx required")
 	}

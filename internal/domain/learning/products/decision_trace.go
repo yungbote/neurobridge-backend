@@ -16,7 +16,6 @@ type DecisionTrace struct {
 	OccurredAt time.Time `gorm:"column:occurred_at;not null;index:idx_decision_time,priority:2" json:"occurred_at"`
 
 	DecisionType string     `gorm:"column:decision_type;not null;index" json:"decision_type"`
-	CourseID     *uuid.UUID `gorm:"type:uuid;index" json:"course_id,omitempty"`
 	PathID       *uuid.UUID `gorm:"type:uuid;index" json:"path_id,omitempty"`
 	ActivityID   *uuid.UUID `gorm:"type:uuid;index" json:"activity_id,omitempty"`
 	VariantID    *uuid.UUID `gorm:"type:uuid;index" json:"variant_id,omitempty"`

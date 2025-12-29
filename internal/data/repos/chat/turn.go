@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -11,14 +10,15 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatTurnRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, row *types.ChatTurn) error
-	GetByID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, turnID uuid.UUID) (*types.ChatTurn, error)
-	GetByUserMessageID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, threadID uuid.UUID, userMessageID uuid.UUID) (*types.ChatTurn, error)
-	UpdateFields(ctx context.Context, tx *gorm.DB, userID uuid.UUID, turnID uuid.UUID, updates map[string]interface{}) error
+	Create(dbc dbctx.Context, row *types.ChatTurn) error
+	GetByID(dbc dbctx.Context, userID uuid.UUID, turnID uuid.UUID) (*types.ChatTurn, error)
+	GetByUserMessageID(dbc dbctx.Context, userID uuid.UUID, threadID uuid.UUID, userMessageID uuid.UUID) (*types.ChatTurn, error)
+	UpdateFields(dbc dbctx.Context, userID uuid.UUID, turnID uuid.UUID, updates map[string]interface{}) error
 }
 
 type chatTurnRepo struct {
@@ -33,11 +33,11 @@ func NewChatTurnRepo(db *gorm.DB, log *logger.Logger) ChatTurnRepo {
 	}
 }
 
-func (r *chatTurnRepo) Create(ctx context.Context, tx *gorm.DB, row *types.ChatTurn) error {
+func (r *chatTurnRepo) Create(dbc dbctx.Context, row *types.ChatTurn) error {
 	if row == nil || row.UserID == uuid.Nil || row.ThreadID == uuid.Nil || row.UserMessageID == uuid.Nil || row.AssistantMessageID == uuid.Nil {
 		return fmt.Errorf("invalid chat turn")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -46,7 +46,7 @@ func (r *chatTurnRepo) Create(ctx context.Context, tx *gorm.DB, row *types.ChatT
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = now
 	}
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(row).Error; err != nil {
 		return err
@@ -54,16 +54,16 @@ func (r *chatTurnRepo) Create(ctx context.Context, tx *gorm.DB, row *types.ChatT
 	return nil
 }
 
-func (r *chatTurnRepo) GetByID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, turnID uuid.UUID) (*types.ChatTurn, error) {
+func (r *chatTurnRepo) GetByID(dbc dbctx.Context, userID uuid.UUID, turnID uuid.UUID) (*types.ChatTurn, error) {
 	if userID == uuid.Nil || turnID == uuid.Nil {
 		return nil, fmt.Errorf("missing ids")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	var out types.ChatTurn
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatTurn{}).
 		Where("id = ? AND user_id = ?", turnID, userID).
 		First(&out).Error
@@ -76,16 +76,16 @@ func (r *chatTurnRepo) GetByID(ctx context.Context, tx *gorm.DB, userID uuid.UUI
 	return &out, nil
 }
 
-func (r *chatTurnRepo) GetByUserMessageID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, threadID uuid.UUID, userMessageID uuid.UUID) (*types.ChatTurn, error) {
+func (r *chatTurnRepo) GetByUserMessageID(dbc dbctx.Context, userID uuid.UUID, threadID uuid.UUID, userMessageID uuid.UUID) (*types.ChatTurn, error) {
 	if userID == uuid.Nil || threadID == uuid.Nil || userMessageID == uuid.Nil {
 		return nil, fmt.Errorf("missing ids")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	var out types.ChatTurn
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatTurn{}).
 		Where("user_id = ? AND thread_id = ? AND user_message_id = ?", userID, threadID, userMessageID).
 		First(&out).Error
@@ -98,11 +98,11 @@ func (r *chatTurnRepo) GetByUserMessageID(ctx context.Context, tx *gorm.DB, user
 	return &out, nil
 }
 
-func (r *chatTurnRepo) UpdateFields(ctx context.Context, tx *gorm.DB, userID uuid.UUID, turnID uuid.UUID, updates map[string]interface{}) error {
+func (r *chatTurnRepo) UpdateFields(dbc dbctx.Context, userID uuid.UUID, turnID uuid.UUID, updates map[string]interface{}) error {
 	if userID == uuid.Nil || turnID == uuid.Nil {
 		return fmt.Errorf("missing ids")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -110,7 +110,7 @@ func (r *chatTurnRepo) UpdateFields(ctx context.Context, tx *gorm.DB, userID uui
 		updates = map[string]interface{}{}
 	}
 	updates["updated_at"] = time.Now().UTC()
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatTurn{}).
 		Where("id = ? AND user_id = ?", turnID, userID).
 		Updates(updates).Error

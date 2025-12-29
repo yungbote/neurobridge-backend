@@ -15,6 +15,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type Budget struct {
@@ -223,7 +224,7 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 	}
 
 	// Graph context (always-on, budgeted).
-	graphCtx, _ := graphContext(ctx, deps.DB, in.UserID, retrieved, b.GraphTokens)
+	graphCtx, _ := graphContext(dbctx.Context{Ctx: ctx, Tx: deps.DB}, in.UserID, retrieved, b.GraphTokens)
 
 	// Token budgeting: truncate blocks to budgets.
 	hot = trimToTokens(hot, b.HotTokens)

@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func TestMaterialFileRepo(t *testing.T) {
@@ -14,6 +15,7 @@ func TestMaterialFileRepo(t *testing.T) {
 	tx := testutil.Tx(t, db)
 
 	ctx := context.Background()
+	dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 	repo := NewMaterialFileRepo(db, testutil.Logger(t))
 
 	u := &types.User{
@@ -39,24 +41,24 @@ func TestMaterialFileRepo(t *testing.T) {
 		StorageKey:    "gs://bucket/file.pdf",
 		Status:        "uploaded",
 	}
-	if _, err := repo.Create(ctx, tx, []*types.MaterialFile{mf}); err != nil {
+	if _, err := repo.Create(dbc, []*types.MaterialFile{mf}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if rows, err := repo.GetByIDs(ctx, tx, []uuid.UUID{mf.ID}); err != nil || len(rows) != 1 {
+	if rows, err := repo.GetByIDs(dbc, []uuid.UUID{mf.ID}); err != nil || len(rows) != 1 {
 		t.Fatalf("GetByIDs: err=%v len=%d", err, len(rows))
 	}
-	if rows, err := repo.GetByMaterialSetIDs(ctx, tx, []uuid.UUID{ms.ID}); err != nil || len(rows) != 1 {
+	if rows, err := repo.GetByMaterialSetIDs(dbc, []uuid.UUID{ms.ID}); err != nil || len(rows) != 1 {
 		t.Fatalf("GetByMaterialSetIDs: err=%v len=%d", err, len(rows))
 	}
-	if rows, err := repo.GetByMaterialSetID(ctx, tx, ms.ID); err != nil || len(rows) != 1 {
+	if rows, err := repo.GetByMaterialSetID(dbc, ms.ID); err != nil || len(rows) != 1 {
 		t.Fatalf("GetByMaterialSetID: err=%v len=%d", err, len(rows))
 	}
 
-	if err := repo.SoftDeleteByIDs(ctx, tx, []uuid.UUID{mf.ID}); err != nil {
+	if err := repo.SoftDeleteByIDs(dbc, []uuid.UUID{mf.ID}); err != nil {
 		t.Fatalf("SoftDeleteByIDs: %v", err)
 	}
-	if rows, err := repo.GetByIDs(ctx, tx, []uuid.UUID{mf.ID}); err != nil || len(rows) != 0 {
+	if rows, err := repo.GetByIDs(dbc, []uuid.UUID{mf.ID}); err != nil || len(rows) != 0 {
 		t.Fatalf("after SoftDeleteByIDs GetByIDs: err=%v len=%d", err, len(rows))
 	}
 
@@ -67,10 +69,10 @@ func TestMaterialFileRepo(t *testing.T) {
 		StorageKey:    "gs://bucket/file2.pdf",
 		Status:        "uploaded",
 	}
-	if _, err := repo.Create(ctx, tx, []*types.MaterialFile{mf2}); err != nil {
+	if _, err := repo.Create(dbc, []*types.MaterialFile{mf2}); err != nil {
 		t.Fatalf("seed mf2: %v", err)
 	}
-	if err := repo.SoftDeleteByMaterialSetIDs(ctx, tx, []uuid.UUID{ms.ID}); err != nil {
+	if err := repo.SoftDeleteByMaterialSetIDs(dbc, []uuid.UUID{ms.ID}); err != nil {
 		t.Fatalf("SoftDeleteByMaterialSetIDs: %v", err)
 	}
 
@@ -81,10 +83,10 @@ func TestMaterialFileRepo(t *testing.T) {
 		StorageKey:    "gs://bucket/file3.pdf",
 		Status:        "uploaded",
 	}
-	if _, err := repo.Create(ctx, tx, []*types.MaterialFile{mf3}); err != nil {
+	if _, err := repo.Create(dbc, []*types.MaterialFile{mf3}); err != nil {
 		t.Fatalf("seed mf3: %v", err)
 	}
-	if err := repo.FullDeleteByIDs(ctx, tx, []uuid.UUID{mf3.ID}); err != nil {
+	if err := repo.FullDeleteByIDs(dbc, []uuid.UUID{mf3.ID}); err != nil {
 		t.Fatalf("FullDeleteByIDs: %v", err)
 	}
 
@@ -95,10 +97,10 @@ func TestMaterialFileRepo(t *testing.T) {
 		StorageKey:    "gs://bucket/file4.pdf",
 		Status:        "uploaded",
 	}
-	if _, err := repo.Create(ctx, tx, []*types.MaterialFile{mf4}); err != nil {
+	if _, err := repo.Create(dbc, []*types.MaterialFile{mf4}); err != nil {
 		t.Fatalf("seed mf4: %v", err)
 	}
-	if err := repo.FullDeleteByMaterialSetIDs(ctx, tx, []uuid.UUID{ms.ID}); err != nil {
+	if err := repo.FullDeleteByMaterialSetIDs(dbc, []uuid.UUID{ms.ID}); err != nil {
 		t.Fatalf("FullDeleteByMaterialSetIDs: %v", err)
 	}
 }

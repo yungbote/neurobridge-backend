@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,22 +9,23 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ConceptClusterMemberRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ConceptClusterMember) ([]*types.ConceptClusterMember, error)
-	CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ConceptClusterMember) (int, error)
+	Create(dbc dbctx.Context, rows []*types.ConceptClusterMember) ([]*types.ConceptClusterMember, error)
+	CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ConceptClusterMember) (int, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ConceptClusterMember, error)
-	GetByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) ([]*types.ConceptClusterMember, error)
-	GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ConceptClusterMember, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ConceptClusterMember, error)
+	GetByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) ([]*types.ConceptClusterMember, error)
+	GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ConceptClusterMember, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ConceptClusterMember) error
+	Upsert(dbc dbctx.Context, row *types.ConceptClusterMember) error
 
-	SoftDeleteByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) error
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
+	SoftDeleteByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
 }
 
 type conceptClusterMemberRepo struct {
@@ -37,29 +37,29 @@ func NewConceptClusterMemberRepo(db *gorm.DB, baseLog *logger.Logger) ConceptClu
 	return &conceptClusterMemberRepo{db: db, log: baseLog.With("repo", "ConceptClusterMemberRepo")}
 }
 
-func (r *conceptClusterMemberRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ConceptClusterMember) ([]*types.ConceptClusterMember, error) {
-	t := tx
+func (r *conceptClusterMemberRepo) Create(dbc dbctx.Context, rows []*types.ConceptClusterMember) ([]*types.ConceptClusterMember, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ConceptClusterMember{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *conceptClusterMemberRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ConceptClusterMember) (int, error) {
-	t := tx
+func (r *conceptClusterMemberRepo) CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ConceptClusterMember) (int, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	res := t.WithContext(ctx).
+	res := t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "cluster_id"}, {Name: "concept_id"}},
 			DoNothing: true,
@@ -71,8 +71,8 @@ func (r *conceptClusterMemberRepo) CreateIgnoreDuplicates(ctx context.Context, t
 	return int(res.RowsAffected), nil
 }
 
-func (r *conceptClusterMemberRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ConceptClusterMember, error) {
-	t := tx
+func (r *conceptClusterMemberRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ConceptClusterMember, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -80,14 +80,14 @@ func (r *conceptClusterMemberRepo) GetByIDs(ctx context.Context, tx *gorm.DB, id
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *conceptClusterMemberRepo) GetByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) ([]*types.ConceptClusterMember, error) {
-	t := tx
+func (r *conceptClusterMemberRepo) GetByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) ([]*types.ConceptClusterMember, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -95,7 +95,7 @@ func (r *conceptClusterMemberRepo) GetByClusterIDs(ctx context.Context, tx *gorm
 	if len(clusterIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("cluster_id IN ?", clusterIDs).
 		Order("cluster_id ASC, weight DESC").
 		Find(&out).Error; err != nil {
@@ -104,8 +104,8 @@ func (r *conceptClusterMemberRepo) GetByClusterIDs(ctx context.Context, tx *gorm
 	return out, nil
 }
 
-func (r *conceptClusterMemberRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ConceptClusterMember, error) {
-	t := tx
+func (r *conceptClusterMemberRepo) GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ConceptClusterMember, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -113,7 +113,7 @@ func (r *conceptClusterMemberRepo) GetByConceptIDs(ctx context.Context, tx *gorm
 	if len(conceptIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("concept_id IN ?", conceptIDs).
 		Order("concept_id ASC, weight DESC").
 		Find(&out).Error; err != nil {
@@ -122,8 +122,8 @@ func (r *conceptClusterMemberRepo) GetByConceptIDs(ctx context.Context, tx *gorm
 	return out, nil
 }
 
-func (r *conceptClusterMemberRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ConceptClusterMember) error {
-	t := tx
+func (r *conceptClusterMemberRepo) Upsert(dbc dbctx.Context, row *types.ConceptClusterMember) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -135,7 +135,7 @@ func (r *conceptClusterMemberRepo) Upsert(ctx context.Context, tx *gorm.DB, row 
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "cluster_id"}, {Name: "concept_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -146,46 +146,46 @@ func (r *conceptClusterMemberRepo) Upsert(ctx context.Context, tx *gorm.DB, row 
 		Create(row).Error
 }
 
-func (r *conceptClusterMemberRepo) SoftDeleteByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) error {
-	t := tx
+func (r *conceptClusterMemberRepo) SoftDeleteByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(clusterIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("cluster_id IN ?", clusterIDs).Delete(&types.ConceptClusterMember{}).Error
+	return t.WithContext(dbc.Ctx).Where("cluster_id IN ?", clusterIDs).Delete(&types.ConceptClusterMember{}).Error
 }
 
-func (r *conceptClusterMemberRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *conceptClusterMemberRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.ConceptClusterMember{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.ConceptClusterMember{}).Error
 }
 
-func (r *conceptClusterMemberRepo) FullDeleteByClusterIDs(ctx context.Context, tx *gorm.DB, clusterIDs []uuid.UUID) error {
-	t := tx
+func (r *conceptClusterMemberRepo) FullDeleteByClusterIDs(dbc dbctx.Context, clusterIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(clusterIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("cluster_id IN ?", clusterIDs).Delete(&types.ConceptClusterMember{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("cluster_id IN ?", clusterIDs).Delete(&types.ConceptClusterMember{}).Error
 }
 
-func (r *conceptClusterMemberRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *conceptClusterMemberRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptClusterMember{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptClusterMember{}).Error
 }

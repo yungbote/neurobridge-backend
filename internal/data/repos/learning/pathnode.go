@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,25 +8,26 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type PathNodeRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.PathNode) ([]*types.PathNode, error)
+	Create(dbc dbctx.Context, rows []*types.PathNode) ([]*types.PathNode, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.PathNode, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.PathNode, error)
-	GetByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) ([]*types.PathNode, error)
-	GetByPathAndIndex(ctx context.Context, tx *gorm.DB, pathID uuid.UUID, index int) (*types.PathNode, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.PathNode, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.PathNode, error)
+	GetByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) ([]*types.PathNode, error)
+	GetByPathAndIndex(dbc dbctx.Context, pathID uuid.UUID, index int) (*types.PathNode, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.PathNode) error
-	Update(ctx context.Context, tx *gorm.DB, row *types.PathNode) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	Upsert(dbc dbctx.Context, row *types.PathNode) error
+	Update(dbc dbctx.Context, row *types.PathNode) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) error
 }
 
 type pathNodeRepo struct {
@@ -39,22 +39,22 @@ func NewPathNodeRepo(db *gorm.DB, baseLog *logger.Logger) PathNodeRepo {
 	return &pathNodeRepo{db: db, log: baseLog.With("repo", "PathNodeRepo")}
 }
 
-func (r *pathNodeRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.PathNode) ([]*types.PathNode, error) {
-	t := tx
+func (r *pathNodeRepo) Create(dbc dbctx.Context, rows []*types.PathNode) ([]*types.PathNode, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.PathNode{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *pathNodeRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.PathNode, error) {
-	t := tx
+func (r *pathNodeRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.PathNode, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -62,17 +62,17 @@ func (r *pathNodeRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUI
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *pathNodeRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.PathNode, error) {
+func (r *pathNodeRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.PathNode, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +82,8 @@ func (r *pathNodeRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (
 	return rows[0], nil
 }
 
-func (r *pathNodeRepo) GetByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) ([]*types.PathNode, error) {
-	t := tx
+func (r *pathNodeRepo) GetByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) ([]*types.PathNode, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -91,7 +91,7 @@ func (r *pathNodeRepo) GetByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []
 	if len(pathIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("path_id IN ?", pathIDs).
 		Order("path_id ASC, index ASC").
 		Find(&out).Error; err != nil {
@@ -100,16 +100,16 @@ func (r *pathNodeRepo) GetByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []
 	return out, nil
 }
 
-func (r *pathNodeRepo) GetByPathAndIndex(ctx context.Context, tx *gorm.DB, pathID uuid.UUID, index int) (*types.PathNode, error) {
+func (r *pathNodeRepo) GetByPathAndIndex(dbc dbctx.Context, pathID uuid.UUID, index int) (*types.PathNode, error) {
 	if pathID == uuid.Nil {
 		return nil, nil
 	}
-	t := tx
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	var row types.PathNode
-	err := t.WithContext(ctx).
+	err := t.WithContext(dbc.Ctx).
 		Where("path_id = ? AND index = ?", pathID, index).
 		Limit(1).
 		Find(&row).Error
@@ -122,8 +122,8 @@ func (r *pathNodeRepo) GetByPathAndIndex(ctx context.Context, tx *gorm.DB, pathI
 	return &row, nil
 }
 
-func (r *pathNodeRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.PathNode) error {
-	t := tx
+func (r *pathNodeRepo) Upsert(dbc dbctx.Context, row *types.PathNode) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -135,7 +135,7 @@ func (r *pathNodeRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.PathN
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "path_id"}, {Name: "index"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -150,19 +150,19 @@ func (r *pathNodeRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.PathN
 		Create(row).Error
 }
 
-func (r *pathNodeRepo) Update(ctx context.Context, tx *gorm.DB, row *types.PathNode) error {
-	t := tx
+func (r *pathNodeRepo) Update(dbc dbctx.Context, row *types.PathNode) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if row == nil {
 		return nil
 	}
-	return t.WithContext(ctx).Save(row).Error
+	return t.WithContext(dbc.Ctx).Save(row).Error
 }
 
-func (r *pathNodeRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *pathNodeRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -175,52 +175,52 @@ func (r *pathNodeRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UU
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.PathNode{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *pathNodeRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *pathNodeRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.PathNode{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.PathNode{}).Error
 }
 
-func (r *pathNodeRepo) SoftDeleteByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) error {
-	t := tx
+func (r *pathNodeRepo) SoftDeleteByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(pathIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("path_id IN ?", pathIDs).Delete(&types.PathNode{}).Error
+	return t.WithContext(dbc.Ctx).Where("path_id IN ?", pathIDs).Delete(&types.PathNode{}).Error
 }
 
-func (r *pathNodeRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *pathNodeRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.PathNode{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.PathNode{}).Error
 }
 
-func (r *pathNodeRepo) FullDeleteByPathIDs(ctx context.Context, tx *gorm.DB, pathIDs []uuid.UUID) error {
-	t := tx
+func (r *pathNodeRepo) FullDeleteByPathIDs(dbc dbctx.Context, pathIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(pathIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("path_id IN ?", pathIDs).Delete(&types.PathNode{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("path_id IN ?", pathIDs).Delete(&types.PathNode{}).Error
 }

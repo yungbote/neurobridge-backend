@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"errors"
 	"time"
 
@@ -9,11 +8,12 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningProfileRepo interface {
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningProfile) error
-	GetByUserID(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.LearningProfile, error)
+	Upsert(dbc dbctx.Context, row *types.LearningProfile) error
+	GetByUserID(dbc dbctx.Context, userID uuid.UUID) (*types.LearningProfile, error)
 }
 
 type learningProfileRepo struct {
@@ -25,19 +25,19 @@ func NewLearningProfileRepo(db *gorm.DB, baseLog *logger.Logger) LearningProfile
 	return &learningProfileRepo{db: db, log: baseLog.With("repo", "LearningProfileRepo")}
 }
 
-func (r *learningProfileRepo) dbx(tx *gorm.DB) *gorm.DB {
-	if tx != nil {
-		return tx
+func (r *learningProfileRepo) dbx(dbc dbctx.Context) *gorm.DB {
+	if dbc.Tx != nil {
+		return dbc.Tx
 	}
 	return r.db
 }
 
-func (r *learningProfileRepo) GetByUserID(ctx context.Context, tx *gorm.DB, userID uuid.UUID) (*types.LearningProfile, error) {
+func (r *learningProfileRepo) GetByUserID(dbc dbctx.Context, userID uuid.UUID) (*types.LearningProfile, error) {
 	if userID == uuid.Nil {
 		return nil, nil
 	}
 	var out types.LearningProfile
-	err := r.dbx(tx).WithContext(ctx).
+	err := r.dbx(dbc).WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		First(&out).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -49,7 +49,7 @@ func (r *learningProfileRepo) GetByUserID(ctx context.Context, tx *gorm.DB, user
 	return &out, nil
 }
 
-func (r *learningProfileRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningProfile) error {
+func (r *learningProfileRepo) Upsert(dbc dbctx.Context, row *types.LearningProfile) error {
 	if row == nil || row.UserID == uuid.Nil {
 		return nil
 	}
@@ -59,9 +59,9 @@ func (r *learningProfileRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		row.CreatedAt = now
 	}
 
-	t := r.dbx(tx).WithContext(ctx)
+	t := r.dbx(dbc).WithContext(dbc.Ctx)
 
-	existing, err := r.GetByUserID(ctx, tx, row.UserID)
+	existing, err := r.GetByUserID(dbc, row.UserID)
 	if err != nil {
 		return err
 	}

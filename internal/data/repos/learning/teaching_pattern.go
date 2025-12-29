@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -11,16 +10,17 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type TeachingPatternRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.TeachingPattern) ([]*types.TeachingPattern, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.TeachingPattern, error)
-	GetByPatternKey(ctx context.Context, tx *gorm.DB, patternKey string) (*types.TeachingPattern, error)
-	ListAll(ctx context.Context, tx *gorm.DB, limit int) ([]*types.TeachingPattern, error)
-	Count(ctx context.Context, tx *gorm.DB) (int64, error)
+	Create(dbc dbctx.Context, rows []*types.TeachingPattern) ([]*types.TeachingPattern, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.TeachingPattern, error)
+	GetByPatternKey(dbc dbctx.Context, patternKey string) (*types.TeachingPattern, error)
+	ListAll(dbc dbctx.Context, limit int) ([]*types.TeachingPattern, error)
+	Count(dbc dbctx.Context) (int64, error)
 
-	UpsertByPatternKey(ctx context.Context, tx *gorm.DB, row *types.TeachingPattern) error
+	UpsertByPatternKey(dbc dbctx.Context, row *types.TeachingPattern) error
 }
 
 type teachingPatternRepo struct {
@@ -32,22 +32,22 @@ func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPattern
 	return &teachingPatternRepo{db: db, log: baseLog.With("repo", "TeachingPatternRepo")}
 }
 
-func (r *teachingPatternRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.TeachingPattern) ([]*types.TeachingPattern, error) {
-	t := tx
+func (r *teachingPatternRepo) Create(dbc dbctx.Context, rows []*types.TeachingPattern) ([]*types.TeachingPattern, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.TeachingPattern{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *teachingPatternRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.TeachingPattern, error) {
-	t := tx
+func (r *teachingPatternRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.TeachingPattern, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -55,14 +55,14 @@ func (r *teachingPatternRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *teachingPatternRepo) GetByPatternKey(ctx context.Context, tx *gorm.DB, patternKey string) (*types.TeachingPattern, error) {
-	t := tx
+func (r *teachingPatternRepo) GetByPatternKey(dbc dbctx.Context, patternKey string) (*types.TeachingPattern, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -71,7 +71,7 @@ func (r *teachingPatternRepo) GetByPatternKey(ctx context.Context, tx *gorm.DB, 
 		return nil, nil
 	}
 	var row types.TeachingPattern
-	if err := t.WithContext(ctx).Where("pattern_key = ?", patternKey).Limit(1).Find(&row).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("pattern_key = ?", patternKey).Limit(1).Find(&row).Error; err != nil {
 		return nil, err
 	}
 	if row.ID == uuid.Nil {
@@ -80,8 +80,8 @@ func (r *teachingPatternRepo) GetByPatternKey(ctx context.Context, tx *gorm.DB, 
 	return &row, nil
 }
 
-func (r *teachingPatternRepo) ListAll(ctx context.Context, tx *gorm.DB, limit int) ([]*types.TeachingPattern, error) {
-	t := tx
+func (r *teachingPatternRepo) ListAll(dbc dbctx.Context, limit int) ([]*types.TeachingPattern, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -89,26 +89,26 @@ func (r *teachingPatternRepo) ListAll(ctx context.Context, tx *gorm.DB, limit in
 		limit = 1000
 	}
 	out := []*types.TeachingPattern{}
-	if err := t.WithContext(ctx).Order("updated_at DESC").Limit(limit).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Order("updated_at DESC").Limit(limit).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *teachingPatternRepo) Count(ctx context.Context, tx *gorm.DB) (int64, error) {
-	t := tx
+func (r *teachingPatternRepo) Count(dbc dbctx.Context) (int64, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	var n int64
-	if err := t.WithContext(ctx).Model(&types.TeachingPattern{}).Count(&n).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Model(&types.TeachingPattern{}).Count(&n).Error; err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
-func (r *teachingPatternRepo) UpsertByPatternKey(ctx context.Context, tx *gorm.DB, row *types.TeachingPattern) error {
-	t := tx
+func (r *teachingPatternRepo) UpsertByPatternKey(dbc dbctx.Context, row *types.TeachingPattern) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -120,7 +120,7 @@ func (r *teachingPatternRepo) UpsertByPatternKey(ctx context.Context, tx *gorm.D
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "pattern_key"}},
 			DoUpdates: clause.AssignmentColumns([]string{

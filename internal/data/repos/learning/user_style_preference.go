@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"math"
 	"strings"
 	"time"
@@ -12,13 +11,14 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserStylePreferenceRepo interface {
 	// reward in [-1..+1]; if binary != nil we also update Beta(a,b)
-	UpsertEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error
-	ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error)
-	ListGlobalByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserStylePreference, error)
+	UpsertEMA(dbc dbctx.Context, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error
+	ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error)
+	ListGlobalByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.UserStylePreference, error)
 }
 
 type userStylePreferenceRepo struct {
@@ -37,8 +37,8 @@ func clamp(x, lo, hi float64) float64 {
 	return math.Max(lo, math.Min(hi, x))
 }
 
-func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error {
-	t := tx
+func (r *userStylePreferenceRepo) UpsertEMA(dbc dbctx.Context, userID uuid.UUID, conceptID *uuid.UUID, modality, variant string, reward float64, binary *bool) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -59,7 +59,7 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 	now := time.Now().UTC()
 
 	var row types.UserStylePreference
-	err := t.WithContext(ctx).
+	err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id IS NOT DISTINCT FROM ? AND modality = ? AND variant = ?",
 			userID, conceptID, modality, variant,
 		).
@@ -100,7 +100,7 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 	row.LastObservedAt = &now
 	row.UpdatedAt = now
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "user_id"},
@@ -115,8 +115,8 @@ func (r *userStylePreferenceRepo) UpsertEMA(ctx context.Context, tx *gorm.DB, us
 		Create(&row).Error
 }
 
-func (r *userStylePreferenceRepo) ListByUserAndConceptIDs(ctx context.Context, tx *gorm.DB, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error) {
-	t := tx
+func (r *userStylePreferenceRepo) ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserStylePreference, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -124,7 +124,7 @@ func (r *userStylePreferenceRepo) ListByUserAndConceptIDs(ctx context.Context, t
 	if userID == uuid.Nil || len(conceptIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id IN ?", userID, conceptIDs).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -132,8 +132,8 @@ func (r *userStylePreferenceRepo) ListByUserAndConceptIDs(ctx context.Context, t
 	return out, nil
 }
 
-func (r *userStylePreferenceRepo) ListGlobalByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.UserStylePreference, error) {
-	t := tx
+func (r *userStylePreferenceRepo) ListGlobalByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.UserStylePreference, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -141,7 +141,7 @@ func (r *userStylePreferenceRepo) ListGlobalByUser(ctx context.Context, tx *gorm
 	if userID == uuid.Nil {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id IS NULL", userID).
 		Find(&out).Error; err != nil {
 		return nil, err

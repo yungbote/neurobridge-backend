@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,21 +9,22 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ConceptEvidenceRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ConceptEvidence) ([]*types.ConceptEvidence, error)
-	CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ConceptEvidence) (int, error)
+	Create(dbc dbctx.Context, rows []*types.ConceptEvidence) ([]*types.ConceptEvidence, error)
+	CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ConceptEvidence) (int, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ConceptEvidence, error)
-	GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ConceptEvidence, error)
-	GetByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) ([]*types.ConceptEvidence, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ConceptEvidence, error)
+	GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ConceptEvidence, error)
+	GetByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) ([]*types.ConceptEvidence, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ConceptEvidence) error
-	SoftDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
+	Upsert(dbc dbctx.Context, row *types.ConceptEvidence) error
+	SoftDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
 }
 
 type conceptEvidenceRepo struct {
@@ -36,29 +36,29 @@ func NewConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) ConceptEvidence
 	return &conceptEvidenceRepo{db: db, log: baseLog.With("repo", "ConceptEvidenceRepo")}
 }
 
-func (r *conceptEvidenceRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ConceptEvidence) ([]*types.ConceptEvidence, error) {
-	t := tx
+func (r *conceptEvidenceRepo) Create(dbc dbctx.Context, rows []*types.ConceptEvidence) ([]*types.ConceptEvidence, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ConceptEvidence{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *conceptEvidenceRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ConceptEvidence) (int, error) {
-	t := tx
+func (r *conceptEvidenceRepo) CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ConceptEvidence) (int, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	res := t.WithContext(ctx).
+	res := t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "concept_id"}, {Name: "material_chunk_id"}},
 			DoNothing: true,
@@ -70,8 +70,8 @@ func (r *conceptEvidenceRepo) CreateIgnoreDuplicates(ctx context.Context, tx *go
 	return int(res.RowsAffected), nil
 }
 
-func (r *conceptEvidenceRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ConceptEvidence, error) {
-	t := tx
+func (r *conceptEvidenceRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ConceptEvidence, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -79,14 +79,14 @@ func (r *conceptEvidenceRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *conceptEvidenceRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ConceptEvidence, error) {
-	t := tx
+func (r *conceptEvidenceRepo) GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ConceptEvidence, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -94,7 +94,7 @@ func (r *conceptEvidenceRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, 
 	if len(conceptIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("concept_id IN ?", conceptIDs).
 		Order("concept_id ASC, created_at ASC").
 		Find(&out).Error; err != nil {
@@ -103,8 +103,8 @@ func (r *conceptEvidenceRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, 
 	return out, nil
 }
 
-func (r *conceptEvidenceRepo) GetByMaterialChunkIDs(ctx context.Context, tx *gorm.DB, chunkIDs []uuid.UUID) ([]*types.ConceptEvidence, error) {
-	t := tx
+func (r *conceptEvidenceRepo) GetByMaterialChunkIDs(dbc dbctx.Context, chunkIDs []uuid.UUID) ([]*types.ConceptEvidence, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -112,7 +112,7 @@ func (r *conceptEvidenceRepo) GetByMaterialChunkIDs(ctx context.Context, tx *gor
 	if len(chunkIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("material_chunk_id IN ?", chunkIDs).
 		Order("material_chunk_id ASC, created_at ASC").
 		Find(&out).Error; err != nil {
@@ -121,8 +121,8 @@ func (r *conceptEvidenceRepo) GetByMaterialChunkIDs(ctx context.Context, tx *gor
 	return out, nil
 }
 
-func (r *conceptEvidenceRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ConceptEvidence) error {
-	t := tx
+func (r *conceptEvidenceRepo) Upsert(dbc dbctx.Context, row *types.ConceptEvidence) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -134,7 +134,7 @@ func (r *conceptEvidenceRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "concept_id"}, {Name: "material_chunk_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -146,46 +146,46 @@ func (r *conceptEvidenceRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		Create(row).Error
 }
 
-func (r *conceptEvidenceRepo) SoftDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error {
-	t := tx
+func (r *conceptEvidenceRepo) SoftDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(conceptIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("concept_id IN ?", conceptIDs).Delete(&types.ConceptEvidence{}).Error
+	return t.WithContext(dbc.Ctx).Where("concept_id IN ?", conceptIDs).Delete(&types.ConceptEvidence{}).Error
 }
 
-func (r *conceptEvidenceRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *conceptEvidenceRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.ConceptEvidence{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.ConceptEvidence{}).Error
 }
 
-func (r *conceptEvidenceRepo) FullDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error {
-	t := tx
+func (r *conceptEvidenceRepo) FullDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(conceptIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("concept_id IN ?", conceptIDs).Delete(&types.ConceptEvidence{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("concept_id IN ?", conceptIDs).Delete(&types.ConceptEvidence{}).Error
 }
 
-func (r *conceptEvidenceRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *conceptEvidenceRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptEvidence{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ConceptEvidence{}).Error
 }

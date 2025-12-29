@@ -1,22 +1,23 @@
 package materials
 
 import (
-	"context"
 	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type MaterialFileRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile) ([]*types.MaterialFile, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) ([]*types.MaterialFile, error)
-	GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.MaterialFile, error)
-	GetByMaterialSetID(ctx context.Context, tx *gorm.DB, setID uuid.UUID) ([]*types.MaterialFile, error)
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) error
-	SoftDeleteByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) error
-	FullDeleteByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error
+	Create(dbc dbctx.Context, files []*types.MaterialFile) ([]*types.MaterialFile, error)
+	GetByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) ([]*types.MaterialFile, error)
+	GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.MaterialFile, error)
+	GetByMaterialSetID(dbc dbctx.Context, setID uuid.UUID) ([]*types.MaterialFile, error)
+	SoftDeleteByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) error
+	SoftDeleteByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) error
+	FullDeleteByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) error
 }
 
 type materialFileRepo struct {
@@ -29,8 +30,8 @@ func NewMaterialFileRepo(db *gorm.DB, baseLog *logger.Logger) MaterialFileRepo {
 	return &materialFileRepo{db: db, log: repoLog}
 }
 
-func (r *materialFileRepo) Create(ctx context.Context, tx *gorm.DB, files []*types.MaterialFile) ([]*types.MaterialFile, error) {
-	transaction := tx
+func (r *materialFileRepo) Create(dbc dbctx.Context, files []*types.MaterialFile) ([]*types.MaterialFile, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -39,14 +40,14 @@ func (r *materialFileRepo) Create(ctx context.Context, tx *gorm.DB, files []*typ
 		return []*types.MaterialFile{}, nil
 	}
 
-	if err := transaction.WithContext(ctx).Create(&files).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(&files).Error; err != nil {
 		return nil, err
 	}
 	return files, nil
 }
 
-func (r *materialFileRepo) GetByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) ([]*types.MaterialFile, error) {
-	transaction := tx
+func (r *materialFileRepo) GetByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) ([]*types.MaterialFile, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -56,7 +57,7 @@ func (r *materialFileRepo) GetByIDs(ctx context.Context, tx *gorm.DB, fileIDs []
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", fileIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -64,8 +65,8 @@ func (r *materialFileRepo) GetByIDs(ctx context.Context, tx *gorm.DB, fileIDs []
 	return results, nil
 }
 
-func (r *materialFileRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.MaterialFile, error) {
-	transaction := tx
+func (r *materialFileRepo) GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.MaterialFile, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -75,7 +76,7 @@ func (r *materialFileRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB,
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("material_set_id IN ?", setIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -83,12 +84,12 @@ func (r *materialFileRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB,
 	return results, nil
 }
 
-func (r *materialFileRepo) GetByMaterialSetID(ctx context.Context, tx *gorm.DB, setID uuid.UUID) ([]*types.MaterialFile, error) {
-	return r.GetByMaterialSetIDs(ctx, tx, []uuid.UUID{setID})
+func (r *materialFileRepo) GetByMaterialSetID(dbc dbctx.Context, setID uuid.UUID) ([]*types.MaterialFile, error) {
+	return r.GetByMaterialSetIDs(dbc, []uuid.UUID{setID})
 }
 
-func (r *materialFileRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialFileRepo) SoftDeleteByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -97,7 +98,7 @@ func (r *materialFileRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, fil
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", fileIDs).
 		Delete(&types.MaterialFile{}).Error; err != nil {
 		return err
@@ -105,8 +106,8 @@ func (r *materialFileRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, fil
 	return nil
 }
 
-func (r *materialFileRepo) SoftDeleteByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialFileRepo) SoftDeleteByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -115,7 +116,7 @@ func (r *materialFileRepo) SoftDeleteByMaterialSetIDs(ctx context.Context, tx *g
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("material_set_id IN ?", setIDs).
 		Delete(&types.MaterialFile{}).Error; err != nil {
 		return err
@@ -123,8 +124,8 @@ func (r *materialFileRepo) SoftDeleteByMaterialSetIDs(ctx context.Context, tx *g
 	return nil
 }
 
-func (r *materialFileRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, fileIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialFileRepo) FullDeleteByIDs(dbc dbctx.Context, fileIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -133,7 +134,7 @@ func (r *materialFileRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, fil
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("id IN ?", fileIDs).
 		Delete(&types.MaterialFile{}).Error; err != nil {
@@ -142,8 +143,8 @@ func (r *materialFileRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, fil
 	return nil
 }
 
-func (r *materialFileRepo) FullDeleteByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialFileRepo) FullDeleteByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -152,7 +153,7 @@ func (r *materialFileRepo) FullDeleteByMaterialSetIDs(ctx context.Context, tx *g
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("material_set_id IN ?", setIDs).
 		Delete(&types.MaterialFile{}).Error; err != nil {

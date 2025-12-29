@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,25 +8,26 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ActivityRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.Activity) ([]*types.Activity, error)
+	Create(dbc dbctx.Context, rows []*types.Activity) ([]*types.Activity, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.Activity, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.Activity, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.Activity, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.Activity, error)
 
-	ListByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) ([]*types.Activity, error)
-	ListByOwnerIDs(ctx context.Context, tx *gorm.DB, ownerType string, ownerIDs []uuid.UUID) ([]*types.Activity, error)
-	ListByStatus(ctx context.Context, tx *gorm.DB, statuses []string) ([]*types.Activity, error)
+	ListByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) ([]*types.Activity, error)
+	ListByOwnerIDs(dbc dbctx.Context, ownerType string, ownerIDs []uuid.UUID) ([]*types.Activity, error)
+	ListByStatus(dbc dbctx.Context, statuses []string) ([]*types.Activity, error)
 
-	Update(ctx context.Context, tx *gorm.DB, row *types.Activity) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	Update(dbc dbctx.Context, row *types.Activity) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) error
 }
 
 type activityRepo struct {
@@ -39,22 +39,22 @@ func NewActivityRepo(db *gorm.DB, baseLog *logger.Logger) ActivityRepo {
 	return &activityRepo{db: db, log: baseLog.With("repo", "ActivityRepo")}
 }
 
-func (r *activityRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.Activity) ([]*types.Activity, error) {
-	t := tx
+func (r *activityRepo) Create(dbc dbctx.Context, rows []*types.Activity) ([]*types.Activity, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.Activity{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *activityRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.Activity, error) {
-	t := tx
+func (r *activityRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.Activity, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -62,7 +62,7 @@ func (r *activityRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUI
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("id IN ?", ids).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -70,11 +70,11 @@ func (r *activityRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUI
 	return out, nil
 }
 
-func (r *activityRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.Activity, error) {
+func (r *activityRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.Activity, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +84,8 @@ func (r *activityRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (
 	return rows[0], nil
 }
 
-func (r *activityRepo) ListByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) ([]*types.Activity, error) {
-	t := tx
+func (r *activityRepo) ListByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) ([]*types.Activity, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -99,7 +99,7 @@ func (r *activityRepo) ListByOwner(ctx context.Context, tx *gorm.DB, ownerType s
 		cleanOwnerID = nil
 	}
 
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("owner_type = ? AND owner_id IS NOT DISTINCT FROM ?", ownerType, cleanOwnerID).
 		Order("created_at ASC").
 		Find(&out).Error; err != nil {
@@ -108,8 +108,8 @@ func (r *activityRepo) ListByOwner(ctx context.Context, tx *gorm.DB, ownerType s
 	return out, nil
 }
 
-func (r *activityRepo) ListByOwnerIDs(ctx context.Context, tx *gorm.DB, ownerType string, ownerIDs []uuid.UUID) ([]*types.Activity, error) {
-	t := tx
+func (r *activityRepo) ListByOwnerIDs(dbc dbctx.Context, ownerType string, ownerIDs []uuid.UUID) ([]*types.Activity, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -117,7 +117,7 @@ func (r *activityRepo) ListByOwnerIDs(ctx context.Context, tx *gorm.DB, ownerTyp
 	if ownerType == "" || len(ownerIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("owner_type = ? AND owner_id IN ?", ownerType, ownerIDs).
 		Order("owner_id ASC, created_at ASC").
 		Find(&out).Error; err != nil {
@@ -126,8 +126,8 @@ func (r *activityRepo) ListByOwnerIDs(ctx context.Context, tx *gorm.DB, ownerTyp
 	return out, nil
 }
 
-func (r *activityRepo) ListByStatus(ctx context.Context, tx *gorm.DB, statuses []string) ([]*types.Activity, error) {
-	t := tx
+func (r *activityRepo) ListByStatus(dbc dbctx.Context, statuses []string) ([]*types.Activity, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -135,7 +135,7 @@ func (r *activityRepo) ListByStatus(ctx context.Context, tx *gorm.DB, statuses [
 	if len(statuses) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("status IN ?", statuses).
 		Order("created_at DESC").
 		Find(&out).Error; err != nil {
@@ -144,19 +144,19 @@ func (r *activityRepo) ListByStatus(ctx context.Context, tx *gorm.DB, statuses [
 	return out, nil
 }
 
-func (r *activityRepo) Update(ctx context.Context, tx *gorm.DB, row *types.Activity) error {
-	t := tx
+func (r *activityRepo) Update(dbc dbctx.Context, row *types.Activity) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if row == nil {
 		return nil
 	}
-	return t.WithContext(ctx).Save(row).Error
+	return t.WithContext(dbc.Ctx).Save(row).Error
 }
 
-func (r *activityRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *activityRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -169,25 +169,25 @@ func (r *activityRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UU
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.Activity{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *activityRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.Activity{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.Activity{}).Error
 }
 
-func (r *activityRepo) SoftDeleteByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) error {
-	t := tx
+func (r *activityRepo) SoftDeleteByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -200,24 +200,24 @@ func (r *activityRepo) SoftDeleteByOwner(ctx context.Context, tx *gorm.DB, owner
 		cleanOwnerID = nil
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Where("owner_type = ? AND owner_id IS NOT DISTINCT FROM ?", ownerType, cleanOwnerID).
 		Delete(&types.Activity{}).Error
 }
 
-func (r *activityRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.Activity{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.Activity{}).Error
 }
 
-func (r *activityRepo) FullDeleteByOwner(ctx context.Context, tx *gorm.DB, ownerType string, ownerID *uuid.UUID) error {
-	t := tx
+func (r *activityRepo) FullDeleteByOwner(dbc dbctx.Context, ownerType string, ownerID *uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -230,7 +230,7 @@ func (r *activityRepo) FullDeleteByOwner(ctx context.Context, tx *gorm.DB, owner
 		cleanOwnerID = nil
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("owner_type = ? AND owner_id IS NOT DISTINCT FROM ?", ownerType, cleanOwnerID).
 		Delete(&types.Activity{}).Error

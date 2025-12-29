@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -94,7 +95,7 @@ func New(log *logger.Logger) Tools {
 }
 
 func (m *tools) AssertReady(ctx context.Context) error {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -117,7 +118,7 @@ func (m *tools) assertBinary(ctx context.Context, name string) error {
 }
 
 func (m *tools) WriteTempFile(ctx context.Context, data []byte, suffix string) (string, func(), error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	if err := os.MkdirAll(m.workRoot, 0o755); err != nil {
 		return "", func() {}, fmt.Errorf("mkdir workRoot: %w", err)
 	}
@@ -135,7 +136,7 @@ func (m *tools) WriteTempFile(ctx context.Context, data []byte, suffix string) (
 }
 
 func (m *tools) ConvertOfficeToPDF(ctx context.Context, inputPath string, outDir string) (string, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	if err := m.AssertReady(ctx); err != nil {
 		return "", err
 	}
@@ -183,7 +184,7 @@ func (m *tools) ConvertOfficeToPDF(ctx context.Context, inputPath string, outDir
 }
 
 func (m *tools) RenderPDFToImages(ctx context.Context, pdfPath string, outDir string, opts PDFRenderOptions) ([]string, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	if err := m.AssertReady(ctx); err != nil {
 		return nil, err
 	}
@@ -245,7 +246,7 @@ func (m *tools) RenderPDFToImages(ctx context.Context, pdfPath string, outDir st
 }
 
 func (m *tools) ExtractAudioFromVideo(ctx context.Context, videoPath string, outPath string, opts AudioExtractOptions) (string, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	if err := m.AssertReady(ctx); err != nil {
 		return "", err
 	}
@@ -304,7 +305,7 @@ func (m *tools) ExtractAudioFromVideo(ctx context.Context, videoPath string, out
 }
 
 func (m *tools) ExtractKeyframes(ctx context.Context, videoPath string, outDir string, opts KeyframeOptions) ([]string, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	if err := m.AssertReady(ctx); err != nil {
 		return nil, err
 	}
@@ -440,11 +441,4 @@ func globSorted(dir string, pattern string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
-}
-
-func defaultCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
 }

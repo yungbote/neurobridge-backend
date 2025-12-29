@@ -17,6 +17,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/keys"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -62,13 +63,13 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 		return out, fmt.Errorf("chain_signature_build: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	concepts, err := deps.Concepts.GetByScope(ctx, nil, "path", &pathID)
+	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -90,7 +91,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 	sort.Strings(allKeys)
 
 	// Candidate chains: one per cluster, or one global chain if no clusters.
-	clusters, err := deps.Clusters.GetByScope(ctx, nil, "path", &pathID)
+	clusters, err := deps.Clusters.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
@@ -107,7 +108,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 	cands := make([]chainCandidate, 0)
 
 	if len(clusters) == 0 {
-		edges := chainEdgesForConceptKeys(ctx, deps.Edges, conceptIDToKey, allKeys)
+		edges := chainEdgesForConceptKeys(dbctx.Context{Ctx: ctx}, deps.Edges, conceptIDToKey, allKeys)
 		ck := keys.ChainKey(allKeys, edges)
 		cands = append(cands, chainCandidate{
 			Label:       "global",
@@ -126,7 +127,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 			clusterIDs = append(clusterIDs, cl.ID)
 			clusterLabel[cl.ID] = cl.Label
 		}
-		members, err := deps.Members.GetByClusterIDs(ctx, nil, clusterIDs)
+		members, err := deps.Members.GetByClusterIDs(dbctx.Context{Ctx: ctx}, clusterIDs)
 		if err != nil {
 			return out, err
 		}
@@ -149,7 +150,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 			if len(keysArr) == 0 {
 				continue
 			}
-			edges := chainEdgesForConceptKeys(ctx, deps.Edges, conceptIDToKey, keysArr)
+			edges := chainEdgesForConceptKeys(dbctx.Context{Ctx: ctx}, deps.Edges, conceptIDToKey, keysArr)
 			ck := keys.ChainKey(keysArr, edges)
 			cands = append(cands, chainCandidate{
 				Label:       strings.TrimSpace(clusterLabel[cid]),
@@ -203,7 +204,8 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 	const batchSize = 64
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
@@ -221,7 +223,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 				VectorID:    c.VectorID,
 				Metadata:    datatypes.JSON(mustJSON(map[string]any{"label": c.Label})),
 			}
-			if err := deps.Chains.UpsertByChainKey(ctx, tx, row); err != nil {
+			if err := deps.Chains.UpsertByChainKey(dbc, row); err != nil {
 				return err
 			}
 			out.ChainsUpserted++
@@ -240,7 +242,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {
@@ -289,7 +291,7 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 	return out, nil
 }
 
-func chainEdgesForConceptKeys(ctx context.Context, edgeRepo repos.ConceptEdgeRepo, idToKey map[uuid.UUID]string, conceptKeys []string) []keys.ChainEdge {
+func chainEdgesForConceptKeys(dbc dbctx.Context, edgeRepo repos.ConceptEdgeRepo, idToKey map[uuid.UUID]string, conceptKeys []string) []keys.ChainEdge {
 	if edgeRepo == nil || len(conceptKeys) == 0 {
 		return nil
 	}
@@ -305,7 +307,7 @@ func chainEdgesForConceptKeys(ctx context.Context, edgeRepo repos.ConceptEdgeRep
 			conceptIDs = append(conceptIDs, id)
 		}
 	}
-	edges, err := edgeRepo.GetByConceptIDs(ctx, nil, conceptIDs)
+	edges, err := edgeRepo.GetByConceptIDs(dbc, conceptIDs)
 	if err != nil {
 		return nil
 	}

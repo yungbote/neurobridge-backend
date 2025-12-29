@@ -14,6 +14,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -45,12 +46,12 @@ func RunStage(ctx context.Context, deps Deps, in Input) (*types.MaterialSetSumma
 		return nil, fmt.Errorf("missing ids")
 	}
 	if deps.Sums != nil {
-		ex, _ := deps.Sums.GetByMaterialSetIDs(ctx, nil, []uuid.UUID{in.MaterialSetID})
+		ex, _ := deps.Sums.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID})
 		if len(ex) > 0 && ex[0] != nil && strings.TrimSpace(ex[0].SummaryMD) != "" {
 			return ex[0], nil
 		}
 	}
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +61,7 @@ func RunStage(ctx context.Context, deps Deps, in Input) (*types.MaterialSetSumma
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	chunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	chunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +116,7 @@ func RunStage(ctx context.Context, deps Deps, in Input) (*types.MaterialSetSumma
 	if deps.Sums == nil {
 		return nil, fmt.Errorf("summaries repo missing")
 	}
-	if err := deps.Sums.UpsertByMaterialSetID(ctx, deps.DB, row); err != nil {
+	if err := deps.Sums.UpsertByMaterialSetID(dbctx.Context{Ctx: ctx, Tx: deps.DB}, row); err != nil {
 		return nil, err
 	}
 	if deps.Vec != nil && len(emb) > 0 && emb[0] != nil {

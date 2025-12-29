@@ -14,6 +14,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -97,7 +98,7 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 			} else if strings.TrimSpace(pdfPath) != "" {
 				// For office->pdf conversions, upload the derived PDF and OCR that.
 				derivedKey := strings.TrimRight(mf.StorageKey, "/") + "/derived/source.pdf"
-				if err := s.ex.UploadLocalToGCS(ctx, nil, derivedKey, pdfPath); err != nil {
+				if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, derivedKey, pdfPath); err != nil {
 					warnings = append(warnings, "vision OCR fallback skipped (upload derived pdf failed): "+err.Error())
 				} else {
 					gcsURI = fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, derivedKey)
@@ -263,7 +264,7 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 		}
 		pageNum := i + 1
 		key := fmt.Sprintf("%s/derived/pages/page_%04d.png", mf.StorageKey, pageNum)
-		if err := s.ex.UploadLocalToGCS(ctx, nil, key, pth); err != nil {
+		if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, key, pth); err != nil {
 			warnings = append(warnings, fmt.Sprintf("upload page %d failed: %v", pageNum, err))
 			continue
 		}

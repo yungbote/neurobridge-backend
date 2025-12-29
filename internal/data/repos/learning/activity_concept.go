@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,28 +9,29 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type ActivityConceptRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityConcept) ([]*types.ActivityConcept, error)
-	CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ActivityConcept) (int, error)
+	Create(dbc dbctx.Context, rows []*types.ActivityConcept) ([]*types.ActivityConcept, error)
+	CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ActivityConcept) (int, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityConcept, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityConcept, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityConcept, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityConcept, error)
 
-	GetByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) ([]*types.ActivityConcept, error)
-	GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ActivityConcept, error)
+	GetByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) ([]*types.ActivityConcept, error)
+	GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ActivityConcept, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityConcept) error
-	Update(ctx context.Context, tx *gorm.DB, row *types.ActivityConcept) error
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	Upsert(dbc dbctx.Context, row *types.ActivityConcept) error
+	Update(dbc dbctx.Context, row *types.ActivityConcept) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error
-	SoftDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error
-	FullDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error
+	SoftDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error
+	FullDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error
 }
 
 type activityConceptRepo struct {
@@ -43,29 +43,29 @@ func NewActivityConceptRepo(db *gorm.DB, baseLog *logger.Logger) ActivityConcept
 	return &activityConceptRepo{db: db, log: baseLog.With("repo", "ActivityConceptRepo")}
 }
 
-func (r *activityConceptRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ActivityConcept) ([]*types.ActivityConcept, error) {
-	t := tx
+func (r *activityConceptRepo) Create(dbc dbctx.Context, rows []*types.ActivityConcept) ([]*types.ActivityConcept, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.ActivityConcept{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *activityConceptRepo) CreateIgnoreDuplicates(ctx context.Context, tx *gorm.DB, rows []*types.ActivityConcept) (int, error) {
-	t := tx
+func (r *activityConceptRepo) CreateIgnoreDuplicates(dbc dbctx.Context, rows []*types.ActivityConcept) (int, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	res := t.WithContext(ctx).
+	res := t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "activity_id"}, {Name: "concept_id"}},
 			DoNothing: true,
@@ -77,8 +77,8 @@ func (r *activityConceptRepo) CreateIgnoreDuplicates(ctx context.Context, tx *go
 	return int(res.RowsAffected), nil
 }
 
-func (r *activityConceptRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.ActivityConcept, error) {
-	t := tx
+func (r *activityConceptRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.ActivityConcept, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -86,7 +86,7 @@ func (r *activityConceptRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("id IN ?", ids).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -94,11 +94,11 @@ func (r *activityConceptRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	return out, nil
 }
 
-func (r *activityConceptRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.ActivityConcept, error) {
+func (r *activityConceptRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.ActivityConcept, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -108,8 +108,8 @@ func (r *activityConceptRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.
 	return rows[0], nil
 }
 
-func (r *activityConceptRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) ([]*types.ActivityConcept, error) {
-	t := tx
+func (r *activityConceptRepo) GetByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) ([]*types.ActivityConcept, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -117,7 +117,7 @@ func (r *activityConceptRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB,
 	if len(activityIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("activity_id IN ?", activityIDs).
 		Order("activity_id ASC, weight DESC, role ASC").
 		Find(&out).Error; err != nil {
@@ -126,8 +126,8 @@ func (r *activityConceptRepo) GetByActivityIDs(ctx context.Context, tx *gorm.DB,
 	return out, nil
 }
 
-func (r *activityConceptRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) ([]*types.ActivityConcept, error) {
-	t := tx
+func (r *activityConceptRepo) GetByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) ([]*types.ActivityConcept, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -135,7 +135,7 @@ func (r *activityConceptRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, 
 	if len(conceptIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("concept_id IN ?", conceptIDs).
 		Order("concept_id ASC, weight DESC, role ASC").
 		Find(&out).Error; err != nil {
@@ -144,8 +144,8 @@ func (r *activityConceptRepo) GetByConceptIDs(ctx context.Context, tx *gorm.DB, 
 	return out, nil
 }
 
-func (r *activityConceptRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.ActivityConcept) error {
-	t := tx
+func (r *activityConceptRepo) Upsert(dbc dbctx.Context, row *types.ActivityConcept) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -157,7 +157,7 @@ func (r *activityConceptRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "activity_id"}, {Name: "concept_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -169,19 +169,19 @@ func (r *activityConceptRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		Create(row).Error
 }
 
-func (r *activityConceptRepo) Update(ctx context.Context, tx *gorm.DB, row *types.ActivityConcept) error {
-	t := tx
+func (r *activityConceptRepo) Update(dbc dbctx.Context, row *types.ActivityConcept) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if row == nil {
 		return nil
 	}
-	return t.WithContext(ctx).Save(row).Error
+	return t.WithContext(dbc.Ctx).Save(row).Error
 }
 
-func (r *activityConceptRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *activityConceptRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -194,74 +194,74 @@ func (r *activityConceptRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id 
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.ActivityConcept{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *activityConceptRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.ActivityConcept{}).Error
 }
 
-func (r *activityConceptRepo) SoftDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) SoftDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(activityIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("activity_id IN ?", activityIDs).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Where("activity_id IN ?", activityIDs).Delete(&types.ActivityConcept{}).Error
 }
 
-func (r *activityConceptRepo) SoftDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) SoftDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(conceptIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("concept_id IN ?", conceptIDs).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Where("concept_id IN ?", conceptIDs).Delete(&types.ActivityConcept{}).Error
 }
 
-func (r *activityConceptRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.ActivityConcept{}).Error
 }
 
-func (r *activityConceptRepo) FullDeleteByActivityIDs(ctx context.Context, tx *gorm.DB, activityIDs []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) FullDeleteByActivityIDs(dbc dbctx.Context, activityIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(activityIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("activity_id IN ?", activityIDs).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("activity_id IN ?", activityIDs).Delete(&types.ActivityConcept{}).Error
 }
 
-func (r *activityConceptRepo) FullDeleteByConceptIDs(ctx context.Context, tx *gorm.DB, conceptIDs []uuid.UUID) error {
-	t := tx
+func (r *activityConceptRepo) FullDeleteByConceptIDs(dbc dbctx.Context, conceptIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(conceptIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("concept_id IN ?", conceptIDs).Delete(&types.ActivityConcept{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("concept_id IN ?", conceptIDs).Delete(&types.ActivityConcept{}).Error
 }

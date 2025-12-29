@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -87,7 +88,7 @@ func (h *PathHandler) ListUserPaths(c *gin.Context) {
 	}
 
 	userID := rd.UserID
-	paths, err := h.path.ListByUser(c.Request.Context(), nil, &userID)
+	paths, err := h.path.ListByUser(dbctx.Context{Ctx: c.Request.Context()}, &userID)
 	if err != nil {
 		h.log.Error("ListUserPaths failed", "error", err, "user_id", userID)
 		response.RespondError(c, http.StatusInternalServerError, "load_paths_failed", err)
@@ -114,7 +115,7 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 		return
 	}
 
-	row, err := h.path.GetByID(c.Request.Context(), nil, pathID)
+	row, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
 	if err != nil {
 		h.log.Error("GetPath failed", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -127,7 +128,7 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 
 	var out any = row
 	if h.jobs != nil && row.JobID != nil && *row.JobID != uuid.Nil {
-		jobs, err := h.jobs.GetByIDs(c.Request.Context(), nil, []uuid.UUID{*row.JobID})
+		jobs, err := h.jobs.GetByIDs(dbctx.Context{Ctx: c.Request.Context()}, []uuid.UUID{*row.JobID})
 		if err == nil && len(jobs) > 0 && jobs[0] != nil && jobs[0].OwnerUserID == rd.UserID {
 			out = &pathWithJob{Path: row, JobStatus: jobs[0].Status, JobStage: jobs[0].Stage, JobProgress: jobs[0].Progress, JobMessage: jobs[0].Message}
 		}
@@ -150,7 +151,7 @@ func (h *PathHandler) ListPathNodes(c *gin.Context) {
 		return
 	}
 
-	row, err := h.path.GetByID(c.Request.Context(), nil, pathID)
+	row, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
 	if err != nil {
 		h.log.Error("ListPathNodes failed (load path)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -161,7 +162,7 @@ func (h *PathHandler) ListPathNodes(c *gin.Context) {
 		return
 	}
 
-	nodes, err := h.pathNodes.GetByPathIDs(c.Request.Context(), nil, []uuid.UUID{pathID})
+	nodes, err := h.pathNodes.GetByPathIDs(dbctx.Context{Ctx: c.Request.Context()}, []uuid.UUID{pathID})
 	if err != nil {
 		h.log.Error("ListPathNodes failed (load nodes)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_nodes_failed", err)
@@ -185,7 +186,7 @@ func (h *PathHandler) GetConceptGraph(c *gin.Context) {
 		return
 	}
 
-	row, err := h.path.GetByID(c.Request.Context(), nil, pathID)
+	row, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
 	if err != nil {
 		h.log.Error("GetConceptGraph failed (load path)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -196,7 +197,7 @@ func (h *PathHandler) GetConceptGraph(c *gin.Context) {
 		return
 	}
 
-	concepts, err := h.concepts.GetByScope(c.Request.Context(), nil, "path", &pathID)
+	concepts, err := h.concepts.GetByScope(dbctx.Context{Ctx: c.Request.Context()}, "path", &pathID)
 	if err != nil {
 		h.log.Error("GetConceptGraph failed (load concepts)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_concepts_failed", err)
@@ -217,7 +218,7 @@ func (h *PathHandler) GetConceptGraph(c *gin.Context) {
 		idSet[cc.ID] = true
 	}
 
-	edges, err := h.edges.GetByConceptIDs(c.Request.Context(), nil, ids)
+	edges, err := h.edges.GetByConceptIDs(dbctx.Context{Ctx: c.Request.Context()}, ids)
 	if err != nil {
 		h.log.Error("GetConceptGraph failed (load edges)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_edges_failed", err)
@@ -267,7 +268,7 @@ func (h *PathHandler) ListPathNodeActivities(c *gin.Context) {
 		return
 	}
 
-	node, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("ListPathNodeActivities failed (load node)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
@@ -278,7 +279,7 @@ func (h *PathHandler) ListPathNodeActivities(c *gin.Context) {
 		return
 	}
 
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, node.PathID)
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
 	if err != nil {
 		h.log.Error("ListPathNodeActivities failed (load path)", "error", err, "path_id", node.PathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -289,7 +290,7 @@ func (h *PathHandler) ListPathNodeActivities(c *gin.Context) {
 		return
 	}
 
-	joins, err := h.pathNodeActivity.GetByPathNodeIDs(c.Request.Context(), nil, []uuid.UUID{nodeID})
+	joins, err := h.pathNodeActivity.GetByPathNodeIDs(dbctx.Context{Ctx: c.Request.Context()}, []uuid.UUID{nodeID})
 	if err != nil {
 		h.log.Error("ListPathNodeActivities failed (load joins)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_node_activities_failed", err)
@@ -308,7 +309,7 @@ func (h *PathHandler) ListPathNodeActivities(c *gin.Context) {
 		activityIDs = append(activityIDs, j.ActivityID)
 	}
 
-	activities, err := h.activities.GetByIDs(c.Request.Context(), nil, activityIDs)
+	activities, err := h.activities.GetByIDs(dbctx.Context{Ctx: c.Request.Context()}, activityIDs)
 	if err != nil {
 		h.log.Error("ListPathNodeActivities failed (load activities)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_activities_failed", err)
@@ -401,7 +402,7 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 
 	jobByID := map[uuid.UUID]*types.JobRun{}
 	if h.jobs != nil && len(jobIDs) > 0 {
-		rows, err := h.jobs.GetByIDs(ctx, nil, jobIDs)
+		rows, err := h.jobs.GetByIDs(dbctx.Context{Ctx: ctx}, jobIDs)
 		if err == nil {
 			for _, j := range rows {
 				if j == nil || j.ID == uuid.Nil || j.OwnerUserID != userID {
@@ -445,7 +446,7 @@ func (h *PathHandler) GetPathNodeContent(c *gin.Context) {
 		return
 	}
 
-	node, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("GetPathNodeContent failed (load node)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
@@ -456,7 +457,7 @@ func (h *PathHandler) GetPathNodeContent(c *gin.Context) {
 		return
 	}
 
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, node.PathID)
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
 	if err != nil {
 		h.log.Error("GetPathNodeContent failed (load path)", "error", err, "path_id", node.PathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -484,7 +485,7 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		return
 	}
 
-	node, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("GetPathNodeDoc failed (load node)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
@@ -495,7 +496,7 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		return
 	}
 
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, node.PathID)
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
 	if err != nil {
 		h.log.Error("GetPathNodeDoc failed (load path)", "error", err, "path_id", node.PathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -506,7 +507,7 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		return
 	}
 
-	docRow, err := h.nodeDocs.GetByPathNodeID(c.Request.Context(), nil, nodeID)
+	docRow, err := h.nodeDocs.GetByPathNodeID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("GetPathNodeDoc failed (load doc)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_doc_failed", err)
@@ -547,7 +548,7 @@ func (h *PathHandler) ListPathNodeDrills(c *gin.Context) {
 		return
 	}
 
-	node, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("ListPathNodeDrills failed (load node)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
@@ -558,7 +559,7 @@ func (h *PathHandler) ListPathNodeDrills(c *gin.Context) {
 		return
 	}
 
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, node.PathID)
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
 	if err != nil {
 		h.log.Error("ListPathNodeDrills failed (load path)", "error", err, "path_id", node.PathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -611,7 +612,7 @@ func (h *PathHandler) GeneratePathNodeDrill(c *gin.Context) {
 		req.Count = 0 // allow prompt defaults
 	}
 
-	node, err := h.pathNodes.GetByID(c.Request.Context(), nil, nodeID)
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
 	if err != nil {
 		h.log.Error("GeneratePathNodeDrill failed (load node)", "error", err, "path_node_id", nodeID)
 		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
@@ -622,7 +623,7 @@ func (h *PathHandler) GeneratePathNodeDrill(c *gin.Context) {
 		return
 	}
 
-	pathRow, err := h.path.GetByID(c.Request.Context(), nil, node.PathID)
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
 	if err != nil {
 		h.log.Error("GeneratePathNodeDrill failed (load path)", "error", err, "path_id", node.PathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
@@ -633,8 +634,8 @@ func (h *PathHandler) GeneratePathNodeDrill(c *gin.Context) {
 		return
 	}
 
-	// Require that node content exists (drills are grounded in lesson content).
-	docRow, _ := h.nodeDocs.GetByPathNodeID(c.Request.Context(), nil, node.ID)
+	// Require that node content exists (drills are grounded in node content).
+	docRow, _ := h.nodeDocs.GetByPathNodeID(dbctx.Context{Ctx: c.Request.Context()}, node.ID)
 
 	switch kind {
 	case "quiz":
@@ -729,7 +730,7 @@ func (h *PathHandler) generateDrillV1(ctx context.Context, userID uuid.UUID, nod
 	}
 
 	// Cache lookup.
-	if cached, err := h.drillInstances.GetByKey(ctx, nil, userID, node.ID, kind, count, sourcesHash); err == nil && cached != nil && len(cached.PayloadJSON) > 0 && string(cached.PayloadJSON) != "null" {
+	if cached, err := h.drillInstances.GetByKey(dbctx.Context{Ctx: ctx}, userID, node.ID, kind, count, sourcesHash); err == nil && cached != nil && len(cached.PayloadJSON) > 0 && string(cached.PayloadJSON) != "null" {
 		var obj any
 		if json.Unmarshal(cached.PayloadJSON, &obj) == nil {
 			return obj, nil
@@ -742,7 +743,7 @@ func (h *PathHandler) generateDrillV1(ctx context.Context, userID uuid.UUID, nod
 	if len(evidenceChunkIDs) > maxEvidence {
 		evidenceChunkIDs = evidenceChunkIDs[:maxEvidence]
 	}
-	chunks, err := h.chunks.GetByIDs(ctx, nil, evidenceChunkIDs)
+	chunks, err := h.chunks.GetByIDs(dbctx.Context{Ctx: ctx}, evidenceChunkIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -887,7 +888,7 @@ Return JSON only.`, count, node.Title, excerpts)
 			CreatedAt:     time.Now().UTC(),
 			UpdatedAt:     time.Now().UTC(),
 		}
-		_ = h.drillInstances.Upsert(ctx, nil, row)
+		_ = h.drillInstances.Upsert(dbctx.Context{Ctx: ctx}, row)
 		h.recordGenRun(ctx, "drill", &row.ID, userID, node.PathID, node.ID, "succeeded", "drill_v1@1:"+kind, attempt, latency, nil, map[string]any{
 			"content_hash": contentHash,
 			"sources_hash": sourcesHash,
@@ -919,7 +920,7 @@ func (h *PathHandler) recordGenRun(ctx context.Context, artifactType string, art
 	if model == "" {
 		model = "unknown"
 	}
-	_, _ = h.genRuns.Create(ctx, nil, []*types.LearningDocGenerationRun{{
+	_, _ = h.genRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{{
 		ID:               uuid.New(),
 		ArtifactType:     artifactType,
 		ArtifactID:       artifactID,

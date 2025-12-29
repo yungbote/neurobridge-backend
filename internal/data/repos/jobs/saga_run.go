@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,21 +8,22 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type SagaRunRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.SagaRun) ([]*types.SagaRun, error)
+	Create(dbc dbctx.Context, rows []*types.SagaRun) ([]*types.SagaRun, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.SagaRun, error)
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.SagaRun, error)
-	GetByRootJobID(ctx context.Context, tx *gorm.DB, rootJobID uuid.UUID) (*types.SagaRun, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.SagaRun, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.SagaRun, error)
+	GetByRootJobID(dbc dbctx.Context, rootJobID uuid.UUID) (*types.SagaRun, error)
 
-	LockByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.SagaRun, error)
+	LockByID(dbc dbctx.Context, id uuid.UUID) (*types.SagaRun, error)
 
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
 
-	ListByStatusBefore(ctx context.Context, tx *gorm.DB, statuses []string, before time.Time, limit int) ([]*types.SagaRun, error)
+	ListByStatusBefore(dbc dbctx.Context, statuses []string, before time.Time, limit int) ([]*types.SagaRun, error)
 }
 
 type sagaRunRepo struct {
@@ -35,22 +35,22 @@ func NewSagaRunRepo(db *gorm.DB, baseLog *logger.Logger) SagaRunRepo {
 	return &sagaRunRepo{db: db, log: baseLog.With("repo", "SagaRunRepo")}
 }
 
-func (r *sagaRunRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.SagaRun) ([]*types.SagaRun, error) {
-	t := tx
+func (r *sagaRunRepo) Create(dbc dbctx.Context, rows []*types.SagaRun) ([]*types.SagaRun, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.SagaRun{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *sagaRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.SagaRun, error) {
-	t := tx
+func (r *sagaRunRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.SagaRun, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -58,17 +58,17 @@ func (r *sagaRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *sagaRunRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.SagaRun, error) {
+func (r *sagaRunRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.SagaRun, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.GetByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -78,16 +78,16 @@ func (r *sagaRunRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*
 	return rows[0], nil
 }
 
-func (r *sagaRunRepo) GetByRootJobID(ctx context.Context, tx *gorm.DB, rootJobID uuid.UUID) (*types.SagaRun, error) {
+func (r *sagaRunRepo) GetByRootJobID(dbc dbctx.Context, rootJobID uuid.UUID) (*types.SagaRun, error) {
 	if rootJobID == uuid.Nil {
 		return nil, nil
 	}
-	t := tx
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	var row types.SagaRun
-	if err := t.WithContext(ctx).Where("root_job_id = ?", rootJobID).Limit(1).Find(&row).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("root_job_id = ?", rootJobID).Limit(1).Find(&row).Error; err != nil {
 		return nil, err
 	}
 	if row.ID == uuid.Nil {
@@ -96,16 +96,16 @@ func (r *sagaRunRepo) GetByRootJobID(ctx context.Context, tx *gorm.DB, rootJobID
 	return &row, nil
 }
 
-func (r *sagaRunRepo) LockByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.SagaRun, error) {
+func (r *sagaRunRepo) LockByID(dbc dbctx.Context, id uuid.UUID) (*types.SagaRun, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	t := tx
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	var row types.SagaRun
-	err := t.WithContext(ctx).
+	err := t.WithContext(dbc.Ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ?", id).
 		Limit(1).
@@ -119,8 +119,8 @@ func (r *sagaRunRepo) LockByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (
 	return &row, nil
 }
 
-func (r *sagaRunRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	t := tx
+func (r *sagaRunRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -133,14 +133,14 @@ func (r *sagaRunRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUI
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now().UTC()
 	}
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Model(&types.SagaRun{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *sagaRunRepo) ListByStatusBefore(ctx context.Context, tx *gorm.DB, statuses []string, before time.Time, limit int) ([]*types.SagaRun, error) {
-	t := tx
+func (r *sagaRunRepo) ListByStatusBefore(dbc dbctx.Context, statuses []string, before time.Time, limit int) ([]*types.SagaRun, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -148,7 +148,7 @@ func (r *sagaRunRepo) ListByStatusBefore(ctx context.Context, tx *gorm.DB, statu
 	if len(statuses) == 0 {
 		return out, nil
 	}
-	q := t.WithContext(ctx).Where("status IN ? AND updated_at < ?", statuses, before).Order("updated_at ASC")
+	q := t.WithContext(dbc.Ctx).Where("status IN ? AND updated_at < ?", statuses, before).Order("updated_at ASC")
 	if limit > 0 {
 		q = q.Limit(limit)
 	}

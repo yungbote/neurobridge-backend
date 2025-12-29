@@ -12,6 +12,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -50,13 +51,13 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 	}
 
 	// Contract: derive/ensure path_id.
-	_, _ = deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	_, _ = deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 
 	consumer := "variant_stats_refresh"
 
 	var afterAt *time.Time
 	var afterID *uuid.UUID
-	if cur, err := deps.Cursors.Get(ctx, nil, in.OwnerUserID, consumer); err == nil && cur != nil {
+	if cur, err := deps.Cursors.Get(dbctx.Context{Ctx: ctx}, in.OwnerUserID, consumer); err == nil && cur != nil {
 		afterAt = cur.LastCreatedAt
 		afterID = cur.LastEventID
 	}
@@ -65,7 +66,7 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 	start := time.Now()
 
 	for {
-		events, err := deps.Events.ListAfterCursor(ctx, nil, in.OwnerUserID, afterAt, afterID, pageSize)
+		events, err := deps.Events.ListAfterCursor(dbctx.Context{Ctx: ctx}, in.OwnerUserID, afterAt, afterID, pageSize)
 		if err != nil {
 			return out, err
 		}
@@ -74,6 +75,7 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 		}
 
 		if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 			cache := map[uuid.UUID]*types.ActivityVariantStat{}
 
 			for _, ev := range events {
@@ -89,14 +91,14 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 				if variant == "" {
 					variant = "default"
 				}
-				vrow, _ := deps.Variants.GetByActivityAndVariant(ctx, tx, *ev.ActivityID, variant)
+				vrow, _ := deps.Variants.GetByActivityAndVariant(dbc, *ev.ActivityID, variant)
 				if vrow == nil || vrow.ID == uuid.Nil {
 					continue
 				}
 
 				stat := cache[vrow.ID]
 				if stat == nil {
-					rows, _ := deps.Stats.GetByVariantIDs(ctx, tx, []uuid.UUID{vrow.ID})
+					rows, _ := deps.Stats.GetByVariantIDs(dbc, []uuid.UUID{vrow.ID})
 					if len(rows) > 0 {
 						stat = rows[0]
 					}
@@ -141,7 +143,7 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 					// ignore other event types
 				}
 
-				if err := deps.Stats.Upsert(ctx, tx, stat); err == nil {
+				if err := deps.Stats.Upsert(dbc, stat); err == nil {
 					out.Updated++
 				}
 
@@ -161,7 +163,7 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 					LastEventID:   afterID,
 					UpdatedAt:     time.Now().UTC(),
 				}
-				if err := deps.Cursors.Upsert(ctx, tx, curRow); err != nil {
+				if err := deps.Cursors.Upsert(dbc, curRow); err != nil {
 					return err
 				}
 			}

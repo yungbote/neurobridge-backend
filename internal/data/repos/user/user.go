@@ -1,22 +1,23 @@
 package user
 
 import (
-	"context"
 	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type UserRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, users []*types.User) ([]*types.User, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.User, error)
-	GetByEmails(ctx context.Context, tx *gorm.DB, userEmails []string) ([]*types.User, error)
-	EmailExists(ctx context.Context, tx *gorm.DB, userEmail string) (bool, error)
-	UpdateName(ctx context.Context, tx *gorm.DB, userID uuid.UUID, firstName, lastName string) error
-	UpdatePreferredTheme(ctx context.Context, tx *gorm.DB, userID uuid.UUID, preferredTheme string) error
-	UpdateAvatarColor(ctx context.Context, tx *gorm.DB, userID uuid.UUID, avatarColor string) error
-	UpdateAvatarFields(ctx context.Context, tx *gorm.DB, userID uuid.UUID, bucketKey, avatarURL string) error
+	Create(dbc dbctx.Context, users []*types.User) ([]*types.User, error)
+	GetByIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.User, error)
+	GetByEmails(dbc dbctx.Context, userEmails []string) ([]*types.User, error)
+	EmailExists(dbc dbctx.Context, userEmail string) (bool, error)
+	UpdateName(dbc dbctx.Context, userID uuid.UUID, firstName, lastName string) error
+	UpdatePreferredTheme(dbc dbctx.Context, userID uuid.UUID, preferredTheme string) error
+	UpdateAvatarColor(dbc dbctx.Context, userID uuid.UUID, avatarColor string) error
+	UpdateAvatarFields(dbc dbctx.Context, userID uuid.UUID, bucketKey, avatarURL string) error
 }
 
 type userRepo struct {
@@ -29,8 +30,8 @@ func NewUserRepo(db *gorm.DB, baseLog *logger.Logger) UserRepo {
 	return &userRepo{db: db, log: repoLog}
 }
 
-func (ur *userRepo) Create(ctx context.Context, tx *gorm.DB, users []*types.User) ([]*types.User, error) {
-	transaction := tx
+func (ur *userRepo) Create(dbc dbctx.Context, users []*types.User) ([]*types.User, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
@@ -39,15 +40,15 @@ func (ur *userRepo) Create(ctx context.Context, tx *gorm.DB, users []*types.User
 		return []*types.User{}, nil
 	}
 
-	if err := transaction.WithContext(ctx).Create(&users).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(&users).Error; err != nil {
 		return nil, err
 	}
 
 	return users, nil
 }
 
-func (ur *userRepo) GetByIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.User, error) {
-	transaction := tx
+func (ur *userRepo) GetByIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.User, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
@@ -58,7 +59,7 @@ func (ur *userRepo) GetByIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UU
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", userIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -66,8 +67,8 @@ func (ur *userRepo) GetByIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UU
 	return results, nil
 }
 
-func (ur *userRepo) GetByEmails(ctx context.Context, tx *gorm.DB, userEmails []string) ([]*types.User, error) {
-	transaction := tx
+func (ur *userRepo) GetByEmails(dbc dbctx.Context, userEmails []string) ([]*types.User, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
@@ -77,7 +78,7 @@ func (ur *userRepo) GetByEmails(ctx context.Context, tx *gorm.DB, userEmails []s
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("email IN ?", userEmails).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -85,15 +86,15 @@ func (ur *userRepo) GetByEmails(ctx context.Context, tx *gorm.DB, userEmails []s
 	return results, nil
 }
 
-func (ur *userRepo) EmailExists(ctx context.Context, tx *gorm.DB, userEmail string) (bool, error) {
-	transaction := tx
+func (ur *userRepo) EmailExists(dbc dbctx.Context, userEmail string) (bool, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
 
 	var count int64
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Model(&types.User{}).
 		Where("email = ?", userEmail).
 		Count(&count).Error; err != nil {
@@ -103,12 +104,12 @@ func (ur *userRepo) EmailExists(ctx context.Context, tx *gorm.DB, userEmail stri
 	return exists, nil
 }
 
-func (ur *userRepo) UpdateName(ctx context.Context, tx *gorm.DB, userID uuid.UUID, firstName, lastName string) error {
-	transaction := tx
+func (ur *userRepo) UpdateName(dbc dbctx.Context, userID uuid.UUID, firstName, lastName string) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.User{}).
 		Where("id = ?", userID).
 		Updates(map[string]any{
@@ -117,34 +118,34 @@ func (ur *userRepo) UpdateName(ctx context.Context, tx *gorm.DB, userID uuid.UUI
 		}).Error
 }
 
-func (ur *userRepo) UpdatePreferredTheme(ctx context.Context, tx *gorm.DB, userID uuid.UUID, preferredTheme string) error {
-	transaction := tx
+func (ur *userRepo) UpdatePreferredTheme(dbc dbctx.Context, userID uuid.UUID, preferredTheme string) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.User{}).
 		Where("id = ?", userID).
 		Update("preferred_theme", preferredTheme).Error
 }
 
-func (ur *userRepo) UpdateAvatarColor(ctx context.Context, tx *gorm.DB, userID uuid.UUID, avatarColor string) error {
-	transaction := tx
+func (ur *userRepo) UpdateAvatarColor(dbc dbctx.Context, userID uuid.UUID, avatarColor string) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.User{}).
 		Where("id = ?", userID).
 		Update("avatar_color", avatarColor).Error
 }
 
-func (ur *userRepo) UpdateAvatarFields(ctx context.Context, tx *gorm.DB, userID uuid.UUID, bucketKey, avatarURL string) error {
-	transaction := tx
+func (ur *userRepo) UpdateAvatarFields(dbc dbctx.Context, userID uuid.UUID, bucketKey, avatarURL string) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = ur.db
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.User{}).
 		Where("id = ?", userID).
 		Updates(map[string]any{

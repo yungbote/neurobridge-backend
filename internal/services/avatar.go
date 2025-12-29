@@ -2,7 +2,6 @@ package services
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/font"
@@ -29,9 +29,9 @@ import (
 )
 
 type AvatarService interface {
-	CreateAndUploadUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) error
-	CreateAndUploadUserAvatarFromImage(ctx context.Context, tx *gorm.DB, user *types.User, raw []byte) error
-	GenerateUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) (bytes.Buffer, error)
+	CreateAndUploadUserAvatar(dbc dbctx.Context, user *types.User) error
+	CreateAndUploadUserAvatarFromImage(dbc dbctx.Context, user *types.User, raw []byte) error
+	GenerateUserAvatar(dbc dbctx.Context, user *types.User) (bytes.Buffer, error)
 }
 
 type avatarService struct {
@@ -97,10 +97,10 @@ func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, 
 	}, nil
 }
 
-func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) error {
+func (as *avatarService) CreateAndUploadUserAvatar(dbc dbctx.Context, user *types.User) error {
 	as.ensureUserAvatarColor(user)
 
-	buf, err := as.GenerateUserAvatar(ctx, tx, user)
+	buf, err := as.GenerateUserAvatar(dbc, user)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
 	newKey := fmt.Sprintf("user_avatar/%s/%d.png", user.ID.String(), time.Now().UnixNano())
 
 	// Upload new
-	if err := as.bucketService.UploadFile(ctx, tx, gcp.BucketCategoryAvatar, newKey, bytes.NewReader(buf.Bytes())); err != nil {
+	if err := as.bucketService.UploadFile(dbc, gcp.BucketCategoryAvatar, newKey, bytes.NewReader(buf.Bytes())); err != nil {
 		return fmt.Errorf("failed to upload user avatar: %w", err)
 	}
 
@@ -122,7 +122,7 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
 
 	// Best-effort delete old AFTER we have a new one
 	if oldKey != "" && oldKey != newKey {
-		if err := as.bucketService.DeleteFile(ctx, nil, gcp.BucketCategoryAvatar, oldKey); err != nil {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldKey); err != nil {
 			as.log.Warn("failed to delete old avatar (ignored)", "oldKey", oldKey, "error", err)
 		}
 	}
@@ -130,7 +130,7 @@ func (as *avatarService) CreateAndUploadUserAvatar(ctx context.Context, tx *gorm
 	return nil
 }
 
-func (as *avatarService) GenerateUserAvatar(ctx context.Context, tx *gorm.DB, user *types.User) (bytes.Buffer, error) {
+func (as *avatarService) GenerateUserAvatar(dbc dbctx.Context, user *types.User) (bytes.Buffer, error) {
 	const size = 512
 	as.ensureUserAvatarColor(user)
 
@@ -163,7 +163,7 @@ func (as *avatarService) GenerateUserAvatar(ctx context.Context, tx *gorm.DB, us
 	return buf, nil
 }
 
-func (as *avatarService) CreateAndUploadUserAvatarFromImage(ctx context.Context, tx *gorm.DB, user *types.User, raw []byte) error {
+func (as *avatarService) CreateAndUploadUserAvatarFromImage(dbc dbctx.Context, user *types.User, raw []byte) error {
 	if user == nil || user.ID == uuid.Nil {
 		return fmt.Errorf("user required")
 	}
@@ -180,8 +180,7 @@ func (as *avatarService) CreateAndUploadUserAvatarFromImage(ctx context.Context,
 	newKey := fmt.Sprintf("user_avatar/%s/%d.png", user.ID.String(), time.Now().UnixNano())
 
 	if err := as.bucketService.UploadFile(
-		ctx,
-		tx,
+		dbc,
 		gcp.BucketCategoryAvatar,
 		newKey,
 		bytes.NewReader(processed.Bytes()),
@@ -192,10 +191,9 @@ func (as *avatarService) CreateAndUploadUserAvatarFromImage(ctx context.Context,
 	user.AvatarBucketKey = newKey
 	user.AvatarURL = as.bucketService.GetPublicURL(gcp.BucketCategoryAvatar, newKey)
 
-	// Best-effort delete old avatar object (do NOT fail the request if delete fails)
-	// NOTE: requires BucketService.DeleteFile(ctx, tx, category, key) to exist.
+	// Best-effort delete old avatar object (do NOT fail the request if delete fails).
 	if oldKey != "" && oldKey != newKey {
-		if err := as.bucketService.DeleteFile(ctx, nil, gcp.BucketCategoryAvatar, oldKey); err != nil {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldKey); err != nil {
 			as.log.Warn("failed to delete old avatar (ignored)", "oldKey", oldKey, "error", err)
 		}
 	}

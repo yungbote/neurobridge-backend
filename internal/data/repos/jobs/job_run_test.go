@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"gorm.io/datatypes"
 )
 
@@ -16,6 +17,7 @@ func TestJobRunRepo(t *testing.T) {
 	tx := testutil.Tx(t, db)
 
 	ctx := context.Background()
+	dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 	repo := NewJobRunRepo(db, testutil.Logger(t))
 
 	now := time.Now().UTC()
@@ -25,7 +27,7 @@ func TestJobRunRepo(t *testing.T) {
 		ID:          uuid.New(),
 		OwnerUserID: ownerUserID,
 		JobType:     "test_job",
-		EntityType:  "course",
+		EntityType:  "path",
 		EntityID:    ptrUUID(uuid.New()),
 		Status:      "queued",
 		Stage:       "queued",
@@ -38,7 +40,7 @@ func TestJobRunRepo(t *testing.T) {
 		ID:          uuid.New(),
 		OwnerUserID: ownerUserID,
 		JobType:     "test_job",
-		EntityType:  "course",
+		EntityType:  "path",
 		EntityID:    ptrUUID(uuid.New()),
 		Status:      "failed",
 		Stage:       "failed",
@@ -53,7 +55,7 @@ func TestJobRunRepo(t *testing.T) {
 		ID:          uuid.New(),
 		OwnerUserID: ownerUserID,
 		JobType:     "test_job",
-		EntityType:  "course",
+		EntityType:  "path",
 		EntityID:    ptrUUID(uuid.New()),
 		Status:      "running",
 		Stage:       "running",
@@ -65,7 +67,7 @@ func TestJobRunRepo(t *testing.T) {
 		UpdatedAt:   now.Add(-1 * time.Hour),
 	}
 
-	created, err := repo.Create(ctx, tx, []*types.JobRun{queued, failed, staleRunning})
+	created, err := repo.Create(dbc, []*types.JobRun{queued, failed, staleRunning})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -73,12 +75,12 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("Create: expected 3, got %d", len(created))
 	}
 
-	if rows, err := repo.GetByIDs(ctx, tx, []uuid.UUID{queued.ID, failed.ID, staleRunning.ID}); err != nil || len(rows) != 3 {
+	if rows, err := repo.GetByIDs(dbc, []uuid.UUID{queued.ID, failed.ID, staleRunning.ID}); err != nil || len(rows) != 3 {
 		t.Fatalf("GetByIDs: err=%v len=%d", err, len(rows))
 	}
 
 	// GetLatestByEntity
-	entityType := "lesson"
+	entityType := "path_node"
 	entityID := uuid.New()
 	older := &types.JobRun{
 		ID:          uuid.New(),
@@ -106,10 +108,10 @@ func TestJobRunRepo(t *testing.T) {
 		CreatedAt:   now.Add(-4 * time.Hour),
 		UpdatedAt:   now.Add(-4 * time.Hour),
 	}
-	if _, err := repo.Create(ctx, tx, []*types.JobRun{older, newer}); err != nil {
+	if _, err := repo.Create(dbc, []*types.JobRun{older, newer}); err != nil {
 		t.Fatalf("seed latest: %v", err)
 	}
-	latest, err := repo.GetLatestByEntity(ctx, tx, ownerUserID, entityType, entityID, "build")
+	latest, err := repo.GetLatestByEntity(dbc, ownerUserID, entityType, entityID, "build")
 	if err != nil {
 		t.Fatalf("GetLatestByEntity: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestJobRunRepo(t *testing.T) {
 	}
 
 	// ClaimNextRunnable should walk the runnable set in created_at ASC order.
-	claim1, err := repo.ClaimNextRunnable(ctx, tx, 3, 1*time.Hour, 1*time.Hour)
+	claim1, err := repo.ClaimNextRunnable(dbc, 3, 1*time.Hour, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("ClaimNextRunnable #1: %v", err)
 	}
@@ -126,7 +128,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("ClaimNextRunnable #1: expected %v got %v", queued.ID, claim1)
 	}
 
-	claim2, err := repo.ClaimNextRunnable(ctx, tx, 3, 1*time.Hour, 1*time.Hour)
+	claim2, err := repo.ClaimNextRunnable(dbc, 3, 1*time.Hour, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("ClaimNextRunnable #2: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("ClaimNextRunnable #2: expected %v got %v", failed.ID, claim2)
 	}
 
-	claim3, err := repo.ClaimNextRunnable(ctx, tx, 3, 1*time.Hour, 1*time.Hour)
+	claim3, err := repo.ClaimNextRunnable(dbc, 3, 1*time.Hour, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("ClaimNextRunnable #3: %v", err)
 	}
@@ -142,7 +144,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("ClaimNextRunnable #3: expected %v got %v", staleRunning.ID, claim3)
 	}
 
-	claim4, err := repo.ClaimNextRunnable(ctx, tx, 3, 1*time.Hour, 1*time.Hour)
+	claim4, err := repo.ClaimNextRunnable(dbc, 3, 1*time.Hour, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("ClaimNextRunnable #4: %v", err)
 	}
@@ -151,17 +153,17 @@ func TestJobRunRepo(t *testing.T) {
 	}
 
 	// UpdateFields
-	if err := repo.UpdateFields(ctx, tx, queued.ID, map[string]interface{}{"status": "failed", "stage": "error"}); err != nil {
+	if err := repo.UpdateFields(dbc, queued.ID, map[string]interface{}{"status": "failed", "stage": "error"}); err != nil {
 		t.Fatalf("UpdateFields: %v", err)
 	}
 
 	// Heartbeat
-	if err := repo.Heartbeat(ctx, tx, failed.ID); err != nil {
+	if err := repo.Heartbeat(dbc, failed.ID); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
 
 	// HasRunnableForEntity / ExistsRunnable
-	rEntityType := "course"
+	rEntityType := "path"
 	rEntityID := uuid.New()
 	runnable := &types.JobRun{
 		ID:          uuid.New(),
@@ -174,11 +176,11 @@ func TestJobRunRepo(t *testing.T) {
 		Payload:     datatypes.JSON([]byte("{}")),
 		Result:      datatypes.JSON([]byte("{}")),
 	}
-	if _, err := repo.Create(ctx, tx, []*types.JobRun{runnable}); err != nil {
+	if _, err := repo.Create(dbc, []*types.JobRun{runnable}); err != nil {
 		t.Fatalf("seed runnable: %v", err)
 	}
 
-	has, err := repo.HasRunnableForEntity(ctx, tx, ownerUserID, rEntityType, rEntityID, "rebuild")
+	has, err := repo.HasRunnableForEntity(dbc, ownerUserID, rEntityType, rEntityID, "rebuild")
 	if err != nil {
 		t.Fatalf("HasRunnableForEntity: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("HasRunnableForEntity: expected true")
 	}
 
-	exists, err := repo.ExistsRunnable(ctx, tx, ownerUserID, "rebuild", "", nil)
+	exists, err := repo.ExistsRunnable(dbc, ownerUserID, "rebuild", "", nil)
 	if err != nil {
 		t.Fatalf("ExistsRunnable: %v", err)
 	}
@@ -194,7 +196,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("ExistsRunnable: expected true")
 	}
 
-	exists, err = repo.ExistsRunnable(ctx, tx, ownerUserID, "rebuild", rEntityType, &rEntityID)
+	exists, err = repo.ExistsRunnable(dbc, ownerUserID, "rebuild", rEntityType, &rEntityID)
 	if err != nil {
 		t.Fatalf("ExistsRunnable (scoped): %v", err)
 	}
@@ -202,7 +204,7 @@ func TestJobRunRepo(t *testing.T) {
 		t.Fatalf("ExistsRunnable (scoped): expected true")
 	}
 
-	exists, err = repo.ExistsRunnable(ctx, tx, ownerUserID, "other", rEntityType, &rEntityID)
+	exists, err = repo.ExistsRunnable(dbc, ownerUserID, "other", rEntityType, &rEntityID)
 	if err != nil {
 		t.Fatalf("ExistsRunnable (other): %v", err)
 	}

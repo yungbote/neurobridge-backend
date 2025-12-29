@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,14 +9,15 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningNodeDocRepo interface {
-	GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.LearningNodeDoc, error)
-	GetByPathNodeID(ctx context.Context, tx *gorm.DB, pathNodeID uuid.UUID) (*types.LearningNodeDoc, error)
-	GetByPathNodeIDs(ctx context.Context, tx *gorm.DB, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeDoc, error)
+	GetByID(dbc dbctx.Context, id uuid.UUID) (*types.LearningNodeDoc, error)
+	GetByPathNodeID(dbc dbctx.Context, pathNodeID uuid.UUID) (*types.LearningNodeDoc, error)
+	GetByPathNodeIDs(dbc dbctx.Context, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeDoc, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningNodeDoc) error
+	Upsert(dbc dbctx.Context, row *types.LearningNodeDoc) error
 }
 
 type learningNodeDocRepo struct {
@@ -29,11 +29,11 @@ func NewLearningNodeDocRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDoc
 	return &learningNodeDocRepo{db: db, log: baseLog.With("repo", "LearningNodeDocRepo")}
 }
 
-func (r *learningNodeDocRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.UUID) (*types.LearningNodeDoc, error) {
+func (r *learningNodeDocRepo) GetByID(dbc dbctx.Context, id uuid.UUID) (*types.LearningNodeDoc, error) {
 	if id == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.getByIDs(ctx, tx, []uuid.UUID{id})
+	rows, err := r.getByIDs(dbc, []uuid.UUID{id})
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +43,8 @@ func (r *learningNodeDocRepo) GetByID(ctx context.Context, tx *gorm.DB, id uuid.
 	return rows[0], nil
 }
 
-func (r *learningNodeDocRepo) getByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.LearningNodeDoc, error) {
-	t := tx
+func (r *learningNodeDocRepo) getByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.LearningNodeDoc, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -52,17 +52,17 @@ func (r *learningNodeDocRepo) getByIDs(ctx context.Context, tx *gorm.DB, ids []u
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *learningNodeDocRepo) GetByPathNodeID(ctx context.Context, tx *gorm.DB, pathNodeID uuid.UUID) (*types.LearningNodeDoc, error) {
+func (r *learningNodeDocRepo) GetByPathNodeID(dbc dbctx.Context, pathNodeID uuid.UUID) (*types.LearningNodeDoc, error) {
 	if pathNodeID == uuid.Nil {
 		return nil, nil
 	}
-	rows, err := r.GetByPathNodeIDs(ctx, tx, []uuid.UUID{pathNodeID})
+	rows, err := r.GetByPathNodeIDs(dbc, []uuid.UUID{pathNodeID})
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +72,8 @@ func (r *learningNodeDocRepo) GetByPathNodeID(ctx context.Context, tx *gorm.DB, 
 	return rows[0], nil
 }
 
-func (r *learningNodeDocRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.DB, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeDoc, error) {
-	t := tx
+func (r *learningNodeDocRepo) GetByPathNodeIDs(dbc dbctx.Context, pathNodeIDs []uuid.UUID) ([]*types.LearningNodeDoc, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -81,7 +81,7 @@ func (r *learningNodeDocRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.DB,
 	if len(pathNodeIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("path_node_id IN ?", pathNodeIDs).
 		Order("updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -90,8 +90,8 @@ func (r *learningNodeDocRepo) GetByPathNodeIDs(ctx context.Context, tx *gorm.DB,
 	return out, nil
 }
 
-func (r *learningNodeDocRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.LearningNodeDoc) error {
-	t := tx
+func (r *learningNodeDocRepo) Upsert(dbc dbctx.Context, row *types.LearningNodeDoc) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -107,7 +107,7 @@ func (r *learningNodeDocRepo) Upsert(ctx context.Context, tx *gorm.DB, row *type
 		row.CreatedAt = now
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "path_node_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{

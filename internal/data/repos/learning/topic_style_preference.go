@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,11 +9,12 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type TopicStylePreferenceRepo interface {
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicStylePreference) error
-	ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicStylePreference, error)
+	Upsert(dbc dbctx.Context, row *types.TopicStylePreference) error
+	ListByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.TopicStylePreference, error)
 }
 
 type topicStylePreferenceRepo struct {
@@ -26,19 +26,19 @@ func NewTopicStylePreferenceRepo(db *gorm.DB, baseLog *logger.Logger) TopicStyle
 	return &topicStylePreferenceRepo{db: db, log: baseLog.With("repo", "TopicStylePreferenceRepo")}
 }
 
-func (r *topicStylePreferenceRepo) dbx(tx *gorm.DB) *gorm.DB {
-	if tx != nil {
-		return tx
+func (r *topicStylePreferenceRepo) dbx(dbc dbctx.Context) *gorm.DB {
+	if dbc.Tx != nil {
+		return dbc.Tx
 	}
 	return r.db
 }
 
-func (r *topicStylePreferenceRepo) ListByUser(ctx context.Context, tx *gorm.DB, userID uuid.UUID) ([]*types.TopicStylePreference, error) {
+func (r *topicStylePreferenceRepo) ListByUser(dbc dbctx.Context, userID uuid.UUID) ([]*types.TopicStylePreference, error) {
 	out := []*types.TopicStylePreference{}
 	if userID == uuid.Nil {
 		return out, nil
 	}
-	if err := r.dbx(tx).WithContext(ctx).
+	if err := r.dbx(dbc).WithContext(dbc.Ctx).
 		Where("user_id = ?", userID).
 		Order("updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -47,7 +47,7 @@ func (r *topicStylePreferenceRepo) ListByUser(ctx context.Context, tx *gorm.DB, 
 	return out, nil
 }
 
-func (r *topicStylePreferenceRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.TopicStylePreference) error {
+func (r *topicStylePreferenceRepo) Upsert(dbc dbctx.Context, row *types.TopicStylePreference) error {
 	if row == nil || row.UserID == uuid.Nil || row.Topic == "" || row.Modality == "" {
 		return nil
 	}
@@ -58,7 +58,7 @@ func (r *topicStylePreferenceRepo) Upsert(ctx context.Context, tx *gorm.DB, row 
 	now := time.Now().UTC()
 	row.UpdatedAt = now
 
-	return r.dbx(tx).WithContext(ctx).
+	return r.dbx(dbc).WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "user_id"},

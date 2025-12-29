@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -10,14 +9,15 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatSummaryNodeRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatSummaryNode) error
-	ListOrphansByLevel(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, level int) ([]*types.ChatSummaryNode, error)
-	SetParent(ctx context.Context, tx *gorm.DB, childIDs []uuid.UUID, parentID uuid.UUID) error
-	GetRoot(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.ChatSummaryNode, error)
+	Create(dbc dbctx.Context, rows []*types.ChatSummaryNode) error
+	ListOrphansByLevel(dbc dbctx.Context, threadID uuid.UUID, level int) ([]*types.ChatSummaryNode, error)
+	SetParent(dbc dbctx.Context, childIDs []uuid.UUID, parentID uuid.UUID) error
+	GetRoot(dbc dbctx.Context, threadID uuid.UUID) (*types.ChatSummaryNode, error)
 }
 
 type chatSummaryNodeRepo struct {
@@ -32,11 +32,11 @@ func NewChatSummaryNodeRepo(db *gorm.DB, log *logger.Logger) ChatSummaryNodeRepo
 	}
 }
 
-func (r *chatSummaryNodeRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatSummaryNode) error {
+func (r *chatSummaryNodeRepo) Create(dbc dbctx.Context, rows []*types.ChatSummaryNode) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -51,21 +51,21 @@ func (r *chatSummaryNodeRepo) Create(ctx context.Context, tx *gorm.DB, rows []*t
 		}
 	}
 	// Idempotent insert: summary nodes are derived and may be created concurrently by retries.
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&rows).Error
 }
 
-func (r *chatSummaryNodeRepo) ListOrphansByLevel(ctx context.Context, tx *gorm.DB, threadID uuid.UUID, level int) ([]*types.ChatSummaryNode, error) {
+func (r *chatSummaryNodeRepo) ListOrphansByLevel(dbc dbctx.Context, threadID uuid.UUID, level int) ([]*types.ChatSummaryNode, error) {
 	if threadID == uuid.Nil {
 		return nil, fmt.Errorf("missing thread_id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	var out []*types.ChatSummaryNode
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatSummaryNode{}).
 		Where("thread_id = ? AND level = ? AND parent_id IS NULL", threadID, level).
 		Order("start_seq ASC").
@@ -75,15 +75,15 @@ func (r *chatSummaryNodeRepo) ListOrphansByLevel(ctx context.Context, tx *gorm.D
 	return out, nil
 }
 
-func (r *chatSummaryNodeRepo) SetParent(ctx context.Context, tx *gorm.DB, childIDs []uuid.UUID, parentID uuid.UUID) error {
+func (r *chatSummaryNodeRepo) SetParent(dbc dbctx.Context, childIDs []uuid.UUID, parentID uuid.UUID) error {
 	if len(childIDs) == 0 || parentID == uuid.Nil {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatSummaryNode{}).
 		Where("id IN ?", childIDs).
 		Updates(map[string]interface{}{
@@ -92,16 +92,16 @@ func (r *chatSummaryNodeRepo) SetParent(ctx context.Context, tx *gorm.DB, childI
 		}).Error
 }
 
-func (r *chatSummaryNodeRepo) GetRoot(ctx context.Context, tx *gorm.DB, threadID uuid.UUID) (*types.ChatSummaryNode, error) {
+func (r *chatSummaryNodeRepo) GetRoot(dbc dbctx.Context, threadID uuid.UUID) (*types.ChatSummaryNode, error) {
 	if threadID == uuid.Nil {
 		return nil, fmt.Errorf("missing thread_id")
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	var out types.ChatSummaryNode
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatSummaryNode{}).
 		Where("thread_id = ? AND parent_id IS NULL", threadID).
 		Order("level DESC, end_seq DESC").

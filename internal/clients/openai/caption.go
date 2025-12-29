@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -72,7 +73,7 @@ func NewCaption(log *logger.Logger, client Client) (Caption, error) {
 }
 
 func (c *caption) DescribeImage(ctx context.Context, req CaptionRequest) (*CaptionResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 

@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/ingestion/extractor"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -28,7 +29,7 @@ type AssetRef = extractor.AssetRef
 type ExtractionSummary = extractor.ExtractionSummary
 
 type ContentExtractionService interface {
-	ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile) (*ExtractionSummary, error)
+	ExtractAndPersist(dbc dbctx.Context, mf *types.MaterialFile) (*ExtractionSummary, error)
 }
 
 type service struct {
@@ -63,8 +64,8 @@ func NewContentExtractionService(
 	return &service{ex: ex}
 }
 
-func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.MaterialFile) (*ExtractionSummary, error) {
-	ctx = extractor.DefaultCtx(ctx)
+func (s *service) ExtractAndPersist(dbc dbctx.Context, mf *types.MaterialFile) (*ExtractionSummary, error) {
+	ctx := extractor.DefaultCtx(dbc.Ctx)
 
 	if mf == nil || mf.ID == uuid.Nil || mf.StorageKey == "" || mf.MaterialSetID == uuid.Nil {
 		return nil, fmt.Errorf("invalid material file")
@@ -214,11 +215,11 @@ func (s *service) ExtractAndPersist(ctx context.Context, tx *gorm.DB, mf *types.
 		warnings = append(warnings, "no segments produced; wrote explicit unextractable segment")
 	}
 
-	if err := s.ex.PersistSegmentsAsChunks(ctx, tx, mf, allSegments); err != nil {
+	if err := s.ex.PersistSegmentsAsChunks(dbctx.Context{Ctx: ctx, Tx: dbc.Tx}, mf, allSegments); err != nil {
 		return nil, err
 	}
 
-	if err := s.ex.UpdateMaterialFileExtractionStatus(ctx, tx, mf, kind, warnings, summary.Diagnostics); err != nil {
+	if err := s.ex.UpdateMaterialFileExtractionStatus(dbctx.Context{Ctx: ctx, Tx: dbc.Tx}, mf, kind, warnings, summary.Diagnostics); err != nil {
 		return nil, err
 	}
 

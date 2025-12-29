@@ -15,6 +15,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -37,7 +38,7 @@ const (
 
 type SagaService interface {
 	CreateOrGetSaga(ctx context.Context, ownerUserID uuid.UUID, rootJobID uuid.UUID) (uuid.UUID, error)
-	AppendAction(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID, kind string, payload map[string]any) error
+	AppendAction(dbc dbctx.Context, sagaID uuid.UUID, kind string, payload map[string]any) error
 	Compensate(ctx context.Context, sagaID uuid.UUID) error
 	MarkSagaStatus(ctx context.Context, sagaID uuid.UUID, status string) error
 }
@@ -83,7 +84,8 @@ func (s *sagaService) CreateOrGetSaga(ctx context.Context, ownerUserID uuid.UUID
 
 	var sagaID uuid.UUID
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		existing, err := s.runs.GetByRootJobID(ctx, tx, rootJobID)
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		existing, err := s.runs.GetByRootJobID(dbc, rootJobID)
 		if err != nil {
 			return err
 		}
@@ -100,7 +102,7 @@ func (s *sagaService) CreateOrGetSaga(ctx context.Context, ownerUserID uuid.UUID
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		}
-		if _, err := s.runs.Create(ctx, tx, []*types.SagaRun{row}); err != nil {
+		if _, err := s.runs.Create(dbc, []*types.SagaRun{row}); err != nil {
 			return err
 		}
 		sagaID = row.ID
@@ -114,11 +116,11 @@ func (s *sagaService) CreateOrGetSaga(ctx context.Context, ownerUserID uuid.UUID
 
 // AppendAction must be called with a non-nil tx so actions are committed atomically
 // with the canonical stage state.
-func (s *sagaService) AppendAction(ctx context.Context, tx *gorm.DB, sagaID uuid.UUID, kind string, payload map[string]any) error {
+func (s *sagaService) AppendAction(dbc dbctx.Context, sagaID uuid.UUID, kind string, payload map[string]any) error {
 	if s == nil || s.runs == nil || s.actions == nil {
 		return fmt.Errorf("saga service not configured")
 	}
-	if tx == nil {
+	if dbc.Tx == nil {
 		return fmt.Errorf("AppendAction requires a db transaction")
 	}
 	if sagaID == uuid.Nil {
@@ -130,7 +132,7 @@ func (s *sagaService) AppendAction(ctx context.Context, tx *gorm.DB, sagaID uuid
 	}
 
 	// Serialize seq assignment by locking saga_run.
-	sr, err := s.runs.LockByID(ctx, tx, sagaID)
+	sr, err := s.runs.LockByID(dbc, sagaID)
 	if err != nil {
 		return err
 	}
@@ -138,7 +140,7 @@ func (s *sagaService) AppendAction(ctx context.Context, tx *gorm.DB, sagaID uuid
 		return fmt.Errorf("saga_run not found: %s", sagaID.String())
 	}
 
-	maxSeq, err := s.actions.GetMaxSeq(ctx, tx, sagaID)
+	maxSeq, err := s.actions.GetMaxSeq(dbc, sagaID)
 	if err != nil {
 		return err
 	}
@@ -155,7 +157,7 @@ func (s *sagaService) AppendAction(ctx context.Context, tx *gorm.DB, sagaID uuid
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	_, err = s.actions.Create(ctx, tx, []*types.SagaAction{row})
+	_, err = s.actions.Create(dbc, []*types.SagaAction{row})
 	return err
 }
 
@@ -170,7 +172,7 @@ func (s *sagaService) MarkSagaStatus(ctx context.Context, sagaID uuid.UUID, stat
 	if status == "" {
 		return fmt.Errorf("missing saga status")
 	}
-	return s.runs.UpdateFields(ctx, nil, sagaID, map[string]interface{}{"status": status})
+	return s.runs.UpdateFields(dbctx.Context{Ctx: ctx}, sagaID, map[string]interface{}{"status": status})
 }
 
 func (s *sagaService) Compensate(ctx context.Context, sagaID uuid.UUID) error {
@@ -183,7 +185,7 @@ func (s *sagaService) Compensate(ctx context.Context, sagaID uuid.UUID) error {
 
 	_ = s.MarkSagaStatus(ctx, sagaID, SagaStatusCompensating)
 
-	actions, err := s.actions.ListBySagaIDDesc(ctx, nil, sagaID)
+	actions, err := s.actions.ListBySagaIDDesc(dbctx.Context{Ctx: ctx}, sagaID)
 	if err != nil {
 		return err
 	}
@@ -210,7 +212,7 @@ func (s *sagaService) Compensate(ctx context.Context, sagaID uuid.UUID) error {
 				)
 			}
 		}
-		_ = s.actions.UpdateFields(ctx, nil, a.ID, map[string]interface{}{"status": nextStatus})
+		_ = s.actions.UpdateFields(dbctx.Context{Ctx: ctx}, a.ID, map[string]interface{}{"status": nextStatus})
 	}
 
 	_ = s.MarkSagaStatus(ctx, sagaID, SagaStatusCompensated)
@@ -243,7 +245,7 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 		if key == "" {
 			return nil
 		}
-		err = s.bucket.DeleteFile(ctx, nil, cat, key)
+		err = s.bucket.DeleteFile(dbctx.Context{Ctx: ctx}, cat, key)
 		if isNotFoundErr(err) {
 			return nil
 		}
@@ -266,7 +268,7 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 		if prefix == "" {
 			return nil
 		}
-		return s.bucket.DeletePrefix(ctx, cat, prefix)
+		return s.bucket.DeletePrefix(dbctx.Context{Ctx: ctx}, cat, prefix)
 
 	case SagaActionKindPineconeDeleteIDs:
 		if s.vec == nil {

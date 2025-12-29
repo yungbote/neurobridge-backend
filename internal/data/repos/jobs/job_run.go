@@ -1,26 +1,28 @@
 package jobs
 
 import (
-	"context"
 	"errors"
+	"time"
+
 	"github.com/google/uuid"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"time"
+
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type JobRunRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, jobs []*types.JobRun) ([]*types.JobRun, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.JobRun, error)
-	GetLatestByEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
-	ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error)
-	UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error
-	UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error)
-	Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) error
-	HasRunnableForEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error)
-	ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error)
+	Create(dbc dbctx.Context, jobs []*types.JobRun) ([]*types.JobRun, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.JobRun, error)
+	GetLatestByEntity(dbc dbctx.Context, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
+	ClaimNextRunnable(dbc dbctx.Context, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error)
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
+	UpdateFieldsUnlessStatus(dbc dbctx.Context, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error)
+	Heartbeat(dbc dbctx.Context, id uuid.UUID) error
+	HasRunnableForEntity(dbc dbctx.Context, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error)
+	ExistsRunnable(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error)
 }
 
 type jobRunRepo struct {
@@ -35,22 +37,22 @@ func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {
 	}
 }
 
-func (r *jobRunRepo) Create(ctx context.Context, tx *gorm.DB, jobs []*types.JobRun) ([]*types.JobRun, error) {
-	transaction := tx
+func (r *jobRunRepo) Create(dbc dbctx.Context, jobs []*types.JobRun) ([]*types.JobRun, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 	if len(jobs) == 0 {
 		return []*types.JobRun{}, nil
 	}
-	if err := transaction.WithContext(ctx).Create(&jobs).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(&jobs).Error; err != nil {
 		return nil, err
 	}
 	return jobs, nil
 }
 
-func (r *jobRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.JobRun, error) {
-	transaction := tx
+func (r *jobRunRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.JobRun, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -58,7 +60,7 @@ func (r *jobRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID)
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", ids).
 		Find(&out).Error; err != nil {
 		return nil, err
@@ -66,8 +68,8 @@ func (r *jobRunRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID)
 	return out, nil
 }
 
-func (r *jobRunRepo) GetLatestByEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error) {
-	transaction := tx
+func (r *jobRunRepo) GetLatestByEntity(dbc dbctx.Context, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -75,7 +77,7 @@ func (r *jobRunRepo) GetLatestByEntity(ctx context.Context, tx *gorm.DB, ownerUs
 		return nil, nil
 	}
 	var job types.JobRun
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Where("owner_user_id = ? AND entity_type = ? AND entity_id = ? AND job_type = ?", ownerUserID, entityType, entityID, jobType).
 		Order("created_at DESC").
 		Limit(1).
@@ -89,8 +91,8 @@ func (r *jobRunRepo) GetLatestByEntity(ctx context.Context, tx *gorm.DB, ownerUs
 	return &job, nil
 }
 
-func (r *jobRunRepo) ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error) {
-	transaction := tx
+func (r *jobRunRepo) ClaimNextRunnable(dbc dbctx.Context, maxAttempts int, retryDelay time.Duration, staleRunning time.Duration) (*types.JobRun, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -98,7 +100,7 @@ func (r *jobRunRepo) ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAtte
 	retryCutoff := now.Add(-retryDelay)
 	staleCutoff := now.Add(-staleRunning)
 	var claimed *types.JobRun
-	err := transaction.WithContext(ctx).Transaction(func(txx *gorm.DB) error {
+	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
 		var job types.JobRun
 		q := txx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 			Where(`
@@ -145,8 +147,8 @@ func (r *jobRunRepo) ClaimNextRunnable(ctx context.Context, tx *gorm.DB, maxAtte
 	return claimed, nil
 }
 
-func (r *jobRunRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID, updates map[string]interface{}) error {
-	transaction := tx
+func (r *jobRunRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -159,14 +161,14 @@ func (r *jobRunRepo) UpdateFields(ctx context.Context, tx *gorm.DB, id uuid.UUID
 	if _, ok := updates["updated_at"]; !ok {
 		updates["updated_at"] = time.Now()
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.JobRun{}).
 		Where("id = ?", id).
 		Updates(updates).Error
 }
 
-func (r *jobRunRepo) UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error) {
-	transaction := tx
+func (r *jobRunRepo) UpdateFieldsUnlessStatus(dbc dbctx.Context, id uuid.UUID, disallowedStatuses []string, updates map[string]interface{}) (bool, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -180,7 +182,7 @@ func (r *jobRunRepo) UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, 
 		updates["updated_at"] = time.Now()
 	}
 
-	q := transaction.WithContext(ctx).
+	q := transaction.WithContext(dbc.Ctx).
 		Model(&types.JobRun{}).
 		Where("id = ?", id)
 	if len(disallowedStatuses) == 1 {
@@ -196,8 +198,8 @@ func (r *jobRunRepo) UpdateFieldsUnlessStatus(ctx context.Context, tx *gorm.DB, 
 	return res.RowsAffected > 0, nil
 }
 
-func (r *jobRunRepo) Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) error {
-	transaction := tx
+func (r *jobRunRepo) Heartbeat(dbc dbctx.Context, id uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -205,7 +207,7 @@ func (r *jobRunRepo) Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) e
 		return nil
 	}
 	now := time.Now()
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Model(&types.JobRun{}).
 		Where("id = ? AND status = ?", id, "running").
 		Updates(map[string]interface{}{
@@ -214,8 +216,8 @@ func (r *jobRunRepo) Heartbeat(ctx context.Context, tx *gorm.DB, id uuid.UUID) e
 		}).Error
 }
 
-func (r *jobRunRepo) HasRunnableForEntity(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error) {
-	transaction := tx
+func (r *jobRunRepo) HasRunnableForEntity(dbc dbctx.Context, ownerUserID uuid.UUID, entityType string, entityID uuid.UUID, jobType string) (bool, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -223,7 +225,7 @@ func (r *jobRunRepo) HasRunnableForEntity(ctx context.Context, tx *gorm.DB, owne
 		return false, nil
 	}
 	var count int64
-	err := transaction.WithContext(ctx).
+	err := transaction.WithContext(dbc.Ctx).
 		Model(&types.JobRun{}).
 		Where("owner_user_id = ? AND entity_type = ? AND entity_id = ? AND job_type = ? AND status IN ?",
 			ownerUserID, entityType, entityID, jobType, []string{"queued", "running"},
@@ -235,8 +237,8 @@ func (r *jobRunRepo) HasRunnableForEntity(ctx context.Context, tx *gorm.DB, owne
 	return count > 0, nil
 }
 
-func (r *jobRunRepo) ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error) {
-	transaction := tx
+func (r *jobRunRepo) ExistsRunnable(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID) (bool, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -244,7 +246,7 @@ func (r *jobRunRepo) ExistsRunnable(ctx context.Context, tx *gorm.DB, ownerUserI
 		return false, nil
 	}
 
-	q := transaction.WithContext(ctx).Model(&types.JobRun{}).
+	q := transaction.WithContext(dbc.Ctx).Model(&types.JobRun{}).
 		Where("owner_user_id = ? AND job_type = ? AND status IN ?", ownerUserID, jobType, []string{"queued", "running"})
 
 	if entityType != "" {

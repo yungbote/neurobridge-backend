@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
@@ -141,7 +142,7 @@ func (s *documentService) Close() error {
 }
 
 func (s *documentService) ProcessBytes(ctx context.Context, req DocAIProcessBytesRequest) (*DocAIResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -179,7 +180,7 @@ func (s *documentService) ProcessBytes(ctx context.Context, req DocAIProcessByte
 }
 
 func (s *documentService) ProcessGCSOnline(ctx context.Context, req DocAIProcessGCSRequest) (*DocAIResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -214,7 +215,7 @@ func (s *documentService) ProcessGCSOnline(ctx context.Context, req DocAIProcess
 }
 
 func (s *documentService) BatchProcessGCS(ctx context.Context, req DocAIBatchRequest) (*DocAIBatchResult, error) {
-	ctx = defaultCtx(ctx)
+	ctx = ctxutil.Default(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -49,13 +50,13 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 	}
 
 	// Contract: derive/ensure path_id.
-	_, _ = deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	_, _ = deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 
 	consumer := "progression_compact"
 
 	var afterAt *time.Time
 	var afterID *uuid.UUID
-	if cur, err := deps.Cursors.Get(ctx, nil, in.OwnerUserID, consumer); err == nil && cur != nil {
+	if cur, err := deps.Cursors.Get(dbctx.Context{Ctx: ctx}, in.OwnerUserID, consumer); err == nil && cur != nil {
 		afterAt = cur.LastCreatedAt
 		afterID = cur.LastEventID
 	}
@@ -64,7 +65,7 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 	start := time.Now()
 
 	for {
-		events, err := deps.Events.ListAfterCursor(ctx, nil, in.OwnerUserID, afterAt, afterID, pageSize)
+		events, err := deps.Events.ListAfterCursor(dbctx.Context{Ctx: ctx}, in.OwnerUserID, afterAt, afterID, pageSize)
 		if err != nil {
 			return out, err
 		}
@@ -74,6 +75,7 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 
 		// Transactionally: write progression facts + advance cursor.
 		if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 			rows := make([]*types.UserProgressionEvent, 0, len(events))
 			for _, ev := range events {
 				if ev == nil || ev.ID == uuid.Nil {
@@ -93,7 +95,6 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 					ID:           uuid.New(),
 					UserID:       ev.UserID,
 					OccurredAt:   nonZeroTime(ev.OccurredAt),
-					CourseID:     ev.CourseID,
 					PathID:       ev.PathID,
 					ActivityID:   ev.ActivityID,
 					ConceptIDs:   conceptJSON,
@@ -117,7 +118,7 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 			}
 
 			if len(rows) > 0 {
-				if _, err := deps.Progress.Create(ctx, tx, rows); err != nil {
+				if _, err := deps.Progress.Create(dbc, rows); err != nil {
 					return err
 				}
 			}
@@ -132,7 +133,7 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 					LastEventID:   afterID,
 					UpdatedAt:     time.Now().UTC(),
 				}
-				if err := deps.Cursors.Upsert(ctx, tx, curRow); err != nil {
+				if err := deps.Cursors.Upsert(dbc, curRow); err != nil {
 					return err
 				}
 			}

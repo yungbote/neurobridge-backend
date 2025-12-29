@@ -21,6 +21,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"golang.org/x/sync/errgroup"
@@ -75,18 +76,18 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		return out, fmt.Errorf("node_content_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
 
-	up, err := deps.UserProfile.GetByUserID(ctx, nil, in.OwnerUserID)
+	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
 	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
 		return out, fmt.Errorf("node_content_build: missing user_profile_doc (run user_profile_refresh first)")
 	}
 
-	pathRow, err := deps.Path.GetByID(ctx, nil, pathID)
+	pathRow, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
 	if err != nil {
 		return out, err
 	}
@@ -102,7 +103,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		}
 	}
 
-	nodes, err := deps.PathNodes.GetByPathIDs(ctx, nil, []uuid.UUID{pathID})
+	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
 	if err != nil {
 		return out, err
 	}
@@ -117,7 +118,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 	}
 	sort.Slice(filteredNodes, func(i, j int) bool { return filteredNodes[i].Index < filteredNodes[j].Index })
 
-	files, err := deps.Files.GetByMaterialSetID(ctx, nil, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
@@ -127,7 +128,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
-	allChunks, err := deps.Chunks.GetByMaterialFileIDs(ctx, nil, fileIDs)
+	allChunks, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
 	if err != nil {
 		return out, err
 	}
@@ -321,7 +322,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				return fmt.Errorf("node_content_build: empty content_json returned")
 			}
 
-			if err := deps.PathNodes.UpdateFields(gctx, nil, w.Node.ID, map[string]interface{}{
+			if err := deps.PathNodes.UpdateFields(gdbctx.Context{Ctx: ctx}, w.Node.ID, map[string]interface{}{
 				"content_json": datatypes.JSON(content),
 				"updated_at":   now,
 			}); err != nil {

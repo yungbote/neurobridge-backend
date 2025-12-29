@@ -7,6 +7,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audioPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -20,7 +21,7 @@ func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audio
 	}
 
 	key := fmt.Sprintf("%s/derived/audio/audio.wav", mf.StorageKey)
-	if err := s.ex.UploadLocalToGCS(ctx, nil, key, audioPath); err != nil {
+	if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, key, audioPath); err != nil {
 		warnings = append(warnings, "upload audio failed: "+err.Error())
 	} else {
 		assets = append(assets, AssetRef{

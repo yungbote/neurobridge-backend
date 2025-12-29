@@ -24,7 +24,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
-	jc.Progress("realize", 2, "Writing lessons")
+	jc.Progress("realize", 2, "Writing node content")
 	out, err := steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
 		DB:          p.db,
 		Log:         p.log,

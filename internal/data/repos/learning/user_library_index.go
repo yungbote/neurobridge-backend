@@ -1,7 +1,6 @@
 package learning
 
 import (
-	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,24 +10,25 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type UserLibraryIndexRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.UserLibraryIndex) ([]*types.UserLibraryIndex, error)
+	Create(dbc dbctx.Context, rows []*types.UserLibraryIndex) ([]*types.UserLibraryIndex, error)
 
-	GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserLibraryIndex, error)
-	GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
-	GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
-	GetByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
-	GetByUserAndMaterialSetForUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
+	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.UserLibraryIndex, error)
+	GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
+	GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
+	GetByUserAndMaterialSet(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
+	GetByUserAndMaterialSetForUpdate(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
 
-	Upsert(ctx context.Context, tx *gorm.DB, row *types.UserLibraryIndex) error
-	UpsertPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error
+	Upsert(dbc dbctx.Context, row *types.UserLibraryIndex) error
+	UpsertPathID(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error
 
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error
-	FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error
+	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	SoftDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
+	FullDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error
 }
 
 type userLibraryIndexRepo struct {
@@ -40,22 +40,22 @@ func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryInd
 	return &userLibraryIndexRepo{db: db, log: baseLog.With("repo", "UserLibraryIndexRepo")}
 }
 
-func (r *userLibraryIndexRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.UserLibraryIndex) ([]*types.UserLibraryIndex, error) {
-	t := tx
+func (r *userLibraryIndexRepo) Create(dbc dbctx.Context, rows []*types.UserLibraryIndex) ([]*types.UserLibraryIndex, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(rows) == 0 {
 		return []*types.UserLibraryIndex{}, nil
 	}
-	if err := t.WithContext(ctx).Create(&rows).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Create(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *userLibraryIndexRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) ([]*types.UserLibraryIndex, error) {
-	t := tx
+func (r *userLibraryIndexRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.UserLibraryIndex, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -63,14 +63,14 @@ func (r *userLibraryIndexRepo) GetByIDs(ctx context.Context, tx *gorm.DB, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
+	if err := t.WithContext(dbc.Ctx).Where("id IN ?", ids).Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (r *userLibraryIndexRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.UserLibraryIndex, error) {
-	t := tx
+func (r *userLibraryIndexRepo) GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.UserLibraryIndex, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -78,7 +78,7 @@ func (r *userLibraryIndexRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, us
 	if len(userIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("user_id IN ?", userIDs).
 		Order("user_id ASC, updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -87,8 +87,8 @@ func (r *userLibraryIndexRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, us
 	return out, nil
 }
 
-func (r *userLibraryIndexRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error) {
-	t := tx
+func (r *userLibraryIndexRepo) GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -96,7 +96,7 @@ func (r *userLibraryIndexRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm
 	if len(setIDs) == 0 {
 		return out, nil
 	}
-	if err := t.WithContext(ctx).
+	if err := t.WithContext(dbc.Ctx).
 		Where("material_set_id IN ?", setIDs).
 		Order("material_set_id ASC, updated_at DESC").
 		Find(&out).Error; err != nil {
@@ -105,23 +105,23 @@ func (r *userLibraryIndexRepo) GetByMaterialSetIDs(ctx context.Context, tx *gorm
 	return out, nil
 }
 
-func (r *userLibraryIndexRepo) GetByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
-	return r.getByUserAndMaterialSet(ctx, tx, userID, materialSetID, false)
+func (r *userLibraryIndexRepo) GetByUserAndMaterialSet(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
+	return r.getByUserAndMaterialSet(dbc, userID, materialSetID, false)
 }
 
-func (r *userLibraryIndexRepo) GetByUserAndMaterialSetForUpdate(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
-	return r.getByUserAndMaterialSet(ctx, tx, userID, materialSetID, true)
+func (r *userLibraryIndexRepo) GetByUserAndMaterialSetForUpdate(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
+	return r.getByUserAndMaterialSet(dbc, userID, materialSetID, true)
 }
 
-func (r *userLibraryIndexRepo) getByUserAndMaterialSet(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, forUpdate bool) (*types.UserLibraryIndex, error) {
-	t := tx
+func (r *userLibraryIndexRepo) getByUserAndMaterialSet(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID, forUpdate bool) (*types.UserLibraryIndex, error) {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if userID == uuid.Nil || materialSetID == uuid.Nil {
 		return nil, nil
 	}
-	q := t.WithContext(ctx)
+	q := t.WithContext(dbc.Ctx)
 	if forUpdate {
 		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -135,8 +135,8 @@ func (r *userLibraryIndexRepo) getByUserAndMaterialSet(ctx context.Context, tx *
 	return &row, nil
 }
 
-func (r *userLibraryIndexRepo) Upsert(ctx context.Context, tx *gorm.DB, row *types.UserLibraryIndex) error {
-	t := tx
+func (r *userLibraryIndexRepo) Upsert(dbc dbctx.Context, row *types.UserLibraryIndex) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -148,11 +148,10 @@ func (r *userLibraryIndexRepo) Upsert(ctx context.Context, tx *gorm.DB, row *typ
 	}
 	row.UpdatedAt = time.Now().UTC()
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "material_set_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"course_id",
 				"path_id",
 				"tags",
 				"concept_cluster_ids",
@@ -162,8 +161,8 @@ func (r *userLibraryIndexRepo) Upsert(ctx context.Context, tx *gorm.DB, row *typ
 		Create(row).Error
 }
 
-func (r *userLibraryIndexRepo) UpsertPathID(ctx context.Context, tx *gorm.DB, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error {
-	t := tx
+func (r *userLibraryIndexRepo) UpsertPathID(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
@@ -182,7 +181,7 @@ func (r *userLibraryIndexRepo) UpsertPathID(ctx context.Context, tx *gorm.DB, us
 		UpdatedAt:         now,
 	}
 
-	return t.WithContext(ctx).
+	return t.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "material_set_id"}},
 			DoUpdates: clause.Assignments(map[string]interface{}{
@@ -193,46 +192,46 @@ func (r *userLibraryIndexRepo) UpsertPathID(ctx context.Context, tx *gorm.DB, us
 		Create(row).Error
 }
 
-func (r *userLibraryIndexRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *userLibraryIndexRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("id IN ?", ids).Delete(&types.UserLibraryIndex{}).Error
+	return t.WithContext(dbc.Ctx).Where("id IN ?", ids).Delete(&types.UserLibraryIndex{}).Error
 }
 
-func (r *userLibraryIndexRepo) SoftDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error {
-	t := tx
+func (r *userLibraryIndexRepo) SoftDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(userIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Where("user_id IN ?", userIDs).Delete(&types.UserLibraryIndex{}).Error
+	return t.WithContext(dbc.Ctx).Where("user_id IN ?", userIDs).Delete(&types.UserLibraryIndex{}).Error
 }
 
-func (r *userLibraryIndexRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, ids []uuid.UUID) error {
-	t := tx
+func (r *userLibraryIndexRepo) FullDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("id IN ?", ids).Delete(&types.UserLibraryIndex{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("id IN ?", ids).Delete(&types.UserLibraryIndex{}).Error
 }
 
-func (r *userLibraryIndexRepo) FullDeleteByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) error {
-	t := tx
+func (r *userLibraryIndexRepo) FullDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error {
+	t := dbc.Tx
 	if t == nil {
 		t = r.db
 	}
 	if len(userIDs) == 0 {
 		return nil
 	}
-	return t.WithContext(ctx).Unscoped().Where("user_id IN ?", userIDs).Delete(&types.UserLibraryIndex{}).Error
+	return t.WithContext(dbc.Ctx).Unscoped().Where("user_id IN ?", userIDs).Delete(&types.UserLibraryIndex{}).Error
 }

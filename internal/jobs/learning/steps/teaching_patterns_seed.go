@@ -16,6 +16,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -57,18 +58,18 @@ func TeachingPatternsSeed(ctx context.Context, deps TeachingPatternsSeedDeps, in
 	}
 
 	// Contract: derive/ensure path_id.
-	_, err := deps.Bootstrap.EnsurePath(ctx, nil, in.OwnerUserID, in.MaterialSetID)
+	_, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
 	if err != nil {
 		return out, err
 	}
 
 	// Idempotency: if we already have a reasonable number of global patterns, skip.
 	const minPatterns = 10
-	if n, err := deps.Patterns.Count(ctx, nil); err == nil && n >= minPatterns {
+	if n, err := deps.Patterns.Count(dbctx.Context{Ctx: ctx}); err == nil && n >= minPatterns {
 		return out, nil
 	}
 
-	up, err := deps.UserProfile.GetByUserID(ctx, nil, in.OwnerUserID)
+	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
 	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
 		return out, fmt.Errorf("teaching_patterns_seed: missing user_profile_doc (run user_profile_refresh first)")
 	}
@@ -109,7 +110,8 @@ func TeachingPatternsSeed(ctx context.Context, deps TeachingPatternsSeedDeps, in
 	const batchSize = 64
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID); err != nil {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
 			return err
 		}
 
@@ -127,7 +129,7 @@ func TeachingPatternsSeed(ctx context.Context, deps TeachingPatternsSeedDeps, in
 				Embedding:   datatypes.JSON(mustJSON(embs[i])),
 				VectorID:    "teaching_pattern:" + p.PatternKey,
 			}
-			if err := deps.Patterns.UpsertByPatternKey(ctx, tx, row); err != nil {
+			if err := deps.Patterns.UpsertByPatternKey(dbc, row); err != nil {
 				return err
 			}
 			out.Seeded++
@@ -139,7 +141,7 @@ func TeachingPatternsSeed(ctx context.Context, deps TeachingPatternsSeedDeps, in
 				if end > len(vectorIDs) {
 					end = len(vectorIDs)
 				}
-				if err := deps.Saga.AppendAction(ctx, tx, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       vectorIDs[start:end],
 				}); err != nil {

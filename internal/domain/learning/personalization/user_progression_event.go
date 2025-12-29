@@ -14,7 +14,6 @@ type UserProgressionEvent struct {
 	UserID     uuid.UUID `gorm:"type:uuid;not null;index:idx_user_prog_time,priority:1" json:"user_id"`
 	OccurredAt time.Time `gorm:"column:occurred_at;not null;index:idx_user_prog_time,priority:2" json:"occurred_at"`
 
-	CourseID   *uuid.UUID `gorm:"type:uuid;index" json:"course_id,omitempty"`
 	PathID     *uuid.UUID `gorm:"type:uuid;index" json:"path_id,omitempty"`
 	ActivityID *uuid.UUID `gorm:"type:uuid;index" json:"activity_id,omitempty"`
 

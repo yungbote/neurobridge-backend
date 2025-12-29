@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -11,19 +10,20 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type ChatEntityRepo interface {
-	UpsertByName(ctx context.Context, tx *gorm.DB, row *types.ChatEntity) (*types.ChatEntity, error)
+	UpsertByName(dbc dbctx.Context, row *types.ChatEntity) (*types.ChatEntity, error)
 }
 
 type ChatEdgeRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatEdge) error
+	Create(dbc dbctx.Context, rows []*types.ChatEdge) error
 }
 
 type ChatClaimRepo interface {
-	InsertIgnore(ctx context.Context, tx *gorm.DB, rows []*types.ChatClaim) error
+	InsertIgnore(dbc dbctx.Context, rows []*types.ChatClaim) error
 }
 
 type chatEntityRepo struct {
@@ -38,7 +38,7 @@ func NewChatEntityRepo(db *gorm.DB, log *logger.Logger) ChatEntityRepo {
 	}
 }
 
-func (r *chatEntityRepo) UpsertByName(ctx context.Context, tx *gorm.DB, row *types.ChatEntity) (*types.ChatEntity, error) {
+func (r *chatEntityRepo) UpsertByName(dbc dbctx.Context, row *types.ChatEntity) (*types.ChatEntity, error) {
 	if row == nil || row.UserID == uuid.Nil {
 		return nil, fmt.Errorf("missing row/user_id")
 	}
@@ -47,12 +47,12 @@ func (r *chatEntityRepo) UpsertByName(ctx context.Context, tx *gorm.DB, row *typ
 		return nil, fmt.Errorf("missing entity name")
 	}
 
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
 
-	q := transaction.WithContext(ctx).
+	q := transaction.WithContext(dbc.Ctx).
 		Model(&types.ChatEntity{}).
 		Where("user_id = ? AND scope = ? AND lower(name) = lower(?)", row.UserID, strings.TrimSpace(row.Scope), name)
 	if row.ScopeID != nil && *row.ScopeID != uuid.Nil {
@@ -69,7 +69,7 @@ func (r *chatEntityRepo) UpsertByName(ctx context.Context, tx *gorm.DB, row *typ
 
 	if err == nil && existing.ID != uuid.Nil {
 		row.ID = existing.ID
-		if err := transaction.WithContext(ctx).
+		if err := transaction.WithContext(dbc.Ctx).
 			Model(&types.ChatEntity{}).
 			Where("id = ?", existing.ID).
 			Updates(map[string]interface{}{
@@ -92,7 +92,7 @@ func (r *chatEntityRepo) UpsertByName(ctx context.Context, tx *gorm.DB, row *typ
 	if row.ID == uuid.Nil {
 		row.ID = uuid.New()
 	}
-	if err := transaction.WithContext(ctx).Create(row).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(row).Error; err != nil {
 		return nil, err
 	}
 	return row, nil
@@ -110,11 +110,11 @@ func NewChatEdgeRepo(db *gorm.DB, log *logger.Logger) ChatEdgeRepo {
 	}
 }
 
-func (r *chatEdgeRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.ChatEdge) error {
+func (r *chatEdgeRepo) Create(dbc dbctx.Context, rows []*types.ChatEdge) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -128,7 +128,7 @@ func (r *chatEdgeRepo) Create(ctx context.Context, tx *gorm.DB, rows []*types.Ch
 		}
 	}
 	// Idempotent insert: edges are derived and may be re-created by retries.
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&rows).Error
 }
@@ -145,11 +145,11 @@ func NewChatClaimRepo(db *gorm.DB, log *logger.Logger) ChatClaimRepo {
 	}
 }
 
-func (r *chatClaimRepo) InsertIgnore(ctx context.Context, tx *gorm.DB, rows []*types.ChatClaim) error {
+func (r *chatClaimRepo) InsertIgnore(dbc dbctx.Context, rows []*types.ChatClaim) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	transaction := tx
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -162,7 +162,7 @@ func (r *chatClaimRepo) InsertIgnore(ctx context.Context, tx *gorm.DB, rows []*t
 			row.CreatedAt = now
 		}
 	}
-	return transaction.WithContext(ctx).
+	return transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&rows).Error
 }

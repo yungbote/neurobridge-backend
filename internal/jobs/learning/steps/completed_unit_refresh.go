@@ -15,6 +15,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/learning/keys"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -98,13 +99,14 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 	}
 
 	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		pathID, err := deps.Bootstrap.EnsurePath(ctx, tx, in.OwnerUserID, in.MaterialSetID)
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		pathID, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID)
 		if err != nil {
 			return err
 		}
 
 		// Chain signatures (chains to evaluate).
-		chainRows, err := deps.Chains.ListByScope(ctx, tx, "path", &pathID)
+		chainRows, err := deps.Chains.ListByScope(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -135,7 +137,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 		sort.Slice(chains, func(i, j int) bool { return chains[i].ChainKey < chains[j].ChainKey })
 
 		// Concepts for key->id mapping (for mastery lookup).
-		concepts, err := deps.Concepts.GetByScope(ctx, tx, "path", &pathID)
+		concepts, err := deps.Concepts.GetByScope(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -153,7 +155,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 		}
 
 		// Activities for this path, and their concept keys (for mapping to chain_key).
-		activities, err := deps.Act.ListByOwner(ctx, tx, "path", &pathID)
+		activities, err := deps.Act.ListByOwner(dbc, "path", &pathID)
 		if err != nil {
 			return err
 		}
@@ -168,7 +170,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 			activityIDs = append(activityIDs, a.ID)
 		}
 
-		acRows, err := deps.ActCon.GetByActivityIDs(ctx, tx, activityIDs)
+		acRows, err := deps.ActCon.GetByActivityIDs(dbc, activityIDs)
 		if err != nil {
 			return err
 		}
@@ -194,7 +196,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 		}
 
 		// Progression evidence (compact facts).
-		events, err := deps.Progress.ListByUserAndPathID(ctx, tx, in.OwnerUserID, pathID, maxEvents)
+		events, err := deps.Progress.ListByUserAndPathID(dbc, in.OwnerUserID, pathID, maxEvents)
 		if err != nil {
 			return err
 		}
@@ -262,7 +264,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 			conceptIDs = dedupeUUIDs(conceptIDs)
 
 			if deps.Mastery != nil && len(conceptIDs) > 0 {
-				states, err := deps.Mastery.ListByUserAndConceptIDs(ctx, tx, in.OwnerUserID, conceptIDs)
+				states, err := deps.Mastery.ListByUserAndConceptIDs(dbc, in.OwnerUserID, conceptIDs)
 				if err != nil {
 					return err
 				}
@@ -297,7 +299,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 			completionConfidence := math.Max(masteryConfidence, progressionConfidence)
 
 			// Preserve monotonicity.
-			existing, err := deps.Completed.Get(ctx, tx, in.OwnerUserID, chainKey)
+			existing, err := deps.Completed.Get(dbc, in.OwnerUserID, chainKey)
 			if err != nil {
 				return err
 			}
@@ -358,7 +360,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 				UpdatedAt: now,
 			}
 
-			if err := deps.Completed.Upsert(ctx, tx, row); err != nil {
+			if err := deps.Completed.Upsert(dbc, row); err != nil {
 				return err
 			}
 			out.UnitsUpserted++

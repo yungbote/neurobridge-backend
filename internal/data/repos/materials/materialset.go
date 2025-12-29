@@ -1,22 +1,21 @@
 package materials
 
 import (
-	"context"
-
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type MaterialSetRepo interface {
-	Create(ctx context.Context, tx *gorm.DB, sets []*types.MaterialSet) ([]*types.MaterialSet, error)
-	GetByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.MaterialSet, error)
-	GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.MaterialSet, error)
-	GetByStatus(ctx context.Context, tx *gorm.DB, statuses []string) ([]*types.MaterialSet, error)
-	SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error
-	FullDeleteByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error
+	Create(dbc dbctx.Context, sets []*types.MaterialSet) ([]*types.MaterialSet, error)
+	GetByIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.MaterialSet, error)
+	GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.MaterialSet, error)
+	GetByStatus(dbc dbctx.Context, statuses []string) ([]*types.MaterialSet, error)
+	SoftDeleteByIDs(dbc dbctx.Context, setIDs []uuid.UUID) error
+	FullDeleteByIDs(dbc dbctx.Context, setIDs []uuid.UUID) error
 }
 
 type materialSetRepo struct {
@@ -29,8 +28,8 @@ func NewMaterialSetRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetRepo {
 	return &materialSetRepo{db: db, log: repoLog}
 }
 
-func (r *materialSetRepo) Create(ctx context.Context, tx *gorm.DB, sets []*types.MaterialSet) ([]*types.MaterialSet, error) {
-	transaction := tx
+func (r *materialSetRepo) Create(dbc dbctx.Context, sets []*types.MaterialSet) ([]*types.MaterialSet, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -39,14 +38,14 @@ func (r *materialSetRepo) Create(ctx context.Context, tx *gorm.DB, sets []*types
 		return []*types.MaterialSet{}, nil
 	}
 
-	if err := transaction.WithContext(ctx).Create(&sets).Error; err != nil {
+	if err := transaction.WithContext(dbc.Ctx).Create(&sets).Error; err != nil {
 		return nil, err
 	}
 	return sets, nil
 }
 
-func (r *materialSetRepo) GetByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) ([]*types.MaterialSet, error) {
-	transaction := tx
+func (r *materialSetRepo) GetByIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.MaterialSet, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -56,7 +55,7 @@ func (r *materialSetRepo) GetByIDs(ctx context.Context, tx *gorm.DB, setIDs []uu
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", setIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -64,8 +63,8 @@ func (r *materialSetRepo) GetByIDs(ctx context.Context, tx *gorm.DB, setIDs []uu
 	return results, nil
 }
 
-func (r *materialSetRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs []uuid.UUID) ([]*types.MaterialSet, error) {
-	transaction := tx
+func (r *materialSetRepo) GetByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.MaterialSet, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -75,7 +74,7 @@ func (r *materialSetRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("user_id IN ?", userIDs).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -83,8 +82,8 @@ func (r *materialSetRepo) GetByUserIDs(ctx context.Context, tx *gorm.DB, userIDs
 	return results, nil
 }
 
-func (r *materialSetRepo) GetByStatus(ctx context.Context, tx *gorm.DB, statuses []string) ([]*types.MaterialSet, error) {
-	transaction := tx
+func (r *materialSetRepo) GetByStatus(dbc dbctx.Context, statuses []string) ([]*types.MaterialSet, error) {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -94,7 +93,7 @@ func (r *materialSetRepo) GetByStatus(ctx context.Context, tx *gorm.DB, statuses
 		return results, nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("status IN ?", statuses).
 		Find(&results).Error; err != nil {
 		return nil, err
@@ -102,8 +101,8 @@ func (r *materialSetRepo) GetByStatus(ctx context.Context, tx *gorm.DB, statuses
 	return results, nil
 }
 
-func (r *materialSetRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialSetRepo) SoftDeleteByIDs(dbc dbctx.Context, setIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -112,7 +111,7 @@ func (r *materialSetRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, setI
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Where("id IN ?", setIDs).
 		Delete(&types.MaterialSet{}).Error; err != nil {
 		return err
@@ -120,8 +119,8 @@ func (r *materialSetRepo) SoftDeleteByIDs(ctx context.Context, tx *gorm.DB, setI
 	return nil
 }
 
-func (r *materialSetRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, setIDs []uuid.UUID) error {
-	transaction := tx
+func (r *materialSetRepo) FullDeleteByIDs(dbc dbctx.Context, setIDs []uuid.UUID) error {
+	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
@@ -130,7 +129,7 @@ func (r *materialSetRepo) FullDeleteByIDs(ctx context.Context, tx *gorm.DB, setI
 		return nil
 	}
 
-	if err := transaction.WithContext(ctx).
+	if err := transaction.WithContext(dbc.Ctx).
 		Unscoped().
 		Where("id IN ?", setIDs).
 		Delete(&types.MaterialSet{}).Error; err != nil {

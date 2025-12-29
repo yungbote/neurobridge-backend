@@ -18,7 +18,6 @@ type SSEEvent string
 const (
 	SSEEventUserNameChanged   SSEEvent = "UserNameChanged"
 	SSEEventUserAvatarUpdated SSEEvent = "UserAvatarChanged"
-	SSEEventUserCourseCreated SSEEvent = "UserCourseCreated"
 
 	SSEEventJobCreated   SSEEvent = "JobCreated"
 	SSEEventJobProgress  SSEEvent = "JobProgress"
@@ -26,12 +25,6 @@ const (
 	SSEEventJobDone      SSEEvent = "JobDone"
 	SSEEventJobCanceled  SSEEvent = "JobCanceled"
 	SSEEventJobRestarted SSEEvent = "JobRestarted"
-
-	CourseGenerationProgress SSEEvent = "CourseGenerationProgress"
-	CourseGenerationFailed   SSEEvent = "CourseGenerationFailed"
-	CourseGenerationDone     SSEEvent = "CourseGenerationDone"
-
-	SSEEventLessonUpdated SSEEvent = "LessonUpdated"
 
 	SSEEventChatThreadCreated  SSEEvent = "ChatThreadCreated"
 	SSEEventChatMessageCreated SSEEvent = "ChatMessageCreated"
