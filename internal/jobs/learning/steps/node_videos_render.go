@@ -142,9 +142,6 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	if maxConc > 2 {
-		maxConc = 2
-	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)

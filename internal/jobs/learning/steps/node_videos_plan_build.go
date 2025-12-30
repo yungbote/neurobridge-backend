@@ -254,9 +254,6 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	if maxConc > 8 {
-		maxConc = 8
-	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)

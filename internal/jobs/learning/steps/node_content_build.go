@@ -260,9 +260,6 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	if maxConc > 16 {
-		maxConc = 16
-	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)

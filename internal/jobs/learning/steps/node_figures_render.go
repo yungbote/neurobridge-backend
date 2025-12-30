@@ -142,9 +142,6 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	if maxConc > 4 {
-		maxConc = 4
-	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)

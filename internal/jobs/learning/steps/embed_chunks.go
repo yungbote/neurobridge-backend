@@ -112,9 +112,6 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 	if maxConc < 1 {
 		maxConc = 1
 	}
-	if maxConc > 8 {
-		maxConc = 8
-	}
 
 	ns := index.ChunksNamespace(in.MaterialSetID)
 
