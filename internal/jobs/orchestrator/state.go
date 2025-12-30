@@ -29,11 +29,14 @@ type StageState struct {
 	Attempts       int            `json:"attempts"`
 	StartedAt      *time.Time     `json:"started_at,omitempty"`
 	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
-	LastError      string         `json:"last_error,omitempty'`
+	LastError      string         `json:"last_error,omitempty"`
 	Outputs        map[string]any `json:"outputs,omitempty"`
+	ChildResult    any            `json:"child_result,omitempty"`
 	ChildJobID     string         `json:"child_job_id,omitempty"`
 	ChildJobType   string         `json:"child_job_type,omitempty"`
-	ChildJobStatus string         `json:"child_jon_status,omitempty"`
+	ChildJobStatus string         `json:"child_job_status,omitempty"`
+	ChildProgress  int            `json:"child_progress,omitempty"`
+	ChildMessage   string         `json:"child_message,omitempty"`
 	NextRunAt      *time.Time     `json:"next_run_at,omitempty"`
 }
 

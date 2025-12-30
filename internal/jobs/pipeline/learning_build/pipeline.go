@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
+	orchestrator "github.com/yungbote/neurobridge-backend/internal/jobs/orchestrator"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -113,227 +114,70 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		return nil
 	}
 
-	// If we're in a scheduled wait, sleep a bit to reduce polling pressure.
-	if st.WaitUntil != nil && time.Now().Before(*st.WaitUntil) {
-		sleep := clampDuration(st.WaitUntil.Sub(time.Now()), p.minPoll, p.maxPoll)
-		if sleep > 0 {
-			time.Sleep(sleep)
-		}
-		st.WaitUntil = nil
+	mode := "child"
+	if st != nil && strings.TrimSpace(st.Mode) != "" {
+		mode = strings.ToLower(strings.TrimSpace(st.Mode))
 	}
 
-	total := len(stageOrder)
-	for i, jobType := range stageOrder {
-		if p.isCanceled(jc) {
+	engine := orchestrator.NewDAGEngine(p.jobs)
+	engine.MinPollInterval = p.minPoll
+	engine.MaxPollInterval = p.maxPoll
+	engine.ChildMaxWait = p.childMaxWait
+	engine.ChildStaleRunning = p.childStaleRunning
+	engine.ResultEncoder = orchestrator.EncodeFlatState
+	engine.IsCanceled = func(ctx *jobrt.Context) bool {
+		return p.isCanceled(ctx)
+	}
+	engine.OnFail = func(ctx *jobrt.Context, st *orchestrator.OrchestratorState, stage string, jobStage string, err error) {
+		if ctx == nil || p == nil || p.saga == nil || sagaID == uuid.Nil {
+			return
+		}
+		if strings.TrimSpace(jobStage) == "finalize" {
+			return
+		}
+		_ = p.saga.MarkSagaStatus(ctx.Ctx, sagaID, services.SagaStatusFailed)
+		_ = p.saga.Compensate(ctx.Ctx, sagaID)
+	}
+	engine.OnSuccess = func(ctx *jobrt.Context, st *orchestrator.OrchestratorState) error {
+		if ctx == nil || p == nil || p.db == nil || p.path == nil || pathID == uuid.Nil {
 			return nil
 		}
-
-		ss := st.ensureStage(jobType)
-		if ss.Status == stageStatusSucceeded {
-			continue
-		}
-
-		// Enqueue the next stage if needed.
-		if strings.TrimSpace(ss.ChildJobID) == "" {
-			progress := st.setProgress(progressForStage(i, total))
-			jc.Progress(jobType, progress, "Enqueuing "+jobType)
-
-			payload := map[string]any{
-				"material_set_id": setID.String(),
-				"saga_id":         sagaID.String(),
-			}
-			entityID := setID
-			now := time.Now().UTC()
-
-			err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-				child, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, jc.Job.OwnerUserID, jobType, "material_set", &entityID, payload)
-				if err != nil {
-					return err
-				}
-				ss.Status = stageStatusWaitingChild
-				ss.ChildJobID = child.ID.String()
-				ss.ChildJobStatus = child.Status
-				if ss.StartedAt == nil {
-					ss.StartedAt = &now
-				}
-				st.WaitUntil = ptrTime(now.Add(p.minPoll))
-
-				// Persist state in the same transaction as child job creation to avoid duplicate enqueues.
-				b, _ := json.Marshal(st)
-				return jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, jc.Job.ID, map[string]interface{}{
-					"result": datatypes.JSON(b),
-				})
+		if err := p.db.WithContext(ctx.Ctx).Transaction(func(tx *gorm.DB) error {
+			return p.path.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: tx}, pathID, map[string]interface{}{
+				"status": "ready",
+				"job_id": nil,
 			})
-			if err != nil {
-				jc.Fail(jobType, err)
-				return nil
-			}
-
-			// Update in-memory copy for subsequent logic this run.
-			jc.Job.Result, _ = json.Marshal(st)
-			return p.yield(jc, st, "waiting_child_"+jobType, progress)
+		}); err != nil {
+			return err
 		}
-
-		// Poll child job.
-		childID, err := uuid.Parse(ss.ChildJobID)
-		if err != nil || childID == uuid.Nil {
-			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("invalid child_job_id %q", ss.ChildJobID))
+		if p.saga != nil && sagaID != uuid.Nil {
+			_ = p.saga.MarkSagaStatus(ctx.Ctx, sagaID, services.SagaStatusSucceeded)
 		}
-
-		rows, err := jc.Repo.GetByIDs(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, []uuid.UUID{childID})
-		if err != nil || len(rows) == 0 || rows[0] == nil {
-			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("load child job %s: %w", childID.String(), err))
-		}
-		child := rows[0]
-		ss.ChildJobStatus = child.Status
-		if ss.StartedAt == nil {
-			t := child.CreatedAt.UTC()
-			ss.StartedAt = &t
-			_ = p.saveState(jc, nil, st)
-		}
-
-		// Hard stop: if a child stage takes too long, fail the root saga so we don't wait forever.
-		if ss.StartedAt != nil && p.childMaxWait > 0 && time.Since(*ss.StartedAt) > p.childMaxWait {
-			now := time.Now().UTC()
-			_ = jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, childID, map[string]interface{}{
-				"status":        "failed",
-				"stage":         "timeout",
-				"error":         fmt.Sprintf("timed out after %s waiting for parent stage %s", p.childMaxWait.String(), jobType),
-				"last_error_at": now,
-				"locked_at":     nil,
-				"updated_at":    now,
-			})
-			return p.failAndCompensateWithStage(
-				jc,
-				st,
-				sagaID,
-				jobType,
-				"timeout_"+jobType,
-				fmt.Errorf("learning_build: child stage %s timed out after %s (child_job_id=%s)", jobType, p.childMaxWait.String(), childID.String()),
-			)
-		}
-
-		// If the child is "running" but hasn't heartbeated recently, treat it as stuck.
-		if p.childStaleRunning > 0 && strings.EqualFold(strings.TrimSpace(child.Status), "running") {
-			stale := false
-			if child.HeartbeatAt != nil && !child.HeartbeatAt.IsZero() {
-				stale = time.Since(child.HeartbeatAt.UTC()) > p.childStaleRunning
-			} else {
-				stale = time.Since(child.CreatedAt.UTC()) > p.childStaleRunning
-			}
-			if stale {
-				now := time.Now().UTC()
-				_ = jc.Repo.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, childID, map[string]interface{}{
-					"status":        "failed",
-					"stage":         "stale_heartbeat",
-					"error":         fmt.Sprintf("stale heartbeat (> %s) while running; treated as stuck by learning_build", p.childStaleRunning.String()),
-					"last_error_at": now,
-					"locked_at":     nil,
-					"updated_at":    now,
-				})
-				return p.failAndCompensateWithStage(
-					jc,
-					st,
-					sagaID,
-					jobType,
-					"stale_"+jobType,
-					fmt.Errorf("learning_build: child stage %s has stale heartbeat (> %s) (child_job_id=%s)", jobType, p.childStaleRunning.String(), childID.String()),
-				)
-			}
-		}
-
-		switch child.Status {
-		case "succeeded":
-			now := time.Now().UTC()
-			ss.Status = stageStatusSucceeded
-			ss.FinishedAt = &now
-			if len(child.Result) > 0 && string(child.Result) != "null" {
-				var obj any
-				_ = json.Unmarshal(child.Result, &obj)
-				ss.ChildResult = obj
-			}
-
-			_ = p.saveState(jc, nil, st)
-			continue
-
-		case "failed":
-			errMsg := strings.TrimSpace(child.Error)
-			if errMsg == "" {
-				errMsg = "child job failed"
-			}
-			return p.failAndCompensate(jc, st, sagaID, jobType, fmt.Errorf("%s: %s", jobType, errMsg))
-
-		case "canceled":
-			// Child stage was canceled (likely due to user cancel). Clear linkage so we can re-enqueue on restart.
-			ss.Status = stageStatusPending
-			ss.ChildJobID = ""
-			ss.ChildJobStatus = "canceled"
-			ss.LastError = ""
-			ss.StartedAt = nil
-			ss.FinishedAt = nil
-			st.WaitUntil = ptrTime(time.Now().Add(p.minPoll))
-			_ = p.saveState(jc, nil, st)
-			return p.yield(jc, st, jobType, st.LastProgress)
-
-		default:
-			// Still running/queued; emit root progress based on child snapshot so the UI
-			// can stay live without frontend polling (SSE has no replay).
-			base := progressForStage(i, total)
-			progress := base
-			if total > 0 && child != nil {
-				cp := child.Progress
-				if cp < 0 {
-					cp = 0
-				}
-				if cp > 100 {
-					cp = 100
-				}
-				// Scale child progress into this stage's slice of the total.
-				intra := int(float64(cp) / float64(total))
-				if intra < 0 {
-					intra = 0
-				}
-				if intra > 99-base {
-					intra = 99 - base
-				}
-				progress = base + intra
-			}
-			msg := strings.TrimSpace(child.Message)
-			if msg == "" {
-				msg = "Running " + jobType
-			}
-			progress = st.setProgress(progress)
-			jc.Progress("waiting_child_"+jobType, progress, msg)
-			st.WaitUntil = ptrTime(time.Now().Add(p.minPoll))
-			_ = p.saveState(jc, nil, st)
-			return p.yield(jc, st, "waiting_child_"+jobType, progress)
-		}
-	}
-
-	// All stages succeeded.
-	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
-		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
-			"status": "ready",
-			"job_id": nil,
-		})
-	}); err != nil {
-		jc.Fail("finalize", err)
+		p.enqueueChatPathIndex(ctx, pathID)
 		return nil
 	}
 
-	_ = p.saga.MarkSagaStatus(jc.Ctx, sagaID, services.SagaStatusSucceeded)
+	init := func(st *orchestrator.OrchestratorState) {
+		if st == nil {
+			return
+		}
+		if st.Meta == nil {
+			st.Meta = map[string]any{}
+		}
+		st.Meta["material_set_id"] = setID.String()
+		st.Meta["saga_id"] = sagaID.String()
+		st.Meta["path_id"] = pathID.String()
+		st.Meta["mode"] = mode
+	}
 
-	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
-	p.enqueueChatPathIndex(jc, pathID)
-
-	jc.Succeed("done", map[string]any{
+	finalResult := map[string]any{
 		"material_set_id": setID.String(),
 		"saga_id":         sagaID.String(),
 		"path_id":         pathID.String(),
-		"mode":            st.Mode,
-		"stages":          st.Stages,
-	})
-	return nil
+		"mode":            mode,
+	}
+	stages := buildChildStages(setID, sagaID)
+	return engine.Run(jc, stages, finalResult, init)
 }
 
 func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID uuid.UUID) error {

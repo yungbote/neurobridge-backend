@@ -31,6 +31,7 @@ type RetryPolicy struct {
 
 type Stage struct {
 	Name string
+	Deps []string
 
 	Mode         StageMode
 	Timeout      time.Duration // inline only
@@ -352,6 +353,14 @@ func LoadState(ctx *jobrt.Context, version int) (*OrchestratorState, error) {
 			st.ensure()
 			return st, nil
 		}
+		// Accept flat state (top-level stages + meta fields).
+		if _, ok := probe["stages"]; ok {
+			b, _ := json.Marshal(probe)
+			_ = json.Unmarshal(b, st)
+			st.ensure()
+			mergeMetaFromProbe(st, probe)
+			return st, nil
+		}
 	}
 
 	if err := json.Unmarshal(raw, st); err != nil {
@@ -361,6 +370,29 @@ func LoadState(ctx *jobrt.Context, version int) (*OrchestratorState, error) {
 	}
 	st.ensure()
 	return st, nil
+}
+
+func mergeMetaFromProbe(st *OrchestratorState, probe map[string]any) {
+	if st == nil || probe == nil {
+		return
+	}
+	st.ensure()
+	// Preserve nested meta (if any).
+	if rawMeta, ok := probe["meta"]; ok && rawMeta != nil {
+		if m, ok := rawMeta.(map[string]any); ok {
+			for k, v := range m {
+				st.Meta[k] = v
+			}
+		}
+	}
+	for k, v := range probe {
+		switch k {
+		case "stages", "wait_until", "last_progress", "version", "meta":
+			continue
+		default:
+			st.Meta[k] = v
+		}
+	}
 }
 
 func SaveState(ctx *jobrt.Context, st *OrchestratorState) error {
