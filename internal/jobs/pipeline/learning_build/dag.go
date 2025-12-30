@@ -28,8 +28,8 @@ var stageDeps = map[string][]string{
 
 	"realize_activities":       {"path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_build"},
 	"coverage_coherence_audit": {"realize_activities"},
-	"progression_compact":      {"realize_activities"},
-	"variant_stats_refresh":    {"realize_activities"},
+	"progression_compact":      {"user_profile_refresh"},
+	"variant_stats_refresh":    {"user_profile_refresh"},
 	"priors_refresh":           {"realize_activities", "variant_stats_refresh", "chain_signature_build"},
 	"completed_unit_refresh":   {"realize_activities", "progression_compact", "chain_signature_build"},
 }
