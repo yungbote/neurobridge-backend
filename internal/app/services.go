@@ -23,6 +23,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_patch"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
@@ -60,11 +61,11 @@ type Services struct {
 	Events services.EventService
 
 	// Jobs + notifications
-	JobNotifier    services.JobNotifier
-	JobService     services.JobService
-	Workflow       services.WorkflowService
-	ChatNotifier   services.ChatNotifier
-	Chat           services.ChatService
+	JobNotifier  services.JobNotifier
+	JobService   services.JobService
+	Workflow     services.WorkflowService
+	ChatNotifier services.ChatNotifier
+	Chat         services.ChatService
 
 	// Orchestrator
 	ContentExtractor ingestion.ContentExtractionService
@@ -362,6 +363,27 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(nodeDocs); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocPatch := node_doc_patch.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeFigure,
+		repos.LearningNodeVideo,
+		repos.LearningNodeDocRevision,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		repos.UserLibraryIndex,
+		repos.Asset,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		clients.GcpBucket,
+	)
+	if err := jobRegistry.Register(nodeDocPatch); err != nil {
 		return Services{}, err
 	}
 

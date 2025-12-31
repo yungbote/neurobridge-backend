@@ -9,8 +9,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type UserLibraryIndexRepo interface {
@@ -21,6 +21,7 @@ type UserLibraryIndexRepo interface {
 	GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.UUID) ([]*types.UserLibraryIndex, error)
 	GetByUserAndMaterialSet(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
 	GetByUserAndMaterialSetForUpdate(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error)
+	GetByUserAndPathID(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID) (*types.UserLibraryIndex, error)
 
 	Upsert(dbc dbctx.Context, row *types.UserLibraryIndex) error
 	UpsertPathID(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) error
@@ -111,6 +112,27 @@ func (r *userLibraryIndexRepo) GetByUserAndMaterialSet(dbc dbctx.Context, userID
 
 func (r *userLibraryIndexRepo) GetByUserAndMaterialSetForUpdate(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID) (*types.UserLibraryIndex, error) {
 	return r.getByUserAndMaterialSet(dbc, userID, materialSetID, true)
+}
+
+func (r *userLibraryIndexRepo) GetByUserAndPathID(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID) (*types.UserLibraryIndex, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	if userID == uuid.Nil || pathID == uuid.Nil {
+		return nil, nil
+	}
+	var row types.UserLibraryIndex
+	if err := t.WithContext(dbc.Ctx).
+		Where("user_id = ? AND path_id = ?", userID, pathID).
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return nil, err
+	}
+	if row.ID == uuid.Nil {
+		return nil, nil
+	}
+	return &row, nil
 }
 
 func (r *userLibraryIndexRepo) getByUserAndMaterialSet(dbc dbctx.Context, userID uuid.UUID, materialSetID uuid.UUID, forUpdate bool) (*types.UserLibraryIndex, error) {

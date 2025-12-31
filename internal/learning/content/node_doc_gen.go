@@ -318,6 +318,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 				level = 4
 			}
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":    id,
 				"type":  "heading",
 				"level": level,
 				"text":  h.Text,
@@ -329,6 +330,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refParagraph[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "paragraph",
 				"md":        p.MD,
 				"citations": toAny(p.Citations),
@@ -340,6 +342,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refCallout[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "callout",
 				"variant":   c.Variant,
 				"title":     c.Title,
@@ -353,6 +356,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refCode[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":       id,
 				"type":     "code",
 				"language": c.Language,
 				"filename": c.Filename,
@@ -365,6 +369,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refFigure[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "figure",
 				"asset":     toAny(f.Asset),
 				"caption":   f.Caption,
@@ -377,6 +382,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refVideo[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "video",
 				"url":       v.URL,
 				"start_sec": v.StartSec,
@@ -389,6 +395,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refDiagram[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "diagram",
 				"kind":      d.Kind,
 				"source":    d.Source,
@@ -402,6 +409,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refTable[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "table",
 				"caption":   t.Caption,
 				"columns":   toAny(t.Columns),
@@ -415,6 +423,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			}
 			refQC[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
 				"type":      "quick_check",
 				"prompt_md": q.PromptMD,
 				"answer_md": q.AnswerMD,
@@ -422,7 +431,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			})
 		case "divider":
 			refDivider[id] = true
-			doc.Blocks = append(doc.Blocks, map[string]any{"type": "divider"})
+			doc.Blocks = append(doc.Blocks, map[string]any{"id": id, "type": "divider"})
 		default:
 			continue
 		}
@@ -439,61 +448,61 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 		} else if level > 4 {
 			level = 4
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "heading", "level": level, "text": h.Text})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": h.ID, "type": "heading", "level": level, "text": h.Text})
 	}
 	for _, p := range paragraphSeq {
 		if refParagraph[p.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "paragraph", "md": p.MD, "citations": toAny(p.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": p.ID, "type": "paragraph", "md": p.MD, "citations": toAny(p.Citations)})
 	}
 	for _, c := range calloutSeq {
 		if refCallout[c.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "callout", "variant": c.Variant, "title": c.Title, "md": c.MD, "citations": toAny(c.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": c.ID, "type": "callout", "variant": c.Variant, "title": c.Title, "md": c.MD, "citations": toAny(c.Citations)})
 	}
 	for _, c := range codeSeq {
 		if refCode[c.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "code", "language": c.Language, "filename": c.Filename, "code": c.Code})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": c.ID, "type": "code", "language": c.Language, "filename": c.Filename, "code": c.Code})
 	}
 	for _, f := range figureSeq {
 		if refFigure[f.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "figure", "asset": toAny(f.Asset), "caption": f.Caption, "citations": toAny(f.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": f.ID, "type": "figure", "asset": toAny(f.Asset), "caption": f.Caption, "citations": toAny(f.Citations)})
 	}
 	for _, v := range videoSeq {
 		if refVideo[v.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "video", "url": v.URL, "start_sec": v.StartSec, "caption": v.Caption})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": v.ID, "type": "video", "url": v.URL, "start_sec": v.StartSec, "caption": v.Caption})
 	}
 	for _, d := range diagramSeq {
 		if refDiagram[d.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "diagram", "kind": d.Kind, "source": d.Source, "caption": d.Caption, "citations": toAny(d.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": d.ID, "type": "diagram", "kind": d.Kind, "source": d.Source, "caption": d.Caption, "citations": toAny(d.Citations)})
 	}
 	for _, t := range tableSeq {
 		if refTable[t.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "table", "caption": t.Caption, "columns": toAny(t.Columns), "rows": toAny(t.Rows), "citations": toAny(t.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": t.ID, "type": "table", "caption": t.Caption, "columns": toAny(t.Columns), "rows": toAny(t.Rows), "citations": toAny(t.Citations)})
 	}
 	for _, q := range qcSeq {
 		if refQC[q.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "quick_check", "prompt_md": q.PromptMD, "answer_md": q.AnswerMD, "citations": toAny(q.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": q.ID, "type": "quick_check", "prompt_md": q.PromptMD, "answer_md": q.AnswerMD, "citations": toAny(q.Citations)})
 	}
 	for _, d := range dividerSeq {
 		if refDivider[d.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"type": "divider"})
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": d.ID, "type": "divider"})
 	}
 
 	return doc, dedupeStrings(errs)

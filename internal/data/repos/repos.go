@@ -56,6 +56,7 @@ type ChainPriorRepo = learning.ChainPriorRepo
 type UserCompletedUnitRepo = learning.UserCompletedUnitRepo
 type TeachingPatternRepo = learning.TeachingPatternRepo
 type LearningNodeDocRepo = learning.LearningNodeDocRepo
+type LearningNodeDocRevisionRepo = learning.LearningNodeDocRevisionRepo
 type LearningNodeFigureRepo = learning.LearningNodeFigureRepo
 type LearningNodeVideoRepo = learning.LearningNodeVideoRepo
 type LearningDocGenerationRunRepo = learning.LearningDocGenerationRunRepo
@@ -179,6 +180,9 @@ func NewTeachingPatternRepo(db *gorm.DB, baseLog *logger.Logger) TeachingPattern
 }
 func NewLearningNodeDocRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocRepo {
 	return learning.NewLearningNodeDocRepo(db, baseLog)
+}
+func NewLearningNodeDocRevisionRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocRevisionRepo {
+	return learning.NewLearningNodeDocRevisionRepo(db, baseLog)
 }
 func NewLearningNodeFigureRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeFigureRepo {
 	return learning.NewLearningNodeFigureRepo(db, baseLog)

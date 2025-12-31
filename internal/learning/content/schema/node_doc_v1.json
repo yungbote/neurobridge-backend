@@ -15,6 +15,7 @@
             "type": "string",
             "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "quick_check", "divider"]
           },
+          "id": { "type": "string" },
 
           "level": { "type": "integer" },
           "text": { "type": "string" },
@@ -80,6 +81,7 @@
         },
         "required": [
           "type",
+          "id",
           "level",
           "text",
           "md",

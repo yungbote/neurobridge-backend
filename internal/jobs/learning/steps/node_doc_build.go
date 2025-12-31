@@ -808,6 +808,9 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				if videoAsset != nil {
 					doc = ensureNodeDocHasVideo(doc, videoAsset)
 				}
+				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
+					doc = withIDs
+				}
 
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
@@ -1042,7 +1045,9 @@ func ensureNodeDocHasDiagram(doc content.NodeDocV1, allowedChunkIDs map[string]b
 		return doc
 	}
 
+	blockID := "auto_diagram_" + uuid.New().String()
 	block := map[string]any{
+		"id":      blockID,
 		"type":    "diagram",
 		"kind":    "svg",
 		"source":  svg,
@@ -1130,7 +1135,9 @@ func ensureNodeDocHasGeneratedFigure(doc content.NodeDocV1, figs []*mediaAssetCa
 		mime = "image/png"
 	}
 
+	blockID := "auto_figure_" + uuid.New().String()
 	block := map[string]any{
+		"id":   blockID,
 		"type": "figure",
 		"asset": map[string]any{
 			"url":              strings.TrimSpace(a.URL),
@@ -1177,7 +1184,9 @@ func ensureNodeDocHasVideo(doc content.NodeDocV1, videoAsset *mediaAssetCandidat
 			caption = "Supplementary video (from your materials)"
 		}
 	}
+	blockID := "auto_video_" + uuid.New().String()
 	block := map[string]any{
+		"id":        blockID,
 		"type":      "video",
 		"url":       strings.TrimSpace(videoAsset.URL),
 		"start_sec": startSec,

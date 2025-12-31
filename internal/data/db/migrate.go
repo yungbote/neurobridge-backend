@@ -51,6 +51,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.ActivityCitation{},
 		// Node docs + drills (canonical content + supplemental tools)
 		&types.LearningNodeDoc{},
+		&types.LearningNodeDocRevision{},
 		&types.LearningNodeFigure{},
 		&types.LearningNodeVideo{},
 		&types.LearningDocGenerationRun{},
@@ -291,6 +292,20 @@ func EnsureLearningIndexes(db *gorm.DB) error {
 		ON learning_node_doc (user_id, path_id, updated_at DESC);
 	`).Error; err != nil {
 		return fmt.Errorf("create idx_learning_node_doc_user_path_updated: %w", err)
+	}
+
+	// Node doc revisions: per-node history view.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_learning_node_doc_revision_node_created
+		ON learning_node_doc_revision (path_node_id, created_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_doc_revision_node_created: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_learning_node_doc_revision_doc_created
+		ON learning_node_doc_revision (doc_id, created_at DESC);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_learning_node_doc_revision_doc_created: %w", err)
 	}
 
 	// Drill cache: (user,node,kind,count,sources_hash) uniqueness.

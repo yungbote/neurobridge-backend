@@ -112,6 +112,7 @@ type UserCompletedUnit = products.UserCompletedUnit
 type TeachingPattern = products.TeachingPattern
 type ActivityVariantStat = products.ActivityVariantStat
 type LearningNodeDoc = products.LearningNodeDoc
+type LearningNodeDocRevision = products.LearningNodeDocRevision
 type LearningNodeFigure = products.LearningNodeFigure
 type LearningNodeVideo = products.LearningNodeVideo
 type LearningDocGenerationRun = products.LearningDocGenerationRun
