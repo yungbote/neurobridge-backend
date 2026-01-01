@@ -47,6 +47,8 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 			repos.DocGenerationRun,
 			repos.MaterialChunk,
 			repos.MaterialFile,
+			repos.MaterialAsset,
+			repos.UserLibraryIndex,
 			repos.Concept,
 			repos.ConceptEdge,
 			repos.JobRun,

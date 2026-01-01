@@ -39,6 +39,8 @@ type PathHandler struct {
 	genRuns          repos.LearningDocGenerationRunRepo
 	chunks           repos.MaterialChunkRepo
 	materialFiles    repos.MaterialFileRepo
+	materialAssets   repos.MaterialAssetRepo
+	userLibraryIndex repos.UserLibraryIndexRepo
 
 	concepts repos.ConceptRepo
 	edges    repos.ConceptEdgeRepo
@@ -62,6 +64,8 @@ func NewPathHandler(
 	genRuns repos.LearningDocGenerationRunRepo,
 	chunks repos.MaterialChunkRepo,
 	materialFiles repos.MaterialFileRepo,
+	materialAssets repos.MaterialAssetRepo,
+	userLibraryIndex repos.UserLibraryIndexRepo,
 	concepts repos.ConceptRepo,
 	edges repos.ConceptEdgeRepo,
 	jobs repos.JobRunRepo,
@@ -81,6 +85,8 @@ func NewPathHandler(
 		genRuns:          genRuns,
 		chunks:           chunks,
 		materialFiles:    materialFiles,
+		materialAssets:   materialAssets,
+		userLibraryIndex: userLibraryIndex,
 		concepts:         concepts,
 		edges:            edges,
 		jobs:             jobs,
@@ -146,6 +152,88 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 	}
 
 	response.RespondOK(c, gin.H{"path": out})
+}
+
+// GET /api/paths/:id/materials
+func (h *PathHandler) ListPathMaterials(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+	if h.materialFiles == nil || h.userLibraryIndex == nil {
+		response.RespondError(c, http.StatusInternalServerError, "material_repo_missing", nil)
+		return
+	}
+
+	pathID, err := uuid.Parse(c.Param("id"))
+	if err != nil || pathID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_path_id", err)
+		return
+	}
+
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
+	if err != nil {
+		h.log.Error("ListPathMaterials failed (load path)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+	if pathRow == nil || pathRow.UserID == nil || *pathRow.UserID != rd.UserID {
+		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
+		return
+	}
+
+	idxRow, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
+	if err != nil {
+		h.log.Error("ListPathMaterials failed (load library index)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_library_index_failed", err)
+		return
+	}
+	if idxRow == nil || idxRow.MaterialSetID == uuid.Nil {
+		response.RespondOK(c, gin.H{"files": []any{}, "assets": []any{}, "assets_by_file": gin.H{}})
+		return
+	}
+
+	files, err := h.materialFiles.GetByMaterialSetID(dbctx.Context{Ctx: c.Request.Context()}, idxRow.MaterialSetID)
+	if err != nil {
+		h.log.Error("ListPathMaterials failed (load files)", "error", err, "material_set_id", idxRow.MaterialSetID)
+		response.RespondError(c, http.StatusInternalServerError, "load_files_failed", err)
+		return
+	}
+
+	fileIDs := make([]uuid.UUID, 0, len(files))
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		fileIDs = append(fileIDs, f.ID)
+	}
+
+	assets := []*types.MaterialAsset{}
+	assetsByFile := map[string][]*types.MaterialAsset{}
+	if h.materialAssets != nil && len(fileIDs) > 0 {
+		rows, err := h.materialAssets.GetByMaterialFileIDs(dbctx.Context{Ctx: c.Request.Context()}, fileIDs)
+		if err != nil {
+			h.log.Error("ListPathMaterials failed (load assets)", "error", err, "material_set_id", idxRow.MaterialSetID)
+			response.RespondError(c, http.StatusInternalServerError, "load_assets_failed", err)
+			return
+		}
+		assets = rows
+		for _, a := range rows {
+			if a == nil || a.MaterialFileID == uuid.Nil {
+				continue
+			}
+			key := a.MaterialFileID.String()
+			assetsByFile[key] = append(assetsByFile[key], a)
+		}
+	}
+
+	response.RespondOK(c, gin.H{
+		"files":           files,
+		"assets":          assets,
+		"assets_by_file":  assetsByFile,
+		"material_set_id": idxRow.MaterialSetID.String(),
+	})
 }
 
 // GET /api/paths/:id/nodes
