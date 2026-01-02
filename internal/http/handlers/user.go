@@ -64,7 +64,7 @@ func (uh *UserHandler) ChangeName(c *gin.Context) {
 }
 
 // PATCH /user/theme
-// body: { "preferred_theme": "light" | "dark" | "system", "preferred_ui_theme": "classic" | "slate" | "dune" | "sage" | "aurora" }
+// body: { "preferred_theme": "light" | "dark" | "system", "preferred_ui_theme": "classic" | "slate" | "dune" | "sage" | "aurora" | "ink" | "linen" | "ember" | "harbor" | "moss" }
 func (uh *UserHandler) ChangeTheme(c *gin.Context) {
 	var req struct {
 		PreferredTheme   *string `json:"preferred_theme"`

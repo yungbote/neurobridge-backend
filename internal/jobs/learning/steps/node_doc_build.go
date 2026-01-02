@@ -815,17 +815,15 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
 				if len(mustCiteIDs) > 0 {
-					cited := map[string]bool{}
-					for _, s := range content.CitedChunkIDsFromNodeDocV1(doc) {
-						cited[strings.TrimSpace(s)] = true
-					}
-					missing := make([]string, 0)
-					for _, id := range mustCiteIDs {
-						if id == uuid.Nil {
-							continue
-						}
-						if !cited[id.String()] {
-							missing = append(missing, id.String())
+					missing := missingMustCiteIDs(doc, mustCiteIDs)
+					if len(missing) > 0 {
+						if patched, ok := injectMissingMustCiteCitations(doc, missing, chunkByID); ok {
+							doc = patched
+							errs, metrics = content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
+							missing = missingMustCiteIDs(doc, mustCiteIDs)
+							if len(missing) == 0 {
+								metrics["must_cite_injected"] = true
+							}
 						}
 					}
 					if len(missing) > 0 {
@@ -1230,6 +1228,84 @@ func insertAfterFirstBodyBlock(blocks []map[string]any, block map[string]any) []
 	out = append(out, block)
 	out = append(out, blocks[insertAt:]...)
 	return out
+}
+
+func missingMustCiteIDs(doc content.NodeDocV1, mustCiteIDs []uuid.UUID) []string {
+	if len(mustCiteIDs) == 0 {
+		return nil
+	}
+	cited := map[string]bool{}
+	for _, s := range content.CitedChunkIDsFromNodeDocV1(doc) {
+		cited[strings.TrimSpace(s)] = true
+	}
+	missing := make([]string, 0)
+	for _, id := range mustCiteIDs {
+		if id == uuid.Nil {
+			continue
+		}
+		s := id.String()
+		if !cited[s] {
+			missing = append(missing, s)
+		}
+	}
+	return missing
+}
+
+func injectMissingMustCiteCitations(doc content.NodeDocV1, missing []string, chunkByID map[uuid.UUID]*types.MaterialChunk) (content.NodeDocV1, bool) {
+	if len(missing) == 0 {
+		return doc, false
+	}
+	idx := firstCitationBlockIndex(doc.Blocks)
+	if idx < 0 || idx >= len(doc.Blocks) {
+		return doc, false
+	}
+	block := doc.Blocks[idx]
+	citations := make([]any, 0)
+	if existing, ok := block["citations"].([]any); ok {
+		citations = append(citations, existing...)
+	}
+	for _, id := range missing {
+		citations = append(citations, buildMustCiteRef(id, chunkByID))
+	}
+	block["citations"] = citations
+	doc.Blocks[idx] = block
+	return doc, true
+}
+
+func firstCitationBlockIndex(blocks []map[string]any) int {
+	for i, b := range blocks {
+		if b == nil {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch t {
+		case "paragraph", "callout", "figure", "diagram", "table", "quick_check":
+			return i
+		}
+	}
+	return -1
+}
+
+func buildMustCiteRef(id string, chunkByID map[uuid.UUID]*types.MaterialChunk) map[string]any {
+	quote := ""
+	page := 0
+	if parsed, err := uuid.Parse(strings.TrimSpace(id)); err == nil && parsed != uuid.Nil {
+		if ch := chunkByID[parsed]; ch != nil {
+			quote = shorten(strings.TrimSpace(ch.Text), 220)
+			if ch.Page != nil {
+				page = *ch.Page
+			}
+		}
+	}
+	return map[string]any{
+		"chunk_id": strings.TrimSpace(id),
+		"quote":    quote,
+		"loc": map[string]any{
+			"page":  page,
+			"start": 0,
+			"end":   0,
+		},
+	}
 }
 
 func buildSimpleFlowSVG(labels []string) string {

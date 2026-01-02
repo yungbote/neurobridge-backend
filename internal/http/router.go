@@ -78,6 +78,9 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Materials
 		if cfg.MaterialHandler != nil {
 			protected.POST("/material-sets/upload", cfg.MaterialHandler.UploadMaterials)
+			protected.GET("/material-files", cfg.MaterialHandler.ListUserMaterialFiles)
+			protected.GET("/material-files/:id/view", cfg.MaterialHandler.ViewMaterialFile)
+			protected.GET("/material-assets/:id/view", cfg.MaterialHandler.ViewMaterialAsset)
 		}
 
 		// Chat
@@ -99,6 +102,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		if cfg.PathHandler != nil {
 			protected.GET("/paths", cfg.PathHandler.ListUserPaths)
 			protected.GET("/paths/:id", cfg.PathHandler.GetPath)
+			protected.POST("/paths/:id/cover", cfg.PathHandler.GeneratePathCover)
 			protected.GET("/paths/:id/materials", cfg.PathHandler.ListPathMaterials)
 			protected.GET("/paths/:id/nodes", cfg.PathHandler.ListPathNodes)
 			protected.GET("/paths/:id/concept-graph", cfg.PathHandler.GetConceptGraph)

@@ -44,6 +44,11 @@ var validUIThemes = map[string]struct{}{
 	"dune":    {},
 	"sage":    {},
 	"aurora":  {},
+	"ink":     {},
+	"linen":   {},
+	"ember":   {},
+	"harbor":  {},
+	"moss":    {},
 }
 
 func normalizeThemeInput(value string) string {

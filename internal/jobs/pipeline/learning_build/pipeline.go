@@ -142,6 +142,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		if ctx == nil || p == nil || p.db == nil || p.path == nil || pathID == uuid.Nil {
 			return nil
 		}
+		p.maybeGeneratePathCover(ctx, pathID)
 		if err := p.db.WithContext(ctx.Ctx).Transaction(func(tx *gorm.DB) error {
 			return p.path.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: tx}, pathID, map[string]interface{}{
 				"status": "ready",
@@ -474,6 +475,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 	}
 
 	// All stages succeeded.
+	p.maybeGeneratePathCover(jc, pathID)
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
 		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
 			"status": "ready",
@@ -531,6 +533,27 @@ func (p *Pipeline) failAndCompensateWithStage(jc *jobrt.Context, st *state, saga
 	_ = p.saga.Compensate(jc.Ctx, sagaID)
 	jc.Fail(jobStage, err)
 	return nil
+}
+
+func (p *Pipeline) maybeGeneratePathCover(jc *jobrt.Context, pathID uuid.UUID) {
+	if p == nil || jc == nil || pathID == uuid.Nil || p.inline == nil {
+		return
+	}
+	if p.inline.Path == nil || p.inline.PathNodes == nil || p.inline.AI == nil {
+		return
+	}
+	_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
+		DB:        p.db,
+		Log:       p.log,
+		Path:      p.inline.Path,
+		PathNodes: p.inline.PathNodes,
+		Assets:    p.inline.Assets,
+		AI:        p.inline.AI,
+		Bucket:    p.inline.Bucket,
+	}, steps.PathCoverRenderInput{PathID: pathID})
+	if err != nil && p.log != nil {
+		p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
+	}
 }
 
 func (p *Pipeline) enqueueChatPathIndex(jc *jobrt.Context, pathID uuid.UUID) {

@@ -33,10 +33,19 @@ type BucketService interface {
 	DeleteFile(dbc dbctx.Context, category BucketCategory, key string) error
 	ReplaceFile(dbc dbctx.Context, category BucketCategory, key string, newFile io.Reader) error
 	DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error)
+	OpenRangeReader(ctx context.Context, category BucketCategory, key string, offset, length int64) (io.ReadCloser, error)
+	GetObjectAttrs(ctx context.Context, category BucketCategory, key string) (*ObjectAttrs, error)
 	CopyObject(ctx context.Context, category BucketCategory, srcKey, dstKey string) error
 	ListKeys(ctx context.Context, category BucketCategory, prefix string) ([]string, error)
 	DeletePrefix(ctx context.Context, category BucketCategory, prefix string) error
 	GetPublicURL(category BucketCategory, key string) string
+}
+
+type ObjectAttrs struct {
+	Size        int64
+	ContentType string
+	Updated     time.Time
+	ETag        string
 }
 
 type bucketService struct {
@@ -268,4 +277,37 @@ func (bs *bucketService) DownloadFile(ctx context.Context, category BucketCatego
 	}
 
 	return &readCloserWithCancel{ReadCloser: r, cancel: cancel}, nil
+}
+
+func (bs *bucketService) OpenRangeReader(ctx context.Context, category BucketCategory, key string, offset, length int64) (io.ReadCloser, error) {
+	cfg, err := bs.getBucketConfig(category)
+	if err != nil {
+		return nil, err
+	}
+	ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	r, err := bs.storageClient.Bucket(cfg.name).Object(key).NewRangeReader(ctx2, offset, length)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to open GCS range reader: %w", err)
+	}
+	return &readCloserWithCancel{ReadCloser: r, cancel: cancel}, nil
+}
+
+func (bs *bucketService) GetObjectAttrs(ctx context.Context, category BucketCategory, key string) (*ObjectAttrs, error) {
+	cfg, err := bs.getBucketConfig(category)
+	if err != nil {
+		return nil, err
+	}
+	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	attrs, err := bs.storageClient.Bucket(cfg.name).Object(key).Attrs(ctx2)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch GCS object attrs: %w", err)
+	}
+	return &ObjectAttrs{
+		Size:        attrs.Size,
+		ContentType: attrs.ContentType,
+		Updated:     attrs.Updated,
+		ETag:        attrs.Etag,
+	}, nil
 }

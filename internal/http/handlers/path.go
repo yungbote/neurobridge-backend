@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,10 +16,12 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
@@ -45,11 +49,13 @@ type PathHandler struct {
 	concepts repos.ConceptRepo
 	edges    repos.ConceptEdgeRepo
 
+	assets repos.AssetRepo
 	jobs   repos.JobRunRepo
 	jobSvc services.JobService
 
 	userProfile repos.UserProfileVectorRepo
 	ai          openai.Client
+	bucket      gcp.BucketService
 }
 
 func NewPathHandler(
@@ -68,10 +74,12 @@ func NewPathHandler(
 	userLibraryIndex repos.UserLibraryIndexRepo,
 	concepts repos.ConceptRepo,
 	edges repos.ConceptEdgeRepo,
+	assets repos.AssetRepo,
 	jobs repos.JobRunRepo,
 	jobSvc services.JobService,
 	userProfile repos.UserProfileVectorRepo,
 	ai openai.Client,
+	bucket gcp.BucketService,
 ) *PathHandler {
 	return &PathHandler{
 		log:              log.With("handler", "PathHandler"),
@@ -89,10 +97,12 @@ func NewPathHandler(
 		userLibraryIndex: userLibraryIndex,
 		concepts:         concepts,
 		edges:            edges,
+		assets:           assets,
 		jobs:             jobs,
 		jobSvc:           jobSvc,
 		userProfile:      userProfile,
 		ai:               ai,
+		bucket:           bucket,
 	}
 }
 
@@ -152,6 +162,74 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 	}
 
 	response.RespondOK(c, gin.H{"path": out})
+}
+
+type pathCoverRequest struct {
+	Force bool `json:"force"`
+}
+
+// POST /api/paths/:id/cover
+func (h *PathHandler) GeneratePathCover(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	pathID, err := uuid.Parse(c.Param("id"))
+	if err != nil || pathID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_path_id", err)
+		return
+	}
+
+	row, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
+	if err != nil {
+		h.log.Error("GeneratePathCover failed (load path)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+	if row == nil || row.UserID == nil || *row.UserID != rd.UserID {
+		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
+		return
+	}
+
+	req := pathCoverRequest{}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.RespondError(c, http.StatusBadRequest, "invalid_body", err)
+		return
+	}
+
+	force := req.Force
+	if !force {
+		q := strings.TrimSpace(c.Query("force"))
+		if q != "" {
+			q = strings.ToLower(q)
+			force = q == "1" || q == "true" || q == "yes"
+		}
+	}
+
+	out, err := steps.PathCoverRender(c.Request.Context(), steps.PathCoverRenderDeps{
+		Log:       h.log,
+		Path:      h.path,
+		PathNodes: h.pathNodes,
+		Assets:    h.assets,
+		AI:        h.ai,
+		Bucket:    h.bucket,
+	}, steps.PathCoverRenderInput{PathID: pathID, Force: force})
+	if err != nil {
+		h.log.Error("GeneratePathCover failed (render)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "generate_path_cover_failed", err)
+		return
+	}
+
+	updated, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
+	if err != nil {
+		h.log.Error("GeneratePathCover failed (reload path)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+
+	response.RespondOK(c, gin.H{"path": updated, "cover": out})
 }
 
 // GET /api/paths/:id/materials
