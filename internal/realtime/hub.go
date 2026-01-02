@@ -18,6 +18,7 @@ type SSEEvent string
 const (
 	SSEEventUserNameChanged   SSEEvent = "UserNameChanged"
 	SSEEventUserAvatarUpdated SSEEvent = "UserAvatarChanged"
+	SSEEventUserThemeChanged  SSEEvent = "UserThemeChanged"
 
 	SSEEventJobCreated   SSEEvent = "JobCreated"
 	SSEEventJobProgress  SSEEvent = "JobProgress"

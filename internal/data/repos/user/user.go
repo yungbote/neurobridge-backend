@@ -16,6 +16,7 @@ type UserRepo interface {
 	EmailExists(dbc dbctx.Context, userEmail string) (bool, error)
 	UpdateName(dbc dbctx.Context, userID uuid.UUID, firstName, lastName string) error
 	UpdatePreferredTheme(dbc dbctx.Context, userID uuid.UUID, preferredTheme string) error
+	UpdatePreferredUITheme(dbc dbctx.Context, userID uuid.UUID, preferredUITheme string) error
 	UpdateAvatarColor(dbc dbctx.Context, userID uuid.UUID, avatarColor string) error
 	UpdateAvatarFields(dbc dbctx.Context, userID uuid.UUID, bucketKey, avatarURL string) error
 }
@@ -127,6 +128,17 @@ func (ur *userRepo) UpdatePreferredTheme(dbc dbctx.Context, userID uuid.UUID, pr
 		Model(&types.User{}).
 		Where("id = ?", userID).
 		Update("preferred_theme", preferredTheme).Error
+}
+
+func (ur *userRepo) UpdatePreferredUITheme(dbc dbctx.Context, userID uuid.UUID, preferredUITheme string) error {
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = ur.db
+	}
+	return transaction.WithContext(dbc.Ctx).
+		Model(&types.User{}).
+		Where("id = ?", userID).
+		Update("preferred_ui_theme", preferredUITheme).Error
 }
 
 func (ur *userRepo) UpdateAvatarColor(dbc dbctx.Context, userID uuid.UUID, avatarColor string) error {

@@ -18,7 +18,8 @@ type User struct {
 	AvatarURL       string    `gorm:"column:avatar_url" json:"avatar_url"`
 	AvatarColor     string    `gorm:"column:avatar_color" json:"avatar_color"`
 
-	PreferredTheme string `gorm:"column:preferred_theme" json:"preferred_theme"`
+	PreferredTheme   string `gorm:"column:preferred_theme" json:"preferred_theme"`
+	PreferredUITheme string `gorm:"column:preferred_ui_theme" json:"preferred_ui_theme"`
 
 	CreatedAt time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"not null;default:now()" json:"updated_at"`

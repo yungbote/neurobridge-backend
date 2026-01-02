@@ -64,26 +64,30 @@ func (uh *UserHandler) ChangeName(c *gin.Context) {
 }
 
 // PATCH /user/theme
-// body: { "preferred_theme": "light" | "dark" | "system" }
+// body: { "preferred_theme": "light" | "dark" | "system", "preferred_ui_theme": "classic" | "slate" | "dune" | "sage" | "aurora" }
 func (uh *UserHandler) ChangeTheme(c *gin.Context) {
 	var req struct {
-		PreferredTheme string `json:"preferred_theme"`
+		PreferredTheme   *string `json:"preferred_theme"`
+		PreferredUITheme *string `json:"preferred_ui_theme"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": err.Error()})
 		return
 	}
+	if req.PreferredTheme == nil && req.PreferredUITheme == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": "no theme changes provided"})
+		return
+	}
 
-	u, err := uh.userService.UpdatePreferredTheme(c.Request.Context(), req.PreferredTheme)
+	u, err := uh.userService.UpdateThemePreferences(c.Request.Context(), req.PreferredTheme, req.PreferredUITheme)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change_theme_failed", "detail": err.Error()})
 		return
 	}
 
-	// NOTE: realtime hub constants currently don't include a theme event.
-	// Using a string event is fine; just make sure frontend matches it.
-	uh.broadcastUser(u.ID.String(), realtime.SSEEvent("UserThemeChanged"), gin.H{
-		"preferred_theme": u.PreferredTheme,
+	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserThemeChanged, gin.H{
+		"preferred_theme":    u.PreferredTheme,
+		"preferred_ui_theme": u.PreferredUITheme,
 	})
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})

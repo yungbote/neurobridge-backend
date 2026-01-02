@@ -19,6 +19,7 @@ type UserService interface {
 
 	// NEW
 	UpdatePreferredTheme(ctx context.Context, preferredTheme string) (*types.User, error)
+	UpdateThemePreferences(ctx context.Context, preferredTheme *string, preferredUITheme *string) (*types.User, error)
 	UpdateName(ctx context.Context, firstName, lastName string) (*types.User, error)
 	UpdateAvatarColor(ctx context.Context, avatarColor string) (*types.User, error)
 	UploadAvatarImage(ctx context.Context, raw []byte) (*types.User, error)
@@ -29,6 +30,24 @@ type userService struct {
 	log           *logger.Logger
 	userRepo      repos.UserRepo
 	avatarService AvatarService
+}
+
+var validThemePreferences = map[string]struct{}{
+	"light":  {},
+	"dark":   {},
+	"system": {},
+}
+
+var validUIThemes = map[string]struct{}{
+	"classic": {},
+	"slate":   {},
+	"dune":    {},
+	"sage":    {},
+	"aurora":  {},
+}
+
+func normalizeThemeInput(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func NewUserService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, avatarService AvatarService) UserService {
@@ -84,21 +103,49 @@ func (us *userService) GetMe(dbc dbctx.Context) (*types.User, error) {
 }
 
 func (us *userService) UpdatePreferredTheme(ctx context.Context, preferredTheme string) (*types.User, error) {
+	return us.UpdateThemePreferences(ctx, &preferredTheme, nil)
+}
+
+func (us *userService) UpdateThemePreferences(ctx context.Context, preferredTheme *string, preferredUITheme *string) (*types.User, error) {
 	rd := ctxutil.GetRequestData(ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	preferredTheme = strings.ToLower(strings.TrimSpace(preferredTheme))
-	if preferredTheme != "light" && preferredTheme != "dark" && preferredTheme != "system" {
-		return nil, fmt.Errorf("invalid preferred_theme")
+	if preferredTheme == nil && preferredUITheme == nil {
+		return nil, fmt.Errorf("no theme updates provided")
+	}
+
+	var normalizedTheme *string
+	if preferredTheme != nil {
+		normalized := normalizeThemeInput(*preferredTheme)
+		if _, ok := validThemePreferences[normalized]; !ok {
+			return nil, fmt.Errorf("invalid preferred_theme")
+		}
+		normalizedTheme = &normalized
+	}
+
+	var normalizedUITheme *string
+	if preferredUITheme != nil {
+		normalized := normalizeThemeInput(*preferredUITheme)
+		if _, ok := validUIThemes[normalized]; !ok {
+			return nil, fmt.Errorf("invalid preferred_ui_theme")
+		}
+		normalizedUITheme = &normalized
 	}
 
 	var out *types.User
 	if err := us.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		if err := us.userRepo.UpdatePreferredTheme(dbc, rd.UserID, preferredTheme); err != nil {
-			return err
+		if normalizedTheme != nil {
+			if err := us.userRepo.UpdatePreferredTheme(dbc, rd.UserID, *normalizedTheme); err != nil {
+				return err
+			}
+		}
+		if normalizedUITheme != nil {
+			if err := us.userRepo.UpdatePreferredUITheme(dbc, rd.UserID, *normalizedUITheme); err != nil {
+				return err
+			}
 		}
 		u, err := us.userRepo.GetByIDs(dbc, []uuid.UUID{rd.UserID})
 		if err != nil || len(u) == 0 {
