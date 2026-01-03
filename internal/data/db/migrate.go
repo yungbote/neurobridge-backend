@@ -2,6 +2,8 @@ package db
 
 import (
 	"fmt"
+	"strings"
+
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"gorm.io/gorm"
 )
@@ -56,6 +58,13 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.LearningNodeVideo{},
 		&types.LearningDocGenerationRun{},
 		&types.LearningDrillInstance{},
+		// Library taxonomy (user-specific evolving DAG)
+		&types.LibraryTaxonomyNode{},
+		&types.LibraryTaxonomyEdge{},
+		&types.LibraryTaxonomyMembership{},
+		&types.LibraryTaxonomyState{},
+		&types.LibraryTaxonomySnapshot{},
+		&types.LibraryPathEmbedding{},
 		// Path (the non-legacy top-level object)
 		&types.Path{},
 		&types.PathNode{},
@@ -336,6 +345,40 @@ func EnsureLearningIndexes(db *gorm.DB) error {
 		ON learning_doc_generation_run (path_node_id, created_at DESC);
 	`).Error; err != nil {
 		return fmt.Errorf("create idx_learning_doc_generation_run_node_created: %w", err)
+	}
+
+	// Library taxonomy nodes: ON CONFLICT ("user_id","facet","key") requires a matching unique index.
+	//
+	// Older installs may have an incorrect unique index that only covered `key`, which prevents
+	// multi-user taxonomy and breaks upserts.
+	type pgIndexDef struct {
+		Indexdef string `gorm:"column:indexdef"`
+	}
+	var idx pgIndexDef
+	if err := db.Raw(`
+		SELECT indexdef
+		FROM pg_indexes
+		WHERE tablename = 'library_taxonomy_node' AND indexname = 'idx_library_taxonomy_node_user_facet_key'
+		LIMIT 1;
+	`).Scan(&idx).Error; err != nil {
+		return fmt.Errorf("load idx_library_taxonomy_node_user_facet_key: %w", err)
+	}
+	if idx.Indexdef != "" {
+		compact := strings.ReplaceAll(strings.ToLower(idx.Indexdef), " ", "")
+		if !strings.Contains(compact, "(user_id,facet,key)") {
+			if err := db.Exec(`ALTER TABLE library_taxonomy_node DROP CONSTRAINT IF EXISTS idx_library_taxonomy_node_user_facet_key;`).Error; err != nil {
+				return fmt.Errorf("drop library_taxonomy_node constraint idx_library_taxonomy_node_user_facet_key: %w", err)
+			}
+			if err := db.Exec(`DROP INDEX IF EXISTS idx_library_taxonomy_node_user_facet_key;`).Error; err != nil {
+				return fmt.Errorf("drop index idx_library_taxonomy_node_user_facet_key: %w", err)
+			}
+		}
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_library_taxonomy_node_user_facet_key
+		ON library_taxonomy_node (user_id, facet, key);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_library_taxonomy_node_user_facet_key: %w", err)
 	}
 
 	return nil

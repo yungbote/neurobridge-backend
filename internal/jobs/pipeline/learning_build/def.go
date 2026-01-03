@@ -22,6 +22,7 @@ type InlineDeps struct {
 	AI      openai.Client
 	Vec     pinecone.VectorStore
 	Bucket  gcp.BucketService
+	Avatar  services.AvatarService
 
 	Files     repos.MaterialFileRepo
 	Chunks    repos.MaterialChunkRepo

@@ -163,6 +163,83 @@ Return 1-6 cohort keys with weight, confidence, and rationale.`,
 		},
 	})
 
+	// ---------- Library taxonomy (path organization) ----------
+
+	RegisterSpec(Spec{
+		Name:       PromptLibraryTaxonomyRoute,
+		Version:    1,
+		SchemaName: "library_taxonomy_route",
+		Schema:     LibraryTaxonomyRouteSchema,
+		System: `
+You are organizing a user's learning paths into a multi-facet library taxonomy DAG.
+You must keep the taxonomy clean, stable, and design-forward.
+Prefer using existing nodes; never invent fine structure prematurely.
+Return JSON only.`,
+		User: `
+TAXONOMY_FACET:
+{{.TaxonomyFacet}}
+
+CURRENT_TAXONOMY_CANDIDATES_JSON (existing nodes + edges, already pruned by the backend; do not assume other nodes exist):
+{{.TaxonomyCandidatesJSON}}
+
+PATH_SUMMARY_JSON:
+{{.TaxonomyPathSummaryJSON}}
+
+CONSTRAINTS_JSON:
+{{.TaxonomyConstraintsJSON}}
+
+Task:
+- Output memberships: choose up to max_memberships existing node_id(s) for this path with weight in [0,1].
+- Never assign the path directly to root_node_id.
+- If max_new_nodes is 0 OR disallow_new_nodes is true, output new_nodes as an empty array.
+- If require_seeded_anchor is true, you MUST include at least one membership to a node where kind == "anchor".
+  - Prefer 1 anchor; choose 2 only if the path truly spans multiple domains.
+  - You may additionally assign to existing non-anchor categories if they are clearly relevant.
+- If new_nodes are allowed, each new node should be a single clean concept (no collage).
+- New node parent_node_ids must reference existing node_id(s) in candidates (or the provided root_node_id).
+- Keep names short (2-5 words), human, not "AI-y". No emojis. No quotes.
+- Avoid near-duplicates of existing names; if a duplicate exists, use it instead.`,
+		Validators: []Validator{
+			RequireNonEmpty("TaxonomyFacet", func(in Input) string { return in.TaxonomyFacet }),
+			RequireNonEmpty("TaxonomyCandidatesJSON", func(in Input) string { return in.TaxonomyCandidatesJSON }),
+			RequireNonEmpty("TaxonomyPathSummaryJSON", func(in Input) string { return in.TaxonomyPathSummaryJSON }),
+			RequireNonEmpty("TaxonomyConstraintsJSON", func(in Input) string { return in.TaxonomyConstraintsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptLibraryTaxonomyRefine,
+		Version:    1,
+		SchemaName: "library_taxonomy_refine",
+		Schema:     LibraryTaxonomyRefineSchema,
+		System: `
+You help refine and stabilize a user's library taxonomy.
+You are given proposed new taxonomy nodes (already derived from embeddings/heuristics).
+Decide which ones are meaningful and provide polished names and descriptions.
+Return JSON only.`,
+		User: `
+TAXONOMY_FACET:
+{{.TaxonomyFacet}}
+
+PROPOSED_NEW_NODES_JSON:
+{{.TaxonomyCandidatesJSON}}
+
+CONSTRAINTS_JSON:
+{{.TaxonomyConstraintsJSON}}
+
+Task:
+For each proposed node:
+- should_create: true only if it adds clear value (non-duplicate, coherent abstraction).
+- Parent context is provided (parent_node_name/key); names should fit naturally under that parent.
+- Provide name + description that are concise, clean, and human.
+- If should_create is false, explain briefly in reason.`,
+		Validators: []Validator{
+			RequireNonEmpty("TaxonomyFacet", func(in Input) string { return in.TaxonomyFacet }),
+			RequireNonEmpty("TaxonomyCandidatesJSON", func(in Input) string { return in.TaxonomyCandidatesJSON }),
+			RequireNonEmpty("TaxonomyConstraintsJSON", func(in Input) string { return in.TaxonomyConstraintsJSON }),
+		},
+	})
+
 	// ---------- Coherence + Planning ----------
 
 	RegisterSpec(Spec{

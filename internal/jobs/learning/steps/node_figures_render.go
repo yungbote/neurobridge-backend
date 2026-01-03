@@ -138,6 +138,15 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, nil
 	}
 
+	maxFigures := envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1)
+	if maxFigures == 0 {
+		deps.Log.Warn("NODE_FIGURES_RENDER_LIMIT=0; skipping node_figures_render")
+		return out, nil
+	}
+	if maxFigures > 0 && len(work) > maxFigures {
+		work = work[:maxFigures]
+	}
+
 	maxConc := envInt("NODE_FIGURES_RENDER_CONCURRENCY", 2)
 	if maxConc < 1 {
 		maxConc = 1

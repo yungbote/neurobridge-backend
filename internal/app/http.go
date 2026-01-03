@@ -20,6 +20,7 @@ type Handlers struct {
 	Realtime *httpH.RealtimeHandler
 	Material *httpH.MaterialHandler
 	Chat     *httpH.ChatHandler
+	Library  *httpH.LibraryHandler
 	Path     *httpH.PathHandler
 	Activity *httpH.ActivityHandler
 	Event    *httpH.EventHandler
@@ -42,7 +43,17 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 			repos.MaterialAsset,
 			repos.UserLibraryIndex,
 		),
-		Chat:     httpH.NewChatHandler(services.Chat),
+		Chat: httpH.NewChatHandler(services.Chat),
+		Library: httpH.NewLibraryHandler(
+			log,
+			services.JobService,
+			repos.JobRun,
+			repos.LibraryTaxonomyNode,
+			repos.LibraryTaxonomyEdge,
+			repos.LibraryTaxonomyMember,
+			repos.LibraryTaxonomyState,
+			repos.LibraryTaxonomySnapshot,
+		),
 		Path: httpH.NewPathHandler(
 			log,
 			repos.Path,
@@ -62,6 +73,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 			repos.Asset,
 			repos.JobRun,
 			services.JobService,
+			services.Avatar,
 			repos.UserProfileVector,
 			clients.OpenaiClient,
 			clients.GcpBucket,
@@ -81,6 +93,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		RealtimeHandler: handlers.Realtime,
 		MaterialHandler: handlers.Material,
 		ChatHandler:     handlers.Chat,
+		LibraryHandler:  handlers.Library,
 		PathHandler:     handlers.Path,
 		ActivityHandler: handlers.Activity,
 		EventHandler:    handlers.Event,

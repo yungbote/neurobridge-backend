@@ -8,6 +8,8 @@ const (
 	PromptConceptInventory   PromptName = "concept_inventory"
 	PromptConceptEdges       PromptName = "concept_edges"
 	PromptConceptClusters    PromptName = "concept_clusters"
+	PromptLibraryTaxonomyRoute PromptName = "library_taxonomy_route"
+	PromptLibraryTaxonomyRefine PromptName = "library_taxonomy_refine"
 
 	// Personalization
 	PromptUserProfileDoc           PromptName = "user_profile_doc"

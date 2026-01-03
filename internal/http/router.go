@@ -14,6 +14,7 @@ type RouterConfig struct {
 
 	MaterialHandler *httpH.MaterialHandler
 	ChatHandler     *httpH.ChatHandler
+	LibraryHandler  *httpH.LibraryHandler
 	PathHandler     *httpH.PathHandler
 	ActivityHandler *httpH.ActivityHandler
 	EventHandler    *httpH.EventHandler
@@ -98,10 +99,16 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/chat/turns/:id", cfg.ChatHandler.GetTurn)
 		}
 
+		// Library (taxonomy snapshot)
+		if cfg.LibraryHandler != nil {
+			protected.GET("/library/taxonomy", cfg.LibraryHandler.GetTaxonomySnapshot)
+		}
+
 		// Paths (Path-centric learning)
 		if cfg.PathHandler != nil {
 			protected.GET("/paths", cfg.PathHandler.ListUserPaths)
 			protected.GET("/paths/:id", cfg.PathHandler.GetPath)
+			protected.POST("/paths/:id/view", cfg.PathHandler.ViewPath)
 			protected.POST("/paths/:id/cover", cfg.PathHandler.GeneratePathCover)
 			protected.GET("/paths/:id/materials", cfg.PathHandler.ListPathMaterials)
 			protected.GET("/paths/:id/nodes", cfg.PathHandler.ListPathNodes)

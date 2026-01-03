@@ -37,9 +37,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Log:       p.log,
 		Path:      p.path,
 		PathNodes: p.nodes,
-		Assets:    p.assets,
-		AI:        p.ai,
-		Bucket:    p.bucket,
+		Avatar:    p.avatar,
 	}, steps.NodeAvatarRenderInput{PathID: pathID})
 	if err != nil {
 		if p.log != nil {

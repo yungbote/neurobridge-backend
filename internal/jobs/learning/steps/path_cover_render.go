@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,26 +13,20 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type PathCoverRenderDeps struct {
-	DB  *gorm.DB
 	Log *logger.Logger
 
 	Path      repos.PathRepo
 	PathNodes repos.PathNodeRepo
-	Assets    repos.AssetRepo
 
-	AI     openai.Client
-	Bucket gcp.BucketService
+	Avatar services.AvatarService
 }
 
 type PathCoverRenderInput struct {
@@ -54,23 +47,17 @@ const pathCoverPromptVersion = "path_cover_v1@1"
 
 func PathCoverRender(ctx context.Context, deps PathCoverRenderDeps, in PathCoverRenderInput) (PathCoverRenderOutput, error) {
 	out := PathCoverRenderOutput{PathID: in.PathID}
-	if deps.Path == nil || deps.PathNodes == nil || deps.Assets == nil || deps.AI == nil {
+	if deps.Path == nil || deps.PathNodes == nil || deps.Avatar == nil {
 		return out, fmt.Errorf("path_cover_render: missing deps")
 	}
 	if in.PathID == uuid.Nil {
 		return out, fmt.Errorf("path_cover_render: missing path_id")
 	}
 
-	// Feature gate: require image model + bucket configured; otherwise no-op.
+	// Feature gate: require image model configured; otherwise no-op.
 	if strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL")) == "" {
 		if deps.Log != nil {
 			deps.Log.Warn("OPENAI_IMAGE_MODEL missing; skipping path_cover_render")
-		}
-		return out, nil
-	}
-	if deps.Bucket == nil {
-		if deps.Log != nil {
-			deps.Log.Warn("Bucket service missing; skipping path_cover_render")
 		}
 		return out, nil
 	}
@@ -83,9 +70,8 @@ func PathCoverRender(ctx context.Context, deps PathCoverRenderDeps, in PathCover
 		return out, fmt.Errorf("path_cover_render: path not found")
 	}
 
-	meta := parseJSONMap(pathRow.Metadata)
 	if !in.Force {
-		if existingURL := coverURLFromMeta(meta); existingURL != "" {
+		if existingURL := strings.TrimSpace(pathRow.AvatarURL); existingURL != "" && strings.TrimSpace(pathRow.AvatarSquareURL) != "" {
 			out.Existing = true
 			out.URL = existingURL
 			return out, nil
@@ -124,84 +110,22 @@ func PathCoverRender(ctx context.Context, deps PathCoverRenderDeps, in PathCover
 	out.InputsHash = inputsHash
 
 	prompt := buildPathCoverPrompt(title, desc, topics)
-	img, err := deps.AI.GenerateImage(ctx, prompt)
-	if err != nil {
+	if err := deps.Avatar.CreateAndUploadPathAvatar(dbctx.Context{Ctx: ctx}, pathRow, prompt); err != nil {
 		return out, err
 	}
-	if len(img.Bytes) == 0 {
-		return out, fmt.Errorf("path_cover_render: image_generate_empty")
-	}
-
-	now := time.Now().UTC()
-	hashSuffix := shortHash(inputsHash)
-	storageKey := fmt.Sprintf("generated/path_avatars/%s/%s_%s.png",
-		pathRow.ID.String(),
-		now.Format("20060102T150405Z"),
-		hashSuffix,
-	)
-	if err := deps.Bucket.UploadFile(dbctx.Context{Ctx: ctx}, gcp.BucketCategoryAvatar, storageKey, bytes.NewReader(img.Bytes)); err != nil {
-		return out, err
-	}
-
-	publicURL := deps.Bucket.GetPublicURL(gcp.BucketCategoryAvatar, storageKey)
-	mime := strings.TrimSpace(img.MimeType)
-	if mime == "" {
-		mime = "image/png"
-	}
-
-	var assetID *uuid.UUID
-	if deps.Assets != nil {
-		aid := uuid.New()
-		meta := map[string]any{
-			"asset_kind":     "path_cover",
-			"prompt_hash":    inputsHash,
-			"prompt_version": pathCoverPromptVersion,
-			"revised_prompt": strings.TrimSpace(img.RevisedPrompt),
-			"path_title":     title,
-			"topics":         topics,
-		}
-		b, _ := json.Marshal(meta)
-		a := &types.Asset{
-			ID:         aid,
-			Kind:       "image",
-			StorageKey: storageKey,
-			URL:        publicURL,
-			OwnerType:  "path",
-			OwnerID:    pathRow.ID,
-			Metadata:   datatypes.JSON(b),
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		if _, err := deps.Assets.Create(dbctx.Context{Ctx: ctx}, []*types.Asset{a}); err == nil {
-			assetID = &aid
-		}
-	}
-
-	coverMeta := map[string]any{
-		"url":            publicURL,
-		"storage_key":    storageKey,
-		"mime_type":      mime,
-		"prompt_hash":    inputsHash,
-		"prompt_version": pathCoverPromptVersion,
-		"revised_prompt": strings.TrimSpace(img.RevisedPrompt),
-		"generated_at":   now.Format(time.RFC3339Nano),
-	}
-	if assetID != nil {
-		coverMeta["asset_id"] = assetID.String()
-	}
-	meta["cover_image"] = coverMeta
-	meta["cover_image_url"] = publicURL
-	meta["updated_at"] = now.Format(time.RFC3339Nano)
 
 	if err := deps.Path.UpdateFields(dbctx.Context{Ctx: ctx}, pathRow.ID, map[string]interface{}{
-		"metadata": datatypes.JSON(mustJSON(meta)),
+		"avatar_bucket_key":        strings.TrimSpace(pathRow.AvatarBucketKey),
+		"avatar_url":               strings.TrimSpace(pathRow.AvatarURL),
+		"avatar_square_bucket_key": strings.TrimSpace(pathRow.AvatarSquareBucketKey),
+		"avatar_square_url":        strings.TrimSpace(pathRow.AvatarSquareURL),
+		"updated_at":               time.Now().UTC(),
 	}); err != nil {
 		return out, err
 	}
 
 	out.Generated = true
-	out.URL = publicURL
-	out.AssetID = assetID
+	out.URL = strings.TrimSpace(pathRow.AvatarURL)
 	return out, nil
 }
 
@@ -231,15 +155,17 @@ func buildPathCoverPrompt(title, desc string, topics []string) string {
 		desc = "A curated learning journey."
 	}
 	var b strings.Builder
-	b.WriteString("Design a premium, modern cover image for a learning path.\n")
+	b.WriteString("Create a clean, human-designed avatar illustration for a learning path.\n")
+	b.WriteString("Goal: premium, design-forward, polished (not 'AI-looking').\n")
 	b.WriteString("Title: " + strings.TrimSpace(title) + "\n")
 	b.WriteString("Description: " + strings.TrimSpace(desc) + "\n")
 	if len(topics) > 0 {
-		b.WriteString("Key topics: " + strings.Join(topics, ", ") + "\n")
+		b.WriteString("Themes for inspiration (pick ONE and compress into a single motif): " + strings.Join(topics, ", ") + "\n")
 	}
-	b.WriteString("Style: elegant, minimal editorial illustration; subtle gradients; balanced composition; soft depth; refined palette.")
-	b.WriteString(" No text, no logos, no watermarks, no UI, no borders, avoid identifiable people/faces.")
-	b.WriteString(" Format: square 1:1 with a centered focal point.")
+	b.WriteString("Composition: one clear focal symbol (max 1–2 elements); no collage; lots of negative space; readable at small sizes.\n")
+	b.WriteString("Style: crisp vector-like shapes or clean 3D-lite forms; subtle gradients; consistent lighting; refined, cohesive palette; simple background.\n")
+	b.WriteString("Avoid: clutter, multiple unrelated icons, busy scenes, photorealism, noisy textures, warped geometry, artifacts, text/letters/numbers, logos, watermarks, UI, borders, identifiable people/faces.\n")
+	b.WriteString("Format: square 1:1, centered composition.")
 	return b.String()
 }
 

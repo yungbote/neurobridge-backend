@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -627,8 +628,11 @@ func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string,
 	if err != nil {
 		return nil, "", err
 	}
-	// Some endpoints may require auth; include it but safe for signed URLs too.
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	// Only attach OpenAI auth when downloading from OpenAI-controlled hosts.
+	// Signed blob URLs (e.g., from image generations) can break if we send an unrelated Authorization header.
+	if shouldAttachOpenAIAuth(c.baseURL, url) {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -643,6 +647,34 @@ func (c *client) downloadBytes(ctx context.Context, url string) ([]byte, string,
 		return nil, "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	return raw, strings.TrimSpace(resp.Header.Get("Content-Type")), nil
+}
+
+func shouldAttachOpenAIAuth(baseURL, rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return false
+	}
+
+	// Prefer the configured base URL host (supports proxies and Azure-style base URLs).
+	if bu, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && bu != nil {
+		baseHost := strings.ToLower(strings.TrimSpace(bu.Hostname()))
+		if baseHost != "" && host == baseHost {
+			return true
+		}
+	}
+
+	// Fallback allowlist for known OpenAI domains.
+	if host == "openai.com" || strings.HasSuffix(host, ".openai.com") {
+		return true
+	}
+	if host == "openai.azure.com" || strings.HasSuffix(host, ".openai.azure.com") {
+		return true
+	}
+	return false
 }
 
 func (c *client) doMultipart(ctx context.Context, method, path string, payload []byte, contentType string, out any) error {

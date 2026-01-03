@@ -635,11 +635,34 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 
 			// ---- Learner-facing doc with validation + retry ----
 			reqs := content.DefaultNodeDocRequirements()
+			diagramLimit := envIntAllowZero("NODE_DOC_DIAGRAMS_LIMIT", -1)
+			if diagramLimit < 0 {
+				diagramLimit = -1
+			}
+			diagramsDisabled := diagramLimit == 0
+			if diagramsDisabled {
+				reqs.MinDiagrams = 0
+			}
 			requireGeneratedFigure := len(figAssetsByNode[w.Node.ID]) > 0
 			// Best-effort: if a video is available in the allowed assets list, include it (we can auto-inject on fallback).
 			videoAsset := firstVideoAssetFromAssetsJSON(assetsJSON)
 
-			system := `
+			mediaRequirementLine := "- Must include at least one of: figure | diagram | table"
+			generatedFigureRequirementLine := `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any diagrams/tables you include).`
+			citationsRequirementLine := "- Every paragraph/callout/figure/diagram/table/quick_check must have citations (non-empty)"
+			outlineDiagramLine := "- Include at least one diagram early."
+			diagramHardRule := "- Include at least one diagram block (SVG preferred)."
+			diagramPrefRule := `- Prefer diagram.kind="svg" (simple, readable SVG).`
+			if diagramsDisabled {
+				mediaRequirementLine = "- Must include at least one of: figure | table"
+				generatedFigureRequirementLine = `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any tables you include).`
+				citationsRequirementLine = "- Every paragraph/callout/figure/table/quick_check must have citations (non-empty)"
+				outlineDiagramLine = "- Do not include any diagram blocks."
+				diagramHardRule = "- Do not include any diagram blocks."
+				diagramPrefRule = ""
+			}
+
+			system := fmt.Sprintf(`
 MODE: STATIC_UNIT_DOC
 
 You write dense, structured learning unit docs in a "docs page" style.
@@ -666,14 +689,14 @@ Hard rules:
 - Quick checks must be short-answer or true/false (no multiple choice).
 - Heading levels must be 2, 3, or 4 (never use 1).
 - Include a tip callout titled exactly "Worked example".
-- Include at least one diagram block (SVG preferred).
+%s
 - If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
 - Every paragraph/callout/figure/diagram/table/quick_check MUST include non-empty citations.
 - Citations MUST reference ONLY the provided chunk_ids.
 - Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
 - Use markdown in md fields; do not include raw HTML.
 - If using a figure/video URL, it MUST come from AVAILABLE_MEDIA_ASSETS_JSON.
-- Prefer diagram.kind="svg" (simple, readable SVG).`
+%s`, diagramHardRule, diagramPrefRule)
 
 			var lastErrors []string
 			for attempt := 1; attempt <= 3; attempt++ {
@@ -721,9 +744,9 @@ REQUIREMENTS:
 - Minimum headings (level 2-4): %d
 - Minimum diagram blocks: %d
 - Must include a tip callout titled exactly "Worked example"
-- Must include at least one of: figure | diagram | table
-- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any diagrams/tables you include).
-- Every paragraph/callout/figure/diagram/table/quick_check must have citations (non-empty)
+%s
+%s
+%s
 
 PATH_STYLE_JSON (optional; style only, no warnings):
 %s
@@ -735,7 +758,7 @@ SUGGESTED_SECTION_OUTLINE (internal guidance; learner-facing doc should NOT ment
 - Include a "Worked example" as a tip callout (title exactly "Worked example").
 - End with a level-2 heading that lists common misconceptions + corrections.
 - Spread >= %d quick checks throughout (not all at the end).
-- Include at least one diagram early.
+%s
 %s
 
 GROUNDING_EXCERPTS (chunk_id lines):
@@ -746,7 +769,7 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional; ONLY use listed URLs):
 %s
 
 Output:
-Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, pathStyleJSON, reqs.MinQuickChecks, suggestedVideoLine(videoAsset), excerpts, assetsJSON, generatedFigures) + feedback
+Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, pathStyleJSON, reqs.MinQuickChecks, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, assetsJSON, generatedFigures) + feedback
 
 				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
 				latency := int(time.Since(start).Milliseconds())
@@ -801,12 +824,19 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 				}
 
 				// Best-effort auto-injection to avoid wasting retries on simple omissions.
-				doc = ensureNodeDocHasDiagram(doc, allowedChunkIDs, chunkIDs)
+				if !diagramsDisabled {
+					doc = ensureNodeDocHasDiagram(doc, allowedChunkIDs, chunkIDs)
+				}
 				if requireGeneratedFigure {
 					doc = ensureNodeDocHasGeneratedFigure(doc, figAssetsByNode[w.Node.ID], allowedChunkIDs, chunkIDs)
 				}
 				if videoAsset != nil {
 					doc = ensureNodeDocHasVideo(doc, videoAsset)
+				}
+				if diagramsDisabled {
+					doc = removeNodeDocBlockType(doc, "diagram")
+				} else if diagramLimit > 0 {
+					doc = capNodeDocBlockType(doc, "diagram", diagramLimit)
 				}
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
 					doc = withIDs
@@ -991,6 +1021,48 @@ func suggestedVideoLine(videoAsset *mediaAssetCandidate) string {
 		return ""
 	}
 	return "- If a relevant video is available in AVAILABLE_MEDIA_ASSETS_JSON, include 1 short video block and caption what to watch for."
+}
+
+func removeNodeDocBlockType(doc content.NodeDocV1, blockType string) content.NodeDocV1 {
+	blockType = strings.TrimSpace(blockType)
+	if blockType == "" || len(doc.Blocks) == 0 {
+		return doc
+	}
+	out := make([]map[string]any, 0, len(doc.Blocks))
+	for _, b := range doc.Blocks {
+		if strings.EqualFold(strings.TrimSpace(stringFromAny(b["type"])), blockType) {
+			continue
+		}
+		out = append(out, b)
+	}
+	doc.Blocks = out
+	return doc
+}
+
+func capNodeDocBlockType(doc content.NodeDocV1, blockType string, max int) content.NodeDocV1 {
+	if max < 0 {
+		return doc
+	}
+	if max == 0 {
+		return removeNodeDocBlockType(doc, blockType)
+	}
+	blockType = strings.TrimSpace(blockType)
+	if blockType == "" || len(doc.Blocks) == 0 {
+		return doc
+	}
+	kept := 0
+	out := make([]map[string]any, 0, len(doc.Blocks))
+	for _, b := range doc.Blocks {
+		if strings.EqualFold(strings.TrimSpace(stringFromAny(b["type"])), blockType) {
+			kept++
+			if kept > max {
+				continue
+			}
+		}
+		out = append(out, b)
+	}
+	doc.Blocks = out
+	return doc
 }
 
 func ensureNodeDocHasDiagram(doc content.NodeDocV1, allowedChunkIDs map[string]bool, fallbackChunkIDs []uuid.UUID) content.NodeDocV1 {

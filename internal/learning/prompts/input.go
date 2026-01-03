@@ -49,4 +49,10 @@ type Input struct {
 	ChainPlansJSON string
 	ActivitiesJSON string
 	VariantsJSON   string
+
+	// Library taxonomy (path organization)
+	TaxonomyFacet             string
+	TaxonomyCandidatesJSON    string
+	TaxonomyPathSummaryJSON   string
+	TaxonomyConstraintsJSON   string
 }

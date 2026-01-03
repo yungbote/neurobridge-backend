@@ -117,6 +117,12 @@ type LearningNodeFigure = products.LearningNodeFigure
 type LearningNodeVideo = products.LearningNodeVideo
 type LearningDocGenerationRun = products.LearningDocGenerationRun
 type LearningDrillInstance = products.LearningDrillInstance
+type LibraryTaxonomyNode = products.LibraryTaxonomyNode
+type LibraryTaxonomyEdge = products.LibraryTaxonomyEdge
+type LibraryTaxonomyMembership = products.LibraryTaxonomyMembership
+type LibraryTaxonomyState = products.LibraryTaxonomyState
+type LibraryTaxonomySnapshot = products.LibraryTaxonomySnapshot
+type LibraryPathEmbedding = products.LibraryPathEmbedding
 
 type ChatThread = chat.ChatThread
 type ChatMessage = chat.ChatMessage

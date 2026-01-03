@@ -20,6 +20,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_refine"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_route"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_avatar_render"
@@ -83,7 +85,7 @@ type Services struct {
 func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *realtime.SSEHub, clients Clients) (Services, error) {
 	log.Info("Wiring services...")
 
-	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket)
+	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket, clients.OpenaiClient)
 	if err != nil {
 		return Services{}, fmt.Errorf("init avatar service: %w", err)
 	}
@@ -282,14 +284,50 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
+	libraryTaxonomyRoute := library_taxonomy_route.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		jobService,
+		repos.JobRun,
+		repos.Path,
+		repos.PathNode,
+		repos.ConceptCluster,
+		repos.LibraryTaxonomyNode,
+		repos.LibraryTaxonomyEdge,
+		repos.LibraryTaxonomyMember,
+		repos.LibraryTaxonomyState,
+		repos.LibraryTaxonomySnapshot,
+		repos.LibraryPathEmbedding,
+	)
+	if err := jobRegistry.Register(libraryTaxonomyRoute); err != nil {
+		return Services{}, err
+	}
+
+	libraryTaxonomyRefine := library_taxonomy_refine.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		repos.Path,
+		repos.PathNode,
+		repos.ConceptCluster,
+		repos.LibraryTaxonomyNode,
+		repos.LibraryTaxonomyEdge,
+		repos.LibraryTaxonomyMember,
+		repos.LibraryTaxonomyState,
+		repos.LibraryTaxonomySnapshot,
+		repos.LibraryPathEmbedding,
+	)
+	if err := jobRegistry.Register(libraryTaxonomyRefine); err != nil {
+		return Services{}, err
+	}
+
 	pathCoverRender := path_cover_render.New(
 		db,
 		log,
 		repos.Path,
 		repos.PathNode,
-		repos.Asset,
-		clients.OpenaiClient,
-		clients.GcpBucket,
+		avatarService,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(pathCoverRender); err != nil {
@@ -301,9 +339,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		repos.Path,
 		repos.PathNode,
-		repos.Asset,
-		clients.OpenaiClient,
-		clients.GcpBucket,
+		avatarService,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(nodeAvatarRender); err != nil {
@@ -506,6 +542,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			AI:      clients.OpenaiClient,
 			Vec:     clients.PineconeVectorStore,
 			Bucket:  clients.GcpBucket,
+			Avatar:  avatarService,
 
 			Files:     repos.MaterialFile,
 			Chunks:    repos.MaterialChunk,

@@ -61,6 +61,12 @@ type LearningNodeFigureRepo = learning.LearningNodeFigureRepo
 type LearningNodeVideoRepo = learning.LearningNodeVideoRepo
 type LearningDocGenerationRunRepo = learning.LearningDocGenerationRunRepo
 type LearningDrillInstanceRepo = learning.LearningDrillInstanceRepo
+type LibraryTaxonomyNodeRepo = learning.LibraryTaxonomyNodeRepo
+type LibraryTaxonomyEdgeRepo = learning.LibraryTaxonomyEdgeRepo
+type LibraryTaxonomyMembershipRepo = learning.LibraryTaxonomyMembershipRepo
+type LibraryTaxonomyStateRepo = learning.LibraryTaxonomyStateRepo
+type LibraryTaxonomySnapshotRepo = learning.LibraryTaxonomySnapshotRepo
+type LibraryPathEmbeddingRepo = learning.LibraryPathEmbeddingRepo
 
 type JobRunRepo = jobs.JobRunRepo
 type SagaRunRepo = jobs.SagaRunRepo
@@ -195,6 +201,24 @@ func NewLearningDocGenerationRunRepo(db *gorm.DB, baseLog *logger.Logger) Learni
 }
 func NewLearningDrillInstanceRepo(db *gorm.DB, baseLog *logger.Logger) LearningDrillInstanceRepo {
 	return learning.NewLearningDrillInstanceRepo(db, baseLog)
+}
+func NewLibraryTaxonomyNodeRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomyNodeRepo {
+	return learning.NewLibraryTaxonomyNodeRepo(db, baseLog)
+}
+func NewLibraryTaxonomyEdgeRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomyEdgeRepo {
+	return learning.NewLibraryTaxonomyEdgeRepo(db, baseLog)
+}
+func NewLibraryTaxonomyMembershipRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomyMembershipRepo {
+	return learning.NewLibraryTaxonomyMembershipRepo(db, baseLog)
+}
+func NewLibraryTaxonomyStateRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomyStateRepo {
+	return learning.NewLibraryTaxonomyStateRepo(db, baseLog)
+}
+func NewLibraryTaxonomySnapshotRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomySnapshotRepo {
+	return learning.NewLibraryTaxonomySnapshotRepo(db, baseLog)
+}
+func NewLibraryPathEmbeddingRepo(db *gorm.DB, baseLog *logger.Logger) LibraryPathEmbeddingRepo {
+	return learning.NewLibraryPathEmbeddingRepo(db, baseLog)
 }
 
 func NewJobRunRepo(db *gorm.DB, baseLog *logger.Logger) JobRunRepo {

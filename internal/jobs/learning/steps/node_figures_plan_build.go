@@ -85,6 +85,10 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 		deps.Log.Warn("OPENAI_IMAGE_MODEL missing; skipping node_figures_plan_build")
 		return out, nil
 	}
+	if envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1) == 0 {
+		deps.Log.Warn("NODE_FIGURES_RENDER_LIMIT=0; skipping node_figures_plan_build")
+		return out, nil
+	}
 
 	// Safety: don't break legacy installs where migrations haven't created the new tables yet.
 	if !deps.DB.Migrator().HasTable(&types.LearningNodeFigure{}) {

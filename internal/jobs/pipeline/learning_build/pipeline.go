@@ -157,6 +157,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			_ = p.saga.MarkSagaStatus(ctx.Ctx, sagaID, services.SagaStatusSucceeded)
 		}
 		p.enqueueChatPathIndex(ctx, pathID)
+		p.enqueueLibraryTaxonomyRoute(ctx, pathID)
 		return nil
 	}
 
@@ -316,13 +317,10 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			}, steps.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "path_cover_render":
 			_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
-				DB:        p.db,
 				Log:       p.log,
 				Path:      p.inline.Path,
 				PathNodes: p.inline.PathNodes,
-				Assets:    p.inline.Assets,
-				AI:        p.inline.AI,
-				Bucket:    p.inline.Bucket,
+				Avatar:    p.inline.Avatar,
 			}, steps.PathCoverRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {
 				p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
@@ -333,9 +331,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				Log:       p.log,
 				Path:      p.inline.Path,
 				PathNodes: p.inline.PathNodes,
-				Assets:    p.inline.Assets,
-				AI:        p.inline.AI,
-				Bucket:    p.inline.Bucket,
+				Avatar:    p.inline.Avatar,
 			}, steps.NodeAvatarRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {
 				p.log.Warn("node_avatar_render failed", "error", err, "path_id", pathID.String())
@@ -519,6 +515,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
 	p.enqueueChatPathIndex(jc, pathID)
+	p.enqueueLibraryTaxonomyRoute(jc, pathID)
 
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),
@@ -568,17 +565,14 @@ func (p *Pipeline) maybeGeneratePathCover(jc *jobrt.Context, pathID uuid.UUID) {
 	if p == nil || jc == nil || pathID == uuid.Nil || p.inline == nil {
 		return
 	}
-	if p.inline.Path == nil || p.inline.PathNodes == nil || p.inline.AI == nil {
+	if p.inline.Path == nil || p.inline.PathNodes == nil || p.inline.Avatar == nil {
 		return
 	}
 	_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
-		DB:        p.db,
 		Log:       p.log,
 		Path:      p.inline.Path,
 		PathNodes: p.inline.PathNodes,
-		Assets:    p.inline.Assets,
-		AI:        p.inline.AI,
-		Bucket:    p.inline.Bucket,
+		Avatar:    p.inline.Avatar,
 	}, steps.PathCoverRenderInput{PathID: pathID})
 	if err != nil && p.log != nil {
 		p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
@@ -593,6 +587,17 @@ func (p *Pipeline) enqueueChatPathIndex(jc *jobrt.Context, pathID uuid.UUID) {
 	entityID := pathID
 	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "chat_path_index", "path", &entityID, payload); err != nil {
 		p.log.Warn("Failed to enqueue chat_path_index", "error", err, "path_id", pathID.String())
+	}
+}
+
+func (p *Pipeline) enqueueLibraryTaxonomyRoute(jc *jobrt.Context, pathID uuid.UUID) {
+	if p == nil || p.jobs == nil || jc == nil || jc.Job == nil || pathID == uuid.Nil {
+		return
+	}
+	payload := map[string]any{"path_id": pathID.String()}
+	entityID := pathID
+	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "library_taxonomy_route", "path", &entityID, payload); err != nil {
+		p.log.Warn("Failed to enqueue library_taxonomy_route", "error", err, "path_id", pathID.String())
 	}
 }
 

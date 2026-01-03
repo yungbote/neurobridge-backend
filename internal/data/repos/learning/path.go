@@ -23,6 +23,7 @@ type PathRepo interface {
 
 	Update(dbc dbctx.Context, row *types.Path) error
 	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
+	RecordView(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID, dedupeWindow time.Duration) (viewCount int, lastViewedAt *time.Time, ok bool, err error)
 
 	SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error
 	SoftDeleteByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) error
@@ -168,6 +169,47 @@ func (r *pathRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[str
 		Model(&types.Path{}).
 		Where("id = ?", id).
 		Updates(updates).Error
+}
+
+type pathViewUpdateRow struct {
+	ViewCount    int        `gorm:"column:view_count"`
+	LastViewedAt *time.Time `gorm:"column:last_viewed_at"`
+}
+
+func (r *pathRepo) RecordView(dbc dbctx.Context, userID uuid.UUID, pathID uuid.UUID, dedupeWindow time.Duration) (int, *time.Time, bool, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	if userID == uuid.Nil || pathID == uuid.Nil {
+		return 0, nil, false, nil
+	}
+
+	now := time.Now().UTC()
+	if dedupeWindow < 0 {
+		dedupeWindow = 0
+	}
+	threshold := now.Add(-dedupeWindow)
+
+	var out pathViewUpdateRow
+	res := t.WithContext(dbc.Ctx).Raw(
+		`
+UPDATE path
+SET
+  view_count = view_count + CASE WHEN last_viewed_at IS NULL OR last_viewed_at < ? THEN 1 ELSE 0 END,
+  last_viewed_at = ?
+WHERE id = ? AND user_id = ?
+RETURNING view_count, last_viewed_at
+`,
+		threshold, now, pathID, userID,
+	).Scan(&out)
+	if res.Error != nil {
+		return 0, nil, false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return 0, nil, false, nil
+	}
+	return out.ViewCount, out.LastViewedAt, true, nil
 }
 
 func (r *pathRepo) SoftDeleteByIDs(dbc dbctx.Context, ids []uuid.UUID) error {

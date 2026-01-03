@@ -48,6 +48,12 @@ type Repos struct {
 	TeachingPattern         repos.TeachingPatternRepo
 	UserCompletedUnit       repos.UserCompletedUnitRepo
 	UserLibraryIndex        repos.UserLibraryIndexRepo
+	LibraryTaxonomyNode     repos.LibraryTaxonomyNodeRepo
+	LibraryTaxonomyEdge     repos.LibraryTaxonomyEdgeRepo
+	LibraryTaxonomyMember   repos.LibraryTaxonomyMembershipRepo
+	LibraryTaxonomyState    repos.LibraryTaxonomyStateRepo
+	LibraryTaxonomySnapshot repos.LibraryTaxonomySnapshotRepo
+	LibraryPathEmbedding    repos.LibraryPathEmbeddingRepo
 	LearningNodeDoc         repos.LearningNodeDocRepo
 	LearningNodeDocRevision repos.LearningNodeDocRevisionRepo
 	LearningNodeFigure      repos.LearningNodeFigureRepo
@@ -110,6 +116,12 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		TeachingPattern:         repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:       repos.NewUserCompletedUnitRepo(db, log),
 		UserLibraryIndex:        repos.NewUserLibraryIndexRepo(db, log),
+		LibraryTaxonomyNode:     repos.NewLibraryTaxonomyNodeRepo(db, log),
+		LibraryTaxonomyEdge:     repos.NewLibraryTaxonomyEdgeRepo(db, log),
+		LibraryTaxonomyMember:   repos.NewLibraryTaxonomyMembershipRepo(db, log),
+		LibraryTaxonomyState:    repos.NewLibraryTaxonomyStateRepo(db, log),
+		LibraryTaxonomySnapshot: repos.NewLibraryTaxonomySnapshotRepo(db, log),
+		LibraryPathEmbedding:    repos.NewLibraryPathEmbeddingRepo(db, log),
 		LearningNodeDoc:         repos.NewLearningNodeDocRepo(db, log),
 		LearningNodeDocRevision: repos.NewLearningNodeDocRevisionRepo(db, log),
 		LearningNodeFigure:      repos.NewLearningNodeFigureRepo(db, log),

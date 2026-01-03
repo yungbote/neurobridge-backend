@@ -34,13 +34,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	out, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
-		DB:        p.db,
 		Log:       p.log,
 		Path:      p.path,
 		PathNodes: p.nodes,
-		Assets:    p.assets,
-		AI:        p.ai,
-		Bucket:    p.bucket,
+		Avatar:    p.avatar,
 	}, steps.PathCoverRenderInput{PathID: pathID})
 	if err != nil {
 		if p.log != nil {

@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/golang/freetype/truetype"
 	"github.com/google/uuid"
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
@@ -32,6 +34,9 @@ type AvatarService interface {
 	CreateAndUploadUserAvatar(dbc dbctx.Context, user *types.User) error
 	CreateAndUploadUserAvatarFromImage(dbc dbctx.Context, user *types.User, raw []byte) error
 	GenerateUserAvatar(dbc dbctx.Context, user *types.User) (bytes.Buffer, error)
+
+	CreateAndUploadPathAvatar(dbc dbctx.Context, path *types.Path, prompt string) error
+	CreateAndUploadPathNodeAvatar(dbc dbctx.Context, node *types.PathNode, prompt string) error
 }
 
 type avatarService struct {
@@ -39,6 +44,7 @@ type avatarService struct {
 	log           *logger.Logger
 	userRepo      repos.UserRepo
 	bucketService gcp.BucketService
+	ai            openai.Client
 
 	bgColors   []color.NRGBA
 	colorByHex map[string]color.NRGBA
@@ -47,10 +53,14 @@ type avatarService struct {
 	fontFace font.Face
 }
 
-func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, bucketService gcp.BucketService) (AvatarService, error) {
+func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, bucketService gcp.BucketService, ai openai.Client) (AvatarService, error) {
 	serviceLog := log.With("service", "AvatarService")
 
 	rand.Seed(time.Now().UnixNano())
+
+	if ai == nil {
+		return nil, fmt.Errorf("OpenAI client required")
+	}
 
 	colorsJSONPath := os.Getenv("AVATAR_COLORS_JSON_PATH")
 	if strings.TrimSpace(colorsJSONPath) == "" {
@@ -90,6 +100,7 @@ func NewAvatarService(db *gorm.DB, log *logger.Logger, userRepo repos.UserRepo, 
 		log:           serviceLog,
 		userRepo:      userRepo,
 		bucketService: bucketService,
+		ai:            ai,
 		bgColors:      bgColors,
 		colorByHex:    colorByHex,
 		colorHexes:    colorHexes,
@@ -201,15 +212,167 @@ func (as *avatarService) CreateAndUploadUserAvatarFromImage(dbc dbctx.Context, u
 	return nil
 }
 
-func processUploadedAvatar(raw []byte, size int) (bytes.Buffer, error) {
-	var out bytes.Buffer
-
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return out, fmt.Errorf("decode image: %w", err)
+func (as *avatarService) CreateAndUploadPathAvatar(dbc dbctx.Context, path *types.Path, prompt string) error {
+	if path == nil || path.ID == uuid.Nil {
+		return fmt.Errorf("path required")
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return fmt.Errorf("prompt required")
+	}
+	if as == nil || as.ai == nil || as.bucketService == nil {
+		return fmt.Errorf("avatar service not configured")
 	}
 
-	// Center-crop to square
+	ctx := dbc.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	img, err := as.ai.GenerateImage(ctx, prompt)
+	if err != nil {
+		return fmt.Errorf("generate path avatar: %w", err)
+	}
+	if len(img.Bytes) == 0 {
+		return fmt.Errorf("generate path avatar: empty image")
+	}
+
+	square, err := cropAndResizeSquare(img.Bytes, 512)
+	if err != nil {
+		return fmt.Errorf("process path avatar: %w", err)
+	}
+
+	squarePNG, err := encodeSquarePNG(square, 512)
+	if err != nil {
+		return fmt.Errorf("process path avatar (square): %w", err)
+	}
+	circlePNG, err := encodeCirclePNG(square, 512)
+	if err != nil {
+		return fmt.Errorf("process path avatar (circle): %w", err)
+	}
+
+	oldCircleKey := strings.TrimSpace(path.AvatarBucketKey)
+	oldSquareKey := strings.TrimSpace(path.AvatarSquareBucketKey)
+
+	ts := time.Now().UnixNano()
+	newCircleKey := fmt.Sprintf("path_avatars/%s/%d.png", path.ID.String(), ts)
+	newSquareKey := fmt.Sprintf("path_avatars/%s/%d_square.png", path.ID.String(), ts)
+
+	if err := as.bucketService.UploadFile(dbc, gcp.BucketCategoryAvatar, newSquareKey, bytes.NewReader(squarePNG.Bytes())); err != nil {
+		return fmt.Errorf("upload path avatar (square): %w", err)
+	}
+	if err := as.bucketService.UploadFile(dbc, gcp.BucketCategoryAvatar, newCircleKey, bytes.NewReader(circlePNG.Bytes())); err != nil {
+		_ = as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, newSquareKey)
+		return fmt.Errorf("upload path avatar (circle): %w", err)
+	}
+
+	path.AvatarBucketKey = newCircleKey
+	path.AvatarURL = as.bucketService.GetPublicURL(gcp.BucketCategoryAvatar, newCircleKey)
+	path.AvatarSquareBucketKey = newSquareKey
+	path.AvatarSquareURL = as.bucketService.GetPublicURL(gcp.BucketCategoryAvatar, newSquareKey)
+
+	if oldCircleKey != "" && oldCircleKey != newCircleKey {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldCircleKey); err != nil {
+			as.log.Warn("failed to delete old path avatar (ignored)", "oldKey", oldCircleKey, "error", err)
+		}
+	}
+	if oldSquareKey != "" && oldSquareKey != newSquareKey {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldSquareKey); err != nil {
+			as.log.Warn("failed to delete old path avatar square (ignored)", "oldKey", oldSquareKey, "error", err)
+		}
+	}
+
+	return nil
+}
+
+func (as *avatarService) CreateAndUploadPathNodeAvatar(dbc dbctx.Context, node *types.PathNode, prompt string) error {
+	if node == nil || node.ID == uuid.Nil || node.PathID == uuid.Nil {
+		return fmt.Errorf("path node required")
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return fmt.Errorf("prompt required")
+	}
+	if as == nil || as.ai == nil || as.bucketService == nil {
+		return fmt.Errorf("avatar service not configured")
+	}
+
+	ctx := dbc.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	img, err := as.ai.GenerateImage(ctx, prompt)
+	if err != nil {
+		return fmt.Errorf("generate unit avatar: %w", err)
+	}
+	if len(img.Bytes) == 0 {
+		return fmt.Errorf("generate unit avatar: empty image")
+	}
+
+	square, err := cropAndResizeSquare(img.Bytes, 512)
+	if err != nil {
+		return fmt.Errorf("process unit avatar: %w", err)
+	}
+
+	squarePNG, err := encodeSquarePNG(square, 512)
+	if err != nil {
+		return fmt.Errorf("process unit avatar (square): %w", err)
+	}
+	circlePNG, err := encodeCirclePNG(square, 512)
+	if err != nil {
+		return fmt.Errorf("process unit avatar (circle): %w", err)
+	}
+
+	oldCircleKey := strings.TrimSpace(node.AvatarBucketKey)
+	oldSquareKey := strings.TrimSpace(node.AvatarSquareBucketKey)
+
+	ts := time.Now().UnixNano()
+	newCircleKey := fmt.Sprintf("unit_avatars/%s/%s/%d.png", node.PathID.String(), node.ID.String(), ts)
+	newSquareKey := fmt.Sprintf("unit_avatars/%s/%s/%d_square.png", node.PathID.String(), node.ID.String(), ts)
+
+	if err := as.bucketService.UploadFile(dbc, gcp.BucketCategoryAvatar, newSquareKey, bytes.NewReader(squarePNG.Bytes())); err != nil {
+		return fmt.Errorf("upload unit avatar (square): %w", err)
+	}
+	if err := as.bucketService.UploadFile(dbc, gcp.BucketCategoryAvatar, newCircleKey, bytes.NewReader(circlePNG.Bytes())); err != nil {
+		_ = as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, newSquareKey)
+		return fmt.Errorf("upload unit avatar (circle): %w", err)
+	}
+
+	node.AvatarBucketKey = newCircleKey
+	node.AvatarURL = as.bucketService.GetPublicURL(gcp.BucketCategoryAvatar, newCircleKey)
+	node.AvatarSquareBucketKey = newSquareKey
+	node.AvatarSquareURL = as.bucketService.GetPublicURL(gcp.BucketCategoryAvatar, newSquareKey)
+
+	if oldCircleKey != "" && oldCircleKey != newCircleKey {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldCircleKey); err != nil {
+			as.log.Warn("failed to delete old unit avatar (ignored)", "oldKey", oldCircleKey, "error", err)
+		}
+	}
+	if oldSquareKey != "" && oldSquareKey != newSquareKey {
+		if err := as.bucketService.DeleteFile(dbctx.Context{Ctx: dbc.Ctx}, gcp.BucketCategoryAvatar, oldSquareKey); err != nil {
+			as.log.Warn("failed to delete old unit avatar square (ignored)", "oldKey", oldSquareKey, "error", err)
+		}
+	}
+
+	return nil
+}
+
+func processUploadedAvatar(raw []byte, size int) (bytes.Buffer, error) {
+	square, err := cropAndResizeSquare(raw, size)
+	if err != nil {
+		return bytes.Buffer{}, err
+	}
+	return encodeCirclePNG(square, size)
+}
+
+func cropAndResizeSquare(raw []byte, size int) (*image.RGBA, error) {
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode image: %w", err)
+	}
+
+	// Center-crop to square.
 	b := img.Bounds()
 	w := b.Dx()
 	h := b.Dy()
@@ -224,20 +387,31 @@ func processUploadedAvatar(raw []byte, size int) (bytes.Buffer, error) {
 	cropped := image.NewRGBA(cropRect)
 	draw.Draw(cropped, cropRect, img, image.Point{X: x0, Y: y0}, draw.Src)
 
-	// Resize to NxN
+	// Resize to NxN.
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), cropped, cropped.Bounds(), draw.Over, nil)
+	return dst, nil
+}
 
-	// Circle clip with gg
+func encodeCirclePNG(img image.Image, size int) (bytes.Buffer, error) {
+	var out bytes.Buffer
 	dc := gg.NewContext(size, size)
 	dc.DrawCircle(float64(size)/2, float64(size)/2, float64(size)/2)
 	dc.Clip()
-	dc.DrawImage(dst, 0, 0)
-
+	dc.DrawImage(img, 0, 0)
 	if err := dc.EncodePNG(&out); err != nil {
 		return out, fmt.Errorf("encode png: %w", err)
 	}
+	return out, nil
+}
 
+func encodeSquarePNG(img image.Image, size int) (bytes.Buffer, error) {
+	var out bytes.Buffer
+	dc := gg.NewContext(size, size)
+	dc.DrawImage(img, 0, 0)
+	if err := dc.EncodePNG(&out); err != nil {
+		return out, fmt.Errorf("encode png: %w", err)
+	}
 	return out, nil
 }
 
