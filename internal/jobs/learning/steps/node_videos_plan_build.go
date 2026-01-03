@@ -85,6 +85,10 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		deps.Log.Warn("OPENAI_VIDEO_MODEL missing; skipping node_videos_plan_build")
 		return out, nil
 	}
+	if envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1) == 0 {
+		deps.Log.Warn("NODE_VIDEOS_RENDER_LIMIT=0; skipping node_videos_plan_build")
+		return out, nil
+	}
 
 	// Safety: don't break legacy installs where migrations haven't created the new tables yet.
 	if !deps.DB.Migrator().HasTable(&types.LearningNodeVideo{}) {

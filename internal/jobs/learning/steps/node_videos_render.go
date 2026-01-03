@@ -138,6 +138,15 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, nil
 	}
 
+	maxVideos := envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1)
+	if maxVideos == 0 {
+		deps.Log.Warn("NODE_VIDEOS_RENDER_LIMIT=0; skipping node_videos_render")
+		return out, nil
+	}
+	if maxVideos > 0 && len(work) > maxVideos {
+		work = work[:maxVideos]
+	}
+
 	maxConc := envInt("NODE_VIDEOS_RENDER_CONCURRENCY", 1)
 	if maxConc < 1 {
 		maxConc = 1

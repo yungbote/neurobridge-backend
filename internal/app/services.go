@@ -22,12 +22,14 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_avatar_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_patch"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_render"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_cover_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
@@ -277,6 +279,34 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
+		return Services{}, err
+	}
+
+	pathCoverRender := path_cover_render.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.Asset,
+		clients.OpenaiClient,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(pathCoverRender); err != nil {
+		return Services{}, err
+	}
+
+	nodeAvatarRender := node_avatar_render.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.Asset,
+		clients.OpenaiClient,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeAvatarRender); err != nil {
 		return Services{}, err
 	}
 

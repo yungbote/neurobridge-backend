@@ -140,6 +140,18 @@ func envInt(key string, def int) int {
 	return i
 }
 
+func envIntAllowZero(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
+}
+
 func cosineSim(a, b []float32) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0

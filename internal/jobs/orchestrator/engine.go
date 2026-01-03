@@ -427,7 +427,7 @@ func yieldToQueue(ctx *jobrt.Context, stage string, progress int) error {
 		return nil
 	}
 	now := time.Now()
-	return ctx.Repo.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, ctx.Job.ID, map[string]interface{}{
+	ok, err := ctx.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, ctx.Job.ID, []string{"canceled"}, map[string]interface{}{
 		"status":       "queued",
 		"stage":        stage,
 		"progress":     progress,
@@ -435,6 +435,13 @@ func yieldToQueue(ctx *jobrt.Context, stage string, progress int) error {
 		"heartbeat_at": now,
 		"updated_at":   now,
 	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return nil
 }
 
 // -------------------- stage error handling --------------------

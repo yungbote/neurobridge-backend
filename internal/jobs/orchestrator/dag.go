@@ -77,6 +77,9 @@ func (e *DAGEngine) Run(ctx *jobrt.Context, stages []Stage, finalResult map[stri
 	var nextWait *time.Time
 
 	for _, name := range order {
+		if e.IsCanceled != nil && e.IsCanceled(ctx) {
+			return nil
+		}
 		def := stageByName[name]
 		ss := st.EnsureStage(def.Name, effectiveMode(def))
 

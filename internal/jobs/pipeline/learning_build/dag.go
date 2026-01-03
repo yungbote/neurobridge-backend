@@ -17,7 +17,9 @@ var stageDeps = map[string][]string{
 	"user_profile_refresh":   {"ingest_chunks"},
 	"teaching_patterns_seed": {"user_profile_refresh"},
 
-	"path_plan_build": {"concept_graph_build", "material_set_summarize", "user_profile_refresh"},
+	"path_plan_build":    {"concept_graph_build", "material_set_summarize", "user_profile_refresh"},
+	"path_cover_render":  {"path_plan_build"},
+	"node_avatar_render": {"path_plan_build"},
 
 	"node_figures_plan_build": {"path_plan_build", "embed_chunks"},
 	"node_figures_render":     {"node_figures_plan_build"},

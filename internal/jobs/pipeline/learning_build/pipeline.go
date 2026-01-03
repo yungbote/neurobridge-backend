@@ -29,6 +29,8 @@ var stageOrder = []string{
 	"user_profile_refresh",
 	"teaching_patterns_seed",
 	"path_plan_build",
+	"path_cover_render",
+	"node_avatar_render",
 	"node_figures_plan_build",
 	"node_figures_render",
 	"node_videos_plan_build",
@@ -312,6 +314,33 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				AI:          p.inline.AI,
 				Bootstrap:   p.bootstrap,
 			}, steps.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "path_cover_render":
+			_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Assets:    p.inline.Assets,
+				AI:        p.inline.AI,
+				Bucket:    p.inline.Bucket,
+			}, steps.PathCoverRenderInput{PathID: pathID})
+			if err != nil && p.log != nil {
+				p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
+			}
+			stageErr = nil
+		case "node_avatar_render":
+			_, err := steps.NodeAvatarRender(jc.Ctx, steps.NodeAvatarRenderDeps{
+				Log:       p.log,
+				Path:      p.inline.Path,
+				PathNodes: p.inline.PathNodes,
+				Assets:    p.inline.Assets,
+				AI:        p.inline.AI,
+				Bucket:    p.inline.Bucket,
+			}, steps.NodeAvatarRenderInput{PathID: pathID})
+			if err != nil && p.log != nil {
+				p.log.Warn("node_avatar_render failed", "error", err, "path_id", pathID.String())
+			}
+			stageErr = nil
 		case "node_figures_plan_build":
 			_, stageErr = steps.NodeFiguresPlanBuild(jc.Ctx, steps.NodeFiguresPlanBuildDeps{
 				DB:        p.db,

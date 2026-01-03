@@ -134,16 +134,16 @@ func PathCoverRender(ctx context.Context, deps PathCoverRenderDeps, in PathCover
 
 	now := time.Now().UTC()
 	hashSuffix := shortHash(inputsHash)
-	storageKey := fmt.Sprintf("generated/path_covers/%s/%s_%s.png",
+	storageKey := fmt.Sprintf("generated/path_avatars/%s/%s_%s.png",
 		pathRow.ID.String(),
 		now.Format("20060102T150405Z"),
 		hashSuffix,
 	)
-	if err := deps.Bucket.UploadFile(dbctx.Context{Ctx: ctx}, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(img.Bytes)); err != nil {
+	if err := deps.Bucket.UploadFile(dbctx.Context{Ctx: ctx}, gcp.BucketCategoryAvatar, storageKey, bytes.NewReader(img.Bytes)); err != nil {
 		return out, err
 	}
 
-	publicURL := deps.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, storageKey)
+	publicURL := deps.Bucket.GetPublicURL(gcp.BucketCategoryAvatar, storageKey)
 	mime := strings.TrimSpace(img.MimeType)
 	if mime == "" {
 		mime = "image/png"

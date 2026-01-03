@@ -124,6 +124,7 @@ func (h *PathHandler) ListUserPaths(c *gin.Context) {
 
 	// Refresh-safe UX: include a durable job snapshot (status/stage/progress/message) for any path with job_id.
 	pathsWithJobs := h.attachJobSnapshot(c.Request.Context(), rd.UserID, paths)
+	h.attachPathAvatars(c.Request.Context(), pathsWithJobs)
 
 	response.RespondOK(c, gin.H{"paths": pathsWithJobs})
 }
@@ -153,15 +154,19 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 		return
 	}
 
-	var out any = row
+	dto := &pathWithJob{Path: row}
 	if h.jobs != nil && row.JobID != nil && *row.JobID != uuid.Nil {
 		jobs, err := h.jobs.GetByIDs(dbctx.Context{Ctx: c.Request.Context()}, []uuid.UUID{*row.JobID})
 		if err == nil && len(jobs) > 0 && jobs[0] != nil && jobs[0].OwnerUserID == rd.UserID {
-			out = &pathWithJob{Path: row, JobStatus: jobs[0].Status, JobStage: jobs[0].Stage, JobProgress: jobs[0].Progress, JobMessage: jobs[0].Message}
+			dto.JobStatus = jobs[0].Status
+			dto.JobStage = jobs[0].Stage
+			dto.JobProgress = jobs[0].Progress
+			dto.JobMessage = jobs[0].Message
 		}
 	}
 
-	response.RespondOK(c, gin.H{"path": out})
+	h.attachSinglePathAvatar(c.Request.Context(), dto)
+	response.RespondOK(c, gin.H{"path": dto})
 }
 
 type pathCoverRequest struct {
@@ -229,7 +234,9 @@ func (h *PathHandler) GeneratePathCover(c *gin.Context) {
 		return
 	}
 
-	response.RespondOK(c, gin.H{"path": updated, "cover": out})
+	dto := &pathWithJob{Path: updated}
+	h.attachSinglePathAvatar(c.Request.Context(), dto)
+	response.RespondOK(c, gin.H{"path": dto, "cover": out})
 }
 
 // GET /api/paths/:id/materials
@@ -345,8 +352,47 @@ func (h *PathHandler) ListPathNodes(c *gin.Context) {
 		response.RespondError(c, http.StatusInternalServerError, "load_nodes_failed", err)
 		return
 	}
+	if h.assets == nil || len(nodes) == 0 {
+		response.RespondOK(c, gin.H{"nodes": nodes})
+		return
+	}
 
-	response.RespondOK(c, gin.H{"nodes": nodes})
+	nodeIDs := make([]uuid.UUID, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil || n.ID == uuid.Nil {
+			continue
+		}
+		nodeIDs = append(nodeIDs, n.ID)
+	}
+	if len(nodeIDs) == 0 {
+		response.RespondOK(c, gin.H{"nodes": nodes})
+		return
+	}
+
+	assets, err := h.assets.GetByOwnerIDs(dbctx.Context{Ctx: c.Request.Context()}, "path_node", nodeIDs)
+	if err != nil {
+		h.log.Warn("ListPathNodes failed (load avatars)", "error", err, "path_id", pathID)
+		response.RespondOK(c, gin.H{"nodes": nodes})
+		return
+	}
+
+	avatarByOwner := latestAvatarByOwner(assets, isNodeAvatarAsset)
+	out := make([]*pathNodeWithAvatar, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		item := &pathNodeWithAvatar{PathNode: n}
+		if asset := avatarByOwner[n.ID]; asset != nil {
+			item.AvatarURL = assetPublicURL(asset, h.bucket, true)
+			if asset.ID != uuid.Nil {
+				item.AvatarAssetID = &asset.ID
+			}
+		}
+		out = append(out, item)
+	}
+
+	response.RespondOK(c, gin.H{"nodes": out})
 }
 
 // GET /api/paths/:id/concept-graph
@@ -554,10 +600,12 @@ type typesActivityProxy struct {
 
 type pathWithJob struct {
 	*types.Path
-	JobStatus   string `json:"job_status,omitempty"`
-	JobStage    string `json:"job_stage,omitempty"`
-	JobProgress int    `json:"job_progress,omitempty"`
-	JobMessage  string `json:"job_message,omitempty"`
+	JobStatus     string     `json:"job_status,omitempty"`
+	JobStage      string     `json:"job_stage,omitempty"`
+	JobProgress   int        `json:"job_progress,omitempty"`
+	JobMessage    string     `json:"job_message,omitempty"`
+	AvatarURL     string     `json:"avatar_url,omitempty"`
+	AvatarAssetID *uuid.UUID `json:"avatar_asset_id,omitempty"`
 }
 
 func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, paths []*types.Path) []*pathWithJob {
@@ -609,6 +657,131 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 	return out
 }
 
+func (h *PathHandler) attachPathAvatars(ctx context.Context, rows []*pathWithJob) {
+	if h == nil || h.assets == nil || len(rows) == 0 {
+		return
+	}
+	ownerIDs := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		if r == nil || r.Path == nil || r.Path.ID == uuid.Nil {
+			continue
+		}
+		ownerIDs = append(ownerIDs, r.Path.ID)
+	}
+	if len(ownerIDs) == 0 {
+		return
+	}
+
+	assets, err := h.assets.GetByOwnerIDs(dbctx.Context{Ctx: ctx}, "path", ownerIDs)
+	if err != nil {
+		h.log.Warn("attachPathAvatars failed (load assets)", "error", err)
+		return
+	}
+	byOwner := latestAvatarByOwner(assets, isPathAvatarAsset)
+	for _, r := range rows {
+		if r == nil || r.Path == nil || r.Path.ID == uuid.Nil {
+			continue
+		}
+		if asset := byOwner[r.Path.ID]; asset != nil {
+			r.AvatarURL = assetPublicURL(asset, h.bucket, true)
+			if asset.ID != uuid.Nil {
+				r.AvatarAssetID = &asset.ID
+			}
+		}
+	}
+}
+
+func (h *PathHandler) attachSinglePathAvatar(ctx context.Context, row *pathWithJob) {
+	if h == nil || row == nil || row.Path == nil || row.Path.ID == uuid.Nil || h.assets == nil {
+		return
+	}
+	assets, err := h.assets.GetByOwner(dbctx.Context{Ctx: ctx}, "path", row.Path.ID)
+	if err != nil {
+		h.log.Warn("attachSinglePathAvatar failed (load assets)", "error", err, "path_id", row.Path.ID.String())
+		return
+	}
+	byOwner := latestAvatarByOwner(assets, isPathAvatarAsset)
+	if asset := byOwner[row.Path.ID]; asset != nil {
+		row.AvatarURL = assetPublicURL(asset, h.bucket, true)
+		if asset.ID != uuid.Nil {
+			row.AvatarAssetID = &asset.ID
+		}
+	}
+}
+
+type pathNodeWithAvatar struct {
+	*types.PathNode
+	AvatarURL     string     `json:"avatar_url,omitempty"`
+	AvatarAssetID *uuid.UUID `json:"avatar_asset_id,omitempty"`
+}
+
+func latestAvatarByOwner(assets []*types.Asset, match func(*types.Asset) bool) map[uuid.UUID]*types.Asset {
+	out := map[uuid.UUID]*types.Asset{}
+	for _, a := range assets {
+		if a == nil || a.OwnerID == uuid.Nil || !match(a) {
+			continue
+		}
+		cur := out[a.OwnerID]
+		if cur == nil || a.CreatedAt.After(cur.CreatedAt) {
+			out[a.OwnerID] = a
+		}
+	}
+	return out
+}
+
+func assetPublicURL(a *types.Asset, bucket gcp.BucketService, isAvatar bool) string {
+	if a == nil {
+		return ""
+	}
+	if strings.TrimSpace(a.URL) != "" {
+		return a.URL
+	}
+	if bucket == nil || strings.TrimSpace(a.StorageKey) == "" {
+		return ""
+	}
+	if isAvatar {
+		return bucket.GetPublicURL(gcp.BucketCategoryAvatar, a.StorageKey)
+	}
+	return ""
+}
+
+func assetKindFromMeta(meta datatypes.JSON) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(meta, &obj); err != nil || obj == nil {
+		return ""
+	}
+	val, ok := obj["asset_kind"]
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(fmt.Sprint(val)))
+}
+
+func isPathAvatarAsset(a *types.Asset) bool {
+	if a == nil {
+		return false
+	}
+	kind := assetKindFromMeta(a.Metadata)
+	if kind == "path_cover" || kind == "path_avatar" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(a.StorageKey), "path_avatars/")
+}
+
+func isNodeAvatarAsset(a *types.Asset) bool {
+	if a == nil {
+		return false
+	}
+	kind := assetKindFromMeta(a.Metadata)
+	if kind == "unit_avatar" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(a.StorageKey), "unit_avatars/")
+}
+
 // GET /api/path-nodes/:id/content
 func (h *PathHandler) GetPathNodeContent(c *gin.Context) {
 	rd := ctxutil.GetRequestData(c.Request.Context())
@@ -645,7 +818,27 @@ func (h *PathHandler) GetPathNodeContent(c *gin.Context) {
 		return
 	}
 
-	response.RespondOK(c, gin.H{"node": node})
+	if h.assets == nil || node == nil || node.ID == uuid.Nil {
+		response.RespondOK(c, gin.H{"node": node})
+		return
+	}
+
+	assets, err := h.assets.GetByOwner(dbctx.Context{Ctx: c.Request.Context()}, "path_node", node.ID)
+	if err != nil {
+		h.log.Warn("GetPathNodeContent failed (load avatar)", "error", err, "path_node_id", node.ID.String())
+		response.RespondOK(c, gin.H{"node": node})
+		return
+	}
+
+	byOwner := latestAvatarByOwner(assets, isNodeAvatarAsset)
+	dto := &pathNodeWithAvatar{PathNode: node}
+	if asset := byOwner[node.ID]; asset != nil {
+		dto.AvatarURL = assetPublicURL(asset, h.bucket, true)
+		if asset.ID != uuid.Nil {
+			dto.AvatarAssetID = &asset.ID
+		}
+	}
+	response.RespondOK(c, gin.H{"node": dto})
 }
 
 // GET /api/path-nodes/:id/doc
