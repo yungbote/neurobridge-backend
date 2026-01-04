@@ -254,11 +254,13 @@ func LibraryTaxonomyRefine(ctx context.Context, deps LibraryTaxonomyRouteDeps, i
 		}
 
 		readySet := map[uuid.UUID]bool{}
+		readyIDs := make([]uuid.UUID, 0, len(readyPaths))
 		for _, p := range readyPaths {
 			if p == nil || p.ID == uuid.Nil {
 				continue
 			}
 			readySet[p.ID] = true
+			readyIDs = append(readyIDs, p.ID)
 		}
 
 		nodeByID := map[uuid.UUID]*types.LibraryTaxonomyNode{}
@@ -322,6 +324,138 @@ func LibraryTaxonomyRefine(ctx context.Context, deps LibraryTaxonomyRouteDeps, i
 			}
 			if !hasCategoryMembership[p.ID] {
 				unsorted = append(unsorted, p)
+			}
+		}
+
+		// Phase 0: normalize topic anchor memberships deterministically (primary + optional secondary).
+		// This keeps anchors acting like domains and prevents noisy multi-anchor duplication.
+		if facet == "topic" && deps.DB != nil && len(anchors) > 0 && len(readyIDs) > 0 {
+			type anchorEmb struct {
+				id  uuid.UUID
+				key string
+				emb []float32
+			}
+			anchorEmbeds := make([]anchorEmb, 0, len(anchors))
+			anchorIDs := make([]uuid.UUID, 0, len(anchors))
+			for _, a := range anchors {
+				if a == nil || a.ID == uuid.Nil {
+					continue
+				}
+				emb, ok := parseFloat32ArrayJSON(a.Embedding)
+				if !ok || len(emb) == 0 {
+					continue
+				}
+				anchorEmbeds = append(anchorEmbeds, anchorEmb{id: a.ID, key: strings.TrimSpace(a.Key), emb: emb})
+				anchorIDs = append(anchorIDs, a.ID)
+			}
+			if len(anchorEmbeds) > 0 && len(anchorIDs) > 0 {
+				secondaryMin := float64(0.88)
+				if v := envutil.Int("LIBRARY_TAXONOMY_SECONDARY_ANCHOR_MIN_SIMILARITY_THRESHOLD_PCT", 88); v >= 50 && v <= 99 {
+					secondaryMin = float64(v) / 100.0
+				}
+				secondaryMaxGap := float64(0.02)
+				if v := envutil.Int("LIBRARY_TAXONOMY_SECONDARY_ANCHOR_MAX_GAP_PCT", 2); v >= 0 && v <= 20 {
+					secondaryMaxGap = float64(v) / 100.0
+				}
+
+				toWeight := func(score float64) float64 {
+					w := (score + 1.0) / 2.0
+					if w < 0.01 {
+						w = 0.01
+					}
+					return clamp01(w)
+				}
+
+				anchorMems := make([]*types.LibraryTaxonomyMembership, 0, len(readyIDs)*2)
+				normalizedPathIDs := make([]uuid.UUID, 0, len(readyIDs))
+				for _, p := range readyPaths {
+					if p == nil || p.ID == uuid.Nil {
+						continue
+					}
+					emb, err := getEmb(p)
+					if err != nil || len(emb) == 0 {
+						continue
+					}
+					type scored struct {
+						id    uuid.UUID
+						key   string
+						score float64
+					}
+					scoredAnchors := make([]scored, 0, len(anchorEmbeds))
+					for _, a := range anchorEmbeds {
+						if a.id == uuid.Nil || len(a.emb) == 0 {
+							continue
+						}
+						scoredAnchors = append(scoredAnchors, scored{
+							id:    a.id,
+							key:   a.key,
+							score: cosineSimilarity(emb, a.emb),
+						})
+					}
+					sort.Slice(scoredAnchors, func(i, j int) bool {
+						if scoredAnchors[i].score != scoredAnchors[j].score {
+							return scoredAnchors[i].score > scoredAnchors[j].score
+						}
+						return scoredAnchors[i].key < scoredAnchors[j].key
+					})
+					if len(scoredAnchors) == 0 {
+						continue
+					}
+					primary := scoredAnchors[0]
+					secondary := scored{ id: uuid.Nil }
+					if len(scoredAnchors) > 1 {
+						secondary = scoredAnchors[1]
+					}
+					allowSecondary := secondary.id != uuid.Nil &&
+						secondary.score >= secondaryMin &&
+						(primary.score-secondary.score) <= secondaryMaxGap
+					normalizedPathIDs = append(normalizedPathIDs, p.ID)
+					anchorMems = append(anchorMems, &types.LibraryTaxonomyMembership{
+						ID:         uuid.New(),
+						UserID:     in.UserID,
+						Facet:      facet,
+						PathID:     p.ID,
+						NodeID:     primary.id,
+						Weight:     toWeight(primary.score),
+						AssignedBy: "refine",
+						Metadata:   datatypes.JSON(toJSON(map[string]any{"reason": "primary_anchor_by_embedding"})),
+						Version:    1,
+						CreatedAt:  now,
+						UpdatedAt:  now,
+					})
+					if allowSecondary {
+						anchorMems = append(anchorMems, &types.LibraryTaxonomyMembership{
+							ID:         uuid.New(),
+							UserID:     in.UserID,
+							Facet:      facet,
+							PathID:     p.ID,
+							NodeID:     secondary.id,
+							Weight:     toWeight(secondary.score),
+							AssignedBy: "refine",
+							Metadata:   datatypes.JSON(toJSON(map[string]any{"reason": "secondary_anchor_by_embedding"})),
+							Version:    1,
+							CreatedAt:  now,
+							UpdatedAt:  now,
+						})
+					}
+				}
+				normalizedPathIDs = dedupeUUIDs(normalizedPathIDs)
+				if len(anchorMems) > 0 && len(normalizedPathIDs) > 0 {
+					if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+						if err := tx.Where("user_id = ? AND facet = ? AND node_id IN ? AND path_id IN ?", in.UserID, facet, anchorIDs, normalizedPathIDs).
+							Delete(&types.LibraryTaxonomyMembership{}).Error; err != nil {
+							return err
+						}
+						return deps.Membership.UpsertMany(dbctx.Context{Ctx: ctx, Tx: tx}, anchorMems)
+					}); err != nil {
+						return out, err
+					}
+					// Reload memberships so downstream phases see normalized anchors.
+					mems, err = deps.Membership.GetByUserFacet(dbctx.Context{Ctx: ctx}, in.UserID, facet)
+					if err != nil {
+						return out, err
+					}
+				}
 			}
 		}
 
@@ -726,6 +860,10 @@ func LibraryTaxonomyRefine(ctx context.Context, deps LibraryTaxonomyRouteDeps, i
 			toUpdate := make([]*types.LibraryTaxonomyNode, 0, len(nodesNow))
 			for _, n := range nodesNow {
 				if n == nil || n.ID == uuid.Nil || n.ID == root.ID || n.ID == inbox.ID {
+					continue
+				}
+				if strings.EqualFold(strings.TrimSpace(n.Kind), "anchor") {
+					// Anchor embeddings are derived from their definitions (stable); do not drift them.
 					continue
 				}
 				ids := dedupeUUIDs(pathIDsByNode[n.ID])

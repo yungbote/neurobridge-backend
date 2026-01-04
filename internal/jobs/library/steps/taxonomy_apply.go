@@ -13,6 +13,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/envutil"
 )
 
 func applyRouteResult(
@@ -226,9 +227,6 @@ func applyRouteResult(
 		if uid == inbox.ID || nodeByID[uid] != nil {
 			cur, ok := targetByNode[uid]
 			w := clamp01(m.Weight)
-			if uid != inbox.ID && anchorIDs[uid] && w < 0.97 {
-				w = 0.97
-			}
 			if !ok || w > cur.weight {
 				targetByNode[uid] = target{nodeID: uid, weight: w, reason: strings.TrimSpace(m.Reason)}
 			}
@@ -246,6 +244,125 @@ func applyRouteResult(
 		targetByNode[id] = target{nodeID: id, weight: w, reason: strings.TrimSpace(nn.Reason)}
 	}
 
+	// Deterministic topic-anchor selection:
+	// - Pick the primary anchor by embedding similarity (not by model whim).
+	// - Allow a secondary anchor only when it is genuinely close to the primary (tight threshold).
+	// - Keep anchors in the DAG as memberships, but the UI can project a single "primary" anchor for grouping.
+	if facet == "topic" && len(anchorIDs) > 0 && len(pathEmb) > 0 {
+		type scoredAnchor struct {
+			id    uuid.UUID
+			key   string
+			score float64
+		}
+		scored := make([]scoredAnchor, 0, len(anchorIDs))
+		for id := range anchorIDs {
+			n := nodeByID[id]
+			if n == nil || n.ID == uuid.Nil {
+				continue
+			}
+			emb, ok := parseFloat32ArrayJSON(n.Embedding)
+			if !ok || len(emb) == 0 {
+				continue
+			}
+			scored = append(scored, scoredAnchor{
+				id:    id,
+				key:   strings.TrimSpace(n.Key),
+				score: cosineSimilarity(pathEmb, emb),
+			})
+		}
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].score != scored[j].score {
+				return scored[i].score > scored[j].score
+			}
+			return scored[i].key < scored[j].key
+		})
+
+		primaryID := uuid.Nil
+		primaryScore := 0.0
+		secondaryID := uuid.Nil
+		secondaryScore := 0.0
+
+		if len(scored) > 0 {
+			primaryID = scored[0].id
+			primaryScore = scored[0].score
+			if len(scored) > 1 {
+				secondaryID = scored[1].id
+				secondaryScore = scored[1].score
+			}
+		}
+
+		// If we couldn't score anchors (e.g., missing anchor embeddings), fall back to the model's
+		// anchor picks, but still cap to 1-2 anchors deterministically.
+		if primaryID == uuid.Nil {
+			type scoredModelAnchor struct {
+				id    uuid.UUID
+				key   string
+				weight float64
+			}
+			modelAnchors := make([]scoredModelAnchor, 0, len(anchorIDs))
+			for id := range anchorIDs {
+				t, ok := targetByNode[id]
+				if !ok || t.nodeID == uuid.Nil {
+					continue
+				}
+				k := ""
+				if n := nodeByID[id]; n != nil {
+					k = strings.TrimSpace(n.Key)
+				}
+				modelAnchors = append(modelAnchors, scoredModelAnchor{id: id, key: k, weight: clamp01(t.weight)})
+			}
+			sort.Slice(modelAnchors, func(i, j int) bool {
+				if modelAnchors[i].weight != modelAnchors[j].weight {
+					return modelAnchors[i].weight > modelAnchors[j].weight
+				}
+				return modelAnchors[i].key < modelAnchors[j].key
+			})
+			if len(modelAnchors) > 0 {
+				primaryID = modelAnchors[0].id
+				primaryScore = modelAnchors[0].weight
+			}
+			if len(modelAnchors) > 1 {
+				secondaryID = modelAnchors[1].id
+				secondaryScore = modelAnchors[1].weight
+			}
+		}
+
+		secondaryMin := float64(0.88)
+		if v := envutil.Int("LIBRARY_TAXONOMY_SECONDARY_ANCHOR_MIN_SIMILARITY_THRESHOLD_PCT", 88); v >= 50 && v <= 99 {
+			secondaryMin = float64(v) / 100.0
+		}
+		secondaryMaxGap := float64(0.02)
+		if v := envutil.Int("LIBRARY_TAXONOMY_SECONDARY_ANCHOR_MAX_GAP_PCT", 2); v >= 0 && v <= 20 {
+			secondaryMaxGap = float64(v) / 100.0
+		}
+		allowSecondary := secondaryID != uuid.Nil &&
+			secondaryScore >= secondaryMin &&
+			(primaryScore-secondaryScore) <= secondaryMaxGap
+		if !allowSecondary {
+			secondaryID = uuid.Nil
+		}
+
+		if primaryID != uuid.Nil {
+			// Replace any existing anchor memberships with the deterministic selection.
+			for id := range anchorIDs {
+				delete(targetByNode, id)
+			}
+			// Map cosine similarity [-1,1] -> [0,1] for weights; keep a minimum floor to avoid
+			// being dropped by weight filtering.
+			toWeight := func(score float64) float64 {
+				w := (score + 1.0) / 2.0
+				if w < 0.01 {
+					w = 0.01
+				}
+				return clamp01(w)
+			}
+			targetByNode[primaryID] = target{nodeID: primaryID, weight: toWeight(primaryScore), reason: "primary_anchor_by_embedding"}
+			if secondaryID != uuid.Nil {
+				targetByNode[secondaryID] = target{nodeID: secondaryID, weight: toWeight(secondaryScore), reason: "secondary_anchor_by_embedding"}
+			}
+		}
+	}
+
 	targets := make([]target, 0, len(targetByNode))
 	for _, t := range targetByNode {
 		// Never allow direct membership to the root.
@@ -259,6 +376,31 @@ func applyRouteResult(
 		targets = append(targets, t)
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].weight > targets[j].weight })
+
+	// For the topic facet, always keep anchor memberships and treat any remaining capacity as
+	// "additional labels" (categories/related) so anchors can't be displaced by other weights.
+	if facet == "topic" && len(anchorIDs) > 0 {
+		anchorTargets := make([]target, 0, 2)
+		otherTargets := make([]target, 0, len(targets))
+		for _, t := range targets {
+			if anchorIDs[t.nodeID] {
+				anchorTargets = append(anchorTargets, t)
+			} else {
+				otherTargets = append(otherTargets, t)
+			}
+		}
+		sort.Slice(anchorTargets, func(i, j int) bool { return anchorTargets[i].weight > anchorTargets[j].weight })
+		sort.Slice(otherTargets, func(i, j int) bool { return otherTargets[i].weight > otherTargets[j].weight })
+		out := make([]target, 0, len(targets))
+		out = append(out, anchorTargets...)
+		for _, t := range otherTargets {
+			if len(out) >= maxMemberships {
+				break
+			}
+			out = append(out, t)
+		}
+		targets = out
+	}
 
 	// Remove inbox if we have any non-inbox assignment.
 	hasNonInbox := false
@@ -396,6 +538,29 @@ func applyRouteResult(
 	}
 	membersUpserted = len(memRows)
 
+	// Best-effort: if we selected anchors deterministically, remove any other anchor memberships for this
+	// path to keep the taxonomy clean (anchors behave like domains, not tags).
+	if deps.DB != nil && facet == "topic" && len(anchorIDs) > 0 {
+		keep := make([]uuid.UUID, 0, 2)
+		for _, t := range targets {
+			if anchorIDs[t.nodeID] {
+				keep = append(keep, t.nodeID)
+			}
+		}
+		keep = dedupeUUIDs(keep)
+		allAnchors := make([]uuid.UUID, 0, len(anchorIDs))
+		for id := range anchorIDs {
+			allAnchors = append(allAnchors, id)
+		}
+		if len(allAnchors) > 0 {
+			q := deps.DB.WithContext(ctx).Where("user_id = ? AND facet = ? AND path_id = ? AND node_id IN ?", userID, facet, pathID, allAnchors)
+			if len(keep) > 0 {
+				q = q.Where("node_id NOT IN ?", keep)
+			}
+			_ = q.Delete(&types.LibraryTaxonomyMembership{}).Error
+		}
+	}
+
 	// Best-effort centroid update for touched nodes (skip root).
 	touched := make([]*types.LibraryTaxonomyNode, 0, len(targets))
 	for _, t := range targets {
@@ -405,6 +570,10 @@ func applyRouteResult(
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(n.Kind), "root") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(n.Kind), "anchor") {
+			// Anchor embeddings are derived from their definitions (stable); do not drift them.
 			continue
 		}
 		emb, ok := parseFloat32ArrayJSON(n.Embedding)

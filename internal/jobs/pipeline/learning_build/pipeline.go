@@ -145,10 +145,12 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 			return nil
 		}
 		p.maybeGeneratePathCover(ctx, pathID)
+		readyAt := time.Now().UTC()
 		if err := p.db.WithContext(ctx.Ctx).Transaction(func(tx *gorm.DB) error {
 			return p.path.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: tx}, pathID, map[string]interface{}{
 				"status": "ready",
 				"job_id": nil,
+				"ready_at": readyAt,
 			})
 		}); err != nil {
 			return err
@@ -501,10 +503,12 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	// All stages succeeded.
 	p.maybeGeneratePathCover(jc, pathID)
+	readyAt := time.Now().UTC()
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
 		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
 			"status": "ready",
 			"job_id": nil,
+			"ready_at": readyAt,
 		})
 	}); err != nil {
 		jc.Fail("finalize", err)

@@ -22,6 +22,7 @@ type Path struct {
 	AvatarSquareURL       string         `gorm:"column:avatar_square_url" json:"avatar_square_url"`
 	ViewCount             int            `gorm:"column:view_count;not null;default:0" json:"view_count"`
 	LastViewedAt          *time.Time     `gorm:"column:last_viewed_at;index" json:"last_viewed_at,omitempty"`
+	ReadyAt               *time.Time     `gorm:"column:ready_at;index" json:"ready_at,omitempty"`
 	CreatedAt             time.Time      `gorm:"not null;default:now()" json:"created_at"`
 	UpdatedAt             time.Time      `gorm:"not null;default:now()" json:"updated_at"`
 	DeletedAt             gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`

@@ -2,6 +2,8 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -31,6 +33,29 @@ var topicAnchors = []topicAnchorDef{
 	{Key: "anchor_economics_business", Name: "Economics & Business", Description: "Micro/macro economics, finance, markets, strategy, and organizational topics."},
 	{Key: "anchor_history", Name: "History", Description: "Historical periods, events, societies, and historiography."},
 	{Key: "anchor_philosophy", Name: "Philosophy", Description: "Ethics, epistemology, metaphysics, logic, and philosophical traditions."},
+}
+
+func topicAnchorDoc(def topicAnchorDef) string {
+	name := strings.TrimSpace(def.Name)
+	desc := strings.TrimSpace(def.Description)
+	if desc == "" {
+		return name
+	}
+	return name + "\n" + desc
+}
+
+func statsString(raw datatypes.JSON, key string) string {
+	if len(raw) == 0 || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return ""
+	}
+	if v, ok := obj[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+	return ""
 }
 
 func topicAnchorKeys() []string {
@@ -72,6 +97,52 @@ func ensureTopicAnchors(ctx context.Context, deps LibraryTaxonomyRouteDeps, user
 		existingByKey[strings.TrimSpace(n.Key)] = n
 	}
 
+	// Compute (or backfill) stable anchor embeddings from their definitions (not from assigned paths).
+	// This keeps anchor semantics consistent over time and enables deterministic primary-anchor selection.
+	anchorEmbByKey := map[string][]float32{}
+	if deps.AI != nil {
+		toEmbed := make([]topicAnchorDef, 0, len(topicAnchors))
+		for _, def := range topicAnchors {
+			k := strings.TrimSpace(def.Key)
+			if k == "" {
+				continue
+			}
+			n := existingByKey[k]
+			curEmb, ok := parseFloat32ArrayJSON(func() []byte {
+				if n == nil {
+					return nil
+				}
+				return n.Embedding
+			}())
+			defHash := hashStrings("topic_anchor_def@1", k, topicAnchorDoc(def))
+			existingHash := ""
+			if n != nil {
+				existingHash = statsString(n.Stats, "seeded_def_hash")
+			}
+			needsEmbed := !ok || len(curEmb) == 0 || existingHash != defHash
+			if needsEmbed {
+				toEmbed = append(toEmbed, def)
+			} else {
+				anchorEmbByKey[k] = curEmb
+			}
+		}
+		if len(toEmbed) > 0 {
+			docs := make([]string, 0, len(toEmbed))
+			for _, def := range toEmbed {
+				docs = append(docs, topicAnchorDoc(def))
+			}
+			if embs, eErr := deps.AI.Embed(ctx, docs); eErr == nil && len(embs) == len(docs) {
+				for i, def := range toEmbed {
+					k := strings.TrimSpace(def.Key)
+					if k == "" {
+						continue
+					}
+					anchorEmbByKey[k] = embs[i]
+				}
+			}
+		}
+	}
+
 	now := time.Now().UTC()
 	toUpsert := make([]*types.LibraryTaxonomyNode, 0, len(topicAnchors))
 	for _, def := range topicAnchors {
@@ -79,21 +150,63 @@ func ensureTopicAnchors(ctx context.Context, deps LibraryTaxonomyRouteDeps, user
 		if k == "" {
 			continue
 		}
-		if existingByKey[k] != nil {
+		defHash := hashStrings("topic_anchor_def@1", k, topicAnchorDoc(def))
+		stats := map[string]any{"seeded": true, "seeded_def_hash": defHash}
+		emb := anchorEmbByKey[k]
+		embJSON := datatypes.JSON([]byte(`[]`))
+		if len(emb) > 0 {
+			embJSON = datatypes.JSON(toJSON(emb))
+		}
+
+		existing := existingByKey[k]
+		existingHash := ""
+		existingName := ""
+		existingDesc := ""
+		existingKind := ""
+		existingHasEmb := false
+		existingDeleted := false
+		id := uuid.New()
+		createdAt := now
+		if existing != nil && existing.ID != uuid.Nil {
+			id = existing.ID
+			if !existing.CreatedAt.IsZero() {
+				createdAt = existing.CreatedAt
+			}
+			existingHash = statsString(existing.Stats, "seeded_def_hash")
+			existingName = strings.TrimSpace(existing.Name)
+			existingDesc = strings.TrimSpace(existing.Description)
+			existingKind = strings.TrimSpace(existing.Kind)
+			existingDeleted = existing.DeletedAt.Valid
+			if curEmb, ok := parseFloat32ArrayJSON(existing.Embedding); ok && len(curEmb) > 0 {
+				existingHasEmb = true
+			}
+		}
+
+		desiredName := strings.TrimSpace(def.Name)
+		desiredDesc := strings.TrimSpace(def.Description)
+		needsUpsert := existing == nil ||
+			existingDeleted ||
+			!strings.EqualFold(existingKind, "anchor") ||
+			existingName != desiredName ||
+			existingDesc != desiredDesc ||
+			existingHash != defHash ||
+			(!existingHasEmb && len(emb) > 0)
+		if !needsUpsert {
 			continue
 		}
+
 		toUpsert = append(toUpsert, &types.LibraryTaxonomyNode{
-			ID:          uuid.New(),
+			ID:          id,
 			UserID:      userID,
 			Facet:       facet,
 			Key:         k,
 			Kind:        "anchor",
-			Name:        strings.TrimSpace(def.Name),
-			Description: strings.TrimSpace(def.Description),
-			Embedding:   datatypes.JSON([]byte(`[]`)),
-			Stats:       datatypes.JSON(toJSON(map[string]any{"seeded": true})),
+			Name:        desiredName,
+			Description: desiredDesc,
+			Embedding:   embJSON,
+			Stats:       datatypes.JSON(toJSON(stats)),
 			Version:     1,
-			CreatedAt:   now,
+			CreatedAt:   createdAt,
 			UpdatedAt:   now,
 		})
 	}
@@ -149,4 +262,3 @@ func ensureTopicAnchors(ctx context.Context, deps LibraryTaxonomyRouteDeps, user
 
 	return anchors, nil
 }
-
