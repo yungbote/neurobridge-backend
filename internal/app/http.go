@@ -17,6 +17,7 @@ type Handlers struct {
 	Health   *httpH.HealthHandler
 	Auth     *httpH.AuthHandler
 	User     *httpH.UserHandler
+	Session  *httpH.SessionStateHandler
 	Realtime *httpH.RealtimeHandler
 	Material *httpH.MaterialHandler
 	Chat     *httpH.ChatHandler
@@ -33,6 +34,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 		Health:   httpH.NewHealthHandler(),
 		Auth:     httpH.NewAuthHandler(services.Auth),
 		User:     httpH.NewUserHandler(services.User, sseHub),
+		Session:  httpH.NewSessionStateHandler(services.SessionState),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(
 			log,
@@ -90,6 +92,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		AuthHandler:     handlers.Auth,
 		AuthMiddleware:  middleware.Auth,
 		UserHandler:     handlers.User,
+		SessionHandler:  handlers.Session,
 		RealtimeHandler: handlers.Realtime,
 		MaterialHandler: handlers.Material,
 		ChatHandler:     handlers.Chat,

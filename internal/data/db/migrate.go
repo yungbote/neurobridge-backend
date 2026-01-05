@@ -16,6 +16,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		// =========================
 		&types.User{},
 		&types.UserToken{},
+		&types.UserSessionState{},
 		&types.UserIdentity{},
 		&types.OAuthNonce{},
 

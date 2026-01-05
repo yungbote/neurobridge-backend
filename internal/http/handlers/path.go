@@ -167,6 +167,13 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 			dto.JobMessage = jobs[0].Message
 		}
 	}
+	if h.userLibraryIndex != nil {
+		idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
+		if err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
+			msid := idx.MaterialSetID
+			dto.MaterialSetID = &msid
+		}
+	}
 
 	response.RespondOK(c, gin.H{"path": dto})
 }
@@ -220,6 +227,13 @@ func (h *PathHandler) ViewPath(c *gin.Context) {
 			dto.JobStage = jobs[0].Stage
 			dto.JobProgress = jobs[0].Progress
 			dto.JobMessage = jobs[0].Message
+		}
+	}
+	if h.userLibraryIndex != nil {
+		idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
+		if err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
+			msid := idx.MaterialSetID
+			dto.MaterialSetID = &msid
 		}
 	}
 
@@ -618,6 +632,9 @@ type pathWithJob struct {
 	JobStage    string `json:"job_stage,omitempty"`
 	JobProgress int    `json:"job_progress,omitempty"`
 	JobMessage  string `json:"job_message,omitempty"`
+
+	// Derived from user_library_index (Path doesn't store this directly).
+	MaterialSetID *uuid.UUID `json:"material_set_id,omitempty"`
 }
 
 func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, paths []*types.Path) []*pathWithJob {
@@ -627,6 +644,19 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 	out := make([]*pathWithJob, 0, len(paths))
 	if len(paths) == 0 {
 		return out
+	}
+
+	materialSetByPathID := map[uuid.UUID]uuid.UUID{}
+	if h.userLibraryIndex != nil {
+		rows, err := h.userLibraryIndex.GetByUserIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{userID})
+		if err == nil {
+			for _, r := range rows {
+				if r == nil || r.PathID == nil || *r.PathID == uuid.Nil || r.MaterialSetID == uuid.Nil {
+					continue
+				}
+				materialSetByPathID[*r.PathID] = r.MaterialSetID
+			}
+		}
 	}
 
 	jobIDs := make([]uuid.UUID, 0, len(paths))
@@ -655,6 +685,12 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 			continue
 		}
 		dto := &pathWithJob{Path: p}
+
+		if msid, ok := materialSetByPathID[p.ID]; ok && msid != uuid.Nil {
+			v := msid
+			dto.MaterialSetID = &v
+		}
+
 		if p.JobID != nil && *p.JobID != uuid.Nil {
 			if j := jobByID[*p.JobID]; j != nil {
 				dto.JobStatus = j.Status

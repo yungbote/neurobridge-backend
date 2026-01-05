@@ -20,9 +20,9 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_refine"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_route"
-	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_avatar_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
@@ -63,6 +63,8 @@ type Services struct {
 
 	// User Event Ingestion (raw user_event log)
 	Events services.EventService
+	// Runtime per-session state (active path/node/etc)
+	SessionState services.SessionStateService
 
 	// Jobs + notifications
 	JobNotifier  services.JobNotifier
@@ -114,6 +116,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	userService := services.NewUserService(db, log, repos.User, avatarService)
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
 	eventService := services.NewEventService(db, log, repos.UserEvent)
+	sessionStateService := services.NewSessionStateService(db, log, repos.UserSessionState)
 
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
 	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
@@ -144,6 +147,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		repos.MaterialChunk,
 		repos.MaterialFile,
+		repos.MaterialAsset,
 		clients.GcpBucket,
 		clients.LMTools,
 		clients.GcpDocument,
@@ -628,6 +632,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		User:             userService,
 		Material:         materialService,
 		Events:           eventService,
+		SessionState:     sessionStateService,
 		JobNotifier:      jobNotifier,
 		JobService:       jobService,
 		Workflow:         workflow,

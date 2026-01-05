@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -21,6 +22,19 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
+
+func assetPrimaryMimeType(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	v, _ := obj["mime"]
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
+}
 
 type MaterialHandler struct {
 	log      *logger.Logger
@@ -391,6 +405,59 @@ func (h *MaterialHandler) ViewMaterialFile(c *gin.Context) {
 	h.streamMaterialObject(c, file.StorageKey, file.OriginalName, file.MimeType)
 }
 
+// GET /api/material-files/:id/thumbnail
+func (h *MaterialHandler) ViewMaterialFileThumbnail(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+	if h.materialFiles == nil || h.userLibraryIndex == nil {
+		response.RespondError(c, http.StatusInternalServerError, "material_repo_missing", nil)
+		return
+	}
+
+	fileID, err := uuid.Parse(c.Param("id"))
+	if err != nil || fileID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_material_file_id", err)
+		return
+	}
+
+	files, err := h.materialFiles.GetByIDs(dbctx.Context{Ctx: c.Request.Context()}, []uuid.UUID{fileID})
+	if err != nil || len(files) == 0 || files[0] == nil {
+		response.RespondError(c, http.StatusNotFound, "material_not_found", err)
+		return
+	}
+	file := files[0]
+
+	idx, err := h.userLibraryIndex.GetByUserAndMaterialSet(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, file.MaterialSetID)
+	if err != nil {
+		response.RespondError(c, http.StatusInternalServerError, "load_library_index_failed", err)
+		return
+	}
+	if idx == nil {
+		response.RespondError(c, http.StatusNotFound, "material_not_found", nil)
+		return
+	}
+
+	if file.ThumbnailAssetID != nil && *file.ThumbnailAssetID != uuid.Nil && h.materialAssets != nil {
+		asset, err := h.materialAssets.GetByID(dbctx.Context{Ctx: c.Request.Context()}, *file.ThumbnailAssetID)
+		if err == nil && asset != nil && asset.MaterialFileID == file.ID && strings.TrimSpace(asset.StorageKey) != "" {
+			filename := fmt.Sprintf("%s%s", asset.ID.String(), filepath.Ext(asset.StorageKey))
+			h.streamMaterialObject(c, asset.StorageKey, filename, assetPrimaryMimeType(asset.Metadata))
+			return
+		}
+	}
+
+	// Fallback: if the original upload is already an image, use it.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(file.MimeType)), "image/") {
+		h.streamMaterialObject(c, file.StorageKey, file.OriginalName, file.MimeType)
+		return
+	}
+
+	response.RespondError(c, http.StatusNotFound, "thumbnail_not_found", nil)
+}
+
 // GET /api/material-assets/:id/view
 func (h *MaterialHandler) ViewMaterialAsset(c *gin.Context) {
 	rd := ctxutil.GetRequestData(c.Request.Context())
@@ -436,5 +503,5 @@ func (h *MaterialHandler) ViewMaterialAsset(c *gin.Context) {
 	}
 
 	filename := fmt.Sprintf("%s%s", asset.ID.String(), filepath.Ext(asset.StorageKey))
-	h.streamMaterialObject(c, asset.StorageKey, filename, "")
+	h.streamMaterialObject(c, asset.StorageKey, filename, assetPrimaryMimeType(asset.Metadata))
 }

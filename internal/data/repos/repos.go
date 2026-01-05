@@ -13,6 +13,7 @@ import (
 
 type UserRepo = user.UserRepo
 type UserProfileVectorRepo = user.UserProfileVectorRepo
+type UserSessionStateRepo = user.UserSessionStateRepo
 type UserTokenRepo = auth.UserTokenRepo
 type UserIdentityRepo = auth.UserIdentityRepo
 type OAuthNonceRepo = auth.OAuthNonceRepo
@@ -86,6 +87,9 @@ type ChatTurnRepo = chat.ChatTurnRepo
 func NewUserRepo(db *gorm.DB, baseLog *logger.Logger) UserRepo { return user.NewUserRepo(db, baseLog) }
 func NewUserProfileVectorRepo(db *gorm.DB, baseLog *logger.Logger) UserProfileVectorRepo {
 	return user.NewUserProfileVectorRepo(db, baseLog)
+}
+func NewUserSessionStateRepo(db *gorm.DB, baseLog *logger.Logger) UserSessionStateRepo {
+	return user.NewUserSessionStateRepo(db, baseLog)
 }
 func NewUserTokenRepo(db *gorm.DB, baseLog *logger.Logger) UserTokenRepo {
 	return auth.NewUserTokenRepo(db, baseLog)

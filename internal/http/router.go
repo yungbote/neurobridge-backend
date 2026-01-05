@@ -10,6 +10,7 @@ type RouterConfig struct {
 	AuthHandler     *httpH.AuthHandler
 	AuthMiddleware  *httpMW.AuthMiddleware
 	UserHandler     *httpH.UserHandler
+	SessionHandler  *httpH.SessionStateHandler
 	RealtimeHandler *httpH.RealtimeHandler
 
 	MaterialHandler *httpH.MaterialHandler
@@ -76,11 +77,18 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.POST("/user/avatar/upload", cfg.UserHandler.UploadAvatar)
 		}
 
+		// Session (runtime state)
+		if cfg.SessionHandler != nil {
+			protected.GET("/session/state", cfg.SessionHandler.Get)
+			protected.PATCH("/session/state", cfg.SessionHandler.Patch)
+		}
+
 		// Materials
 		if cfg.MaterialHandler != nil {
 			protected.POST("/material-sets/upload", cfg.MaterialHandler.UploadMaterials)
 			protected.GET("/material-files", cfg.MaterialHandler.ListUserMaterialFiles)
 			protected.GET("/material-files/:id/view", cfg.MaterialHandler.ViewMaterialFile)
+			protected.GET("/material-files/:id/thumbnail", cfg.MaterialHandler.ViewMaterialFileThumbnail)
 			protected.GET("/material-assets/:id/view", cfg.MaterialHandler.ViewMaterialAsset)
 		}
 

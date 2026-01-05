@@ -33,7 +33,8 @@ type ContentExtractionService interface {
 }
 
 type service struct {
-	ex *extractor.Extractor
+	ex             *extractor.Extractor
+	materialAssets repos.MaterialAssetRepo
 }
 
 func NewContentExtractionService(
@@ -41,6 +42,7 @@ func NewContentExtractionService(
 	log *logger.Logger,
 	materialChunkRepo repos.MaterialChunkRepo,
 	materialFileRepo repos.MaterialFileRepo,
+	materialAssetRepo repos.MaterialAssetRepo,
 	bucket gcp.BucketService,
 	media localmedia.MediaToolsService,
 	docai gcp.Document,
@@ -61,7 +63,10 @@ func NewContentExtractionService(
 		videoAI,
 		caption,
 	)
-	return &service{ex: ex}
+	return &service{
+		ex:             ex,
+		materialAssets: materialAssetRepo,
+	}
 }
 
 func (s *service) ExtractAndPersist(dbc dbctx.Context, mf *types.MaterialFile) (*ExtractionSummary, error) {
@@ -217,6 +222,12 @@ func (s *service) ExtractAndPersist(dbc dbctx.Context, mf *types.MaterialFile) (
 
 	if err := s.ex.PersistSegmentsAsChunks(dbctx.Context{Ctx: ctx, Tx: dbc.Tx}, mf, allSegments); err != nil {
 		return nil, err
+	}
+
+	if _, err := s.ensureThumbnailAsset(dbctx.Context{Ctx: ctx, Tx: dbc.Tx}, mf, kind, assets); err != nil {
+		// Best-effort: don't fail ingestion for a missing thumbnail.
+		summary.Diagnostics["thumbnail_error"] = err.Error()
+		warnings = append(warnings, "thumbnail generation failed: "+err.Error())
 	}
 
 	if err := s.ex.UpdateMaterialFileExtractionStatus(dbctx.Context{Ctx: ctx, Tx: dbc.Tx}, mf, kind, warnings, summary.Diagnostics); err != nil {
