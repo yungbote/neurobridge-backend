@@ -79,7 +79,7 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	handlerset := wireHandlers(log, serviceset, reposet, clientSet, ssehub)
+	handlerset := wireHandlers(log, theDB, serviceset, reposet, clientSet, ssehub)
 	middleware := wireMiddleware(log, serviceset)
 	router := wireRouter(handlerset, middleware)
 

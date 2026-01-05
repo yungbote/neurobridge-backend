@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
@@ -33,6 +34,7 @@ import (
 
 type PathHandler struct {
 	log *logger.Logger
+	db  *gorm.DB
 
 	path             repos.PathRepo
 	pathNodes        repos.PathNodeRepo
@@ -43,6 +45,7 @@ type PathHandler struct {
 	drillInstances   repos.LearningDrillInstanceRepo
 	genRuns          repos.LearningDocGenerationRunRepo
 	chunks           repos.MaterialChunkRepo
+	materialSets     repos.MaterialSetRepo
 	materialFiles    repos.MaterialFileRepo
 	materialAssets   repos.MaterialAssetRepo
 	userLibraryIndex repos.UserLibraryIndexRepo
@@ -62,6 +65,7 @@ type PathHandler struct {
 
 func NewPathHandler(
 	log *logger.Logger,
+	db *gorm.DB,
 	path repos.PathRepo,
 	pathNodes repos.PathNodeRepo,
 	pathNodeActivity repos.PathNodeActivityRepo,
@@ -71,6 +75,7 @@ func NewPathHandler(
 	drillInstances repos.LearningDrillInstanceRepo,
 	genRuns repos.LearningDocGenerationRunRepo,
 	chunks repos.MaterialChunkRepo,
+	materialSets repos.MaterialSetRepo,
 	materialFiles repos.MaterialFileRepo,
 	materialAssets repos.MaterialAssetRepo,
 	userLibraryIndex repos.UserLibraryIndexRepo,
@@ -86,6 +91,7 @@ func NewPathHandler(
 ) *PathHandler {
 	return &PathHandler{
 		log:              log.With("handler", "PathHandler"),
+		db:               db,
 		path:             path,
 		pathNodes:        pathNodes,
 		pathNodeActivity: pathNodeActivity,
@@ -95,6 +101,7 @@ func NewPathHandler(
 		drillInstances:   drillInstances,
 		genRuns:          genRuns,
 		chunks:           chunks,
+		materialSets:     materialSets,
 		materialFiles:    materialFiles,
 		materialAssets:   materialAssets,
 		userLibraryIndex: userLibraryIndex,
@@ -130,6 +137,89 @@ func (h *PathHandler) ListUserPaths(c *gin.Context) {
 	pathsWithJobs := h.attachJobSnapshot(c.Request.Context(), rd.UserID, paths)
 
 	response.RespondOK(c, gin.H{"paths": pathsWithJobs})
+}
+
+// DELETE /api/paths/:id
+func (h *PathHandler) DeletePath(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+	if h.path == nil || h.userLibraryIndex == nil {
+		response.RespondError(c, http.StatusInternalServerError, "path_repo_missing", nil)
+		return
+	}
+
+	pathID, err := uuid.Parse(c.Param("id"))
+	if err != nil || pathID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_path_id", err)
+		return
+	}
+
+	row, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, pathID)
+	if err != nil {
+		h.log.Error("DeletePath failed (load path)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+	if row == nil || row.UserID == nil || *row.UserID != rd.UserID {
+		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
+		return
+	}
+
+	idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
+	if err != nil {
+		h.log.Error("DeletePath failed (load library index)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_library_index_failed", err)
+		return
+	}
+
+	var (
+		idxID         uuid.UUID
+		materialSetID uuid.UUID
+	)
+	if idx != nil && idx.ID != uuid.Nil {
+		idxID = idx.ID
+		materialSetID = idx.MaterialSetID
+	}
+
+	if h.db == nil {
+		response.RespondError(c, http.StatusInternalServerError, "db_unavailable", nil)
+		return
+	}
+
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(txx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: c.Request.Context(), Tx: txx}
+
+		// Delete the index row first so we never keep a dangling (user, material_set)->path_id mapping.
+		if idxID != uuid.Nil {
+			if err := h.userLibraryIndex.FullDeleteByIDs(dbc, []uuid.UUID{idxID}); err != nil {
+				return err
+			}
+		}
+		if materialSetID != uuid.Nil && h.materialSets != nil {
+			if err := h.materialSets.FullDeleteByIDs(dbc, []uuid.UUID{materialSetID}); err != nil {
+				return err
+			}
+		}
+		if err := h.path.FullDeleteByIDs(dbc, []uuid.UUID{pathID}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		h.log.Error("DeletePath failed (transaction)", "error", err, "path_id", pathID)
+		response.RespondError(c, http.StatusInternalServerError, "delete_path_failed", err)
+		return
+	}
+
+	// Best-effort: delete material objects from bucket (db delete already succeeded).
+	if materialSetID != uuid.Nil && h.bucket != nil {
+		prefix := fmt.Sprintf("materials/%s/", materialSetID.String())
+		_ = h.bucket.DeletePrefix(c.Request.Context(), gcp.BucketCategoryMaterial, prefix)
+	}
+
+	response.RespondOK(c, gin.H{"ok": true})
 }
 
 // GET /api/paths/:id

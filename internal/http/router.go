@@ -116,6 +116,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		if cfg.PathHandler != nil {
 			protected.GET("/paths", cfg.PathHandler.ListUserPaths)
 			protected.GET("/paths/:id", cfg.PathHandler.GetPath)
+			protected.DELETE("/paths/:id", cfg.PathHandler.DeletePath)
 			protected.POST("/paths/:id/view", cfg.PathHandler.ViewPath)
 			protected.POST("/paths/:id/cover", cfg.PathHandler.GeneratePathCover)
 			protected.GET("/paths/:id/materials", cfg.PathHandler.ListPathMaterials)

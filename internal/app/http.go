@@ -7,6 +7,7 @@ import (
 	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
+	"gorm.io/gorm"
 )
 
 type Middleware struct {
@@ -28,7 +29,7 @@ type Handlers struct {
 	Job      *httpH.JobHandler
 }
 
-func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
+func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
 	return Handlers{
 		Health:   httpH.NewHealthHandler(),
@@ -58,6 +59,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 		),
 		Path: httpH.NewPathHandler(
 			log,
+			db,
 			repos.Path,
 			repos.PathNode,
 			repos.PathNodeActivity,
@@ -67,6 +69,7 @@ func wireHandlers(log *logger.Logger, services Services, repos Repos, clients Cl
 			repos.DrillInstance,
 			repos.DocGenerationRun,
 			repos.MaterialChunk,
+			repos.MaterialSet,
 			repos.MaterialFile,
 			repos.MaterialAsset,
 			repos.UserLibraryIndex,
