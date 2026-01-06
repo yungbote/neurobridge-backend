@@ -49,6 +49,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 		Chat: httpH.NewChatHandler(services.Chat),
 		Library: httpH.NewLibraryHandler(
 			log,
+			db,
 			services.JobService,
 			repos.JobRun,
 			repos.LibraryTaxonomyNode,

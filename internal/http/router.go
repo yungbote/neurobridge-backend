@@ -110,6 +110,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Library (taxonomy snapshot)
 		if cfg.LibraryHandler != nil {
 			protected.GET("/library/taxonomy", cfg.LibraryHandler.GetTaxonomySnapshot)
+			protected.GET("/library/taxonomy/nodes/:id/items", cfg.LibraryHandler.ListTaxonomyNodeItems)
 		}
 
 		// Paths (Path-centric learning)
