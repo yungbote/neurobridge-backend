@@ -31,6 +31,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		NodeActs:   p.nodeActs,
 		Activities: p.activities,
 		Concepts:   p.concepts,
+		NodeDocs:   p.nodeDocs,
+
+		UserLibraryIndex:     p.userLibraryIndex,
+		MaterialFiles:        p.materialFiles,
+		MaterialSetSummaries: p.materialSetSummaries,
 	}, steps.PathIndexInput{
 		UserID: jc.Job.OwnerUserID,
 		PathID: pathID,

@@ -139,7 +139,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	// Shared bootstrap service (used by workflows + learning pipelines).
 	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
 
-	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread)
+	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread, repos.ChatMessage)
 	chatNotifier := services.NewChatNotifier(emitter)
 
 	extractor := ingestion.NewContentExtractionService(
@@ -232,6 +232,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.PathNodeActivity,
 		repos.Activity,
 		repos.Concept,
+		repos.LearningNodeDoc,
+		repos.UserLibraryIndex,
+		repos.MaterialFile,
+		repos.MaterialSetSummary,
 	)
 	if err := jobRegistry.Register(chatPathIndex); err != nil {
 		return Services{}, err
@@ -539,6 +543,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		jobService,
 		repos.Path,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
 		sagaSvc,
 		bootstrapSvc,
 		&learning_build.InlineDeps{

@@ -16,9 +16,11 @@ const (
 	DocTypeClaim      = "claim"
 
 	// Path-scoped derived docs (from canonical learning tables).
-	DocTypePathOverview = "path_overview"
-	DocTypePathNode     = "path_node"
-	DocTypePathConcepts = "path_concepts"
+	DocTypePathOverview  = "path_overview"
+	DocTypePathNode      = "path_node"
+	DocTypePathConcepts  = "path_concepts"
+	DocTypePathMaterials = "path_materials"
+	DocTypePathUnitDoc   = "path_unit_doc"
 )
 
 const (

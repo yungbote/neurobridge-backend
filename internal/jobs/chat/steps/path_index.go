@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,11 @@ type PathIndexDeps struct {
 	NodeActs   repos.PathNodeActivityRepo
 	Activities repos.ActivityRepo
 	Concepts   repos.ConceptRepo
+	NodeDocs   repos.LearningNodeDocRepo
+
+	UserLibraryIndex     repos.UserLibraryIndexRepo
+	MaterialFiles        repos.MaterialFileRepo
+	MaterialSetSummaries repos.MaterialSetSummaryRepo
 }
 
 type PathIndexInput struct {
@@ -116,11 +122,53 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		concepts, _ = deps.Concepts.GetByScope(dbc, "path", &in.PathID)
 	}
 
+	// Load unit docs (optional; improves "any question about this path").
+	nodeDocByNodeID := map[uuid.UUID]*types.LearningNodeDoc{}
+	if deps.NodeDocs != nil && len(nodes) > 0 {
+		nodeIDs := make([]uuid.UUID, 0, len(nodes))
+		for _, n := range nodes {
+			if n != nil && n.ID != uuid.Nil {
+				nodeIDs = append(nodeIDs, n.ID)
+			}
+		}
+		if len(nodeIDs) > 0 {
+			if rows, err := deps.NodeDocs.GetByPathNodeIDs(dbc, nodeIDs); err == nil {
+				for _, d := range rows {
+					if d != nil && d.PathNodeID != uuid.Nil && strings.TrimSpace(d.DocText) != "" {
+						nodeDocByNodeID[d.PathNodeID] = d
+					}
+				}
+			}
+		}
+	}
+
+	// Load source material files (optional).
+	var (
+		materialSetID uuid.UUID
+		materialFiles []*types.MaterialFile
+		setSummary    *types.MaterialSetSummary
+	)
+	if deps.UserLibraryIndex != nil {
+		if idx, err := deps.UserLibraryIndex.GetByUserAndPathID(dbc, in.UserID, in.PathID); err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
+			materialSetID = idx.MaterialSetID
+			if deps.MaterialFiles != nil {
+				if rows, err := deps.MaterialFiles.GetByMaterialSetID(dbc, materialSetID); err == nil {
+					materialFiles = rows
+				}
+			}
+			if deps.MaterialSetSummaries != nil {
+				if rows, err := deps.MaterialSetSummaries.GetByMaterialSetIDs(dbc, []uuid.UUID{materialSetID}); err == nil && len(rows) > 0 {
+					setSummary = rows[0]
+				}
+			}
+		}
+	}
+
 	now := time.Now().UTC()
 	ns := chatIndex.ChatUserNamespace(in.UserID)
 
 	// Best-effort cleanup: remove previous path-scoped docs of these types (projection rebuild).
-	docTypes := []string{DocTypePathOverview, DocTypePathNode, DocTypePathConcepts}
+	docTypes := []string{DocTypePathOverview, DocTypePathNode, DocTypePathConcepts, DocTypePathMaterials, DocTypePathUnitDoc}
 	var priorVectorIDs []string
 	_ = deps.DB.WithContext(ctx).
 		Model(&types.ChatDoc{}).
@@ -204,6 +252,56 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		}
 		docs = append(docs, d)
 		embedInputs = append(embedInputs, d.ContextualText)
+
+		// Optional: unit doc chunks for deep Q&A.
+		if nd := nodeDocByNodeID[n.ID]; nd != nil {
+			docText := strings.TrimSpace(nd.DocText)
+			if docText != "" {
+				chunks := chunkByChars(docText, 2200)
+				if len(chunks) > 8 {
+					chunks = chunks[:8]
+				}
+				for ci, chunk := range chunks {
+					chunk = strings.TrimSpace(chunk)
+					if chunk == "" {
+						continue
+					}
+					unitDocID := deterministicUUID(fmt.Sprintf(
+						"chat_doc|v%d|%s|path:%s|node:%s|chunk:%d",
+						ChatPathDocVersion,
+						DocTypePathUnitDoc,
+						in.PathID.String(),
+						n.ID.String(),
+						ci,
+					))
+					title := strings.TrimSpace(n.Title)
+					if title == "" {
+						title = "Untitled unit"
+					}
+					body := fmt.Sprintf("Unit %d: %s\n\n%s", n.Index, title, chunk)
+					ud := &types.ChatDoc{
+						ID:             unitDocID,
+						UserID:         in.UserID,
+						DocType:        DocTypePathUnitDoc,
+						Scope:          ScopePath,
+						ScopeID:        &in.PathID,
+						ThreadID:       nil,
+						PathID:         &in.PathID,
+						JobID:          nil,
+						SourceID:       &n.ID,
+						SourceSeq:      nil,
+						ChunkIndex:     ci,
+						Text:           body,
+						ContextualText: "Unit doc (retrieval context):\n" + body,
+						VectorID:       unitDocID.String(),
+						CreatedAt:      now,
+						UpdatedAt:      now,
+					}
+					docs = append(docs, ud)
+					embedInputs = append(embedInputs, ud.ContextualText)
+				}
+			}
+		}
 	}
 
 	// Concepts doc (optional, capped).
@@ -237,6 +335,32 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 			Text:           body,
 			ContextualText: "Path concepts (retrieval context):\n" + body,
 			VectorID:       conceptsID.String(),
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		docs = append(docs, d)
+		embedInputs = append(embedInputs, d.ContextualText)
+	}
+
+	// Materials doc (optional).
+	if materialSetID != uuid.Nil && len(materialFiles) > 0 {
+		materialsID := deterministicUUID(fmt.Sprintf("chat_doc|v%d|%s|path:%s|materials", ChatPathDocVersion, DocTypePathMaterials, in.PathID.String()))
+		body := renderPathMaterials(materialFiles, setSummary)
+		d := &types.ChatDoc{
+			ID:             materialsID,
+			UserID:         in.UserID,
+			DocType:        DocTypePathMaterials,
+			Scope:          ScopePath,
+			ScopeID:        &in.PathID,
+			ThreadID:       nil,
+			PathID:         &in.PathID,
+			JobID:          nil,
+			SourceID:       &materialSetID,
+			SourceSeq:      nil,
+			ChunkIndex:     0,
+			Text:           body,
+			ContextualText: "Path source materials (retrieval context):\n" + body,
+			VectorID:       materialsID.String(),
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
@@ -282,18 +406,21 @@ func renderPathOverview(path *types.Path, nodes []*types.PathNode, concepts []*t
 
 	var b strings.Builder
 	b.WriteString("Path: " + title + "\n")
-	b.WriteString("PathID: " + path.ID.String() + "\n")
 	b.WriteString("Status: " + status + "\n")
 	if desc != "" {
 		b.WriteString("Description: " + desc + "\n")
 	}
 	if len(nodes) > 0 {
-		b.WriteString("\nNodes:\n")
+		b.WriteString("\nUnit titles (in order):\n")
 		for _, n := range nodes {
 			if n == nil || n.ID == uuid.Nil {
 				continue
 			}
-			b.WriteString(fmt.Sprintf("- [%d] %s (node_id=%s)\n", n.Index, strings.TrimSpace(n.Title), n.ID.String()))
+			t := strings.TrimSpace(n.Title)
+			if t == "" {
+				t = "Untitled unit"
+			}
+			b.WriteString(fmt.Sprintf("- %d. %s\n", n.Index, t))
 		}
 	}
 	if len(concepts) > 0 {
@@ -324,16 +451,11 @@ func renderPathNode(n *types.PathNode, joins []*types.PathNodeActivity, activity
 	}
 	title := strings.TrimSpace(n.Title)
 	if title == "" {
-		title = "Node"
+		title = "Untitled unit"
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Node %d: %s\n", n.Index, title))
-	b.WriteString("NodeID: " + n.ID.String() + "\n")
-	b.WriteString("PathID: " + n.PathID.String() + "\n")
-	if n.ParentNodeID != nil && *n.ParentNodeID != uuid.Nil {
-		b.WriteString("ParentNodeID: " + n.ParentNodeID.String() + "\n")
-	}
+	b.WriteString(fmt.Sprintf("Unit %d: %s\n", n.Index, title))
 	if len(n.Gating) > 0 && string(n.Gating) != "null" {
 		b.WriteString("Gating: " + trimToChars(string(n.Gating), 800) + "\n")
 	}
@@ -347,7 +469,7 @@ func renderPathNode(n *types.PathNode, joins []*types.PathNodeActivity, activity
 				continue
 			}
 			a := activityByID[j.ActivityID]
-			name := j.ActivityID.String()
+			name := "Activity"
 			kind := ""
 			status := ""
 			if a != nil {
@@ -361,14 +483,18 @@ func renderPathNode(n *types.PathNode, joins []*types.PathNodeActivity, activity
 			if j.IsPrimary {
 				line += "[primary] "
 			}
-			line += fmt.Sprintf("%s (activity_id=%s", name, j.ActivityID.String())
+			line += name
+			meta := make([]string, 0, 2)
 			if kind != "" {
-				line += " kind=" + kind
+				meta = append(meta, "kind="+kind)
 			}
 			if status != "" {
-				line += " status=" + status
+				meta = append(meta, "status="+status)
 			}
-			line += ")\n"
+			if len(meta) > 0 {
+				line += " (" + strings.Join(meta, ", ") + ")"
+			}
+			line += "\n"
 			b.WriteString(line)
 			count++
 			if count >= 12 {
@@ -382,7 +508,7 @@ func renderPathNode(n *types.PathNode, joins []*types.PathNodeActivity, activity
 
 func renderPathConcepts(concepts []*types.Concept) string {
 	var b strings.Builder
-	b.WriteString("Concepts:\n")
+	b.WriteString(fmt.Sprintf("Concepts (%d):\n", len(concepts)))
 	for _, c := range concepts {
 		if c == nil {
 			continue
@@ -391,19 +517,78 @@ func renderPathConcepts(concepts []*types.Concept) string {
 		if name == "" {
 			continue
 		}
-		key := strings.TrimSpace(c.Key)
-		summary := strings.TrimSpace(c.Summary)
-		if summary != "" {
-			summary = trimToChars(summary, 280)
-		}
-		line := "- " + name
-		if key != "" {
-			line += " (key=" + key + ")"
-		}
-		if summary != "" {
-			line += ": " + summary
-		}
-		b.WriteString(line + "\n")
+		b.WriteString("- " + name + "\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func renderPathMaterials(files []*types.MaterialFile, setSummary *types.MaterialSetSummary) string {
+	var b strings.Builder
+	if len(files) == 0 {
+		return ""
+	}
+	b.WriteString(fmt.Sprintf("Source files (%d):\n", len(files)))
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		name := strings.TrimSpace(f.OriginalName)
+		if name == "" {
+			name = "Untitled file"
+		}
+		kind := materialFileTypeLabel(f)
+		if kind != "" {
+			b.WriteString("- " + name + " (" + kind + ")\n")
+		} else {
+			b.WriteString("- " + name + "\n")
+		}
+	}
+	if setSummary != nil && strings.TrimSpace(setSummary.SummaryMD) != "" {
+		b.WriteString("\nMaterial set summary:\n")
+		b.WriteString(trimToChars(strings.TrimSpace(setSummary.SummaryMD), 1600))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func materialFileTypeLabel(f *types.MaterialFile) string {
+	if f == nil {
+		return ""
+	}
+	mt := strings.ToLower(strings.TrimSpace(f.MimeType))
+	if strings.HasPrefix(mt, "application/pdf") {
+		return "PDF"
+	}
+	if strings.HasPrefix(mt, "application/vnd.ms-powerpoint") || strings.HasPrefix(mt, "application/vnd.openxmlformats-officedocument.presentationml") {
+		return "PowerPoint"
+	}
+	if strings.HasPrefix(mt, "video/") {
+		return "Video"
+	}
+	if strings.HasPrefix(mt, "audio/") {
+		return "Audio"
+	}
+	if strings.HasPrefix(mt, "image/") {
+		return "Image"
+	}
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(strings.TrimSpace(f.OriginalName)), "."))
+	switch ext {
+	case "pdf":
+		return "PDF"
+	case "ppt", "pptx":
+		return "PowerPoint"
+	case "doc", "docx":
+		return "Word"
+	case "md", "markdown":
+		return "Markdown"
+	case "txt":
+		return "Text"
+	case "mov", "mp4", "m4v", "webm":
+		return "Video"
+	case "mp3", "wav", "m4a":
+		return "Audio"
+	case "png", "jpg", "jpeg", "gif", "webp", "svg":
+		return "Image"
+	default:
+		return ""
+	}
 }

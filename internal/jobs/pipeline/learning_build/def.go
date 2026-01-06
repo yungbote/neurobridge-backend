@@ -72,6 +72,9 @@ type Pipeline struct {
 	log       *logger.Logger
 	jobs      services.JobService
 	path      repos.PathRepo
+	threads   repos.ChatThreadRepo
+	messages  repos.ChatMessageRepo
+	chatNotif services.ChatNotifier
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
 
@@ -89,6 +92,9 @@ func New(
 	baseLog *logger.Logger,
 	jobs services.JobService,
 	path repos.PathRepo,
+	threads repos.ChatThreadRepo,
+	messages repos.ChatMessageRepo,
+	chatNotif services.ChatNotifier,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
 	inline *InlineDeps,
@@ -128,6 +134,9 @@ func New(
 		log:               baseLog.With("job", "learning_build"),
 		jobs:              jobs,
 		path:              path,
+		threads:           threads,
+		messages:          messages,
+		chatNotif:         chatNotif,
 		saga:              saga,
 		bootstrap:         bootstrap,
 		inline:            inline,

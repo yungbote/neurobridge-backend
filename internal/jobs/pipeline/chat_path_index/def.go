@@ -23,6 +23,11 @@ type Pipeline struct {
 	nodeActs   repos.PathNodeActivityRepo
 	activities repos.ActivityRepo
 	concepts   repos.ConceptRepo
+	nodeDocs   repos.LearningNodeDocRepo
+
+	userLibraryIndex     repos.UserLibraryIndexRepo
+	materialFiles        repos.MaterialFileRepo
+	materialSetSummaries repos.MaterialSetSummaryRepo
 }
 
 func New(
@@ -36,6 +41,10 @@ func New(
 	nodeActs repos.PathNodeActivityRepo,
 	activities repos.ActivityRepo,
 	concepts repos.ConceptRepo,
+	nodeDocs repos.LearningNodeDocRepo,
+	userLibraryIndex repos.UserLibraryIndexRepo,
+	materialFiles repos.MaterialFileRepo,
+	materialSetSummaries repos.MaterialSetSummaryRepo,
 ) *Pipeline {
 	return &Pipeline{
 		db:         db,
@@ -48,6 +57,11 @@ func New(
 		nodeActs:   nodeActs,
 		activities: activities,
 		concepts:   concepts,
+		nodeDocs:   nodeDocs,
+
+		userLibraryIndex:     userLibraryIndex,
+		materialFiles:        materialFiles,
+		materialSetSummaries: materialSetSummaries,
 	}
 }
 

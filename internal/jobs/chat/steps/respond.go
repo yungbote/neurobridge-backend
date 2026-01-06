@@ -120,7 +120,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	// Ensure thread state + OpenAI conversation.
-state, err := deps.State.GetOrCreate(dbc, in.ThreadID)
+	state, err := deps.State.GetOrCreate(dbc, in.ThreadID)
 	if err != nil {
 		return out, err
 	}
@@ -262,7 +262,7 @@ state, err := deps.State.GetOrCreate(dbc, in.ThreadID)
 	out.AssistantText = text
 
 	// Persist final message content + status.
-if err := deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
+	if err := deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 		"content":    text,
 		"status":     MessageStatusDone,
 		"updated_at": time.Now().UTC(),
@@ -281,7 +281,7 @@ if err := deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]inte
 	}
 
 	doneAt := time.Now().UTC()
-_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
+	_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 		"status":                 "done",
 		"completed_at":           &doneAt,
 		"openai_conversation_id": state.OpenAIConversationID,

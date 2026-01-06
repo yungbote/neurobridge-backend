@@ -85,12 +85,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		st.Mode = resolveMode(jc)
 	}
 
+	var runErr error
 	switch strings.ToLower(strings.TrimSpace(st.Mode)) {
 	case "inline":
-		return p.runInline(jc, st, setID, sagaID, pathID)
+		runErr = p.runInline(jc, st, setID, sagaID, pathID)
 	default:
-		return p.runChild(jc, st, setID, sagaID, pathID)
+		runErr = p.runChild(jc, st, setID, sagaID, pathID)
 	}
+
+	if strings.EqualFold(strings.TrimSpace(jc.Job.Status), "failed") {
+		p.maybeAppendPathBuildFailedMessage(jc, pathID)
+	}
+
+	return runErr
 }
 
 func resolveMode(jc *jobrt.Context) string {
@@ -160,6 +167,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		}
 		p.enqueueChatPathIndex(ctx, pathID)
 		p.enqueueLibraryTaxonomyRoute(ctx, pathID)
+		p.maybeAppendPathBuildReadyMessage(ctx, setID, pathID)
 		return nil
 	}
 
@@ -520,6 +528,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
 	p.enqueueChatPathIndex(jc, pathID)
 	p.enqueueLibraryTaxonomyRoute(jc, pathID)
+	p.maybeAppendPathBuildReadyMessage(jc, setID, pathID)
 
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),

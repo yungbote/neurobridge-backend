@@ -21,6 +21,10 @@ type HybridRetrieveOutput struct {
 	Docs  []*types.ChatDoc
 	Mode  string
 	Trace map[string]any
+
+	// QueryEmbedding is the embedding used for dense retrieval.
+	// It is not persisted; callers may reuse it for other retrieval passes (e.g., source materials).
+	QueryEmbedding []float32 `json:"-"`
 }
 
 type retrievalCandidate struct {
@@ -63,6 +67,7 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 	if len(embs) > 0 {
 		qEmb = embs[0]
 	}
+	out.QueryEmbedding = qEmb
 	out.Trace["embed_ms"] = time.Since(embedStart).Milliseconds()
 
 	docTypes := []string{
@@ -74,6 +79,8 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 		DocTypePathOverview,
 		DocTypePathNode,
 		DocTypePathConcepts,
+		DocTypePathMaterials,
+		DocTypePathUnitDoc,
 	}
 	maxCandidatesPerScope := 40
 
@@ -258,12 +265,11 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 		return nil
 	}
 
-	// Expansion order: thread -> path -> user (stop early when thread retrieval looks healthy).
+	// Expansion order: thread -> path -> user.
 	if err := addScope(ScopeThread, &thread.ID); err != nil {
 		return out, err
 	}
-	threadCand := len(candidates)
-	if thread.PathID != nil && *thread.PathID != uuid.Nil && threadCand < 24 {
+	if thread.PathID != nil && *thread.PathID != uuid.Nil {
 		if err := addScope(ScopePath, thread.PathID); err != nil {
 			return out, err
 		}
@@ -604,11 +610,11 @@ func graphContext(dbc dbctx.Context, userID uuid.UUID, retrieved []*types.ChatDo
 			if ed == nil {
 				continue
 			}
-			src := ed.SrcEntityID.String()
+			src := "Unknown entity"
 			if n, ok := nameByID[ed.SrcEntityID]; ok {
 				src = n
 			}
-			dst := ed.DstEntityID.String()
+			dst := "Unknown entity"
 			if n, ok := nameByID[ed.DstEntityID]; ok {
 				dst = n
 			}

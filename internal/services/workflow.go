@@ -29,6 +29,7 @@ type workflowService struct {
 	bootstrap LearningBuildBootstrapService
 	paths     repos.PathRepo
 	threads   repos.ChatThreadRepo
+	messages  repos.ChatMessageRepo
 }
 
 func NewWorkflowService(
@@ -39,6 +40,7 @@ func NewWorkflowService(
 	bootstrap LearningBuildBootstrapService,
 	paths repos.PathRepo,
 	threads repos.ChatThreadRepo,
+	messages repos.ChatMessageRepo,
 ) WorkflowService {
 	return &workflowService{
 		db:        db,
@@ -48,6 +50,7 @@ func NewWorkflowService(
 		bootstrap: bootstrap,
 		paths:     paths,
 		threads:   threads,
+		messages:  messages,
 	}
 }
 
@@ -76,7 +79,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 	if transaction == nil {
 		transaction = w.db
 	}
-	if w.bootstrap == nil || w.paths == nil || w.threads == nil {
+	if w.bootstrap == nil || w.paths == nil || w.threads == nil || w.messages == nil {
 		return nil, uuid.Nil, nil, nil, fmt.Errorf("workflow service not fully configured")
 	}
 
@@ -163,6 +166,43 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		}); err != nil {
 			return err
 		}
+
+		// 7) Seed the chat thread with a generation status message (content intentionally blank).
+		genMeta := map[string]any{
+			"kind":            "path_generation",
+			"material_set_id": set.ID.String(),
+			"path_id":         pathID.String(),
+			"job_id":          job.ID.String(),
+		}
+		genMetaJSON, _ := json.Marshal(genMeta)
+
+		nextSeq := thread.NextSeq + 1
+		genMsg := &types.ChatMessage{
+			ID:        uuid.New(),
+			ThreadID:  thread.ID,
+			UserID:    userID,
+			Seq:       nextSeq,
+			Role:      "assistant",
+			Status:    "sent",
+			Content:   "",
+			Model:     "",
+			Metadata:  datatypes.JSON(genMetaJSON),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if _, err := w.messages.Create(inner, []*types.ChatMessage{genMsg}); err != nil {
+			return err
+		}
+		if err := w.threads.UpdateFields(inner, thread.ID, map[string]interface{}{
+			"next_seq":        nextSeq,
+			"last_message_at": now,
+			"updated_at":      now,
+		}); err != nil {
+			return err
+		}
+		thread.NextSeq = nextSeq
+		thread.LastMessageAt = now
+		thread.UpdatedAt = now
 
 		return nil
 	})
