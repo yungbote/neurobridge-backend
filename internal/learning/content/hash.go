@@ -16,16 +16,28 @@ func HashBytes(b []byte) string {
 // CanonicalizeJSON marshals a JSON value with stable key ordering and no whitespace.
 // Input may be raw bytes, a map/struct, or any json-marshalable value.
 func CanonicalizeJSON(v any) ([]byte, error) {
+	var obj any
 	switch t := v.(type) {
 	case []byte:
-		var obj any
 		if err := json.Unmarshal(t, &obj); err != nil {
 			return nil, err
 		}
-		return json.Marshal(obj)
+	case json.RawMessage:
+		if err := json.Unmarshal([]byte(t), &obj); err != nil {
+			return nil, err
+		}
 	default:
-		return json.Marshal(v)
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return nil, err
+		}
 	}
+
+	obj = sanitizeJSONValueForPostgres(obj)
+	return json.Marshal(obj)
 }
 
 func HashSources(promptVersion string, schemaVersion int, chunkIDs []string) string {

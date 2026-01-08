@@ -83,13 +83,24 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 	actsJSON, _ := json.Marshal(map[string]any{"activities": acts})
 	variantsJSON, _ := json.Marshal(map[string]any{"variants": variants})
 
+	curriculumSpecJSON := ""
+	if deps.Path != nil {
+		if pr, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && pr != nil && len(pr.Metadata) > 0 && strings.TrimSpace(string(pr.Metadata)) != "" && string(pr.Metadata) != "null" {
+			var meta map[string]any
+			if json.Unmarshal(pr.Metadata, &meta) == nil && meta != nil {
+				curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
+			}
+		}
+	}
+
 	p, err := prompts.Build(prompts.PromptCoverageAndCoheranceAudit, prompts.Input{
-		ConceptsJSON:   string(conceptsJSON),
-		PathNodesJSON:  string(nodesJSON),
-		NodePlansJSON:  "[]",
-		ChainPlansJSON: "[]",
-		ActivitiesJSON: string(actsJSON),
-		VariantsJSON:   string(variantsJSON),
+		CurriculumSpecJSON: curriculumSpecJSON,
+		ConceptsJSON:       string(conceptsJSON),
+		PathNodesJSON:      string(nodesJSON),
+		NodePlansJSON:      "[]",
+		ChainPlansJSON:     "[]",
+		ActivitiesJSON:     string(actsJSON),
+		VariantsJSON:       string(variantsJSON),
 	})
 	if err != nil {
 		return out, err

@@ -71,6 +71,24 @@ type webResourceItemV1 struct {
 	Reason string `json:"reason"`
 }
 
+type webResourcePlanV2 struct {
+	Resources []webResourceItemV2   `json:"resources"`
+	Coverage  webResourceCoverageV2 `json:"coverage"`
+}
+
+type webResourceItemV2 struct {
+	Title             string   `json:"title"`
+	URL               string   `json:"url"`
+	Kind              string   `json:"type"`
+	Reason            string   `json:"reason"`
+	CoversSectionKeys []string `json:"covers_section_keys"`
+}
+
+type webResourceCoverageV2 struct {
+	CoveredSectionKeys []string `json:"covered_section_keys"`
+	MissingSectionKeys []string `json:"missing_section_keys"`
+}
+
 func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebResourcesSeedInput) (WebResourcesSeedOutput, error) {
 	out := WebResourcesSeedOutput{}
 	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Path == nil || deps.Bucket == nil || deps.AI == nil || deps.Saga == nil || deps.Bootstrap == nil {
@@ -97,15 +115,11 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 		return out, err
 	}
 
-	// If a user uploaded files, this stage is a no-op (we only seed for prompt-only builds).
-	if shouldSkipWebSeed(files) {
-		out.Skipped = true
-		return out, nil
-	}
-
 	prompt := strings.TrimSpace(in.Prompt)
 	if prompt == "" {
-		return out, fmt.Errorf("web_resources_seed: missing prompt (prompt-only builds require a prompt)")
+		// Upload-only build: do not fail; downstream stages can operate on uploaded materials.
+		out.Skipped = true
+		return out, nil
 	}
 
 	// Always ensure a small seed file exists so downstream stages never see an empty material set.
@@ -122,10 +136,44 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 		return out, nil
 	}
 
-	plan, err := buildWebResourcePlan(ctx, deps, prompt)
+	// If we already seeded web_* files for this set, treat as completed (idempotent).
+	if hasAnyWebResourceFile(files) {
+		out.Skipped = true
+		return out, nil
+	}
+
+	hasUploads := hasUserUploadedFiles(files)
+	if hasUploads && !shouldAugmentUploadsWithWeb(prompt) && !envBool("WEB_RESOURCES_AUGMENT_UPLOADS", false) {
+		// Prompt exists but the user likely intended "use my uploads" (or the prompt isn't mastery); keep uploads-only.
+		out.Skipped = true
+		_ = deps.persistWebPlanV2(ctx, pathID, CurriculumSpecV1{
+			SchemaVersion:  1,
+			Goal:           prompt,
+			Domain:         "",
+			CoverageTarget: InferCoverageTargetFromPrompt(prompt),
+			Sections:       nil,
+		}, webResourcePlanV2{}, 0, "uploads_only")
+		return out, nil
+	}
+
+	spec, sErr := BuildCurriculumSpecV1(ctx, deps.AI, prompt)
+	if sErr != nil {
+		deps.Log.Warn("web_resources_seed: curriculum spec generation failed; falling back to v1 planner", "error", sErr)
+		planV1, err := buildWebResourcePlan(ctx, deps, prompt)
+		if err != nil {
+			// Non-fatal: the rest of the pipeline can still run from the prompt seed file.
+			deps.Log.Warn("web_resources_seed: plan generation failed; continuing with prompt-only", "error", err)
+			out.Skipped = true
+			return out, nil
+		}
+		out.ResourcesPlanned = len(planV1.Resources)
+		return deps.fetchAndPersistPlanV1(ctx, in, pathID, planV1, &out)
+	}
+
+	plan, err := buildWebResourcePlanV2(ctx, deps, spec)
 	if err != nil {
 		// Non-fatal: the rest of the pipeline can still run from the prompt seed file.
-		deps.Log.Warn("web_resources_seed: plan generation failed; continuing with prompt-only", "error", err)
+		deps.Log.Warn("web_resources_seed: v2 plan generation failed; continuing with prompt-only", "error", err)
 		out.Skipped = true
 		return out, nil
 	}
@@ -139,6 +187,9 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 	if maxFetch < 1 {
 		maxFetch = 1
 	}
+	if strings.EqualFold(strings.TrimSpace(spec.CoverageTarget), "mastery") && maxFetch < 14 {
+		maxFetch = 14
+	}
 	maxBytes := int64(envInt("WEB_RESOURCES_MAX_BYTES", 2*1024*1024))
 	if maxBytes < 64*1024 {
 		maxBytes = 64 * 1024
@@ -148,7 +199,16 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 
 	// Fetch and persist resources (best-effort; we don't fail the stage if some URLs fail).
 	fetched := 0
-	for _, r := range plan.Resources {
+	requiredSections := make([]string, 0, len(spec.Sections))
+	for _, s := range spec.Sections {
+		if strings.TrimSpace(s.Key) != "" {
+			requiredSections = append(requiredSections, strings.TrimSpace(s.Key))
+		}
+	}
+	requiredSections = dedupeStrings(requiredSections)
+	selected := selectWebResourcesForCoverage(plan.Resources, requiredSections, maxFetch)
+
+	for _, r := range selected {
 		if fetched >= maxFetch {
 			break
 		}
@@ -170,7 +230,13 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 			continue
 		}
 
-		name, mimeType := normalizeFetchedNameAndMime(r, finalURL, ctype)
+		// Reuse the v1 naming logic (title/url/kind fields are identical).
+		name, mimeType := normalizeFetchedNameAndMime(webResourceItemV1{
+			Title:  r.Title,
+			URL:    r.URL,
+			Kind:   r.Kind,
+			Reason: r.Reason,
+		}, finalURL, ctype)
 		payload := body
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "text/") {
 			// Prefix content with provenance so the ingestion extractor preserves it even when stripping HTML tags.
@@ -193,7 +259,7 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 	out.ResourcesFetched = fetched
 
 	// Record the plan (debuggability). Best-effort; failure shouldn't fail the stage.
-	_ = deps.persistWebPlan(ctx, pathID, plan, fetched)
+	_ = deps.persistWebPlanV2(ctx, pathID, spec, plan, fetched, stringsOr(spec.CoverageTarget, "unknown"))
 
 	return out, nil
 }
@@ -220,6 +286,43 @@ func shouldSkipWebSeed(files []*types.MaterialFile) bool {
 		}
 	}
 	return true
+}
+
+func hasAnyWebResourceFile(files []*types.MaterialFile) bool {
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.OriginalName)), "web_") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUserUploadedFiles(files []*types.MaterialFile) bool {
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(f.OriginalName))
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, "web_") {
+			continue
+		}
+		if name == "learning_goal.txt" || name == "learning_goal.md" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func shouldAugmentUploadsWithWeb(prompt string) bool {
+	// Conservative heuristic: only auto-augment uploads when the user clearly asks for full coverage.
+	return InferCoverageTargetFromPrompt(prompt) == "mastery"
 }
 
 func (deps WebResourcesSeedDeps) ensureGoalFile(ctx context.Context, in WebResourcesSeedInput, prompt string, files []*types.MaterialFile) (int, error) {
@@ -307,7 +410,7 @@ func (deps WebResourcesSeedDeps) createMaterialFileFromBytes(
 	return 1, nil
 }
 
-func (deps WebResourcesSeedDeps) persistWebPlan(ctx context.Context, pathID uuid.UUID, plan webResourcePlanV1, fetched int) error {
+func (deps WebResourcesSeedDeps) persistWebPlanV2(ctx context.Context, pathID uuid.UUID, spec CurriculumSpecV1, plan webResourcePlanV2, fetched int, mode string) error {
 	if deps.Path == nil || pathID == uuid.Nil {
 		return nil
 	}
@@ -320,15 +423,100 @@ func (deps WebResourcesSeedDeps) persistWebPlan(ctx context.Context, pathID uuid
 		_ = json.Unmarshal(row.Metadata, &meta)
 	}
 	meta["web_resources_seed"] = map[string]any{
+		"spec":      spec,
 		"planned":   plan,
 		"fetched":   fetched,
 		"updated":   time.Now().UTC().Format(time.RFC3339Nano),
-		"version":   "v1",
+		"version":   "v2",
+		"mode":      strings.TrimSpace(mode),
 		"max_fetch": envInt("WEB_RESOURCES_MAX_FETCH", 10),
 	}
 	return deps.Path.UpdateFields(dbctx.Context{Ctx: ctx}, pathID, map[string]any{
 		"metadata": mustJSON(meta),
 	})
+}
+
+func (deps WebResourcesSeedDeps) fetchAndPersistPlanV1(ctx context.Context, in WebResourcesSeedInput, pathID uuid.UUID, plan webResourcePlanV1, out *WebResourcesSeedOutput) (WebResourcesSeedOutput, error) {
+	if out == nil {
+		out = &WebResourcesSeedOutput{}
+	}
+	maxFetch := envInt("WEB_RESOURCES_MAX_FETCH", 10)
+	if maxFetch < 1 {
+		maxFetch = 1
+	}
+	maxBytes := int64(envInt("WEB_RESOURCES_MAX_BYTES", 2*1024*1024))
+	if maxBytes < 64*1024 {
+		maxBytes = 64 * 1024
+	}
+
+	client := newWebHTTPClient()
+	fetched := 0
+	for _, r := range plan.Resources {
+		if fetched >= maxFetch {
+			break
+		}
+		u := strings.TrimSpace(r.URL)
+		if u == "" {
+			continue
+		}
+		if !isAllowedWebURL(ctx, u) {
+			deps.Log.Warn("web_resources_seed: blocked url", "url", u)
+			continue
+		}
+
+		body, ctype, finalURL, ferr := fetchURL(ctx, client, u, maxBytes)
+		if ferr != nil {
+			deps.Log.Warn("web_resources_seed: fetch failed", "url", u, "error", ferr)
+			continue
+		}
+		if len(body) == 0 {
+			continue
+		}
+
+		name, mimeType := normalizeFetchedNameAndMime(r, finalURL, ctype)
+		payload := body
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "text/") {
+			provenance := fmt.Sprintf(
+				"SOURCE_URL: %s\nSOURCE_TITLE: %s\n\n",
+				strings.TrimSpace(finalURL),
+				strings.TrimSpace(r.Title),
+			)
+			payload = append([]byte(provenance), body...)
+		}
+
+		n, uErr := deps.createMaterialFileFromBytes(ctx, in, name, mimeType, payload)
+		if uErr != nil {
+			deps.Log.Warn("web_resources_seed: failed to persist resource", "url", u, "error", uErr)
+			continue
+		}
+		out.FilesCreated += n
+		fetched++
+	}
+	out.ResourcesFetched = fetched
+
+	// Record v1 plan for debuggability.
+	planV2 := webResourcePlanV2{
+		Resources: make([]webResourceItemV2, 0, len(plan.Resources)),
+		Coverage:  webResourceCoverageV2{},
+	}
+	for _, r := range plan.Resources {
+		planV2.Resources = append(planV2.Resources, webResourceItemV2{
+			Title:             r.Title,
+			URL:               r.URL,
+			Kind:              r.Kind,
+			Reason:            r.Reason,
+			CoversSectionKeys: nil,
+		})
+	}
+	_ = deps.persistWebPlanV2(ctx, pathID, CurriculumSpecV1{
+		SchemaVersion:  1,
+		Goal:           strings.TrimSpace(in.Prompt),
+		Domain:         "",
+		CoverageTarget: InferCoverageTargetFromPrompt(in.Prompt),
+		Sections:       nil,
+	}, planV2, fetched, "v1_fallback")
+
+	return *out, nil
 }
 
 func buildWebResourcePlan(ctx context.Context, deps WebResourcesSeedDeps, prompt string) (webResourcePlanV1, error) {
@@ -389,6 +577,112 @@ Return 8–14 resources.`, strings.TrimSpace(prompt))
 	return out, nil
 }
 
+func buildWebResourcePlanV2(ctx context.Context, deps WebResourcesSeedDeps, spec CurriculumSpecV1) (webResourcePlanV2, error) {
+	out := webResourcePlanV2{}
+	goal := strings.TrimSpace(spec.Goal)
+	if goal == "" {
+		return out, fmt.Errorf("buildWebResourcePlanV2: missing spec goal")
+	}
+
+	sectionItems := make([]map[string]any, 0, len(spec.Sections))
+	for _, s := range spec.Sections {
+		sectionItems = append(sectionItems, map[string]any{
+			"key":         strings.TrimSpace(s.Key),
+			"title":       strings.TrimSpace(s.Title),
+			"description": strings.TrimSpace(s.Description),
+		})
+	}
+	sectionsJSON, _ := json.Marshal(map[string]any{"sections": sectionItems})
+
+	system := strings.TrimSpace(`
+You are an expert curriculum researcher.
+
+Task: propose a set of high-quality, FREE, publicly accessible web resources for learning.
+Return ONLY JSON matching the provided schema.
+
+Rules:
+- Use ONLY https URLs.
+- Prefer authoritative sources (official docs/specs, reputable references, university notes).
+- Prefer open/free resources; avoid paywalled content.
+- Avoid duplicates (same URL or near-identical mirrors).
+- The plan MUST cover the curriculum sections; missing_section_keys should only be non-empty if it is truly impossible.
+- If the domain appears to be a programming language, ensure you include at least:
+  - a beginner-friendly tutorial/guide
+  - a reference (language + standard library)
+  - a exercises/practice source
+  - and at least one advanced/edge-cases resource.
+`)
+
+	target := strings.TrimSpace(spec.CoverageTarget)
+	if target == "" {
+		target = InferCoverageTargetFromPrompt(goal)
+	}
+	minResources := 8
+	maxResources := 14
+	if strings.EqualFold(target, "mastery") {
+		minResources = 12
+		maxResources = 20
+	}
+
+	user := fmt.Sprintf(`LEARNING_GOAL:
+%s
+
+CURRICULUM_DOMAIN: %s
+CURRICULUM_COVERAGE_TARGET: %s
+
+CURRICULUM_SECTIONS_JSON:
+%s
+
+Return %d–%d resources.`, goal, strings.TrimSpace(spec.Domain), target, string(sectionsJSON), minResources, maxResources)
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"resources": map[string]any{
+				"type":     "array",
+				"minItems": 0,
+				"maxItems": 24,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"title":               map[string]any{"type": "string"},
+						"url":                 map[string]any{"type": "string"},
+						"type":                map[string]any{"type": "string"},
+						"reason":              map[string]any{"type": "string"},
+						"covers_section_keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					},
+					"required": []string{"title", "url", "type", "reason", "covers_section_keys"},
+				},
+			},
+			"coverage": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"covered_section_keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"missing_section_keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+				"required": []string{"covered_section_keys", "missing_section_keys"},
+			},
+		},
+		"required": []string{"resources", "coverage"},
+	}
+
+	obj, err := deps.AI.GenerateJSON(ctx, system, user, "web_resources_seed_v2", schema)
+	if err != nil {
+		return out, err
+	}
+	raw, _ := json.Marshal(obj)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, err
+	}
+	out.Resources = normalizeWebResourceListV2(out.Resources)
+	out.Coverage.CoveredSectionKeys = dedupeStrings(out.Coverage.CoveredSectionKeys)
+	out.Coverage.MissingSectionKeys = dedupeStrings(out.Coverage.MissingSectionKeys)
+	return out, nil
+}
+
 func normalizeWebResourceList(in []webResourceItemV1) []webResourceItemV1 {
 	seen := map[string]bool{}
 	out := make([]webResourceItemV1, 0, len(in))
@@ -414,6 +708,104 @@ func normalizeWebResourceList(in []webResourceItemV1) []webResourceItemV1 {
 		out = append(out, r)
 	}
 	return out
+}
+
+func normalizeWebResourceListV2(in []webResourceItemV2) []webResourceItemV2 {
+	seen := map[string]bool{}
+	out := make([]webResourceItemV2, 0, len(in))
+	for _, r := range in {
+		u := strings.TrimSpace(r.URL)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(u), "https://") {
+			continue
+		}
+		if seen[u] {
+			continue
+		}
+		seen[u] = true
+		r.URL = u
+		r.Title = strings.TrimSpace(r.Title)
+		r.Reason = strings.TrimSpace(r.Reason)
+		r.Kind = strings.TrimSpace(r.Kind)
+		r.CoversSectionKeys = dedupeStrings(r.CoversSectionKeys)
+		if r.Title == "" {
+			r.Title = "Resource"
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func selectWebResourcesForCoverage(resources []webResourceItemV2, requiredSectionKeys []string, maxFetch int) []webResourceItemV2 {
+	if maxFetch <= 0 {
+		return nil
+	}
+	if len(resources) == 0 {
+		return nil
+	}
+	required := map[string]bool{}
+	for _, k := range requiredSectionKeys {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			required[k] = true
+		}
+	}
+	uncovered := map[string]bool{}
+	for k := range required {
+		uncovered[k] = true
+	}
+
+	selected := make([]webResourceItemV2, 0, min(maxFetch, len(resources)))
+	used := make([]bool, len(resources))
+
+	for len(uncovered) > 0 && len(selected) < maxFetch {
+		bestIdx := -1
+		bestGain := 0
+		for i, r := range resources {
+			if used[i] {
+				continue
+			}
+			gain := 0
+			for _, k := range r.CoversSectionKeys {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					continue
+				}
+				if uncovered[k] {
+					gain++
+				}
+			}
+			if gain > bestGain {
+				bestGain = gain
+				bestIdx = i
+			}
+		}
+		if bestIdx < 0 || bestGain == 0 {
+			break
+		}
+		used[bestIdx] = true
+		selected = append(selected, resources[bestIdx])
+		for _, k := range resources[bestIdx].CoversSectionKeys {
+			delete(uncovered, strings.TrimSpace(k))
+		}
+	}
+
+	// Fill remaining slots in the original plan order.
+	if len(selected) < maxFetch {
+		for i, r := range resources {
+			if used[i] {
+				continue
+			}
+			selected = append(selected, r)
+			if len(selected) >= maxFetch {
+				break
+			}
+		}
+	}
+
+	return selected
 }
 
 func newWebHTTPClient() *http.Client {

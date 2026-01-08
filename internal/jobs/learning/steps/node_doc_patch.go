@@ -414,6 +414,7 @@ func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInp
 	contentHash := content.HashBytes(canon)
 	sourcesHash := content.HashSources(promptVersion, 1, content.CitedChunkIDsFromNodeDocV1(doc))
 	docText, _ := content.NodeDocMetrics(doc)["doc_text"].(string)
+	docText = content.SanitizeStringForPostgres(docText)
 
 	now := time.Now().UTC()
 	docID := docRow.ID

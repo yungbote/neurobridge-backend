@@ -630,7 +630,7 @@ func CoverageAndCoherenceAuditSchema() map[string]any {
 		"required":             []string{"type", "target", "reason"},
 		"additionalProperties": false,
 	}
-	return SchemaVersionedObject(1, map[string]any{
+	return SchemaVersionedObject(2, map[string]any{
 		"coverage": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -638,6 +638,15 @@ func CoverageAndCoherenceAuditSchema() map[string]any {
 				"duplicate_concepts_suspected": StringArraySchema(),
 			},
 			"required":             []string{"uncovered_concept_keys", "duplicate_concepts_suspected"},
+			"additionalProperties": false,
+		},
+		"curriculum": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"uncovered_section_keys": StringArraySchema(),
+				"notes":                  StringArraySchema(),
+			},
+			"required":             []string{"uncovered_section_keys", "notes"},
 			"additionalProperties": false,
 		},
 		"coherence": map[string]any{
@@ -651,7 +660,7 @@ func CoverageAndCoherenceAuditSchema() map[string]any {
 			"additionalProperties": false,
 		},
 		"recommended_fixes": map[string]any{"type": "array", "items": fix},
-	}, []string{"coverage", "coherence", "recommended_fixes"})
+	}, []string{"coverage", "curriculum", "coherence", "recommended_fixes"})
 }
 
 func DecisionTraceExplanationSchema() map[string]any {

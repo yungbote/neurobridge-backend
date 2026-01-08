@@ -83,6 +83,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
 		summaryText = strings.TrimSpace(rows[0].SummaryMD)
 	}
+	curriculumSpecJSON := ""
 	// Optionally prepend user intent/intake context (written by the path_intake stage).
 	if deps.Path != nil {
 		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
@@ -96,6 +97,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 						summaryText = intakeMD
 					}
 				}
+				curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
 			}
 		}
 	}
@@ -167,9 +169,11 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 
 	// ---- Prompt: Path structure ----
 	structPrompt, err := prompts.Build(prompts.PromptPathStructure, prompts.Input{
-		PathCharterJSON: string(charterJSON),
-		ConceptsJSON:    string(conceptsJSON),
-		EdgesJSON:       string(edgesJSON),
+		PathCharterJSON:    string(charterJSON),
+		BundleExcerpt:      summaryText,
+		CurriculumSpecJSON: curriculumSpecJSON,
+		ConceptsJSON:       string(conceptsJSON),
+		EdgesJSON:          string(edgesJSON),
 	})
 	if err != nil {
 		return out, err

@@ -274,16 +274,23 @@ Output path_style with:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathStructure,
-		Version:    2,
+		Version:    3,
 		SchemaName: "path_structure",
 		Schema:     PathStructureSchema,
 		System: `
 You design the path structure (nodes and activity slots) to cover all concepts coherently.
 Respect prerequisite edges when ordering.
+If a curriculum spec is provided, it is the source of truth for macro-coverage and sequencing intent.
 Return JSON only.`,
 		User: `
 PATH_CHARTER_JSON:
 {{.PathCharterJSON}}
+
+MATERIAL_SET_SUMMARY_MD (optional):
+{{.BundleExcerpt}}
+
+CURRICULUM_SPEC_JSON (optional):
+{{.CurriculumSpecJSON}}
 
 CONCEPTS_JSON:
 {{.ConceptsJSON}}
@@ -293,6 +300,10 @@ EDGES_JSON:
 
 Task:
 Create a dynamic path outline that covers all concepts.
+
+Guidance:
+- If CURRICULUM_SPEC_JSON is present and coverage_target is "mastery", start with fundamentals and core semantics before specialized tooling.
+- Use CURRICULUM_SPEC_JSON sections to decide high-level module ordering and ensure no major area is omitted.
 
 You may include hierarchy:
 - "module" nodes are grouping/overview nodes.
@@ -671,14 +682,18 @@ Generate 4-12 MCQ questions with citations per question.`,
 
 	RegisterSpec(Spec{
 		Name:       PromptCoverageAndCoheranceAudit,
-		Version:    1,
+		Version:    2,
 		SchemaName: "coverage_and_coherance_audit",
 		Schema:     CoverageAndCoherenceAuditSchema,
 		System: `
 You audit a generated path for coverage and coherence.
 Use only the provided JSON snapshots; do not invent missing facts.
+If a curriculum spec is provided, audit for curriculum coverage as well.
 Return JSON only.`,
 		User: `
+CURRICULUM_SPEC_JSON (optional):
+{{.CurriculumSpecJSON}}
+
 CONCEPTS_JSON:
 {{.ConceptsJSON}}
 
@@ -698,7 +713,7 @@ VARIANTS_JSON:
 {{.VariantsJSON}}
 
 Task:
-Return uncovered concepts, terminology conflicts, style inconsistencies, sequence issues, and recommended fixes.`,
+Return uncovered concepts, uncovered curriculum sections (if spec provided), terminology conflicts, style inconsistencies, sequence issues, and recommended fixes.`,
 		Validators: []Validator{
 			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
 			RequireNonEmpty("PathNodesJSON", func(in Input) string { return in.PathNodesJSON }),

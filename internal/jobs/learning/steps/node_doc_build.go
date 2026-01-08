@@ -956,6 +956,7 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 				sourcesHash := content.HashSources(nodeDocPromptVersion, 1, mapKeys(allowedChunkIDs))
 
 				docText, _ := metrics["doc_text"].(string)
+				docText = content.SanitizeStringForPostgres(docText)
 
 				docID := uuid.New()
 				row := &types.LearningNodeDoc{

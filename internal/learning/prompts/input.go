@@ -15,8 +15,9 @@ type Input struct {
 	RecentEventsSummary string
 	UserProfileDoc      string
 	// Planning context
-	PathCharterJSON   string
-	PathStructureJSON string
+	PathCharterJSON    string
+	PathStructureJSON  string
+	CurriculumSpecJSON string
 	// Node / Chain planning
 	NodeIndex           int
 	NodeTitle           string
@@ -51,8 +52,8 @@ type Input struct {
 	VariantsJSON   string
 
 	// Library taxonomy (path organization)
-	TaxonomyFacet             string
-	TaxonomyCandidatesJSON    string
-	TaxonomyPathSummaryJSON   string
-	TaxonomyConstraintsJSON   string
+	TaxonomyFacet           string
+	TaxonomyCandidatesJSON  string
+	TaxonomyPathSummaryJSON string
+	TaxonomyConstraintsJSON string
 }
