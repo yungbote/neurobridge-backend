@@ -20,6 +20,7 @@ import (
 )
 
 var stageOrder = []string{
+	"web_resources_seed",
 	"ingest_chunks",
 	"embed_chunks",
 	"material_set_summarize",
@@ -28,6 +29,7 @@ var stageOrder = []string{
 	"chain_signature_build",
 	"user_profile_refresh",
 	"teaching_patterns_seed",
+	"path_intake",
 	"path_plan_build",
 	"path_cover_render",
 	"node_avatar_render",
@@ -75,6 +77,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	threadID, _ := jc.PayloadUUID("thread_id")
+
 	st := loadState(jc.Job.Result)
 	st.MaterialSetID = setID.String()
 	st.SagaID = sagaID.String()
@@ -90,7 +94,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	case "inline":
 		runErr = p.runInline(jc, st, setID, sagaID, pathID)
 	default:
-		runErr = p.runChild(jc, st, setID, sagaID, pathID)
+		runErr = p.runChild(jc, st, setID, sagaID, pathID, threadID)
 	}
 
 	if strings.EqualFold(strings.TrimSpace(jc.Job.Status), "failed") {
@@ -118,7 +122,7 @@ func resolveMode(jc *jobrt.Context) string {
 	return "child"
 }
 
-func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID uuid.UUID) error {
+func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID, threadID uuid.UUID) error {
 	if p.isCanceled(jc) {
 		return nil
 	}
@@ -155,8 +159,8 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		readyAt := time.Now().UTC()
 		if err := p.db.WithContext(ctx.Ctx).Transaction(func(tx *gorm.DB) error {
 			return p.path.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: tx}, pathID, map[string]interface{}{
-				"status": "ready",
-				"job_id": nil,
+				"status":   "ready",
+				"job_id":   nil,
 				"ready_at": readyAt,
 			})
 		}); err != nil {
@@ -181,6 +185,9 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		st.Meta["material_set_id"] = setID.String()
 		st.Meta["saga_id"] = sagaID.String()
 		st.Meta["path_id"] = pathID.String()
+		if threadID != uuid.Nil {
+			st.Meta["thread_id"] = threadID.String()
+		}
 		st.Meta["mode"] = mode
 	}
 
@@ -190,7 +197,10 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID 
 		"path_id":         pathID.String(),
 		"mode":            mode,
 	}
-	stages := buildChildStages(setID, sagaID)
+	if threadID != uuid.Nil {
+		finalResult["thread_id"] = threadID.String()
+	}
+	stages := buildChildStages(setID, sagaID, pathID, threadID)
 	return engine.Run(jc, stages, finalResult, init)
 }
 
@@ -216,6 +226,27 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 		var stageErr error
 		switch stageName {
+		case "web_resources_seed":
+			_, stageErr = steps.WebResourcesSeed(jc.Ctx, steps.WebResourcesSeedDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Files:     p.inline.Files,
+				Path:      p.inline.Path,
+				Bucket:    p.inline.Bucket,
+				AI:        p.inline.AI,
+				Saga:      p.saga,
+				Bootstrap: p.bootstrap,
+			}, steps.WebResourcesSeedInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				Prompt: func() string {
+					if v, ok := jc.Payload()["prompt"]; ok && v != nil {
+						return fmt.Sprint(v)
+					}
+					return ""
+				}(),
+			})
 		case "ingest_chunks":
 			_, stageErr = steps.IngestChunks(jc.Ctx, steps.IngestChunksDeps{
 				DB:        p.db,
@@ -296,6 +327,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				StylePrefs:  p.inline.StylePrefs,
 				ProgEvents:  p.inline.UserProgressionEvents,
 				UserProfile: p.inline.UserProfile,
+				Prefs:       p.inline.UserPrefs,
 				AI:          p.inline.AI,
 				Vec:         p.inline.Vec,
 				Saga:        p.saga,
@@ -312,6 +344,32 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				Saga:        p.saga,
 				Bootstrap:   p.bootstrap,
 			}, steps.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "path_intake":
+			_, stageErr = steps.PathIntake(jc.Ctx, steps.PathIntakeDeps{
+				DB:        p.db,
+				Log:       p.log,
+				Files:     p.inline.Files,
+				Chunks:    p.inline.Chunks,
+				Summaries: p.inline.Summaries,
+				Path:      p.inline.Path,
+				Prefs:     p.inline.UserPrefs,
+				Threads:   p.threads,
+				Messages:  p.messages,
+				AI:        p.inline.AI,
+				Notify:    p.chatNotif,
+				Bootstrap: p.bootstrap,
+			}, steps.PathIntakeInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				PathID:        pathID,
+				ThreadID: func() uuid.UUID {
+					tid, _ := jc.PayloadUUID("thread_id")
+					return tid
+				}(),
+				JobID:       jc.Job.ID,
+				WaitForUser: false,
+			})
 		case "path_plan_build":
 			_, stageErr = steps.PathPlanBuild(jc.Ctx, steps.PathPlanBuildDeps{
 				DB:          p.db,
@@ -514,8 +572,8 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 	readyAt := time.Now().UTC()
 	if err := p.db.WithContext(jc.Ctx).Transaction(func(tx *gorm.DB) error {
 		return p.path.UpdateFields(dbctx.Context{Ctx: jc.Ctx, Tx: tx}, pathID, map[string]interface{}{
-			"status": "ready",
-			"job_id": nil,
+			"status":   "ready",
+			"job_id":   nil,
 			"ready_at": readyAt,
 		})
 	}); err != nil {

@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,8 +17,8 @@ import (
 )
 
 type WorkflowService interface {
-	UploadMaterialsAndStartLearningBuild(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, *types.JobRun, error)
-	UploadMaterialsAndStartLearningBuildWithChat(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error)
+	UploadMaterialsAndStartLearningBuild(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo, prompt string) (*types.MaterialSet, *types.JobRun, error)
+	UploadMaterialsAndStartLearningBuildWithChat(dbc dbctx.Context, userID uuid.UUID, uploaded []UploadedFileInfo, prompt string) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error)
 }
 
 type workflowService struct {
@@ -58,8 +59,9 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuild(
 	dbc dbctx.Context,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
+	prompt string,
 ) (*types.MaterialSet, *types.JobRun, error) {
-	set, _, _, job, err := w.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded)
+	set, _, _, job, err := w.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded, prompt)
 	return set, job, err
 }
 
@@ -67,12 +69,14 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 	dbc dbctx.Context,
 	userID uuid.UUID,
 	uploaded []UploadedFileInfo,
+	prompt string,
 ) (*types.MaterialSet, uuid.UUID, *types.ChatThread, *types.JobRun, error) {
 	if userID == uuid.Nil {
 		return nil, uuid.Nil, nil, nil, fmt.Errorf("missing user id")
 	}
-	if len(uploaded) == 0 {
-		return nil, uuid.Nil, nil, nil, fmt.Errorf("no files")
+	trimmedPrompt := strings.TrimSpace(prompt)
+	if len(uploaded) == 0 && trimmedPrompt == "" {
+		return nil, uuid.Nil, nil, nil, fmt.Errorf("no files or prompt")
 	}
 
 	transaction := dbc.Tx
@@ -93,12 +97,22 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 	err := transaction.WithContext(dbc.Ctx).Transaction(func(txx *gorm.DB) error {
 		inner := dbctx.Context{Ctx: dbc.Ctx, Tx: txx}
 
-		// 1) Persist materials (set + file rows + upload blobs)
-		createdSet, _, err := w.materials.UploadMaterialFiles(inner, userID, uploaded)
-		if err != nil {
-			return err
+		// 1) Persist materials
+		// - If user uploaded files: set + file rows + upload blobs
+		// - If prompt-only: create an empty MaterialSet (web_resources_seed will populate it)
+		if len(uploaded) > 0 {
+			createdSet, _, err := w.materials.UploadMaterialFiles(inner, userID, uploaded)
+			if err != nil {
+				return err
+			}
+			set = createdSet
+		} else {
+			createdSet, err := w.materials.CreateMaterialSet(inner, userID)
+			if err != nil {
+				return err
+			}
+			set = createdSet
 		}
-		set = createdSet
 
 		// 2) Ensure canonical path exists (race-safe via user_library_index lock).
 		pid, err := w.bootstrap.EnsurePath(inner, userID, set.ID)
@@ -139,11 +153,36 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		}
 		thread = created[0]
 
-		// 4) Enqueue learning_build (root orchestrator creates saga_id).
+		// 4) Optionally seed the thread with the user's prompt/context.
+		nextSeq := thread.NextSeq
+		if trimmedPrompt != "" {
+			nextSeq++
+			userMsg := &types.ChatMessage{
+				ID:        uuid.New(),
+				ThreadID:  thread.ID,
+				UserID:    userID,
+				Seq:       nextSeq,
+				Role:      "user",
+				Status:    "sent",
+				Content:   trimmedPrompt,
+				Model:     "",
+				Metadata:  datatypes.JSON([]byte(`{}`)),
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if _, err := w.messages.Create(inner, []*types.ChatMessage{userMsg}); err != nil {
+				return err
+			}
+		}
+
+		// 5) Enqueue learning_build (root orchestrator creates saga_id).
 		payload := map[string]any{
 			"material_set_id": set.ID.String(),
 			"path_id":         pathID.String(),
 			"thread_id":       thread.ID.String(),
+		}
+		if trimmedPrompt != "" {
+			payload["prompt"] = trimmedPrompt
 		}
 		entityID := set.ID
 		createdJob, err := w.jobs.Enqueue(inner, userID, "learning_build", "material_set", &entityID, payload)
@@ -176,7 +215,7 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		}
 		genMetaJSON, _ := json.Marshal(genMeta)
 
-		nextSeq := thread.NextSeq + 1
+		nextSeq++
 		genMsg := &types.ChatMessage{
 			ID:        uuid.New(),
 			ThreadID:  thread.ID,

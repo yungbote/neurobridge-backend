@@ -41,6 +41,7 @@ type InlineDeps struct {
 	ConceptState     repos.UserConceptStateRepo
 	ProgEvents       repos.UserProgressionEventRepo
 	UserProfile      repos.UserProfileVectorRepo
+	UserPrefs        repos.UserPersonalizationPrefsRepo
 	TeachingPatterns repos.TeachingPatternRepo
 
 	Path               repos.PathRepo

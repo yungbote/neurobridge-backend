@@ -247,3 +247,94 @@ func stratifiedChunkExcerpts(chunks []*types.MaterialChunk, perFile int, maxChar
 	}
 	return strings.TrimSpace(b.String())
 }
+
+func stratifiedChunkExcerptsWithLimits(chunks []*types.MaterialChunk, perFile int, maxChars int, maxLines int, maxTotalChars int) string {
+	if perFile <= 0 {
+		perFile = 12
+	}
+	if maxChars <= 0 {
+		maxChars = 700
+	}
+
+	byFile := map[uuid.UUID][]*types.MaterialChunk{}
+	for _, ch := range chunks {
+		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
+			continue
+		}
+		txt := strings.TrimSpace(ch.Text)
+		if txt == "" {
+			continue
+		}
+		byFile[ch.MaterialFileID] = append(byFile[ch.MaterialFileID], ch)
+	}
+
+	fileIDs := make([]uuid.UUID, 0, len(byFile))
+	for fid := range byFile {
+		fileIDs = append(fileIDs, fid)
+	}
+	sort.Slice(fileIDs, func(i, j int) bool { return fileIDs[i].String() < fileIDs[j].String() })
+
+	var b strings.Builder
+	linesUsed := 0
+
+outer:
+	for _, fid := range fileIDs {
+		arr := byFile[fid]
+		sort.Slice(arr, func(i, j int) bool { return arr[i].Index < arr[j].Index })
+		n := len(arr)
+		if n == 0 {
+			continue
+		}
+
+		k := perFile
+		if k > n {
+			k = n
+		}
+		if maxLines > 0 {
+			remaining := maxLines - linesUsed
+			if remaining <= 0 {
+				break
+			}
+			if k > remaining {
+				k = remaining
+			}
+		}
+		if k <= 0 {
+			break
+		}
+
+		step := float64(n) / float64(k)
+		for i := 0; i < k; i++ {
+			idx := int(float64(i) * step)
+			if idx < 0 {
+				idx = 0
+			}
+			if idx >= n {
+				idx = n - 1
+			}
+			ch := arr[idx]
+			txt := shorten(ch.Text, maxChars)
+			if txt == "" {
+				continue
+			}
+			line := fmt.Sprintf("[chunk_id=%s] %s\n", ch.ID.String(), txt)
+			if maxTotalChars > 0 && b.Len()+len(line) > maxTotalChars {
+				break outer
+			}
+			b.WriteString(line)
+			linesUsed++
+			if maxLines > 0 && linesUsed >= maxLines {
+				break outer
+			}
+		}
+		b.WriteString("\n")
+		if maxTotalChars > 0 && b.Len() >= maxTotalChars {
+			break
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}

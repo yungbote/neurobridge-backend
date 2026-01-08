@@ -1,0 +1,674 @@
+package steps
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
+)
+
+type WebResourcesSeedDeps struct {
+	DB  *gorm.DB
+	Log *logger.Logger
+
+	Files  repos.MaterialFileRepo
+	Path   repos.PathRepo
+	Bucket gcp.BucketService
+
+	AI   openai.Client
+	Saga services.SagaService
+
+	Bootstrap services.LearningBuildBootstrapService
+}
+
+type WebResourcesSeedInput struct {
+	OwnerUserID   uuid.UUID
+	MaterialSetID uuid.UUID
+	SagaID        uuid.UUID
+	Prompt        string
+}
+
+type WebResourcesSeedOutput struct {
+	PathID uuid.UUID `json:"path_id"`
+
+	Skipped bool `json:"skipped"`
+
+	FilesCreated     int `json:"files_created"`
+	ResourcesPlanned int `json:"resources_planned"`
+	ResourcesFetched int `json:"resources_fetched"`
+}
+
+type webResourcePlanV1 struct {
+	Resources []webResourceItemV1 `json:"resources"`
+}
+
+type webResourceItemV1 struct {
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+	Kind   string `json:"type"`
+	Reason string `json:"reason"`
+}
+
+func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebResourcesSeedInput) (WebResourcesSeedOutput, error) {
+	out := WebResourcesSeedOutput{}
+	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Path == nil || deps.Bucket == nil || deps.AI == nil || deps.Saga == nil || deps.Bootstrap == nil {
+		return out, fmt.Errorf("web_resources_seed: missing deps")
+	}
+	if in.OwnerUserID == uuid.Nil {
+		return out, fmt.Errorf("web_resources_seed: missing owner_user_id")
+	}
+	if in.MaterialSetID == uuid.Nil {
+		return out, fmt.Errorf("web_resources_seed: missing material_set_id")
+	}
+	if in.SagaID == uuid.Nil {
+		return out, fmt.Errorf("web_resources_seed: missing saga_id")
+	}
+
+	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	if err != nil {
+		return out, err
+	}
+	out.PathID = pathID
+
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
+	if err != nil {
+		return out, err
+	}
+
+	// If a user uploaded files, this stage is a no-op (we only seed for prompt-only builds).
+	if shouldSkipWebSeed(files) {
+		out.Skipped = true
+		return out, nil
+	}
+
+	prompt := strings.TrimSpace(in.Prompt)
+	if prompt == "" {
+		return out, fmt.Errorf("web_resources_seed: missing prompt (prompt-only builds require a prompt)")
+	}
+
+	// Always ensure a small seed file exists so downstream stages never see an empty material set.
+	createdGoal, err := deps.ensureGoalFile(ctx, in, prompt, files)
+	if err != nil {
+		return out, err
+	}
+	out.FilesCreated += createdGoal
+
+	enabled := envBool("WEB_RESOURCES_ENABLED", true)
+	if !enabled {
+		deps.Log.Info("WEB_RESOURCES_ENABLED=false; skipping web fetch")
+		out.Skipped = true
+		return out, nil
+	}
+
+	plan, err := buildWebResourcePlan(ctx, deps, prompt)
+	if err != nil {
+		// Non-fatal: the rest of the pipeline can still run from the prompt seed file.
+		deps.Log.Warn("web_resources_seed: plan generation failed; continuing with prompt-only", "error", err)
+		out.Skipped = true
+		return out, nil
+	}
+	out.ResourcesPlanned = len(plan.Resources)
+	if len(plan.Resources) == 0 {
+		out.Skipped = true
+		return out, nil
+	}
+
+	maxFetch := envInt("WEB_RESOURCES_MAX_FETCH", 10)
+	if maxFetch < 1 {
+		maxFetch = 1
+	}
+	maxBytes := int64(envInt("WEB_RESOURCES_MAX_BYTES", 2*1024*1024))
+	if maxBytes < 64*1024 {
+		maxBytes = 64 * 1024
+	}
+
+	client := newWebHTTPClient()
+
+	// Fetch and persist resources (best-effort; we don't fail the stage if some URLs fail).
+	fetched := 0
+	for _, r := range plan.Resources {
+		if fetched >= maxFetch {
+			break
+		}
+		u := strings.TrimSpace(r.URL)
+		if u == "" {
+			continue
+		}
+		if !isAllowedWebURL(ctx, u) {
+			deps.Log.Warn("web_resources_seed: blocked url", "url", u)
+			continue
+		}
+
+		body, ctype, finalURL, ferr := fetchURL(ctx, client, u, maxBytes)
+		if ferr != nil {
+			deps.Log.Warn("web_resources_seed: fetch failed", "url", u, "error", ferr)
+			continue
+		}
+		if len(body) == 0 {
+			continue
+		}
+
+		name, mimeType := normalizeFetchedNameAndMime(r, finalURL, ctype)
+		payload := body
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "text/") {
+			// Prefix content with provenance so the ingestion extractor preserves it even when stripping HTML tags.
+			provenance := fmt.Sprintf(
+				"SOURCE_URL: %s\nSOURCE_TITLE: %s\n\n",
+				strings.TrimSpace(finalURL),
+				strings.TrimSpace(r.Title),
+			)
+			payload = append([]byte(provenance), body...)
+		}
+
+		n, uErr := deps.createMaterialFileFromBytes(ctx, in, name, mimeType, payload)
+		if uErr != nil {
+			deps.Log.Warn("web_resources_seed: failed to persist resource", "url", u, "error", uErr)
+			continue
+		}
+		out.FilesCreated += n
+		fetched++
+	}
+	out.ResourcesFetched = fetched
+
+	// Record the plan (debuggability). Best-effort; failure shouldn't fail the stage.
+	_ = deps.persistWebPlan(ctx, pathID, plan, fetched)
+
+	return out, nil
+}
+
+func shouldSkipWebSeed(files []*types.MaterialFile) bool {
+	if len(files) == 0 {
+		return false
+	}
+	// If we've already created any web_* material file, we consider this stage completed for this set.
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.OriginalName)), "web_") {
+			return true
+		}
+	}
+	// Otherwise, assume this material set came from user uploads.
+	// The only exception is a single seed goal file from a previous partial run.
+	if len(files) == 1 {
+		name := strings.ToLower(strings.TrimSpace(files[0].OriginalName))
+		if name == "learning_goal.txt" || name == "learning_goal.md" {
+			return false
+		}
+	}
+	return true
+}
+
+func (deps WebResourcesSeedDeps) ensureGoalFile(ctx context.Context, in WebResourcesSeedInput, prompt string, files []*types.MaterialFile) (int, error) {
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(f.OriginalName))
+		if name == "learning_goal.txt" || name == "learning_goal.md" {
+			return 0, nil
+		}
+	}
+	goal := strings.TrimSpace(prompt)
+	if goal == "" {
+		return 0, nil
+	}
+	content := []byte("LEARNING_GOAL:\n" + goal + "\n")
+	return deps.createMaterialFileFromBytes(ctx, in, "learning_goal.txt", "text/plain", content)
+}
+
+func (deps WebResourcesSeedDeps) createMaterialFileFromBytes(
+	ctx context.Context,
+	in WebResourcesSeedInput,
+	originalName string,
+	mimeType string,
+	data []byte,
+) (int, error) {
+	if strings.TrimSpace(originalName) == "" {
+		originalName = "web_resource.txt"
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "text/plain"
+	}
+	now := time.Now().UTC()
+	fileID := uuid.New()
+	storageKey := fmt.Sprintf("materials/%s/%s", in.MaterialSetID.String(), fileID.String())
+
+	row := &types.MaterialFile{
+		ID:            fileID,
+		MaterialSetID: in.MaterialSetID,
+		OriginalName:  originalName,
+		MimeType:      mimeType,
+		SizeBytes:     int64(len(data)),
+		StorageKey:    storageKey,
+		Status:        "pending_upload",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		if _, err := deps.Files.Create(dbc, []*types.MaterialFile{row}); err != nil {
+			return err
+		}
+
+		if err := deps.Bucket.UploadFile(dbc, gcp.BucketCategoryMaterial, storageKey, bytes.NewReader(data)); err != nil {
+			return err
+		}
+
+		if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindGCSDeleteKey, map[string]any{
+			"category": "material",
+			"key":      storageKey,
+		}); err != nil {
+			return err
+		}
+
+		fileURL := deps.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, storageKey)
+		if err := tx.WithContext(ctx).Model(&types.MaterialFile{}).
+			Where("id = ?", fileID).
+			Updates(map[string]any{
+				"status":     "uploaded",
+				"file_url":   fileURL,
+				"updated_at": time.Now().UTC(),
+			}).Error; err != nil {
+			return err
+		}
+		row.Status = "uploaded"
+		row.FileURL = fileURL
+		row.UpdatedAt = time.Now().UTC()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func (deps WebResourcesSeedDeps) persistWebPlan(ctx context.Context, pathID uuid.UUID, plan webResourcePlanV1, fetched int) error {
+	if deps.Path == nil || pathID == uuid.Nil {
+		return nil
+	}
+	row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
+	if err != nil || row == nil {
+		return err
+	}
+	meta := map[string]any{}
+	if len(row.Metadata) > 0 && strings.TrimSpace(string(row.Metadata)) != "" && strings.TrimSpace(string(row.Metadata)) != "null" {
+		_ = json.Unmarshal(row.Metadata, &meta)
+	}
+	meta["web_resources_seed"] = map[string]any{
+		"planned":   plan,
+		"fetched":   fetched,
+		"updated":   time.Now().UTC().Format(time.RFC3339Nano),
+		"version":   "v1",
+		"max_fetch": envInt("WEB_RESOURCES_MAX_FETCH", 10),
+	}
+	return deps.Path.UpdateFields(dbctx.Context{Ctx: ctx}, pathID, map[string]any{
+		"metadata": mustJSON(meta),
+	})
+}
+
+func buildWebResourcePlan(ctx context.Context, deps WebResourcesSeedDeps, prompt string) (webResourcePlanV1, error) {
+	out := webResourcePlanV1{}
+	system := strings.TrimSpace(`
+You are an expert curriculum researcher.
+
+Task: propose a set of high-quality, FREE, publicly accessible web resources for learning.
+Return ONLY JSON matching the provided schema.
+
+Rules:
+- Use ONLY https URLs.
+- Prefer authoritative sources (official docs/specs, reputable references, university notes).
+- Prefer open/free resources; avoid paywalled content.
+- Ensure broad coverage from fundamentals to intermediate practice.
+- Include a mix of: reference docs, beginner tutorial, exercises/problems, tooling/build, debugging, and style/best practices.
+- Avoid duplicates (same URL or near-identical mirrors).
+`)
+
+	user := fmt.Sprintf(`LEARNING_GOAL:
+%s
+
+Return 8–14 resources.`, strings.TrimSpace(prompt))
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"resources": map[string]any{
+				"type":     "array",
+				"minItems": 0,
+				"maxItems": 20,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"title":  map[string]any{"type": "string"},
+						"url":    map[string]any{"type": "string"},
+						"type":   map[string]any{"type": "string"},
+						"reason": map[string]any{"type": "string"},
+					},
+					"required": []string{"title", "url", "type", "reason"},
+				},
+			},
+		},
+		"required": []string{"resources"},
+	}
+
+	obj, err := deps.AI.GenerateJSON(ctx, system, user, "web_resources_seed_v1", schema)
+	if err != nil {
+		return out, err
+	}
+	raw, _ := json.Marshal(obj)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, err
+	}
+	out.Resources = normalizeWebResourceList(out.Resources)
+	return out, nil
+}
+
+func normalizeWebResourceList(in []webResourceItemV1) []webResourceItemV1 {
+	seen := map[string]bool{}
+	out := make([]webResourceItemV1, 0, len(in))
+	for _, r := range in {
+		u := strings.TrimSpace(r.URL)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(u), "https://") {
+			continue
+		}
+		if seen[u] {
+			continue
+		}
+		seen[u] = true
+		r.URL = u
+		r.Title = strings.TrimSpace(r.Title)
+		r.Reason = strings.TrimSpace(r.Reason)
+		r.Kind = strings.TrimSpace(r.Kind)
+		if r.Title == "" {
+			r.Title = "Resource"
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func newWebHTTPClient() *http.Client {
+	timeout := 25 * time.Second
+	if v := strings.TrimSpace(os.Getenv("WEB_RESOURCES_HTTP_TIMEOUT_SECONDS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			timeout = time.Duration(n) * time.Second
+		}
+	}
+	c := &http.Client{Timeout: timeout}
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 6 {
+			return fmt.Errorf("too many redirects")
+		}
+		if req == nil || req.URL == nil {
+			return fmt.Errorf("redirect missing url")
+		}
+		if !isAllowedWebURL(context.Background(), req.URL.String()) {
+			return fmt.Errorf("redirect blocked: %s", req.URL.String())
+		}
+		return nil
+	}
+	return c
+}
+
+func fetchURL(ctx context.Context, client *http.Client, rawURL string, maxBytes int64) ([]byte, string, string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	u := strings.TrimSpace(rawURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	req.Header.Set("User-Agent", "NeurobridgeBot/1.0 (learning path builder)")
+	req.Header.Set("Accept", "text/html, text/plain, application/pdf;q=0.9, */*;q=0.1")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", "", fmt.Errorf("http %d", resp.StatusCode)
+	}
+
+	ctype := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	mediaType := ""
+	if ctype != "" {
+		if mt, _, err := mime.ParseMediaType(ctype); err == nil {
+			mediaType = mt
+		}
+	}
+
+	limited := io.LimitReader(resp.Body, maxBytes+1)
+	b, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if int64(len(b)) > maxBytes {
+		return nil, "", "", fmt.Errorf("response too large (%d > %d)", len(b), maxBytes)
+	}
+	if mediaType == "" && len(b) > 0 {
+		mediaType = http.DetectContentType(b[:min(512, len(b))])
+	}
+	finalURL := u
+	if resp.Request != nil && resp.Request.URL != nil && strings.TrimSpace(resp.Request.URL.String()) != "" {
+		finalURL = strings.TrimSpace(resp.Request.URL.String())
+	}
+	return b, mediaType, finalURL, nil
+}
+
+func normalizeFetchedNameAndMime(r webResourceItemV1, finalURL string, contentType string) (string, string) {
+	u := strings.TrimSpace(finalURL)
+	title := strings.TrimSpace(r.Title)
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+
+	ext := ""
+	switch {
+	case strings.Contains(ct, "application/pdf") || strings.HasSuffix(strings.ToLower(u), ".pdf"):
+		ext = ".pdf"
+		ct = "application/pdf"
+	case strings.Contains(ct, "text/html"):
+		ext = ".html"
+		ct = "text/html"
+	case strings.Contains(ct, "text/plain"):
+		ext = ".txt"
+		ct = "text/plain"
+	default:
+		// default to html-ish extraction
+		ext = ".html"
+		if ct == "" {
+			ct = "text/html"
+		}
+	}
+
+	slug := slugify(title)
+	if slug == "" {
+		slug = "resource"
+	}
+	host := safeHostForName(u)
+	name := fmt.Sprintf("web_%s_%s%s", host, slug, ext)
+	// Avoid pathological lengths / weird extensions.
+	name = strings.TrimSpace(name)
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	if filepath.Ext(name) == "" {
+		name += ext
+	}
+	return name, ct
+}
+
+func safeHostForName(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return "site"
+	}
+	h := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if h == "" {
+		return "site"
+	}
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.ReplaceAll(h, ".", "_")
+	if len(h) > 40 {
+		h = h[:40]
+	}
+	return h
+}
+
+func slugify(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return ""
+	}
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == ' ' || r == '-' || r == '_' || r == '/':
+			return '_'
+		default:
+			return -1
+		}
+	}, s)
+	for strings.Contains(s, "__") {
+		s = strings.ReplaceAll(s, "__", "_")
+	}
+	s = strings.Trim(s, "_")
+	if len(s) > 48 {
+		s = s[:48]
+	}
+	return s
+}
+
+func isAllowedWebURL(ctx context.Context, raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return false
+	}
+	if strings.ToLower(u.Scheme) != "https" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !isPrivateIP(ip)
+	}
+
+	// Best-effort: resolve and block private IPs (SSRF hardening).
+	resCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(resCtx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		// If we can't resolve, treat as blocked (safer default).
+		return false
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	ip = ip.To4()
+	if ip == nil {
+		// IPv6: conservatively treat as private unless explicitly global unicast.
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	// 10.0.0.0/8
+	if ip[0] == 10 {
+		return true
+	}
+	// 172.16.0.0/12
+	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+		return true
+	}
+	// 192.168.0.0/16
+	if ip[0] == 192 && ip[1] == 168 {
+		return true
+	}
+	// 127.0.0.0/8
+	if ip[0] == 127 {
+		return true
+	}
+	// 169.254.0.0/16 (link local)
+	if ip[0] == 169 && ip[1] == 254 {
+		return true
+	}
+	return false
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(v)
+	if v == "1" || v == "true" || v == "yes" || v == "y" || v == "on" {
+		return true
+	}
+	if v == "0" || v == "false" || v == "no" || v == "n" || v == "off" {
+		return false
+	}
+	return def
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// Ensure deterministic ordering for any later uses (debuggability only).
+func (p *webResourcePlanV1) sort() {
+	if p == nil || len(p.Resources) == 0 {
+		return
+	}
+	sort.Slice(p.Resources, func(i, j int) bool {
+		return strings.ToLower(strings.TrimSpace(p.Resources[i].URL)) < strings.ToLower(strings.TrimSpace(p.Resources[j].URL))
+	})
+}

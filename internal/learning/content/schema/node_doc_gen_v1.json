@@ -14,7 +14,33 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "quick_check", "divider"]
+            "enum": [
+              "heading",
+              "paragraph",
+              "callout",
+              "code",
+              "figure",
+              "video",
+              "diagram",
+              "table",
+              "quick_check",
+              "divider",
+              "objectives",
+              "prerequisites",
+              "key_takeaways",
+              "glossary",
+              "common_mistakes",
+              "misconceptions",
+              "edge_cases",
+              "heuristics",
+              "steps",
+              "checklist",
+              "faq",
+              "intuition",
+              "mental_model",
+              "why_it_matters",
+              "connections"
+            ]
           },
           "id": { "type": "string" }
         },
@@ -261,6 +287,568 @@
       }
     },
 
+    "objectives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "prerequisites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "key_takeaways": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "glossary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "term": { "type": "string" },
+                "definition_md": { "type": "string" }
+              },
+              "required": ["term", "definition_md"],
+              "additionalProperties": false
+            }
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "terms", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "common_mistakes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "misconceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "edge_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "heuristics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "steps_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "steps_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "checklist": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "faq": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "qas": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "question_md": { "type": "string" },
+                "answer_md": { "type": "string" }
+              },
+              "required": ["question_md", "answer_md"],
+              "additionalProperties": false
+            }
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "qas", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "intuition": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "mental_model": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "why_it_matters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "md": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "items_md": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "items_md", "citations"],
+        "additionalProperties": false
+      }
+    },
+
     "quick_checks": {
       "type": "array",
       "items": {
@@ -322,6 +910,21 @@
     "videos",
     "diagrams",
     "tables",
+    "objectives",
+    "prerequisites",
+    "key_takeaways",
+    "glossary",
+    "common_mistakes",
+    "misconceptions",
+    "edge_cases",
+    "heuristics",
+    "steps",
+    "checklist",
+    "faq",
+    "intuition",
+    "mental_model",
+    "why_it_matters",
+    "connections",
     "quick_checks",
     "dividers"
   ],

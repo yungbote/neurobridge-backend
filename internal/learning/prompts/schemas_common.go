@@ -39,6 +39,12 @@ func StringOrNullSchema() map[string]any {
 	}
 }
 
+func IntOrNullSchema() map[string]any {
+	return map[string]any{
+		"type": []any{"integer", "null"},
+	}
+}
+
 func NumberSchema() map[string]any {
 	return map[string]any{"type": "number"}
 }

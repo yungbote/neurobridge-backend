@@ -19,6 +19,7 @@ const (
 	SSEEventUserNameChanged   SSEEvent = "UserNameChanged"
 	SSEEventUserAvatarUpdated SSEEvent = "UserAvatarChanged"
 	SSEEventUserThemeChanged  SSEEvent = "UserThemeChanged"
+	SSEEventUserPrefsChanged  SSEEvent = "UserPersonalizationChanged"
 
 	SSEEventJobCreated   SSEEvent = "JobCreated"
 	SSEEventJobProgress  SSEEvent = "JobProgress"

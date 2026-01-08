@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,6 +165,59 @@ func (uh *UserHandler) UploadAvatar(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /user/personalization
+func (uh *UserHandler) GetPersonalizationPrefs(c *gin.Context) {
+	row, err := uh.userService.GetPersonalizationPrefs(dbctx.Context{Ctx: c.Request.Context()})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if row == nil || len(row.PrefsJSON) == 0 || string(row.PrefsJSON) == "null" {
+		c.JSON(http.StatusOK, gin.H{"prefs": nil})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"prefs":      json.RawMessage(row.PrefsJSON),
+		"updated_at": row.UpdatedAt,
+	})
+}
+
+// PATCH /user/personalization
+// body: { "prefs": { ... } }
+func (uh *UserHandler) PatchPersonalizationPrefs(c *gin.Context) {
+	var req struct {
+		Prefs json.RawMessage `json:"prefs"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "detail": err.Error()})
+		return
+	}
+	if len(req.Prefs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "prefs_required"})
+		return
+	}
+	row, err := uh.userService.UpsertPersonalizationPrefs(c.Request.Context(), req.Prefs)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "prefs_update_failed", "detail": err.Error()})
+		return
+	}
+
+	if row != nil {
+		uh.broadcastUser(row.UserID.String(), realtime.SSEEventUserPrefsChanged, gin.H{
+			"updated_at": row.UpdatedAt,
+		})
+	}
+
+	if row == nil || len(row.PrefsJSON) == 0 || string(row.PrefsJSON) == "null" {
+		c.JSON(http.StatusOK, gin.H{"prefs": nil})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"prefs":      json.RawMessage(row.PrefsJSON),
+		"updated_at": row.UpdatedAt,
+	})
 }
 
 // ---- helpers ----

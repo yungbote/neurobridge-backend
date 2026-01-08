@@ -79,9 +79,24 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 		return
 	}
 	form := c.Request.MultipartForm
+	prompt := ""
+	if form != nil {
+		if v := form.Value["prompt"]; len(v) > 0 {
+			prompt = strings.TrimSpace(v[0])
+		}
+		if prompt == "" {
+			if v := form.Value["message"]; len(v) > 0 {
+				prompt = strings.TrimSpace(v[0])
+			}
+		}
+	}
+	if len(prompt) > 20000 {
+		response.RespondError(c, http.StatusBadRequest, "prompt_too_large", nil)
+		return
+	}
 	fileHeaders := form.File["files"]
-	if len(fileHeaders) == 0 {
-		response.RespondError(c, http.StatusBadRequest, "no_files", nil)
+	if len(fileHeaders) == 0 && strings.TrimSpace(prompt) == "" {
+		response.RespondError(c, http.StatusBadRequest, "no_files_or_prompt", nil)
 		return
 	}
 	uploaded := make([]services.UploadedFileInfo, 0, len(fileHeaders))
@@ -120,12 +135,12 @@ func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
 			Reader:       r,
 		})
 	}
-	if len(uploaded) == 0 {
+	if len(uploaded) == 0 && strings.TrimSpace(prompt) == "" {
 		response.RespondError(c, http.StatusBadRequest, "could_not_read_files", nil)
 		return
 	}
 	dbc := dbctx.Context{Ctx: c.Request.Context()}
-	set, pathID, thread, job, err := h.workflow.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded)
+	set, pathID, thread, job, err := h.workflow.UploadMaterialsAndStartLearningBuildWithChat(dbc, userID, uploaded, prompt)
 	if err != nil {
 		response.RespondError(c, http.StatusInternalServerError, "workflow_failed", err)
 		return

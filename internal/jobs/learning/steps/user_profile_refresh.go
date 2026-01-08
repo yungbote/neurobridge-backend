@@ -28,6 +28,7 @@ type UserProfileRefreshDeps struct {
 	StylePrefs  repos.UserStylePreferenceRepo
 	ProgEvents  repos.UserProgressionEventRepo
 	UserProfile repos.UserProfileVectorRepo
+	Prefs       repos.UserPersonalizationPrefsRepo
 	AI          openai.Client
 	Vec         pc.VectorStore
 	Saga        services.SagaService
@@ -65,13 +66,31 @@ func UserProfileRefresh(ctx context.Context, deps UserProfileRefreshDeps, in Use
 		return out, err
 	}
 
-	style, _ := deps.StylePrefs.ListGlobalByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
-	recent, _ := deps.ProgEvents.ListRecentByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID, 200)
+	var prefsAny any
+	allowBehaviorPersonalization := true
+	if deps.Prefs != nil {
+		if row, err := deps.Prefs.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID); err == nil && row != nil && len(row.PrefsJSON) > 0 && string(row.PrefsJSON) != "null" {
+			_ = json.Unmarshal(row.PrefsJSON, &prefsAny)
+			if m, ok := prefsAny.(map[string]any); ok {
+				if v, ok := m["allowBehaviorPersonalization"].(bool); ok {
+					allowBehaviorPersonalization = v
+				}
+			}
+		}
+	}
+
+	var style any
+	var recent []*types.UserProgressionEvent
+	if allowBehaviorPersonalization {
+		style, _ = deps.StylePrefs.ListGlobalByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
+		recent, _ = deps.ProgEvents.ListRecentByUser(dbctx.Context{Ctx: ctx}, in.OwnerUserID, 200)
+	}
 
 	userFacts := map[string]any{
 		"user_id":                  in.OwnerUserID.String(),
 		"style_preferences_global": style,
 		"recent_progression_count": len(recent),
+		"personalization_prefs":    prefsAny,
 	}
 	userFactsJSON, _ := json.Marshal(userFacts)
 

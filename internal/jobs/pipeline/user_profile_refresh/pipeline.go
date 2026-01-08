@@ -31,6 +31,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		StylePrefs:  p.stylePrefs,
 		ProgEvents:  p.progEvents,
 		UserProfile: p.profile,
+		Prefs:       p.prefs,
 		AI:          p.ai,
 		Vec:         p.vec,
 		Saga:        p.saga,

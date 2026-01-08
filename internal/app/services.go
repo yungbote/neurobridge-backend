@@ -32,6 +32,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_cover_render"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_intake"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
@@ -41,6 +42,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_profile_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/variant_stats_refresh"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/web_resources_seed"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	jobworker "github.com/yungbote/neurobridge-backend/internal/jobs/worker"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
@@ -113,7 +115,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		cfg.NonceRefreshTTL,
 	)
 
-	userService := services.NewUserService(db, log, repos.User, avatarService)
+	userService := services.NewUserService(db, log, repos.User, repos.UserPersonalizationPrefs, avatarService)
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
 	eventService := services.NewEventService(db, log, repos.UserEvent)
 	sessionStateService := services.NewSessionStateService(db, log, repos.UserSessionState)
@@ -247,6 +249,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	// --------------------
 	// Learning build (Path-centric) pipelines
 	// --------------------
+	webResourcesSeed := web_resources_seed.New(db, log, repos.MaterialFile, repos.Path, clients.GcpBucket, clients.OpenaiClient, sagaSvc, bootstrapSvc)
+	if err := jobRegistry.Register(webResourcesSeed); err != nil {
+		return Services{}, err
+	}
+
 	ingestChunks := ingest_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, extractor, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(ingestChunks); err != nil {
 		return Services{}, err
@@ -277,13 +284,31 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	userProfileRefresh := user_profile_refresh.New(db, log, repos.UserStylePreference, repos.UserProgressionEvent, repos.UserProfileVector, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	userProfileRefresh := user_profile_refresh.New(db, log, repos.UserStylePreference, repos.UserProgressionEvent, repos.UserProfileVector, repos.UserPersonalizationPrefs, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(userProfileRefresh); err != nil {
 		return Services{}, err
 	}
 
 	teachingPatterns := teaching_patterns_seed.New(db, log, repos.TeachingPattern, repos.UserProfileVector, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(teachingPatterns); err != nil {
+		return Services{}, err
+	}
+
+	pathIntake := path_intake.New(
+		db,
+		log,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		repos.MaterialSetSummary,
+		repos.Path,
+		repos.UserPersonalizationPrefs,
+		repos.ChatThread,
+		repos.ChatMessage,
+		clients.OpenaiClient,
+		chatNotifier,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(pathIntake); err != nil {
 		return Services{}, err
 	}
 
@@ -572,6 +597,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			ConceptState:     repos.UserConceptState,
 			ProgEvents:       repos.UserProgressionEvent,
 			UserProfile:      repos.UserProfileVector,
+			UserPrefs:        repos.UserPersonalizationPrefs,
 			TeachingPatterns: repos.TeachingPattern,
 
 			Path:               repos.Path,

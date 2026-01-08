@@ -69,7 +69,7 @@ type NodeDocBuildOutput struct {
 	TablesWritten   int `json:"tables_written"`
 }
 
-const nodeDocPromptVersion = "node_doc_v1@2"
+const nodeDocPromptVersion = "node_doc_v1@4"
 
 func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	out := NodeDocBuildOutput{}
@@ -100,9 +100,13 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, err
 	}
 	pathStyleJSON := ""
+	pathIntentMD := ""
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
+			if v, ok := meta["intake_md"]; ok && v != nil {
+				pathIntentMD = strings.TrimSpace(stringFromAny(v))
+			}
 			if v, ok := meta["charter"]; ok && v != nil {
 				// Extract just the stable style fields (avoid charter warnings like "ask 2-4 questions").
 				if charter, ok := v.(map[string]any); ok {
@@ -419,11 +423,13 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	}
 
 	type nodeWork struct {
-		Node       *types.PathNode
-		Goal       string
-		ConceptCSV string
-		QueryText  string
-		QueryEmb   []float32
+		Node        *types.PathNode
+		NodeKind    string
+		DocTemplate string
+		Goal        string
+		ConceptCSV  string
+		QueryText   string
+		QueryEmb    []float32
 	}
 	work := make([]nodeWork, 0, len(nodes))
 	for _, node := range nodes {
@@ -439,6 +445,8 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		if len(node.Metadata) > 0 && string(node.Metadata) != "null" {
 			_ = json.Unmarshal(node.Metadata, &nodeMeta)
 		}
+		nodeKind := normalizePathNodeKind(stringFromAny(nodeMeta["node_kind"]))
+		docTemplate := normalizePathNodeDocTemplate(stringFromAny(nodeMeta["doc_template"]), nodeKind)
 		nodeGoal := strings.TrimSpace(stringFromAny(nodeMeta["goal"]))
 		nodeConceptKeys := dedupeStrings(stringSliceFromAny(nodeMeta["concept_keys"]))
 		conceptCSV := strings.Join(nodeConceptKeys, ", ")
@@ -446,10 +454,12 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		queryText := strings.TrimSpace(node.Title + " " + nodeGoal + " " + conceptCSV)
 
 		work = append(work, nodeWork{
-			Node:       node,
-			Goal:       nodeGoal,
-			ConceptCSV: conceptCSV,
-			QueryText:  queryText,
+			Node:        node,
+			NodeKind:    nodeKind,
+			DocTemplate: docTemplate,
+			Goal:        nodeGoal,
+			ConceptCSV:  conceptCSV,
+			QueryText:   queryText,
 		})
 	}
 	if len(work) == 0 {
@@ -634,7 +644,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			}
 
 			// ---- Learner-facing doc with validation + retry ----
-			reqs := content.DefaultNodeDocRequirements()
+			reqs := nodeDocRequirementsForTemplate(w.NodeKind, w.DocTemplate)
 			diagramLimit := envIntAllowZero("NODE_DOC_DIAGRAMS_LIMIT", -1)
 			if diagramLimit < 0 {
 				diagramLimit = -1
@@ -647,56 +657,86 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			// Best-effort: if a video is available in the allowed assets list, include it (we can auto-inject on fallback).
 			videoAsset := firstVideoAssetFromAssetsJSON(assetsJSON)
 
+			requireDiagrams := !diagramsDisabled && reqs.MinDiagrams > 0
+
 			mediaRequirementLine := "- Must include at least one of: figure | diagram | table"
 			generatedFigureRequirementLine := `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any diagrams/tables you include).`
-			citationsRequirementLine := "- Every paragraph/callout/figure/diagram/table/quick_check must have citations (non-empty)"
+			citationsRequirementLine := "- Every content block (everything except heading/divider/video/code) must have citations (non-empty)"
 			outlineDiagramLine := "- Include at least one diagram early."
-			diagramHardRule := "- Include at least one diagram block (SVG preferred)."
+			diagramRuleLine := "- Include at least one diagram block (SVG preferred)."
 			diagramPrefRule := `- Prefer diagram.kind="svg" (simple, readable SVG).`
+			templateRequirementLine := docTemplateRequirementLine(w.DocTemplate, diagramsDisabled)
 			if diagramsDisabled {
 				mediaRequirementLine = "- Must include at least one of: figure | table"
 				generatedFigureRequirementLine = `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any tables you include).`
-				citationsRequirementLine = "- Every paragraph/callout/figure/table/quick_check must have citations (non-empty)"
+				citationsRequirementLine = "- Every content block (everything except heading/divider/video/code) must have citations (non-empty)"
 				outlineDiagramLine = "- Do not include any diagram blocks."
-				diagramHardRule = "- Do not include any diagram blocks."
+				diagramRuleLine = "- Do not include any diagram blocks."
+				diagramPrefRule = ""
+			} else if !requireDiagrams {
+				outlineDiagramLine = "- Diagrams are optional (include one only if it genuinely improves clarity)."
+				diagramRuleLine = "- Diagrams are optional."
 				diagramPrefRule = ""
 			}
 
 			system := fmt.Sprintf(`
-MODE: STATIC_UNIT_DOC
+	MODE: STATIC_UNIT_DOC
 
-You write dense, structured learning unit docs in a "docs page" style.
-This is NOT an interactive chat: do not ask the learner any questions or solicit preferences.
-Do not include any onboarding sections ("Entry Check", "Your goal/level", "Format preferences", etc).
-The only questions in the entire doc must be inside quick_check blocks.
+	You write dense, structured learning unit docs in a "docs page" style.
+	The quality bar is elite: crisp, high-signal, and engaging (like excellent study notes).
+	This is NOT an interactive chat: do not ask the learner any questions or solicit preferences.
+	Do not include any onboarding sections ("Entry Check", "Your goal/level", "Format preferences", etc).
+	The only questions in the entire doc must be inside quick_check blocks.
 
-Media rules (diagrams vs figures):
-- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
-- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
-- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
+	Signal density + style rules:
+	- No repetition. Do not restate the same sentence/definition in multiple places.
+	- Prefer short paragraphs (<= 4 sentences) and use bullets/tables when it improves clarity.
+	- Do not include filler/boilerplate (e.g., "This module pins down..." / "The key idea is..." repeated).
+	- Do not output raw concept keys (snake_case). Write concept names in natural language.
+	- Summary is already provided via the summary field; do NOT include a "Summary" heading/section that repeats it.
+	  If you include an ending recap, title it "Key takeaways" and make it additive (not a rephrase).
+
+	Media rules (diagrams vs figures):
+	- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
+	- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
+	- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
 - Do NOT put labels/text inside figures; keep labels in captions and use diagrams for labeled visuals.
 
-Schema contract:
-- Use "order" as the only render order. Each order item is {kind,id}.
-- Each order item must reference exactly one object with the same id in the corresponding array:
-  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | quick_checks | dividers.
-- IDs must be non-empty and unique within each array (e.g., "h1","p2","qc3").
-- Do not create orphan blocks: every object you create must appear in "order".
+	Schema contract:
+	- Use "order" as the only render order. Each order item is {kind,id}.
+	- Each order item must reference exactly one object with the same id in the corresponding array:
+	  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | objectives | prerequisites | key_takeaways | glossary | common_mistakes | misconceptions | edge_cases | heuristics | steps | checklist | faq | intuition | mental_model | why_it_matters | connections | quick_checks | dividers.
+	- IDs must be non-empty and unique within each array (e.g., "h1","p2","qc3").
+	- Do not create orphan blocks: every object you create must appear in "order".
 
-Hard rules:
-- Output ONLY valid JSON that matches the schema. No surrounding text.
-- Do not include planning/meta/check-in language. Do not offer customization options.
-- Quick checks must be short-answer or true/false (no multiple choice).
-- Heading levels must be 2, 3, or 4 (never use 1).
-- Include a tip callout titled exactly "Worked example".
-%s
-- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
-- Every paragraph/callout/figure/diagram/table/quick_check MUST include non-empty citations.
-- Citations MUST reference ONLY the provided chunk_ids.
-- Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
-- Use markdown in md fields; do not include raw HTML.
-- If using a figure/video URL, it MUST come from AVAILABLE_MEDIA_ASSETS_JSON.
-%s`, diagramHardRule, diagramPrefRule)
+	Block type conventions (use when helpful; leave arrays empty when not needed):
+	- objectives/prerequisites/key_takeaways/common_mistakes/misconceptions/edge_cases/heuristics/connections:
+	  - Use items_md: each entry is one bullet line (no leading "-" and no numbering).
+	- steps:
+	  - Use steps_md: each entry is one step (no leading "1."/"Step 1").
+	- checklist:
+	  - Use items_md: each entry is one checklist item (no leading "- [ ]").
+	- glossary:
+	  - Use terms: {term, definition_md}. Definitions are short and operational (not textbooky).
+	- faq:
+	  - Use qas: {question_md, answer_md}. Keep answers tight; no rambling.
+	- intuition/mental_model/why_it_matters:
+	  - Use md: a short, vivid section that adds insight (not generic filler).
+
+	Hard rules:
+	- Output ONLY valid JSON that matches the schema. No surrounding text.
+	- Do not include planning/meta/check-in language. Do not offer customization options.
+	- Quick checks must be short-answer or true/false (no multiple choice).
+	- Heading levels must be 2, 3, or 4 (never use 1).
+	- Include a tip callout titled exactly "Worked example".
+	%s
+	- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
+	- Every content block (everything except heading/divider/video/code) MUST include non-empty citations.
+	- Citations MUST reference ONLY the provided chunk_ids.
+	- Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
+	- Use markdown in md fields; do not include raw HTML.
+	- If using a figure/video URL, it MUST come from AVAILABLE_MEDIA_ASSETS_JSON.
+	%s`, diagramRuleLine, diagramPrefRule)
 
 			var lastErrors []string
 			for attempt := 1; attempt <= 3; attempt++ {
@@ -730,10 +770,21 @@ Hard rules:
 					generatedFigures = strings.TrimSpace(b.String())
 				}
 
+				intentForPrompt := strings.TrimSpace(pathIntentMD)
+				if intentForPrompt == "" {
+					intentForPrompt = "(none)"
+				}
+				suggestedOutline := docTemplateSuggestedOutline(w.NodeKind, w.DocTemplate)
+
 				user := fmt.Sprintf(`
 NODE_TITLE: %s
 NODE_GOAL: %s
 CONCEPT_KEYS: %s
+NODE_KIND: %s
+DOC_TEMPLATE: %s
+
+PATH_INTENT_MD (optional; global goal context):
+%s
 
 MUST_CITE_CHUNK_IDS (each must appear at least once in citations; if empty, ignore):
 %s
@@ -747,17 +798,13 @@ REQUIREMENTS:
 %s
 %s
 %s
+%s
 
 PATH_STYLE_JSON (optional; style only, no warnings):
 %s
 
 SUGGESTED_SECTION_OUTLINE (internal guidance; learner-facing doc should NOT mention this as an outline):
-- Start with a level-2 heading that frames the core idea in 1 sentence.
-- Add a level-2 heading that defines key terms and connects them to the goal.
-- Add a level-2 heading that explains the main mechanism/logic step-by-step.
-- Include a "Worked example" as a tip callout (title exactly "Worked example").
-- End with a level-2 heading that lists common misconceptions + corrections.
-- Spread >= %d quick checks throughout (not all at the end).
+%s
 %s
 %s
 
@@ -769,7 +816,7 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional; ONLY use listed URLs):
 %s
 
 Output:
-Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, pathStyleJSON, reqs.MinQuickChecks, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, assetsJSON, generatedFigures) + feedback
+Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, assetsJSON, generatedFigures) + feedback
 
 				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
 				latency := int(time.Since(start).Milliseconds())
@@ -823,8 +870,13 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					doc = scrubbed
 				}
 
+				// Best-effort: remove duplicated blocks (models sometimes repeat identical lines/paragraphs).
+				if deduped, hit := content.DedupNodeDocV1(doc); len(hit) > 0 {
+					doc = deduped
+				}
+
 				// Best-effort auto-injection to avoid wasting retries on simple omissions.
-				if !diagramsDisabled {
+				if requireDiagrams {
 					doc = ensureNodeDocHasDiagram(doc, allowedChunkIDs, chunkIDs)
 				}
 				if requireGeneratedFigure {
@@ -837,6 +889,10 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, formatCh
 					doc = removeNodeDocBlockType(doc, "diagram")
 				} else if diagramLimit > 0 {
 					doc = capNodeDocBlockType(doc, "diagram", diagramLimit)
+				}
+				// Dedupe again after any auto-injection/capping to keep the final doc clean.
+				if deduped, hit := content.DedupNodeDocV1(doc); len(hit) > 0 {
+					doc = deduped
 				}
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
 					doc = withIDs
@@ -1021,6 +1077,164 @@ func suggestedVideoLine(videoAsset *mediaAssetCandidate) string {
 		return ""
 	}
 	return "- If a relevant video is available in AVAILABLE_MEDIA_ASSETS_JSON, include 1 short video block and caption what to watch for."
+}
+
+func normalizePathNodeKind(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "module", "lesson", "capstone", "review":
+		return s
+	default:
+		return "lesson"
+	}
+}
+
+func normalizePathNodeDocTemplate(raw string, nodeKind string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "overview", "concept", "practice", "cheatsheet", "project", "review":
+		return s
+	}
+	switch normalizePathNodeKind(nodeKind) {
+	case "module":
+		return "overview"
+	case "capstone":
+		return "project"
+	case "review":
+		return "review"
+	default:
+		return "concept"
+	}
+}
+
+func nodeDocRequirementsForTemplate(nodeKind string, docTemplate string) content.NodeDocRequirements {
+	kind := normalizePathNodeKind(nodeKind)
+	tmpl := normalizePathNodeDocTemplate(docTemplate, kind)
+
+	req := content.DefaultNodeDocRequirements()
+
+	switch tmpl {
+	case "overview":
+		req.MinWordCount = 450
+		req.MinHeadings = 2
+		req.MinQuickChecks = 3
+		req.MinDiagrams = 1
+	case "concept":
+		// defaults
+	case "practice":
+		req.MinWordCount = 650
+		req.MinHeadings = 2
+		req.MinQuickChecks = 8
+		req.MinDiagrams = 1
+	case "cheatsheet":
+		req.MinWordCount = 550
+		req.MinHeadings = 2
+		req.MinQuickChecks = 4
+		req.MinDiagrams = 0
+	case "project":
+		req.MinWordCount = 900
+		req.MinHeadings = 3
+		req.MinQuickChecks = 4
+		req.MinDiagrams = 1
+	case "review":
+		req.MinWordCount = 550
+		req.MinHeadings = 2
+		req.MinQuickChecks = 10
+		req.MinDiagrams = 0
+	}
+
+	// Guardrails: keep modules concise by default.
+	if kind == "module" && req.MinWordCount > 650 {
+		req.MinWordCount = 650
+	}
+
+	return req
+}
+
+func docTemplateRequirementLine(docTemplate string, diagramsDisabled bool) string {
+	tmpl := normalizePathNodeDocTemplate(docTemplate, "lesson")
+	switch tmpl {
+	case "cheatsheet":
+		return "- Include at least 1 table block that summarizes key definitions, formulas, or patterns."
+	case "practice":
+		return "- Include at least 2 worked examples (at least one as the tip callout titled exactly \"Worked example\")."
+	case "project":
+		return "- Include a simple rubric/checklist (table preferred) that the learner can use to self-evaluate."
+	case "review":
+		if diagramsDisabled {
+			return "- Prefer tables/bullets over diagrams for recap; focus on quick checks."
+		}
+		return "- Prefer recap tables/bullets; include diagrams only if they add real value."
+	default:
+		return ""
+	}
+}
+
+func docTemplateSuggestedOutline(nodeKind string, docTemplate string) string {
+	kind := normalizePathNodeKind(nodeKind)
+	tmpl := normalizePathNodeDocTemplate(docTemplate, kind)
+
+	lines := make([]string, 0, 12)
+	switch tmpl {
+	case "overview":
+		lines = append(lines,
+			"Start with a level-2 heading that states the module goal in 1 sentence.",
+			"Add a short \"map\" of what the upcoming lessons will cover (bullets).",
+			"Define key terms and prerequisites at a high level (no deep dive yet).",
+			"Include a tip callout titled exactly \"Worked example\" with a small motivating example.",
+			"End with common misconceptions + how this module will address them.",
+		)
+	case "practice":
+		lines = append(lines,
+			"Start with a brief recap of the core idea and when to use it.",
+			"Include 2–4 worked examples that increase in difficulty (one MUST be the \"Worked example\" tip callout).",
+			"Add a short section on common traps and how to debug mistakes.",
+			"End with a compact checklist the learner can apply to new problems.",
+		)
+	case "cheatsheet":
+		lines = append(lines,
+			"Start with a tight definition section (key terms only).",
+			"Include a table that summarizes the most important rules/formulas/patterns.",
+			"Add 1 worked example (the \"Worked example\" tip callout) that demonstrates the table in action.",
+			"End with \"gotchas\" and edge cases.",
+		)
+	case "project":
+		lines = append(lines,
+			"Start with a clear deliverable and constraints.",
+			"List prerequisites and the concepts this project integrates.",
+			"Provide a step-by-step build plan with checkpoints.",
+			"Include a tip callout titled exactly \"Worked example\" that walks through a representative slice end-to-end.",
+			"End with a rubric/checklist and common failure modes.",
+		)
+	case "review":
+		lines = append(lines,
+			"Start with a high-level recap of the core ideas (1–2 short sections).",
+			"Include a short \"common misconceptions\" section.",
+			"Focus on many quick checks throughout the doc to reinforce memory.",
+			"Include a tip callout titled exactly \"Worked example\" with a compact example.",
+		)
+	default: // concept
+		lines = append(lines,
+			"Start with a level-2 heading that frames the core idea in 1 sentence.",
+			"Define key terms and connect them to the goal.",
+			"Explain the main mechanism/logic step-by-step.",
+			"Include a tip callout titled exactly \"Worked example\".",
+			"End with common misconceptions + corrections.",
+		)
+	}
+	lines = append(lines, "Spread quick checks throughout (not all at the end).")
+
+	var b strings.Builder
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func removeNodeDocBlockType(doc content.NodeDocV1, blockType string) content.NodeDocV1 {

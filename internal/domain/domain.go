@@ -60,6 +60,7 @@ const (
 
 type User = user.User
 type UserProfileVector = user.UserProfileVector
+type UserPersonalizationPrefs = user.UserPersonalizationPrefs
 type UserSessionState = user.UserSessionState
 type UserToken = auth.UserToken
 type UserIdentity = auth.UserIdentity

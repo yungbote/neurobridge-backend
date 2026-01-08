@@ -26,6 +26,22 @@ type NodeDocGenV1 struct {
 	Tables      []NodeDocGenTableV1      `json:"tables"`
 	QuickChecks []NodeDocGenQuickCheckV1 `json:"quick_checks"`
 	Dividers    []NodeDocGenDividerV1    `json:"dividers"`
+
+	Objectives     []NodeDocGenListBlockV1     `json:"objectives"`
+	Prerequisites  []NodeDocGenListBlockV1     `json:"prerequisites"`
+	KeyTakeaways   []NodeDocGenListBlockV1     `json:"key_takeaways"`
+	Glossary       []NodeDocGenGlossaryBlockV1 `json:"glossary"`
+	CommonMistakes []NodeDocGenListBlockV1     `json:"common_mistakes"`
+	Misconceptions []NodeDocGenListBlockV1     `json:"misconceptions"`
+	EdgeCases      []NodeDocGenListBlockV1     `json:"edge_cases"`
+	Heuristics     []NodeDocGenListBlockV1     `json:"heuristics"`
+	Steps          []NodeDocGenStepsBlockV1    `json:"steps"`
+	Checklist      []NodeDocGenListBlockV1     `json:"checklist"`
+	FAQ            []NodeDocGenFAQBlockV1      `json:"faq"`
+	Intuition      []NodeDocGenMDSectionV1     `json:"intuition"`
+	MentalModel    []NodeDocGenMDSectionV1     `json:"mental_model"`
+	WhyItMatters   []NodeDocGenMDSectionV1     `json:"why_it_matters"`
+	Connections    []NodeDocGenListBlockV1     `json:"connections"`
 }
 
 type NodeDocGenOrderItemV1 struct {
@@ -101,6 +117,51 @@ type NodeDocGenDividerV1 struct {
 	ID string `json:"id"`
 }
 
+type NodeDocGenListBlockV1 struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	ItemsMD   []string        `json:"items_md"`
+	Citations []CitationRefV1 `json:"citations"`
+}
+
+type NodeDocGenStepsBlockV1 struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	StepsMD   []string        `json:"steps_md"`
+	Citations []CitationRefV1 `json:"citations"`
+}
+
+type NodeDocGenGlossaryTermV1 struct {
+	Term         string `json:"term"`
+	DefinitionMD string `json:"definition_md"`
+}
+
+type NodeDocGenGlossaryBlockV1 struct {
+	ID        string                     `json:"id"`
+	Title     string                     `json:"title"`
+	Terms     []NodeDocGenGlossaryTermV1 `json:"terms"`
+	Citations []CitationRefV1            `json:"citations"`
+}
+
+type NodeDocGenFAQItemV1 struct {
+	QuestionMD string `json:"question_md"`
+	AnswerMD   string `json:"answer_md"`
+}
+
+type NodeDocGenFAQBlockV1 struct {
+	ID        string                `json:"id"`
+	Title     string                `json:"title"`
+	QAs       []NodeDocGenFAQItemV1 `json:"qas"`
+	Citations []CitationRefV1       `json:"citations"`
+}
+
+type NodeDocGenMDSectionV1 struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	MD        string          `json:"md"`
+	Citations []CitationRefV1 `json:"citations"`
+}
+
 func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	errs := make([]string, 0)
 
@@ -142,6 +203,37 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	qcSeq := make([]NodeDocGenQuickCheckV1, 0, len(gen.QuickChecks))
 	divs := map[string]NodeDocGenDividerV1{}
 	dividerSeq := make([]NodeDocGenDividerV1, 0, len(gen.Dividers))
+
+	objectives := map[string]NodeDocGenListBlockV1{}
+	objectivesSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Objectives))
+	prereqs := map[string]NodeDocGenListBlockV1{}
+	prereqSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Prerequisites))
+	keyTakeaways := map[string]NodeDocGenListBlockV1{}
+	keyTakeawaysSeq := make([]NodeDocGenListBlockV1, 0, len(gen.KeyTakeaways))
+	glossary := map[string]NodeDocGenGlossaryBlockV1{}
+	glossarySeq := make([]NodeDocGenGlossaryBlockV1, 0, len(gen.Glossary))
+	commonMistakes := map[string]NodeDocGenListBlockV1{}
+	commonMistakesSeq := make([]NodeDocGenListBlockV1, 0, len(gen.CommonMistakes))
+	misconceptions := map[string]NodeDocGenListBlockV1{}
+	misconceptionsSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Misconceptions))
+	edgeCases := map[string]NodeDocGenListBlockV1{}
+	edgeCasesSeq := make([]NodeDocGenListBlockV1, 0, len(gen.EdgeCases))
+	heuristics := map[string]NodeDocGenListBlockV1{}
+	heuristicsSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Heuristics))
+	steps := map[string]NodeDocGenStepsBlockV1{}
+	stepsSeq := make([]NodeDocGenStepsBlockV1, 0, len(gen.Steps))
+	checklists := map[string]NodeDocGenListBlockV1{}
+	checklistsSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Checklist))
+	faq := map[string]NodeDocGenFAQBlockV1{}
+	faqSeq := make([]NodeDocGenFAQBlockV1, 0, len(gen.FAQ))
+	intuition := map[string]NodeDocGenMDSectionV1{}
+	intuitionSeq := make([]NodeDocGenMDSectionV1, 0, len(gen.Intuition))
+	mentalModel := map[string]NodeDocGenMDSectionV1{}
+	mentalModelSeq := make([]NodeDocGenMDSectionV1, 0, len(gen.MentalModel))
+	whyItMatters := map[string]NodeDocGenMDSectionV1{}
+	whyItMattersSeq := make([]NodeDocGenMDSectionV1, 0, len(gen.WhyItMatters))
+	connections := map[string]NodeDocGenListBlockV1{}
+	connectionsSeq := make([]NodeDocGenListBlockV1, 0, len(gen.Connections))
 
 	addUnique := func(kind string, id string, seen map[string]bool) (string, bool) {
 		id = strings.TrimSpace(id)
@@ -277,6 +369,187 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 		}
 	}
 
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Objectives {
+			id, ok := addUnique("objectives", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			objectives[id] = b
+			objectivesSeq = append(objectivesSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Prerequisites {
+			id, ok := addUnique("prerequisites", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			prereqs[id] = b
+			prereqSeq = append(prereqSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.KeyTakeaways {
+			id, ok := addUnique("key_takeaways", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			keyTakeaways[id] = b
+			keyTakeawaysSeq = append(keyTakeawaysSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Glossary {
+			id, ok := addUnique("glossary", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			glossary[id] = b
+			glossarySeq = append(glossarySeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.CommonMistakes {
+			id, ok := addUnique("common_mistakes", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			commonMistakes[id] = b
+			commonMistakesSeq = append(commonMistakesSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Misconceptions {
+			id, ok := addUnique("misconceptions", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			misconceptions[id] = b
+			misconceptionsSeq = append(misconceptionsSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.EdgeCases {
+			id, ok := addUnique("edge_cases", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			edgeCases[id] = b
+			edgeCasesSeq = append(edgeCasesSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Heuristics {
+			id, ok := addUnique("heuristics", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			heuristics[id] = b
+			heuristicsSeq = append(heuristicsSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Steps {
+			id, ok := addUnique("steps", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			steps[id] = b
+			stepsSeq = append(stepsSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Checklist {
+			id, ok := addUnique("checklist", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			checklists[id] = b
+			checklistsSeq = append(checklistsSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.FAQ {
+			id, ok := addUnique("faq", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			faq[id] = b
+			faqSeq = append(faqSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Intuition {
+			id, ok := addUnique("intuition", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			intuition[id] = b
+			intuitionSeq = append(intuitionSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.MentalModel {
+			id, ok := addUnique("mental_model", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			mentalModel[id] = b
+			mentalModelSeq = append(mentalModelSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.WhyItMatters {
+			id, ok := addUnique("why_it_matters", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			whyItMatters[id] = b
+			whyItMattersSeq = append(whyItMattersSeq, b)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, b := range gen.Connections {
+			id, ok := addUnique("connections", b.ID, seen)
+			if !ok {
+				continue
+			}
+			b.ID = id
+			connections[id] = b
+			connectionsSeq = append(connectionsSeq, b)
+		}
+	}
+
 	refHeading := map[string]bool{}
 	refParagraph := map[string]bool{}
 	refCallout := map[string]bool{}
@@ -287,6 +560,22 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	refTable := map[string]bool{}
 	refQC := map[string]bool{}
 	refDivider := map[string]bool{}
+
+	refObjectives := map[string]bool{}
+	refPrerequisites := map[string]bool{}
+	refKeyTakeaways := map[string]bool{}
+	refGlossary := map[string]bool{}
+	refCommonMistakes := map[string]bool{}
+	refMisconceptions := map[string]bool{}
+	refEdgeCases := map[string]bool{}
+	refHeuristics := map[string]bool{}
+	refSteps := map[string]bool{}
+	refChecklist := map[string]bool{}
+	refFAQ := map[string]bool{}
+	refIntuition := map[string]bool{}
+	refMentalModel := map[string]bool{}
+	refWhyItMatters := map[string]bool{}
+	refConnections := map[string]bool{}
 
 	orderSeen := map[string]bool{}
 	for _, item := range gen.Order {
@@ -432,6 +721,201 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 		case "divider":
 			refDivider[id] = true
 			doc.Blocks = append(doc.Blocks, map[string]any{"id": id, "type": "divider"})
+		case "objectives":
+			b, ok := objectives[id]
+			if !ok {
+				continue
+			}
+			refObjectives[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "objectives",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "prerequisites":
+			b, ok := prereqs[id]
+			if !ok {
+				continue
+			}
+			refPrerequisites[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "prerequisites",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "key_takeaways":
+			b, ok := keyTakeaways[id]
+			if !ok {
+				continue
+			}
+			refKeyTakeaways[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "key_takeaways",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "glossary":
+			b, ok := glossary[id]
+			if !ok {
+				continue
+			}
+			refGlossary[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "glossary",
+				"title":     b.Title,
+				"terms":     toAny(b.Terms),
+				"citations": toAny(b.Citations),
+			})
+		case "common_mistakes":
+			b, ok := commonMistakes[id]
+			if !ok {
+				continue
+			}
+			refCommonMistakes[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "common_mistakes",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "misconceptions":
+			b, ok := misconceptions[id]
+			if !ok {
+				continue
+			}
+			refMisconceptions[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "misconceptions",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "edge_cases":
+			b, ok := edgeCases[id]
+			if !ok {
+				continue
+			}
+			refEdgeCases[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "edge_cases",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "heuristics":
+			b, ok := heuristics[id]
+			if !ok {
+				continue
+			}
+			refHeuristics[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "heuristics",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "steps":
+			b, ok := steps[id]
+			if !ok {
+				continue
+			}
+			refSteps[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "steps",
+				"title":     b.Title,
+				"steps_md":  toAny(b.StepsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "checklist":
+			b, ok := checklists[id]
+			if !ok {
+				continue
+			}
+			refChecklist[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "checklist",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
+		case "faq":
+			b, ok := faq[id]
+			if !ok {
+				continue
+			}
+			refFAQ[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "faq",
+				"title":     b.Title,
+				"qas":       toAny(b.QAs),
+				"citations": toAny(b.Citations),
+			})
+		case "intuition":
+			b, ok := intuition[id]
+			if !ok {
+				continue
+			}
+			refIntuition[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "intuition",
+				"title":     b.Title,
+				"md":        b.MD,
+				"citations": toAny(b.Citations),
+			})
+		case "mental_model":
+			b, ok := mentalModel[id]
+			if !ok {
+				continue
+			}
+			refMentalModel[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "mental_model",
+				"title":     b.Title,
+				"md":        b.MD,
+				"citations": toAny(b.Citations),
+			})
+		case "why_it_matters":
+			b, ok := whyItMatters[id]
+			if !ok {
+				continue
+			}
+			refWhyItMatters[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "why_it_matters",
+				"title":     b.Title,
+				"md":        b.MD,
+				"citations": toAny(b.Citations),
+			})
+		case "connections":
+			b, ok := connections[id]
+			if !ok {
+				continue
+			}
+			refConnections[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "connections",
+				"title":     b.Title,
+				"items_md":  toAny(b.ItemsMD),
+				"citations": toAny(b.Citations),
+			})
 		default:
 			continue
 		}
@@ -503,6 +987,96 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			continue
 		}
 		doc.Blocks = append(doc.Blocks, map[string]any{"id": d.ID, "type": "divider"})
+	}
+	for _, b := range objectivesSeq {
+		if refObjectives[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "objectives", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range prereqSeq {
+		if refPrerequisites[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "prerequisites", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range keyTakeawaysSeq {
+		if refKeyTakeaways[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "key_takeaways", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range glossarySeq {
+		if refGlossary[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "glossary", "title": b.Title, "terms": toAny(b.Terms), "citations": toAny(b.Citations)})
+	}
+	for _, b := range commonMistakesSeq {
+		if refCommonMistakes[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "common_mistakes", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range misconceptionsSeq {
+		if refMisconceptions[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "misconceptions", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range edgeCasesSeq {
+		if refEdgeCases[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "edge_cases", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range heuristicsSeq {
+		if refHeuristics[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "heuristics", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range stepsSeq {
+		if refSteps[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "steps", "title": b.Title, "steps_md": toAny(b.StepsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range checklistsSeq {
+		if refChecklist[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "checklist", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
+	}
+	for _, b := range faqSeq {
+		if refFAQ[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "faq", "title": b.Title, "qas": toAny(b.QAs), "citations": toAny(b.Citations)})
+	}
+	for _, b := range intuitionSeq {
+		if refIntuition[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "intuition", "title": b.Title, "md": b.MD, "citations": toAny(b.Citations)})
+	}
+	for _, b := range mentalModelSeq {
+		if refMentalModel[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "mental_model", "title": b.Title, "md": b.MD, "citations": toAny(b.Citations)})
+	}
+	for _, b := range whyItMattersSeq {
+		if refWhyItMatters[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "why_it_matters", "title": b.Title, "md": b.MD, "citations": toAny(b.Citations)})
+	}
+	for _, b := range connectionsSeq {
+		if refConnections[b.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": b.ID, "type": "connections", "title": b.Title, "items_md": toAny(b.ItemsMD), "citations": toAny(b.Citations)})
 	}
 
 	return doc, dedupeStrings(errs)

@@ -75,6 +75,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.PATCH("/user/theme", cfg.UserHandler.ChangeTheme)
 			protected.PATCH("/user/avatar_color", cfg.UserHandler.ChangeAvatarColor)
 			protected.POST("/user/avatar/upload", cfg.UserHandler.UploadAvatar)
+			protected.GET("/user/personalization", cfg.UserHandler.GetPersonalizationPrefs)
+			protected.PATCH("/user/personalization", cfg.UserHandler.PatchPersonalizationPrefs)
 		}
 
 		// Session (runtime state)

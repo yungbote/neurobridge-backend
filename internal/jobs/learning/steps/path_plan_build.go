@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -81,6 +82,22 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	var summaryText string
 	if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
 		summaryText = strings.TrimSpace(rows[0].SummaryMD)
+	}
+	// Optionally prepend user intent/intake context (written by the path_intake stage).
+	if deps.Path != nil {
+		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
+			var meta map[string]any
+			if uerr := json.Unmarshal(row.Metadata, &meta); uerr == nil && meta != nil {
+				intakeMD := strings.TrimSpace(stringFromAny(meta["intake_md"]))
+				if intakeMD != "" {
+					if summaryText != "" {
+						summaryText = strings.TrimSpace(intakeMD + "\n\n" + summaryText)
+					} else {
+						summaryText = intakeMD
+					}
+				}
+			}
+		}
 	}
 
 	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
@@ -161,6 +178,16 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	if err != nil {
 		return out, err
 	}
+	structDraft := structObj
+	didRefine := false
+
+	// Optional refinement pass for higher-quality structure.
+	if shouldRefinePathStructure(structObj) {
+		if refined, ok := refinePathStructure(ctx, deps, string(charterJSON), string(conceptsJSON), string(edgesJSON), structDraft); ok {
+			structObj = refined
+			didRefine = true
+		}
+	}
 
 	title := strings.TrimSpace(stringFromAny(structObj["title"]))
 	desc := strings.TrimSpace(stringFromAny(structObj["description"]))
@@ -187,6 +214,10 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			_ = json.Unmarshal(pRow.Metadata, &meta)
 		}
 		meta["charter"] = charterObj
+		// Save both the raw draft and refined output when refinement is enabled (debuggability).
+		if didRefine && structDraft != nil {
+			meta["structure_draft"] = structDraft
+		}
 		meta["structure"] = structObj
 		meta["updated_at"] = now.Format(time.RFC3339Nano)
 		if err := deps.Path.UpdateFields(dbc, pathID, map[string]interface{}{
@@ -197,20 +228,46 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			return err
 		}
 
+		idByIndex := map[int]uuid.UUID{}
 		for _, n := range nodesOut {
+			if n.Index <= 0 {
+				continue
+			}
+			if _, exists := idByIndex[n.Index]; exists {
+				continue
+			}
+			idByIndex[n.Index] = uuid.New()
+		}
+
+		for _, n := range nodesOut {
+			if n.Index <= 0 {
+				continue
+			}
 			nodeMeta := map[string]any{
 				"goal":                n.Goal,
 				"concept_keys":        n.ConceptKeys,
 				"prereq_concept_keys": n.PrereqConceptKeys,
 				"difficulty":          n.Difficulty,
 				"activity_slots":      n.ActivitySlots,
+				"node_kind":           n.NodeKind,
+				"doc_template":        n.DocTemplate,
+				"parent_index":        n.ParentIndex,
 			}
+
+			var parentNodeID *uuid.UUID
+			if n.ParentIndex != nil && *n.ParentIndex > 0 {
+				if pid, ok := idByIndex[*n.ParentIndex]; ok && pid != uuid.Nil {
+					parentCopy := pid
+					parentNodeID = &parentCopy
+				}
+			}
+
 			row := &types.PathNode{
-				ID:           uuid.New(),
+				ID:           idByIndex[n.Index],
 				PathID:       pathID,
 				Index:        n.Index,
 				Title:        n.Title,
-				ParentNodeID: nil,
+				ParentNodeID: parentNodeID,
 				Gating:       datatypes.JSON([]byte(`{}`)),
 				Metadata:     datatypes.JSON(mustJSON(nodeMeta)),
 				CreatedAt:    now,
@@ -230,8 +287,96 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	return out, nil
 }
 
+func qualityMode() string {
+	s := strings.ToLower(strings.TrimSpace(os.Getenv("LEARNING_QUALITY_MODE")))
+	if s == "" {
+		return "standard"
+	}
+	return s
+}
+
+func shouldRefinePathStructure(structObj map[string]any) bool {
+	mode := qualityMode()
+	if mode == "premium" || mode == "openai" || mode == "high" {
+		return true
+	}
+	// If the model admits uncovered concepts, always try a refine pass.
+	uncovered := parsePathStructureUncovered(structObj)
+	return len(uncovered) > 0
+}
+
+func parsePathStructureUncovered(obj map[string]any) []string {
+	if obj == nil {
+		return nil
+	}
+	cc, _ := obj["coverage_check"].(map[string]any)
+	if cc == nil {
+		return nil
+	}
+	return dedupeStrings(stringSliceFromAny(cc["uncovered_concept_keys"]))
+}
+
+func refinePathStructure(
+	ctx context.Context,
+	deps PathPlanBuildDeps,
+	pathCharterJSON string,
+	conceptsJSON string,
+	edgesJSON string,
+	draft map[string]any,
+) (map[string]any, bool) {
+	if deps.AI == nil {
+		return nil, false
+	}
+	draftJSON, _ := json.Marshal(draft)
+	uncovered := parsePathStructureUncovered(draft)
+
+	system := strings.TrimSpace(`
+You refine an existing learning path structure to make it feel premium and coherent.
+Improve sequencing, grouping, and coverage. Keep titles crisp and non-generic.
+Return JSON only that matches the schema.`)
+
+	var user strings.Builder
+	user.WriteString("PATH_CHARTER_JSON:\n")
+	user.WriteString(pathCharterJSON)
+	user.WriteString("\n\nCONCEPTS_JSON:\n")
+	user.WriteString(conceptsJSON)
+	user.WriteString("\n\nEDGES_JSON:\n")
+	user.WriteString(edgesJSON)
+	user.WriteString("\n\nDRAFT_PATH_STRUCTURE_JSON:\n")
+	user.WriteString(string(draftJSON))
+	user.WriteString("\n")
+	if len(uncovered) > 0 {
+		user.WriteString("\nUNCOVERED_CONCEPT_KEYS (must cover these):\n")
+		user.WriteString(strings.Join(uncovered, ", "))
+		user.WriteString("\n")
+	}
+
+	user.WriteString(`
+
+Refinement rubric:
+- Cover all concepts (uncovered_concept_keys should be empty).
+- Use meaningful modules when the topic is broad; avoid a flat list when hierarchy helps.
+- Ensure prerequisites flow naturally (no big jumps).
+- Include a capstone when it meaningfully integrates multiple concepts.
+- Include review nodes only when they genuinely help retention (don’t spam).
+- Keep depth <= 3, indices contiguous from 1.`)
+
+	schema := prompts.PathStructureSchema()
+	obj, err := deps.AI.GenerateJSON(ctx, system, user.String(), "path_structure_refine", schema)
+	if err != nil {
+		return nil, false
+	}
+	if len(parsePathStructureNodes(obj)) == 0 {
+		return nil, false
+	}
+	return obj, true
+}
+
 type pathStructureNode struct {
 	Index             int              `json:"index"`
+	ParentIndex       *int             `json:"parent_index"`
+	NodeKind          string           `json:"node_kind"`
+	DocTemplate       string           `json:"doc_template"`
 	Title             string           `json:"title"`
 	Goal              string           `json:"goal"`
 	ConceptKeys       []string         `json:"concept_keys"`
@@ -255,9 +400,27 @@ func parsePathStructureNodes(obj map[string]any) []pathStructureNode {
 		if !ok {
 			continue
 		}
+		index := intFromAny(m["index"], 0)
+		if index <= 0 {
+			continue
+		}
 		title := strings.TrimSpace(stringFromAny(m["title"]))
 		if title == "" {
 			continue
+		}
+		var parentIndex *int
+		if v, ok := m["parent_index"]; ok && v != nil {
+			if pi := intFromAny(v, 0); pi > 0 {
+				parentIndex = &pi
+			}
+		}
+		nodeKind := strings.ToLower(strings.TrimSpace(stringFromAny(m["node_kind"])))
+		if nodeKind == "" {
+			nodeKind = "lesson"
+		}
+		docTemplate := strings.ToLower(strings.TrimSpace(stringFromAny(m["doc_template"])))
+		if docTemplate == "" {
+			docTemplate = "concept"
 		}
 		slots := []map[string]any{}
 		if a, ok := m["activity_slots"].([]any); ok {
@@ -268,7 +431,10 @@ func parsePathStructureNodes(obj map[string]any) []pathStructureNode {
 			}
 		}
 		out = append(out, pathStructureNode{
-			Index:             intFromAny(m["index"], 0),
+			Index:             index,
+			ParentIndex:       parentIndex,
+			NodeKind:          nodeKind,
+			DocTemplate:       docTemplate,
 			Title:             title,
 			Goal:              strings.TrimSpace(stringFromAny(m["goal"])),
 			ConceptKeys:       dedupeStrings(stringSliceFromAny(m["concept_keys"])),
@@ -278,6 +444,87 @@ func parsePathStructureNodes(obj map[string]any) []pathStructureNode {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
+	return normalizePathStructureNodes(out)
+}
+
+func normalizePathStructureNodes(in []pathStructureNode) []pathStructureNode {
+	if len(in) == 0 {
+		return nil
+	}
+
+	// Ensure stable ordering and unique indices (keep first occurrence).
+	sort.Slice(in, func(i, j int) bool { return in[i].Index < in[j].Index })
+	byIndex := map[int]pathStructureNode{}
+	ordered := make([]int, 0, len(in))
+	for _, n := range in {
+		if n.Index <= 0 || strings.TrimSpace(n.Title) == "" {
+			continue
+		}
+		if _, exists := byIndex[n.Index]; exists {
+			continue
+		}
+		byIndex[n.Index] = n
+		ordered = append(ordered, n.Index)
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	hasIndex := func(idx int) bool {
+		_, ok := byIndex[idx]
+		return ok
+	}
+
+	// Clean parent refs (must exist, must be < index, no self refs).
+	for _, idx := range ordered {
+		n := byIndex[idx]
+		if n.ParentIndex == nil {
+			continue
+		}
+		pi := *n.ParentIndex
+		if pi <= 0 || pi == idx || pi >= idx || !hasIndex(pi) {
+			n.ParentIndex = nil
+			byIndex[idx] = n
+		}
+	}
+
+	// Break cycles + enforce depth <= 3 (module -> lesson -> leaf).
+	parentOf := func(idx int) *int {
+		n := byIndex[idx]
+		return n.ParentIndex
+	}
+	for _, idx := range ordered {
+		n := byIndex[idx]
+		seen := map[int]bool{idx: true}
+		depth := 0
+		cur := idx
+		for {
+			p := parentOf(cur)
+			if p == nil || *p <= 0 {
+				break
+			}
+			if seen[*p] {
+				// Cycle detected; detach this node.
+				n.ParentIndex = nil
+				byIndex[idx] = n
+				break
+			}
+			seen[*p] = true
+			depth++
+			if depth >= 3 {
+				// Too deep; detach this node to keep UI + generation sane.
+				n.ParentIndex = nil
+				byIndex[idx] = n
+				break
+			}
+			cur = *p
+		}
+	}
+
+	out := make([]pathStructureNode, 0, len(ordered))
+	for _, idx := range ordered {
+		out = append(out, byIndex[idx])
+	}
 	return out
 }
 

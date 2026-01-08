@@ -372,6 +372,9 @@ func PathStructureSchema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"index":               IntSchema(),
+			"parent_index":        IntOrNullSchema(),
+			"node_kind":           EnumSchema("module", "lesson", "capstone", "review"),
+			"doc_template":        EnumSchema("overview", "concept", "practice", "cheatsheet", "project", "review"),
 			"title":               map[string]any{"type": "string"},
 			"goal":                map[string]any{"type": "string"},
 			"concept_keys":        StringArraySchema(),
@@ -380,12 +383,21 @@ func PathStructureSchema() map[string]any {
 			"activity_slots":      map[string]any{"type": "array", "items": slot},
 		},
 		"required": []string{
-			"index", "title", "goal", "concept_keys", "prereq_concept_keys", "difficulty", "activity_slots",
+			"index",
+			"parent_index",
+			"node_kind",
+			"doc_template",
+			"title",
+			"goal",
+			"concept_keys",
+			"prereq_concept_keys",
+			"difficulty",
+			"activity_slots",
 		},
 		"additionalProperties": false,
 	}
 
-	return SchemaVersionedObject(1, map[string]any{
+	return SchemaVersionedObject(2, map[string]any{
 		"title":       map[string]any{"type": "string"},
 		"description": map[string]any{"type": "string"},
 		"nodes":       map[string]any{"type": "array", "items": node},

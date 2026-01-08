@@ -60,7 +60,7 @@ type NodeVideosPlanBuildOutput struct {
 	VideosExisting int       `json:"videos_existing"`
 }
 
-const nodeVideoPlanPromptVersion = "video_plan_v1@1"
+const nodeVideoPlanPromptVersion = "video_plan_v2@1"
 
 func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in NodeVideosPlanBuildInput) (NodeVideosPlanBuildOutput, error) {
 	out := NodeVideosPlanBuildOutput{}
@@ -96,7 +96,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		return out, nil
 	}
 
-	videoPlanSchema, err := schema.VideoPlanV1()
+	videoPlanSchema, err := schema.VideoPlanV2()
 	if err != nil {
 		return out, err
 	}
@@ -324,12 +324,27 @@ MODE: VIDEO_PLANNER
 You decide whether a short supplementary video would meaningfully help this node.
 Videos should add value beyond diagrams by showing motion, dynamics, spatial intuition, or a realistic setup/demo.
 
+Continuity rules (critical for multi-clip stitching):
+- If you output multiple clips, they MUST feel like one continuous coherent video (same visual style, same setting, consistent camera language).
+- Avoid random scene changes or style switches between clips. Prefer a single “visual bible” for the entire storyboard.
+- Plan clean seams: each clip should start and end with a brief stable hold on a visually clean frame so stitching can crossfade seamlessly.
+
 Hard rules:
 - Return ONLY valid JSON matching the schema (no surrounding text).
 - Plan 0–1 videos total (max 1).
 - Every plan item must include citations referencing ONLY provided chunk_ids.
-- Video prompt MUST include: no watermarks; no logos; no brand names; avoid identifiable people/faces.
+- Every clip prompt MUST include: no watermarks; no logos; no brand names; avoid identifiable people/faces.
 `
+
+			maxClipSec := 12
+			maxTotalSec := envIntAllowZero("NODE_VIDEO_MAX_TOTAL_SECONDS", 36)
+			maxClips := envIntAllowZero("NODE_VIDEO_MAX_CLIPS_PER_VIDEO", 4)
+			if maxTotalSec <= 0 {
+				maxTotalSec = 36
+			}
+			if maxClips <= 0 {
+				maxClips = 4
+			}
 
 			user := fmt.Sprintf(`
 NODE_TITLE: %s
@@ -345,22 +360,30 @@ VIDEO_SUBJECT_CANDIDATES (noun/thing hints extracted from the excerpts; prefer c
 Task:
 - If a video would add motion/spatial intuition/realistic setup value, output exactly 1 plan.
 - Otherwise output videos: [].
-- Each video prompt/caption MUST mention at least one subject from VIDEO_SUBJECT_CANDIDATES (verbatim).
-- On-screen labels/subtitles are OK when they help; include them explicitly in the prompt if needed.
-- Choose duration_sec from {4, 8, 12} only:
-  - 4s: single simple idea (one action/one change)
-  - 8s: short multi-step process
-  - 12s: longer sequence with 2–3 phases
+- Use storyboard planning: break the idea into a sequence of beats with timings.
+- If the full storyboard would exceed the model max clip duration, split into multiple clips and we will stitch them together.
+- Model max clip duration: %ds (choose clip.duration_sec from {4, 8, 12} only).
+- Total duration should be as short as possible; do not exceed %ds. Do not exceed %d clips.
+- Each clip prompt MUST mention at least one subject from VIDEO_SUBJECT_CANDIDATES (verbatim).
+- On-screen labels/subtitles are OK when they help; include them explicitly in the beat descriptions and clip prompt.
+- Seamlessness requirement (important):
+  - Assume clips are stitched with a short crossfade (~0.25s).
+  - For every clip: design the FIRST ~0.3s and LAST ~0.3s to be a stable hold on a clean frame (no new text appearing/disappearing during the hold).
+  - Clip boundaries must be “matchable”: keep the same scene, palette, and framing across clips; end clip N on the exact visual state that clip N+1 starts from.
+  - Keep transitions subtle and consistent; use beat.transition to describe crossfade/match-cut style, not flashy wipes.
 `,
 				w.Node.Title,
 				w.Goal,
 				w.ConceptCSV,
 				excerpts,
 				strings.Join(subjectHints, ", "),
+				maxClipSec,
+				maxTotalSec,
+				maxClips,
 			)
 
 			var lastErrs []string
-			var plan content.VideoPlanDocV1
+			var plan content.VideoPlanDocV2
 			var metrics map[string]any
 			var latency int
 			succAttempt := 0
@@ -373,7 +396,7 @@ Task:
 				}
 
 				start := time.Now()
-				obj, genErr := deps.AI.GenerateJSON(gctx, system, user+feedback, "video_plan_v1", videoPlanSchema)
+				obj, genErr := deps.AI.GenerateJSON(gctx, system, user+feedback, "video_plan_v2", videoPlanSchema)
 				latency = int(time.Since(start).Milliseconds())
 
 				if genErr != nil {
@@ -387,7 +410,7 @@ Task:
 				}
 
 				raw, _ := json.Marshal(obj)
-				var tmp content.VideoPlanDocV1
+				var tmp content.VideoPlanDocV2
 				if err := json.Unmarshal(raw, &tmp); err != nil {
 					lastErrs = []string{"schema_unmarshal_failed"}
 					if deps.GenRuns != nil {
@@ -398,7 +421,7 @@ Task:
 					continue
 				}
 
-				errs, qm := content.ValidateVideoPlanV1(tmp, allowedChunkIDs, subjectHints)
+				errs, qm := content.ValidateVideoPlanV2(tmp, allowedChunkIDs, subjectHints, maxClipSec, maxTotalSec, maxClips)
 				metrics = qm
 				if len(errs) > 0 {
 					lastErrs = errs
@@ -416,7 +439,7 @@ Task:
 				break
 			}
 
-			sourcesHash := content.HashSources(nodeVideoPlanPromptVersion, 1, mapKeys(allowedChunkIDs))
+			sourcesHash := content.HashSources(nodeVideoPlanPromptVersion, 2, mapKeys(allowedChunkIDs))
 			now := time.Now().UTC()
 
 			if !ok {
@@ -432,7 +455,7 @@ Task:
 					PathID:        pathID,
 					PathNodeID:    w.Node.ID,
 					Slot:          0,
-					SchemaVersion: 1,
+					SchemaVersion: 2,
 					PlanJSON:      datatypes.JSON(planJSON),
 					PromptHash:    content.HashBytes([]byte("skipped:" + w.Node.ID.String())),
 					SourcesHash:   sourcesHash,
@@ -455,7 +478,7 @@ Task:
 					PathID:        pathID,
 					PathNodeID:    w.Node.ID,
 					Slot:          0,
-					SchemaVersion: 1,
+					SchemaVersion: 2,
 					PlanJSON:      datatypes.JSON(planJSON),
 					PromptHash:    content.HashBytes([]byte("skipped:" + w.Node.ID.String())),
 					SourcesHash:   sourcesHash,
@@ -469,15 +492,21 @@ Task:
 				for i := range plan.Videos {
 					item := plan.Videos[i]
 					b, _ := json.Marshal(item)
+					ph := strings.TrimSpace(item.Prompt)
+					for _, c := range item.Storyboard.Clips {
+						if strings.TrimSpace(c.Prompt) != "" {
+							ph += "\n\nCLIP:\n" + strings.TrimSpace(c.Prompt)
+						}
+					}
 					row := &types.LearningNodeVideo{
 						ID:            uuid.New(),
 						UserID:        in.OwnerUserID,
 						PathID:        pathID,
 						PathNodeID:    w.Node.ID,
 						Slot:          i + 1,
-						SchemaVersion: 1,
+						SchemaVersion: 2,
 						PlanJSON:      datatypes.JSON(b),
-						PromptHash:    content.HashBytes([]byte(strings.TrimSpace(item.Prompt))),
+						PromptHash:    content.HashBytes([]byte(ph)),
 						SourcesHash:   sourcesHash,
 						Status:        "planned",
 						CreatedAt:     now,

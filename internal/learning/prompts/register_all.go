@@ -134,7 +134,11 @@ RECENT_EVENTS_SUMMARY:
 
 Task:
 Write profile_doc (120-260 words) describing how to teach this user.
-Also output style_preferences and warnings.`,
+Also output style_preferences and warnings.
+
+Guidance:
+- USER_FACTS_JSON may include personalization_prefs (explicit user-controlled learning preferences). Treat those as ground truth.
+- If learningDisabilities are present, focus on practical accommodations (formatting, pacing, practice). Avoid medical claims or labels.`,
 		Validators: []Validator{
 			RequireNonEmpty("UserFactsJSON", func(in Input) string { return in.UserFactsJSON }),
 		},
@@ -270,7 +274,7 @@ Output path_style with:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathStructure,
-		Version:    1,
+		Version:    2,
 		SchemaName: "path_structure",
 		Schema:     PathStructureSchema,
 		System: `
@@ -288,10 +292,25 @@ EDGES_JSON:
 {{.EdgesJSON}}
 
 Task:
-Create nodes that cover all concepts.
-Each node includes:
+Create a dynamic path outline that covers all concepts.
+
+You may include hierarchy:
+- "module" nodes are grouping/overview nodes.
+- "lesson" nodes are the main teaching units (usually children of a module).
+- Optional: "review" nodes for spaced repetition, and a "capstone" node for integration.
+
+Rules:
+- Indices must be unique positive integers (start at 1, increase by 1).
+- Use parent_index to nest nodes. For top-level nodes, parent_index must be null.
+- Parents must come before children (parent_index < index). Avoid cycles. Keep depth <= 3.
+- Every concept in CONCEPTS_JSON should appear in at least one node.concept_keys (prefer lesson/capstone nodes).
+
+Each node must include:
+- node_kind: module | lesson | review | capstone
+- doc_template: overview | concept | practice | cheatsheet | project | review
 - title, goal, concept_keys, prereq_concept_keys, difficulty
-- activity_slots (reading/quiz/drill/case)
+- activity_slots (reading/quiz/drill/case). For modules you can keep this empty if not needed.
+
 Include coverage_check.uncovered_concept_keys.`,
 		Validators: []Validator{
 			RequireNonEmpty("PathCharterJSON", func(in Input) string { return in.PathCharterJSON }),

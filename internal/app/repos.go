@@ -9,6 +9,7 @@ import (
 type Repos struct {
 	User                    repos.UserRepo
 	UserProfileVector       repos.UserProfileVectorRepo
+	UserPersonalizationPrefs repos.UserPersonalizationPrefsRepo
 	UserSessionState        repos.UserSessionStateRepo
 	UserToken               repos.UserTokenRepo
 	UserIdentity            repos.UserIdentityRepo
@@ -78,6 +79,7 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 	return Repos{
 		User:                    repos.NewUserRepo(db, log),
 		UserProfileVector:       repos.NewUserProfileVectorRepo(db, log),
+		UserPersonalizationPrefs: repos.NewUserPersonalizationPrefsRepo(db, log),
 		UserSessionState:        repos.NewUserSessionStateRepo(db, log),
 		UserToken:               repos.NewUserTokenRepo(db, log),
 		UserIdentity:            repos.NewUserIdentityRepo(db, log),

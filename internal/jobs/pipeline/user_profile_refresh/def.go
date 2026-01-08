@@ -16,6 +16,7 @@ type Pipeline struct {
 	stylePrefs repos.UserStylePreferenceRepo
 	progEvents repos.UserProgressionEventRepo
 	profile    repos.UserProfileVectorRepo
+	prefs      repos.UserPersonalizationPrefsRepo
 	ai         openai.Client
 	vec        pinecone.VectorStore
 	saga       services.SagaService
@@ -28,6 +29,7 @@ func New(
 	stylePrefs repos.UserStylePreferenceRepo,
 	progEvents repos.UserProgressionEventRepo,
 	profile repos.UserProfileVectorRepo,
+	prefs repos.UserPersonalizationPrefsRepo,
 	ai openai.Client,
 	vec pinecone.VectorStore,
 	saga services.SagaService,
@@ -39,6 +41,7 @@ func New(
 		stylePrefs: stylePrefs,
 		progEvents: progEvents,
 		profile:    profile,
+		prefs:      prefs,
 		ai:         ai,
 		vec:        vec,
 		saga:       saga,

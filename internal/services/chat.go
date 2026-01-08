@@ -306,6 +306,13 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 					job = rows[0]
 				}
 			}
+
+			// If this thread is a paused path build, allow idempotent retries to still resume the build.
+			if job == nil && s.jobRuns != nil && s.threads != nil {
+				if resumed, _ := s.maybeResumePausedPathBuild(repoCtx, rd.UserID, threadID); resumed != nil {
+					job = resumed
+				}
+			}
 			return userMsg, asstMsg, job, nil
 		}
 		if err != nil && err != gorm.ErrRecordNotFound {
@@ -382,6 +389,42 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		}
 
 		now := time.Now().UTC()
+
+		// If this thread is attached to a paused learning_build (e.g., waiting for path_intake answers),
+		// treat this message as an intake response and resume the build instead of enqueuing chat_respond.
+		if resumedJob, _ := s.maybeResumePausedPathBuild(inner, rd.UserID, threadID); resumedJob != nil {
+			seqUser := th.NextSeq + 1
+			userMsg = &types.ChatMessage{
+				ID:             uuid.New(),
+				ThreadID:       threadID,
+				UserID:         rd.UserID,
+				Seq:            seqUser,
+				Role:           "user",
+				Status:         "sent",
+				Content:        content,
+				Metadata:       datatypes.JSON([]byte(`{}`)),
+				IdempotencyKey: idempotencyKey,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
+			if _, err := s.messages.Create(inner, []*types.ChatMessage{userMsg}); err != nil {
+				return err
+			}
+			createdNew = true
+
+			if err := s.threads.UpdateFields(inner, threadID, map[string]interface{}{
+				"next_seq":        seqUser,
+				"last_message_at": now,
+				"last_viewed_at":  now,
+				"updated_at":      now,
+			}); err != nil {
+				return err
+			}
+
+			job = resumedJob
+			asstMsg = nil
+			return nil
+		}
 
 		turnID := uuid.New()
 		seqUser := th.NextSeq + 1
@@ -485,11 +528,135 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		if asstMsg != nil && len(asstMsg.Metadata) > 0 {
 			_ = json.Unmarshal(asstMsg.Metadata, &meta)
 		}
-		s.notify.MessageCreated(rd.UserID, threadID, userMsg, meta)
-		s.notify.MessageCreated(rd.UserID, threadID, asstMsg, meta)
+		if userMsg != nil {
+			s.notify.MessageCreated(rd.UserID, threadID, userMsg, meta)
+		}
+		if asstMsg != nil {
+			s.notify.MessageCreated(rd.UserID, threadID, asstMsg, meta)
+		}
 	}
 
 	return userMsg, asstMsg, job, nil
+}
+
+type pausedBuildState struct {
+	Stages map[string]struct {
+		ChildJobID string `json:"child_job_id,omitempty"`
+	} `json:"stages"`
+}
+
+func (s *chatService) maybeResumePausedPathBuild(dbc dbctx.Context, userID uuid.UUID, threadID uuid.UUID) (*types.JobRun, error) {
+	if s == nil || s.jobRuns == nil || s.threads == nil || s.db == nil {
+		return nil, nil
+	}
+	if userID == uuid.Nil || threadID == uuid.Nil {
+		return nil, nil
+	}
+
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	threads, err := s.threads.GetByIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, []uuid.UUID{threadID})
+	if err != nil {
+		return nil, err
+	}
+	if len(threads) == 0 || threads[0] == nil || threads[0].UserID != userID {
+		return nil, nil
+	}
+	th := threads[0]
+	if th.JobID == nil || *th.JobID == uuid.Nil {
+		return nil, nil
+	}
+
+	rows, err := s.jobRuns.GetByIDs(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, []uuid.UUID{*th.JobID})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 || rows[0] == nil {
+		return nil, nil
+	}
+	buildJob := rows[0]
+	if !strings.EqualFold(strings.TrimSpace(buildJob.JobType), "learning_build") {
+		return nil, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(buildJob.Status), "waiting_user") {
+		return nil, nil
+	}
+
+	childJobID := uuid.Nil
+	if len(buildJob.Result) > 0 && strings.TrimSpace(string(buildJob.Result)) != "" && strings.TrimSpace(string(buildJob.Result)) != "null" {
+		var st pausedBuildState
+		if err := json.Unmarshal(buildJob.Result, &st); err == nil && st.Stages != nil {
+			if ss, ok := st.Stages["path_intake"]; ok {
+				if id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID)); err == nil {
+					childJobID = id
+				}
+			}
+		}
+	}
+	if childJobID == uuid.Nil && buildJob.EntityID != nil && *buildJob.EntityID != uuid.Nil {
+		// Fallback: find a waiting path_intake job for this material_set entity.
+		var tmp types.JobRun
+		_ = transaction.WithContext(dbc.Ctx).
+			Model(&types.JobRun{}).
+			Where("owner_user_id = ? AND job_type = ? AND entity_type = ? AND entity_id = ? AND status = ?",
+				userID, "path_intake", buildJob.EntityType, *buildJob.EntityID, "waiting_user",
+			).
+			Order("created_at DESC").
+			Limit(1).
+			Find(&tmp).Error
+		if tmp.ID != uuid.Nil {
+			childJobID = tmp.ID
+		}
+	}
+	if childJobID == uuid.Nil && !strings.Contains(strings.ToLower(strings.TrimSpace(buildJob.Stage)), "path_intake") {
+		return nil, nil
+	}
+
+	now := time.Now().UTC()
+	// Resume child first (if present), then resume the parent orchestrator.
+	if childJobID != uuid.Nil {
+		_ = transaction.WithContext(dbc.Ctx).
+			Model(&types.JobRun{}).
+			Where("id = ? AND status = ?", childJobID, "waiting_user").
+			Updates(map[string]interface{}{
+				"status":        "queued",
+				"stage":         "queued",
+				"message":       "Queued",
+				"locked_at":     nil,
+				"updated_at":    now,
+				"heartbeat_at":  now,
+				"error":         "",
+				"last_error_at": nil,
+			}).Error
+	}
+
+	if err := transaction.WithContext(dbc.Ctx).
+		Model(&types.JobRun{}).
+		Where("id = ? AND status = ?", buildJob.ID, "waiting_user").
+		Updates(map[string]interface{}{
+			"status":        "queued",
+			"stage":         "queued",
+			"message":       "Queued",
+			"locked_at":     nil,
+			"updated_at":    now,
+			"heartbeat_at":  now,
+			"error":         "",
+			"last_error_at": nil,
+		}).Error; err != nil {
+		return nil, err
+	}
+
+	buildJob.Status = "queued"
+	buildJob.Stage = "queued"
+	buildJob.Message = "Queued"
+	buildJob.Error = ""
+	buildJob.LockedAt = nil
+	buildJob.HeartbeatAt = &now
+	buildJob.UpdatedAt = now
+	return buildJob, nil
 }
 
 func (s *chatService) RebuildThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error) {

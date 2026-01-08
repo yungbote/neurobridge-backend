@@ -78,6 +78,49 @@ func NodeDocMetrics(doc NodeDocV1) map[string]any {
 		case "quick_check":
 			concat = append(concat, stringFromAny(b["prompt_md"]), stringFromAny(b["answer_md"]))
 			wordCount += WordCount(stripMD(stringFromAny(b["prompt_md"]) + " " + stringFromAny(b["answer_md"])))
+		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+			items := stringSliceFromAny(b["items_md"])
+			joined := strings.Join(items, "\n")
+			concat = append(concat, stringFromAny(b["title"]), joined)
+			wordCount += WordCount(stripMD(stringFromAny(b["title"]) + " " + joined))
+		case "steps":
+			steps := stringSliceFromAny(b["steps_md"])
+			joined := strings.Join(steps, "\n")
+			concat = append(concat, stringFromAny(b["title"]), joined)
+			wordCount += WordCount(stripMD(stringFromAny(b["title"]) + " " + joined))
+		case "glossary":
+			concat = append(concat, stringFromAny(b["title"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["title"])))
+			if arr, ok := b["terms"].([]any); ok {
+				for _, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					term := stringFromAny(m["term"])
+					def := stringFromAny(m["definition_md"])
+					concat = append(concat, term, def)
+					wordCount += WordCount(stripMD(term + " " + def))
+				}
+			}
+		case "faq":
+			concat = append(concat, stringFromAny(b["title"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["title"])))
+			if arr, ok := b["qas"].([]any); ok {
+				for _, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					q := stringFromAny(m["question_md"])
+					a := stringFromAny(m["answer_md"])
+					concat = append(concat, q, a)
+					wordCount += WordCount(stripMD(q + " " + a))
+				}
+			}
+		case "intuition", "mental_model", "why_it_matters":
+			concat = append(concat, stringFromAny(b["title"]), stringFromAny(b["md"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["title"]) + " " + stringFromAny(b["md"])))
 		}
 	}
 
@@ -231,6 +274,63 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
 		case "divider":
 			// ok
+		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+			items := stringSliceFromAny(b["items_md"])
+			if len(items) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] %s.items_md missing", i, t))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "steps":
+			steps := stringSliceFromAny(b["steps_md"])
+			if len(steps) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] steps.steps_md missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "glossary":
+			arr, ok := b["terms"].([]any)
+			if !ok || len(arr) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] glossary.terms missing", i))
+			} else {
+				for j, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						errs = append(errs, fmt.Sprintf("block[%d] glossary.terms[%d] invalid", i, j))
+						continue
+					}
+					if strings.TrimSpace(stringFromAny(m["term"])) == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] glossary.terms[%d].term missing", i, j))
+					}
+					if strings.TrimSpace(stringFromAny(m["definition_md"])) == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] glossary.terms[%d].definition_md missing", i, j))
+					}
+				}
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "faq":
+			arr, ok := b["qas"].([]any)
+			if !ok || len(arr) == 0 {
+				errs = append(errs, fmt.Sprintf("block[%d] faq.qas missing", i))
+			} else {
+				for j, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						errs = append(errs, fmt.Sprintf("block[%d] faq.qas[%d] invalid", i, j))
+						continue
+					}
+					if strings.TrimSpace(stringFromAny(m["question_md"])) == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] faq.qas[%d].question_md missing", i, j))
+					}
+					if strings.TrimSpace(stringFromAny(m["answer_md"])) == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] faq.qas[%d].answer_md missing", i, j))
+					}
+				}
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "intuition", "mental_model", "why_it_matters":
+			if strings.TrimSpace(stringFromAny(b["md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] %s.md missing", i, t))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
 		default:
 			errs = append(errs, fmt.Sprintf("block[%d] unknown type %q", i, t))
 		}

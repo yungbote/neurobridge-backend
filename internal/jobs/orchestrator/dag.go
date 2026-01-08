@@ -359,6 +359,40 @@ func (e *DAGEngine) pollChild(ctx *jobrt.Context, st *OrchestratorState, def Sta
 		progress := clampProgress(st, computeProgress(st, []Stage{def}))
 		_ = yieldToQueue(ctx, active, progress)
 		return true
+	case "waiting_user":
+		// Pause the parent job as well to avoid tight polling while we wait for user input.
+		ss.Status = StageWaitingChild
+		st.WaitUntil = nil
+		_ = saveStateWithEncoder(ctx, st, e.ResultEncoder)
+
+		if ctx.Repo != nil && ctx.Job != nil && ctx.Job.ID != uuid.Nil {
+			now := time.Now().UTC()
+			msg := strings.TrimSpace(child.Message)
+			if msg == "" {
+				msg = "Waiting for your response…"
+			}
+			stage := "waiting_user_" + def.Name
+			_, _ = ctx.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, ctx.Job.ID, []string{"canceled"}, map[string]interface{}{
+				"status":       "waiting_user",
+				"stage":        stage,
+				"message":      msg,
+				"locked_at":    nil,
+				"heartbeat_at": now,
+				"updated_at":   now,
+			})
+			ctx.Job.Status = "waiting_user"
+			ctx.Job.Stage = stage
+			ctx.Job.Message = msg
+			ctx.Job.LockedAt = nil
+			ctx.Job.HeartbeatAt = &now
+			ctx.Job.UpdatedAt = now
+
+			// Emit a progress update so clients see the paused status promptly.
+			if ctx.Notify != nil {
+				ctx.Notify.JobProgress(ctx.Job.OwnerUserID, ctx.Job, stage, ctx.Job.Progress, msg)
+			}
+		}
+		return true
 	default:
 		ss.Status = StageWaitingChild
 		_ = saveStateWithEncoder(ctx, st, e.ResultEncoder)

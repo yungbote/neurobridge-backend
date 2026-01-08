@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -104,9 +105,26 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if len(chunks) == 0 {
 		return out, fmt.Errorf("concept_graph_build: no chunks for material set")
 	}
-	excerpts := stratifiedChunkExcerpts(chunks, 14, 700)
+	perFile := envIntAllowZero("CONCEPT_GRAPH_EXCERPTS_PER_FILE", 14)
+	excerpts := stratifiedChunkExcerptsWithLimits(
+		chunks,
+		perFile,
+		envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_CHARS", 700),
+		envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_LINES", 0),
+		envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_TOTAL_CHARS", 0),
+	)
 	if strings.TrimSpace(excerpts) == "" {
 		return out, fmt.Errorf("concept_graph_build: empty excerpts")
+	}
+	edgeExcerpts := stratifiedChunkExcerptsWithLimits(
+		chunks,
+		perFile,
+		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS", 700),
+		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_LINES", 0),
+		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_TOTAL_CHARS", 0),
+	)
+	if strings.TrimSpace(edgeExcerpts) == "" {
+		edgeExcerpts = excerpts
 	}
 
 	// ---- Prompt: Concept inventory ----
@@ -142,7 +160,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptsOut})
 	edgesPrompt, err := prompts.Build(prompts.PromptConceptEdges, prompts.Input{
 		ConceptsJSON: string(conceptsJSONBytes),
-		Excerpts:     excerpts,
+		Excerpts:     edgeExcerpts,
 	})
 	if err != nil {
 		return out, err
@@ -162,6 +180,53 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		edgesObj map[string]any
 		embs     [][]float32
 	)
+
+	embedBatchSize := envIntAllowZero("CONCEPT_GRAPH_EMBED_BATCH_SIZE", 64)
+	if embedBatchSize <= 0 {
+		embedBatchSize = 64
+	}
+	embedConc := envIntAllowZero("CONCEPT_GRAPH_EMBED_CONCURRENCY", 20)
+	if embedConc < 1 {
+		embedConc = 1
+	}
+	embedBatched := func(ctx context.Context, docs []string) ([][]float32, error) {
+		if len(docs) == 0 {
+			return nil, fmt.Errorf("concept_graph_build: empty embed docs")
+		}
+		out := make([][]float32, len(docs))
+		eg, egctx := errgroup.WithContext(ctx)
+		eg.SetLimit(embedConc)
+		for start := 0; start < len(docs); start += embedBatchSize {
+			start := start
+			end := start + embedBatchSize
+			if end > len(docs) {
+				end = len(docs)
+			}
+			eg.Go(func() error {
+				v, err := deps.AI.Embed(egctx, docs[start:end])
+				if err != nil {
+					return err
+				}
+				if len(v) != end-start {
+					return fmt.Errorf("concept_graph_build: embedding count mismatch (got %d want %d)", len(v), end-start)
+				}
+				for i := range v {
+					out[start+i] = v[i]
+				}
+				return nil
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return nil, err
+		}
+		for i := range out {
+			if len(out[i]) == 0 {
+				return nil, fmt.Errorf("concept_graph_build: empty embedding at index %d", i)
+			}
+		}
+		return out, nil
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		obj, err := deps.AI.GenerateJSON(gctx, edgesPrompt.System, edgesPrompt.User, edgesPrompt.SchemaName, edgesPrompt.Schema)
@@ -172,7 +237,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return nil
 	})
 	g.Go(func() error {
-		v, err := deps.AI.Embed(gctx, conceptDocs)
+		v, err := embedBatched(gctx, conceptDocs)
 		if err != nil {
 			return err
 		}
@@ -219,7 +284,10 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	ns := index.ConceptsNamespace("path", &pathID)
-	const batchSize = 64
+	pineconeBatchSize := envIntAllowZero("CONCEPT_GRAPH_PINECONE_BATCH_SIZE", 64)
+	if pineconeBatchSize <= 0 {
+		pineconeBatchSize = 64
+	}
 	skipped := false
 	txErr := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
@@ -306,8 +374,8 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 		// Append Pinecone compensations for all concept vectors (if configured).
 		if deps.Vec != nil {
-			for start := 0; start < len(rows); start += batchSize {
-				end := start + batchSize
+			for start := 0; start < len(rows); start += pineconeBatchSize {
+				end := start + pineconeBatchSize
 				if end > len(rows) {
 					end = len(rows)
 				}
@@ -404,8 +472,18 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 	// ---- Upsert to Pinecone (best-effort; cache only) ----
 	if deps.Vec != nil {
-		for start := 0; start < len(rows); start += batchSize {
-			end := start + batchSize
+		pineconeConc := envIntAllowZero("CONCEPT_GRAPH_PINECONE_CONCURRENCY", 20)
+		if pineconeConc < 1 {
+			pineconeConc = 1
+		}
+
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(pineconeConc)
+
+		var batches int32
+		for start := 0; start < len(rows); start += pineconeBatchSize {
+			start := start
+			end := start + pineconeBatchSize
 			if end > len(rows) {
 				end = len(rows)
 			}
@@ -429,12 +507,17 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			if len(pv) == 0 {
 				continue
 			}
-			if err := deps.Vec.Upsert(ctx, ns, pv); err != nil {
-				deps.Log.Warn("pinecone upsert failed (continuing)", "namespace", ns, "err", err.Error())
-				break
-			}
-			out.PineconeBatches++
+			g.Go(func() error {
+				if err := deps.Vec.Upsert(gctx, ns, pv); err != nil {
+					deps.Log.Warn("pinecone upsert failed (continuing)", "namespace", ns, "err", err.Error())
+					return nil
+				}
+				atomic.AddInt32(&batches, 1)
+				return nil
+			})
 		}
+		_ = g.Wait()
+		out.PineconeBatches = int(atomic.LoadInt32(&batches))
 	}
 
 	return out, nil

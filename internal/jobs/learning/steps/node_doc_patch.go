@@ -71,7 +71,7 @@ type NodeDocPatchOutput struct {
 	Action     string
 }
 
-const nodeDocPatchPromptVersion = "node_doc_patch_v1@1"
+const nodeDocPatchPromptVersion = "node_doc_patch_v1@2"
 
 func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInput) (NodeDocPatchOutput, error) {
 	out := NodeDocPatchOutput{}
@@ -651,6 +651,63 @@ func blockPatchSchema(blockType string) (map[string]any, error) {
 		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "video"}
 		base["required"] = append(base["required"].([]any), "caption")
 		return base, nil
+	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+		base["properties"].(map[string]any)["title"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["items_md"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": blockType}
+		base["required"] = append(base["required"].([]any), "title", "items_md", "citations")
+		return base, nil
+	case "steps":
+		base["properties"].(map[string]any)["title"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["steps_md"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "steps"}
+		base["required"] = append(base["required"].([]any), "title", "steps_md", "citations")
+		return base, nil
+	case "glossary":
+		base["properties"].(map[string]any)["title"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["terms"] = map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"term":          map[string]any{"type": "string"},
+					"definition_md": map[string]any{"type": "string"},
+				},
+				"required":             []any{"term", "definition_md"},
+				"additionalProperties": false,
+			},
+		}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "glossary"}
+		base["required"] = append(base["required"].([]any), "title", "terms", "citations")
+		return base, nil
+	case "faq":
+		base["properties"].(map[string]any)["title"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["qas"] = map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"question_md": map[string]any{"type": "string"},
+					"answer_md":   map[string]any{"type": "string"},
+				},
+				"required":             []any{"question_md", "answer_md"},
+				"additionalProperties": false,
+			},
+		}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "faq"}
+		base["required"] = append(base["required"].([]any), "title", "qas", "citations")
+		return base, nil
+	case "intuition", "mental_model", "why_it_matters":
+		base["properties"].(map[string]any)["title"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["md"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": blockType}
+		base["required"] = append(base["required"].([]any), "title", "md", "citations")
+		return base, nil
 	default:
 		return nil, fmt.Errorf("node_doc_patch: unsupported block type %q", blockType)
 	}
@@ -698,10 +755,40 @@ func applyBlockPatch(blockType, blockID string, existing map[string]any, obj map
 		updated["citations"] = normalizeCitations(obj["citations"])
 	case "video":
 		updated["caption"] = strings.TrimSpace(stringFromAny(obj["caption"]))
+	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+		updated["title"] = strings.TrimSpace(stringFromAny(obj["title"]))
+		updated["items_md"] = stringSliceFromAny(obj["items_md"])
+		updated["citations"] = normalizeCitations(obj["citations"])
+	case "steps":
+		updated["title"] = strings.TrimSpace(stringFromAny(obj["title"]))
+		updated["steps_md"] = stringSliceFromAny(obj["steps_md"])
+		updated["citations"] = normalizeCitations(obj["citations"])
+	case "glossary":
+		updated["title"] = strings.TrimSpace(stringFromAny(obj["title"]))
+		updated["terms"] = normalizeAnyArray(obj["terms"])
+		updated["citations"] = normalizeCitations(obj["citations"])
+	case "faq":
+		updated["title"] = strings.TrimSpace(stringFromAny(obj["title"]))
+		updated["qas"] = normalizeAnyArray(obj["qas"])
+		updated["citations"] = normalizeCitations(obj["citations"])
+	case "intuition", "mental_model", "why_it_matters":
+		updated["title"] = strings.TrimSpace(stringFromAny(obj["title"]))
+		updated["md"] = strings.TrimSpace(stringFromAny(obj["md"]))
+		updated["citations"] = normalizeCitations(obj["citations"])
 	default:
 		return nil, fmt.Errorf("node_doc_patch: unsupported block type %q", blockType)
 	}
 	return updated, nil
+}
+
+func normalizeAnyArray(raw any) []any {
+	if raw == nil {
+		return []any{}
+	}
+	if arr, ok := raw.([]any); ok {
+		return arr
+	}
+	return []any{}
 }
 
 func normalizeCitations(raw any) []any {
@@ -850,6 +937,46 @@ func blockTextForQuery(blockType string, block map[string]any) string {
 		return strings.TrimSpace(stringFromAny(block["caption"]))
 	case "quick_check":
 		return strings.TrimSpace(stringFromAny(block["prompt_md"]) + " " + stringFromAny(block["answer_md"]))
+	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(stringSliceFromAny(block["items_md"]), " "))
+	case "steps":
+		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(stringSliceFromAny(block["steps_md"]), " "))
+	case "glossary":
+		var b strings.Builder
+		b.WriteString(strings.TrimSpace(stringFromAny(block["title"])))
+		b.WriteString(" ")
+		if arr, ok := block["terms"].([]any); ok {
+			for _, it := range arr {
+				m, ok := it.(map[string]any)
+				if !ok {
+					continue
+				}
+				b.WriteString(stringFromAny(m["term"]))
+				b.WriteString(" ")
+				b.WriteString(stringFromAny(m["definition_md"]))
+				b.WriteString(" ")
+			}
+		}
+		return strings.TrimSpace(b.String())
+	case "faq":
+		var b strings.Builder
+		b.WriteString(strings.TrimSpace(stringFromAny(block["title"])))
+		b.WriteString(" ")
+		if arr, ok := block["qas"].([]any); ok {
+			for _, it := range arr {
+				m, ok := it.(map[string]any)
+				if !ok {
+					continue
+				}
+				b.WriteString(stringFromAny(m["question_md"]))
+				b.WriteString(" ")
+				b.WriteString(stringFromAny(m["answer_md"]))
+				b.WriteString(" ")
+			}
+		}
+		return strings.TrimSpace(b.String())
+	case "intuition", "mental_model", "why_it_matters":
+		return strings.TrimSpace(stringFromAny(block["title"]) + " " + stringFromAny(block["md"]))
 	default:
 		return ""
 	}

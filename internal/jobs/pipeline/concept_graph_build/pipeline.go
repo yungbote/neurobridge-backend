@@ -2,6 +2,11 @@ package concept_graph_build
 
 import (
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -24,6 +29,41 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	heartbeatSec := getEnvInt("CONCEPT_GRAPH_HEARTBEAT_SECONDS", 20)
+	if heartbeatSec < 1 {
+		heartbeatSec = 1
+	}
+	if heartbeatSec > 60 {
+		heartbeatSec = 60
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var stopOnce sync.Once
+	stopTicker := func() {
+		stopOnce.Do(func() {
+			close(stop)
+			wg.Wait()
+		})
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(time.Duration(heartbeatSec) * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-jc.Ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-t.C:
+				jc.Progress("concept_graph", 2, "Building concept graph")
+			}
+		}
+	}()
+	defer stopTicker()
+
 	jc.Progress("concept_graph", 2, "Building concept graph")
 	out, err := steps.ConceptGraphBuild(jc.Ctx, steps.ConceptGraphBuildDeps{
 		DB:        p.db,
@@ -42,6 +82,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		MaterialSetID: setID,
 		SagaID:        sagaID,
 	})
+	stopTicker()
 	if err != nil {
 		jc.Fail("concept_graph", err)
 		return nil
@@ -56,4 +97,16 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"pinecone_batches": out.PineconeBatches,
 	})
 	return nil
+}
+
+func getEnvInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
 }

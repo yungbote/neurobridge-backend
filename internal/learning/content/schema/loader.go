@@ -22,6 +22,9 @@ var (
 	videoPlanV1Once     sync.Once
 	videoPlanV1Schema   map[string]any
 	videoPlanV1Err      error
+	videoPlanV2Once     sync.Once
+	videoPlanV2Schema   map[string]any
+	videoPlanV2Err      error
 	drillV1Once         sync.Once
 	drillV1Schema       map[string]any
 	drillV1SchemaErr    error
@@ -62,6 +65,13 @@ func VideoPlanV1() (map[string]any, error) {
 		videoPlanV1Schema, videoPlanV1Err = loadJSONSchema("video_plan_v1.json")
 	})
 	return videoPlanV1Schema, videoPlanV1Err
+}
+
+func VideoPlanV2() (map[string]any, error) {
+	videoPlanV2Once.Do(func() {
+		videoPlanV2Schema, videoPlanV2Err = loadJSONSchema("video_plan_v2.json")
+	})
+	return videoPlanV2Schema, videoPlanV2Err
 }
 
 func DrillPayloadV1() (map[string]any, error) {

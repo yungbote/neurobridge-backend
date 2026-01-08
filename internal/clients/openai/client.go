@@ -89,16 +89,17 @@ func NewOpenAIClient(log *logger.Logger) (OpenAIClient, error) { return NewClien
 // -------------------------------------------------------------------------------
 
 type client struct {
-	log        *logger.Logger
-	baseURL    string
-	apiKey     string
-	model      string
-	embedModel string
-	imageModel string
-	imageSize  string
-	videoModel string
-	videoSize  string
-	httpClient *http.Client
+	log             *logger.Logger
+	baseURL         string
+	apiKey          string
+	model           string
+	embedModel      string
+	imageModel      string
+	imageSize       string
+	videoModel      string
+	videoSize       string
+	httpClient      *http.Client
+	responsesClient *http.Client
 
 	maxRetries int
 }
@@ -144,6 +145,19 @@ func NewClient(log *logger.Logger) (Client, error) {
 		}
 	}
 
+	responsesTimeoutSec := 0
+	if v := os.Getenv("OPENAI_RESPONSES_TIMEOUT_SECONDS"); v != "" {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && parsed > 0 {
+			responsesTimeoutSec = parsed
+		}
+	}
+	if responsesTimeoutSec <= 0 {
+		responsesTimeoutSec = timeoutSec
+		if responsesTimeoutSec < 600 {
+			responsesTimeoutSec = 600
+		}
+	}
+
 	maxRetries := 4
 	if v := os.Getenv("OPENAI_MAX_RETRIES"); v != "" {
 		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && parsed >= 0 {
@@ -156,17 +170,18 @@ func NewClient(log *logger.Logger) (Client, error) {
 	}
 
 	return &client{
-		log:        log.With("service", "OpenAIClient"),
-		baseURL:    baseURL,
-		apiKey:     apiKey,
-		model:      model,
-		embedModel: embed,
-		imageModel: imageModel,
-		imageSize:  imageSize,
-		videoModel: videoModel,
-		videoSize:  videoSize,
-		httpClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-		maxRetries: maxRetries,
+		log:             log.With("service", "OpenAIClient"),
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		model:           model,
+		embedModel:      embed,
+		imageModel:      imageModel,
+		imageSize:       imageSize,
+		videoModel:      videoModel,
+		videoSize:       videoSize,
+		httpClient:      &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		responsesClient: &http.Client{Timeout: time.Duration(responsesTimeoutSec) * time.Second},
+		maxRetries:      maxRetries,
 	}, nil
 }
 
@@ -186,7 +201,7 @@ func (e *openAIHTTPError) HTTPStatusCode() int {
 	return e.StatusCode
 }
 
-func (c *client) doOnce(ctx context.Context, method, path string, body any) (*http.Response, []byte, error) {
+func (c *client) doOnce(ctx context.Context, httpClient *http.Client, method, path string, body any) (*http.Response, []byte, error) {
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -201,7 +216,10 @@ func (c *client) doOnce(ctx context.Context, method, path string, body any) (*ht
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	if httpClient == nil {
+		httpClient = c.httpClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,7 +236,7 @@ func (c *client) doOnce(ctx context.Context, method, path string, body any) (*ht
 	return resp, raw, nil
 }
 
-func (c *client) do(ctx context.Context, method, path string, body any, out any) error {
+func (c *client) doWithClient(ctx context.Context, httpClient *http.Client, method, path string, body any, out any) error {
 	backoff := 1 * time.Second
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
@@ -226,7 +244,7 @@ func (c *client) do(ctx context.Context, method, path string, body any, out any)
 			return ctx.Err()
 		}
 
-		resp, raw, err := c.doOnce(ctx, method, path, body)
+		resp, raw, err := c.doOnce(ctx, httpClient, method, path, body)
 		if err == nil {
 			if out == nil {
 				return nil
@@ -260,6 +278,18 @@ func (c *client) do(ctx context.Context, method, path string, body any, out any)
 	}
 
 	return fmt.Errorf("unreachable retry loop")
+}
+
+func (c *client) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWithClient(ctx, c.httpClient, method, path, body, out)
+}
+
+func (c *client) doResponses(ctx context.Context, method, path string, body any, out any) error {
+	httpClient := c.responsesClient
+	if httpClient == nil {
+		httpClient = c.httpClient
+	}
+	return c.doWithClient(ctx, httpClient, method, path, body, out)
 }
 
 // -------------------- Embeddings --------------------
@@ -812,7 +842,7 @@ func (c *client) GenerateJSON(ctx context.Context, system string, user string, s
 	}
 
 	var resp responsesResponse
-	if err := c.do(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Refusal != "" {
@@ -845,7 +875,7 @@ func (c *client) GenerateText(ctx context.Context, system string, user string) (
 	}
 
 	var resp responsesResponse
-	if err := c.do(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {
@@ -897,7 +927,7 @@ func (c *client) GenerateTextWithImages(ctx context.Context, system string, user
 	}
 
 	var resp responsesResponse
-	if err := c.do(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {
@@ -1032,7 +1062,7 @@ func (c *client) GenerateTextInConversation(ctx context.Context, conversationID 
 	}
 
 	var resp responsesResponse
-	if err := c.do(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {

@@ -82,6 +82,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.UserStylePreference{},
 		&types.UserProgressionEvent{},
 		&types.UserProfileVector{},
+		&types.UserPersonalizationPrefs{},
 		&types.TeachingPattern{},
 
 		// =========================

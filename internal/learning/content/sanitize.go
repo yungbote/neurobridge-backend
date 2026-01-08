@@ -95,6 +95,112 @@ func ScrubNodeDocV1(doc NodeDocV1) (NodeDocV1, []string) {
 			}
 			hit = append(hit, hh...)
 		}
+
+		// Scrub structured list blocks.
+		if raw, ok := b["items_md"]; ok && raw != nil {
+			if arr, ok := raw.([]any); ok && len(arr) > 0 {
+				changed := false
+				for j := range arr {
+					s, ok := arr[j].(string)
+					if !ok || strings.TrimSpace(s) == "" {
+						continue
+					}
+					ns, hh := scrubMetaText(s)
+					if ns != s {
+						arr[j] = ns
+						changed = true
+					}
+					hit = append(hit, hh...)
+				}
+				if changed {
+					b["items_md"] = arr
+				}
+			}
+		}
+		if raw, ok := b["steps_md"]; ok && raw != nil {
+			if arr, ok := raw.([]any); ok && len(arr) > 0 {
+				changed := false
+				for j := range arr {
+					s, ok := arr[j].(string)
+					if !ok || strings.TrimSpace(s) == "" {
+						continue
+					}
+					ns, hh := scrubMetaText(s)
+					if ns != s {
+						arr[j] = ns
+						changed = true
+					}
+					hit = append(hit, hh...)
+				}
+				if changed {
+					b["steps_md"] = arr
+				}
+			}
+		}
+		if raw, ok := b["terms"]; ok && raw != nil {
+			if arr, ok := raw.([]any); ok && len(arr) > 0 {
+				changed := false
+				for j := range arr {
+					m, ok := arr[j].(map[string]any)
+					if !ok || m == nil {
+						continue
+					}
+					if s, ok := m["term"].(string); ok && strings.TrimSpace(s) != "" {
+						ns, hh := scrubMetaText(s)
+						if ns != s {
+							m["term"] = ns
+							changed = true
+						}
+						hit = append(hit, hh...)
+					}
+					if s, ok := m["definition_md"].(string); ok && strings.TrimSpace(s) != "" {
+						ns, hh := scrubMetaText(s)
+						if ns != s {
+							m["definition_md"] = ns
+							changed = true
+						}
+						hit = append(hit, hh...)
+					}
+					arr[j] = m
+				}
+				if changed {
+					b["terms"] = arr
+				}
+			}
+		}
+		if raw, ok := b["qas"]; ok && raw != nil {
+			if arr, ok := raw.([]any); ok && len(arr) > 0 {
+				changed := false
+				for j := range arr {
+					m, ok := arr[j].(map[string]any)
+					if !ok || m == nil {
+						continue
+					}
+					if s, ok := m["question_md"].(string); ok && strings.TrimSpace(s) != "" {
+						ns, hh := scrubMetaText(s)
+						if ns != s {
+							m["question_md"] = ns
+							changed = true
+						}
+						hit = append(hit, hh...)
+					}
+					if s, ok := m["answer_md"].(string); ok && strings.TrimSpace(s) != "" {
+						ns, hh := scrubMetaText(s)
+						if ns != s {
+							m["answer_md"] = ns
+							changed = true
+						}
+						hit = append(hit, hh...)
+					}
+					arr[j] = m
+				}
+				if changed {
+					b["qas"] = arr
+				}
+			}
+		}
+
+		doc.Blocks[i] = b
 	}
 
 	return doc, dedupeStringsLocal(hit)
@@ -216,6 +322,93 @@ func PruneNodeDocMetaBlocks(doc NodeDocV1) (NodeDocV1, []string) {
 			if isMetaHeading(fmt.Sprint(b["title"])) || isMetaBody(fmt.Sprint(b["md"])) {
 				removed = append(removed, "meta_callout")
 				continue
+			}
+		case "intuition", "mental_model", "why_it_matters":
+			if isMetaHeading(fmt.Sprint(b["title"])) || isMetaBody(fmt.Sprint(b["md"])) {
+				removed = append(removed, "meta_section")
+				continue
+			}
+		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
+			title := fmt.Sprint(b["title"])
+			if isMetaHeading(title) {
+				removed = append(removed, "meta_list")
+				continue
+			}
+			if arr, ok := b["items_md"].([]any); ok {
+				parts := make([]string, 0, len(arr))
+				for _, it := range arr {
+					parts = append(parts, fmt.Sprint(it))
+				}
+				if isMetaBody(strings.Join(parts, "\n")) {
+					removed = append(removed, "meta_list")
+					continue
+				}
+			} else if isMetaBody(fmt.Sprint(b["items_md"])) {
+				removed = append(removed, "meta_list")
+				continue
+			}
+		case "steps":
+			title := fmt.Sprint(b["title"])
+			if isMetaHeading(title) {
+				removed = append(removed, "meta_steps")
+				continue
+			}
+			if arr, ok := b["steps_md"].([]any); ok {
+				parts := make([]string, 0, len(arr))
+				for _, it := range arr {
+					parts = append(parts, fmt.Sprint(it))
+				}
+				if isMetaBody(strings.Join(parts, "\n")) {
+					removed = append(removed, "meta_steps")
+					continue
+				}
+			} else if isMetaBody(fmt.Sprint(b["steps_md"])) {
+				removed = append(removed, "meta_steps")
+				continue
+			}
+		case "glossary":
+			if isMetaHeading(fmt.Sprint(b["title"])) {
+				removed = append(removed, "meta_glossary")
+				continue
+			}
+			if arr, ok := b["terms"].([]any); ok {
+				var joined strings.Builder
+				for _, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					joined.WriteString(fmt.Sprint(m["term"]))
+					joined.WriteString(" ")
+					joined.WriteString(fmt.Sprint(m["definition_md"]))
+					joined.WriteString("\n")
+				}
+				if isMetaBody(joined.String()) {
+					removed = append(removed, "meta_glossary")
+					continue
+				}
+			}
+		case "faq":
+			if isMetaHeading(fmt.Sprint(b["title"])) {
+				removed = append(removed, "meta_faq")
+				continue
+			}
+			if arr, ok := b["qas"].([]any); ok {
+				var joined strings.Builder
+				for _, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					joined.WriteString(fmt.Sprint(m["question_md"]))
+					joined.WriteString(" ")
+					joined.WriteString(fmt.Sprint(m["answer_md"]))
+					joined.WriteString("\n")
+				}
+				if isMetaBody(joined.String()) {
+					removed = append(removed, "meta_faq")
+					continue
+				}
 			}
 		}
 		kept = append(kept, b)
