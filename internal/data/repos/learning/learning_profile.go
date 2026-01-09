@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"gorm.io/gorm"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 type LearningProfileRepo interface {

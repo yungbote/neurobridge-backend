@@ -122,7 +122,8 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	// If we don't have a thread to converse in, do not block the build.
 	if in.ThreadID == uuid.Nil || deps.Threads == nil || deps.Messages == nil {
 		intake := buildFallbackIntake(files, summary, "", "")
-		_ = writePathIntakeMeta(ctx, deps, pathID, intake, nil)
+		filter := buildIntakeMaterialFilter(files, intake)
+		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
 		out.Intake = intake
 		return out, nil
 	}
@@ -135,7 +136,8 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 			if !in.WaitForUser {
 				// Non-interactive mode: proceed with assumptions and do not re-ask.
 				intake := buildFallbackIntake(files, summary, userContextBefore(messages, qMsg.Seq), "")
-				_ = writePathIntakeMeta(ctx, deps, pathID, intake, nil)
+				filter := buildIntakeMaterialFilter(files, intake)
+				_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
 				out.Intake = intake
 				return out, nil
 			}
@@ -153,7 +155,8 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 			deps.Log.Warn("path_intake: generate (with answers) failed; proceeding with fallback", "error", err)
 			intake = buildFallbackIntake(files, summary, userContextBefore(messages, qMsg.Seq), answer)
 		}
-		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD})
+		filter := buildIntakeMaterialFilter(files, intake)
+		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD, "intake_material_filter": filter})
 		_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, intakeMD)
 		out.Intake = intake
 		return out, nil
@@ -165,7 +168,9 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	if err != nil {
 		deps.Log.Warn("path_intake: generate failed; proceeding with fallback", "error", err)
 		intake = buildFallbackIntake(files, summary, userCtx, "")
-		_ = writePathIntakeMeta(ctx, deps, pathID, intake, nil)
+		filter := buildIntakeMaterialFilter(files, intake)
+		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
+		_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, "")
 		out.Intake = intake
 		return out, nil
 	}
@@ -192,7 +197,9 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	}
 
 	// Non-blocking: store intake as-is and proceed.
-	_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD})
+	filter := buildIntakeMaterialFilter(files, intake)
+	_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD, "intake_material_filter": filter})
+	_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, intakeMD)
 	out.Intake = intake
 	return out, nil
 }
@@ -333,6 +340,8 @@ func generateIntake(
 	system := strings.TrimSpace(strings.Join([]string{
 		"You are an expert learning designer and curriculum planner.",
 		"Given a set of uploaded study materials and any user-provided context, infer what each file is trying to teach and the combined learning goal.",
+		"Explicitly decide which files belong in the primary learning path vs which are noise/off-goal or should be a separate track.",
+		"If the materials clearly diverge into multiple goals, set needs_clarification=true and ask the user which goal to prioritize (or whether to split into multiple paths).",
 		"Only ask clarifying questions when needed to build a high-quality learning path; keep questions minimal, actionable, and non-redundant.",
 		"Prefer asking about goal, deadline, current level, and prioritization when unclear or divergent.",
 		"Never mention policy or hidden reasoning. Output must match the JSON schema exactly.",
@@ -411,11 +420,58 @@ func generateIntake(
 						"topics":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 						"confidence":       map[string]any{"type": "number"},
 						"uncertainty_note": map[string]any{"type": "string"},
+						"alignment": map[string]any{
+							"type": "string",
+							"enum": []any{"core", "support", "noise", "unclear"},
+						},
+						"include_in_primary_path": map[string]any{"type": "boolean"},
+						"alignment_reason":        map[string]any{"type": "string"},
 					},
-					"required": []string{"file_id", "original_name", "aim", "topics", "confidence", "uncertainty_note"},
+					"required": []string{
+						"file_id",
+						"original_name",
+						"aim",
+						"topics",
+						"confidence",
+						"uncertainty_note",
+						"alignment",
+						"include_in_primary_path",
+						"alignment_reason",
+					},
 				},
 			},
-			"combined_goal":        map[string]any{"type": "string"},
+			"material_alignment": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"mode": map[string]any{
+						"type": "string",
+						"enum": []any{"single_goal", "multi_goal", "unclear"},
+					},
+					"primary_goal":                     map[string]any{"type": "string"},
+					"include_file_ids":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"exclude_file_ids":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"maybe_separate_track_file_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"noise_file_ids":                   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"notes":                            map[string]any{"type": "string"},
+					"recommended_next_step":            map[string]any{"type": "string"},
+					"recommended_next_step_reason":     map[string]any{"type": "string"},
+					"recommended_next_step_confidence": map[string]any{"type": "number"},
+				},
+				"required": []string{
+					"mode",
+					"primary_goal",
+					"include_file_ids",
+					"exclude_file_ids",
+					"maybe_separate_track_file_ids",
+					"noise_file_ids",
+					"notes",
+					"recommended_next_step",
+					"recommended_next_step_reason",
+					"recommended_next_step_confidence",
+				},
+			},
+			"combined_goal": map[string]any{"type": "string"},
 			"learning_intent": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -469,6 +525,7 @@ func generateIntake(
 		},
 		"required": []string{
 			"file_intents",
+			"material_alignment",
 			"combined_goal",
 			"learning_intent",
 			"audience_level_guess",
@@ -499,6 +556,8 @@ func formatIntakeSummaryMD(intake map[string]any) string {
 	level := strings.TrimSpace(stringFromAny(intake["audience_level_guess"]))
 	intent := mapFromAny(intake["learning_intent"])
 	assumptions := stringSliceFromAny(intake["assumptions"])
+	fileIntents := sliceAny(intake["file_intents"])
+	ma := mapFromAny(intake["material_alignment"])
 
 	lines := make([]string, 0, 8)
 	if goal != "" {
@@ -540,6 +599,67 @@ func formatIntakeSummaryMD(intake map[string]any) string {
 		}
 		lines = append(lines, "**Assumptions**: "+strings.Join(a, " • "))
 	}
+
+	// Brief, user-facing transparency about multi-material alignment decisions.
+	fileNameByID := map[string]string{}
+	for _, it := range fileIntents {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		id := strings.TrimSpace(stringFromAny(m["file_id"]))
+		name := strings.TrimSpace(stringFromAny(m["original_name"]))
+		if id == "" || name == "" {
+			continue
+		}
+		fileNameByID[id] = name
+	}
+	namesForIDs := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
+		seen := map[string]bool{}
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			name := strings.TrimSpace(fileNameByID[id])
+			if name == "" {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+		return out
+	}
+	joinNames := func(names []string, max int) string {
+		if len(names) == 0 {
+			return ""
+		}
+		if max <= 0 {
+			max = 4
+		}
+		if len(names) <= max {
+			return strings.Join(names, " • ")
+		}
+		return strings.Join(names[:max], " • ") + fmt.Sprintf(" (+%d more)", len(names)-max)
+	}
+
+	used := namesForIDs(stringSliceFromAny(ma["include_file_ids"]))
+	if s := joinNames(used, 4); s != "" {
+		lines = append(lines, "**Materials used**: "+s)
+	}
+	separate := namesForIDs(stringSliceFromAny(ma["maybe_separate_track_file_ids"]))
+	if s := joinNames(separate, 3); s != "" {
+		lines = append(lines, "**Possible separate track**: "+s)
+	}
+	ignored := namesForIDs(append(stringSliceFromAny(ma["exclude_file_ids"]), stringSliceFromAny(ma["noise_file_ids"])...))
+	if s := joinNames(ignored, 3); s != "" {
+		lines = append(lines, "**Set aside for now**: "+s)
+	}
+
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
@@ -782,17 +902,24 @@ func maybeAppendIntakeAckMessage(
 
 func buildFallbackIntake(files []*types.MaterialFile, summary *types.MaterialSetSummary, userContext string, userAnswers string) map[string]any {
 	fileIntents := make([]map[string]any, 0, len(files))
+	includeIDs := make([]string, 0, len(files))
 	for _, f := range files {
 		if f == nil {
 			continue
 		}
+		if f.ID != uuid.Nil {
+			includeIDs = append(includeIDs, f.ID.String())
+		}
 		fileIntents = append(fileIntents, map[string]any{
-			"file_id":          f.ID.String(),
-			"original_name":    f.OriginalName,
-			"aim":              "Unknown (fallback)",
-			"topics":           []string{},
-			"confidence":       0.0,
-			"uncertainty_note": "Automatic inference unavailable; proceeding with best effort.",
+			"file_id":                 f.ID.String(),
+			"original_name":           f.OriginalName,
+			"aim":                     "Unknown (fallback)",
+			"topics":                  []string{},
+			"confidence":              0.0,
+			"uncertainty_note":        "Automatic inference unavailable; proceeding with best effort.",
+			"alignment":               "unclear",
+			"include_in_primary_path": true,
+			"alignment_reason":        "Fallback: cannot reliably determine alignment; including by default.",
 		})
 	}
 	goal := ""
@@ -803,8 +930,20 @@ func buildFallbackIntake(files []*types.MaterialFile, summary *types.MaterialSet
 		goal = "Learn the uploaded materials"
 	}
 	out := map[string]any{
-		"file_intents":         fileIntents,
-		"combined_goal":        goal,
+		"file_intents": fileIntents,
+		"material_alignment": map[string]any{
+			"mode":                             "unclear",
+			"primary_goal":                     goal,
+			"include_file_ids":                 dedupeStrings(includeIDs),
+			"exclude_file_ids":                 []string{},
+			"maybe_separate_track_file_ids":    []string{},
+			"noise_file_ids":                   []string{},
+			"notes":                            "Fallback alignment used due to missing/failed AI call.",
+			"recommended_next_step":            "proceed",
+			"recommended_next_step_reason":     "Fallback intake cannot ask questions; proceeding with best effort.",
+			"recommended_next_step_confidence": 0.2,
+		},
+		"combined_goal": goal,
 		"learning_intent": map[string]any{
 			"goal_kind":         "unknown",
 			"deadline":          "",
@@ -828,6 +967,119 @@ func buildFallbackIntake(files []*types.MaterialFile, summary *types.MaterialSet
 		"user_answers":         strings.TrimSpace(userAnswers),
 	}
 	return out
+}
+
+func buildIntakeMaterialFilter(files []*types.MaterialFile, intake map[string]any) map[string]any {
+	valid := map[string]*types.MaterialFile{}
+	allIDs := make([]string, 0, len(files))
+	goalIDs := make([]string, 0, 1)
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		id := f.ID.String()
+		valid[id] = f
+		allIDs = append(allIDs, id)
+		name := strings.ToLower(strings.TrimSpace(f.OriginalName))
+		if name == "learning_goal.txt" || name == "learning_goal.md" {
+			goalIDs = append(goalIDs, id)
+		}
+	}
+	allIDs = dedupeStrings(allIDs)
+
+	ma := mapFromAny(intake["material_alignment"])
+	mode := strings.ToLower(strings.TrimSpace(stringFromAny(ma["mode"])))
+	if mode == "" {
+		mode = "unclear"
+	}
+	primaryGoal := strings.TrimSpace(stringFromAny(ma["primary_goal"]))
+
+	filterIDs := func(in []string) []string {
+		out := make([]string, 0, len(in))
+		seen := map[string]bool{}
+		for _, s := range in {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if _, ok := valid[s]; !ok {
+				continue
+			}
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+		return out
+	}
+
+	includeIDs := filterIDs(stringSliceFromAny(ma["include_file_ids"]))
+	excludeIDs := filterIDs(stringSliceFromAny(ma["exclude_file_ids"]))
+	maybeSeparateIDs := filterIDs(stringSliceFromAny(ma["maybe_separate_track_file_ids"]))
+	noiseIDs := filterIDs(stringSliceFromAny(ma["noise_file_ids"]))
+
+	if len(includeIDs) == 0 {
+		// Derive from per-file flags if the summary block is empty/missing.
+		rawFileIntents := sliceAny(intake["file_intents"])
+		for _, it := range rawFileIntents {
+			m, ok := it.(map[string]any)
+			if !ok || m == nil {
+				continue
+			}
+			id := strings.TrimSpace(stringFromAny(m["file_id"]))
+			if id == "" {
+				continue
+			}
+			if _, ok := valid[id]; !ok {
+				continue
+			}
+			if boolFromAny(m["include_in_primary_path"]) {
+				includeIDs = append(includeIDs, id)
+			}
+		}
+		includeIDs = filterIDs(includeIDs)
+	}
+
+	if len(includeIDs) == 0 {
+		includeIDs = allIDs
+	}
+
+	// Never include excluded/noise in the primary include list.
+	blocked := map[string]bool{}
+	for _, s := range excludeIDs {
+		blocked[s] = true
+	}
+	for _, s := range noiseIDs {
+		blocked[s] = true
+	}
+	tmp := make([]string, 0, len(includeIDs))
+	for _, s := range includeIDs {
+		if blocked[s] {
+			continue
+		}
+		tmp = append(tmp, s)
+	}
+	includeIDs = dedupeStrings(tmp)
+
+	// Always include the goal seed file if present (it anchors intent).
+	for _, gid := range goalIDs {
+		if gid == "" || blocked[gid] {
+			continue
+		}
+		includeIDs = dedupeStrings(append([]string{gid}, includeIDs...))
+	}
+
+	notes := strings.TrimSpace(stringFromAny(ma["notes"]))
+	return map[string]any{
+		"mode":                          mode,
+		"primary_goal":                  primaryGoal,
+		"include_file_ids":              includeIDs,
+		"exclude_file_ids":              excludeIDs,
+		"maybe_separate_track_file_ids": maybeSeparateIDs,
+		"noise_file_ids":                noiseIDs,
+		"notes":                         notes,
+	}
 }
 
 func mapFromAny(v any) map[string]any {

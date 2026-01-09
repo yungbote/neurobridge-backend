@@ -1,12 +1,17 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	temporalsdkclient "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -19,6 +24,7 @@ import (
 
 type JobService interface {
 	Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
+	Dispatch(dbc dbctx.Context, jobID uuid.UUID) error
 	EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error)
 	EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	GetByIDForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
@@ -32,14 +38,26 @@ type jobService struct {
 	log    *logger.Logger
 	repo   repos.JobRunRepo
 	notify JobNotifier
+
+	temporal          temporalsdkclient.Client
+	temporalTaskQueue string
 }
 
-func NewJobService(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, notify JobNotifier) JobService {
+func NewJobService(
+	db *gorm.DB,
+	baseLog *logger.Logger,
+	repo repos.JobRunRepo,
+	notify JobNotifier,
+	tc temporalsdkclient.Client,
+	taskQueue string,
+) JobService {
 	return &jobService{
-		db:     db,
-		log:    baseLog.With("service", "JobService"),
-		repo:   repo,
-		notify: notify,
+		db:                db,
+		log:               baseLog.With("service", "JobService"),
+		repo:              repo,
+		notify:            notify,
+		temporal:          tc,
+		temporalTaskQueue: strings.TrimSpace(taskQueue),
 	}
 }
 
@@ -49,6 +67,9 @@ func (s *jobService) Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType s
 	}
 	if jobType == "" {
 		return nil, fmt.Errorf("missing job_type")
+	}
+	if s.temporal == nil {
+		return nil, fmt.Errorf("temporal not configured (TEMPORAL_ADDRESS)")
 	}
 	transaction := dbc.Tx
 	if transaction == nil {
@@ -83,7 +104,76 @@ func (s *jobService) Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType s
 	}
 	// Notify immediately (request-time)
 	s.notify.JobCreated(ownerUserID, job)
+
+	// Important: if we're inside a *real* DB transaction, do NOT start Temporal yet.
+	// Callers must invoke Dispatch() after the transaction commits.
+	// Note: gorm.DB pointers are frequently cloned (e.g. WithContext/Session), so pointer
+	// inequality is NOT a reliable transaction detector.
+	if isDBTransaction(dbc.Tx) {
+		if s.log != nil {
+			s.log.Debug("Job enqueued inside transaction; awaiting dispatch after commit", "job_id", job.ID, "job_type", job.JobType)
+		}
+		return job, nil
+	}
+	if err := s.Dispatch(dbctx.Context{Ctx: dbc.Ctx}, job.ID); err != nil {
+		return job, err
+	}
 	return job, nil
+}
+
+type txCommitter interface {
+	Commit() error
+	Rollback() error
+}
+
+func isDBTransaction(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil || db.Statement.ConnPool == nil {
+		return false
+	}
+	_, ok := db.Statement.ConnPool.(txCommitter)
+	return ok
+}
+
+func (s *jobService) Dispatch(dbc dbctx.Context, jobID uuid.UUID) error {
+	if s == nil || s.temporal == nil {
+		return fmt.Errorf("temporal not configured (TEMPORAL_ADDRESS)")
+	}
+	if jobID == uuid.Nil {
+		return fmt.Errorf("missing job id")
+	}
+	ctx := dbc.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	err := s.startTemporalJobWorkflow(ctx, jobID, enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE)
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*serviceerror.WorkflowExecutionAlreadyStarted); ok {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	// Best-effort: mark job as failed if we couldn't dispatch.
+	if s.repo != nil {
+		_ = s.repo.UpdateFields(dbctx.Context{Ctx: ctx, Tx: s.db}, jobID, map[string]interface{}{
+			"status":        "failed",
+			"stage":         "dispatch",
+			"message":       "",
+			"error":         err.Error(),
+			"last_error_at": now,
+			"locked_at":     nil,
+			"updated_at":    now,
+		})
+	}
+	if s.notify != nil && s.repo != nil {
+		if rows, rerr := s.repo.GetByIDs(dbctx.Context{Ctx: ctx, Tx: s.db}, []uuid.UUID{jobID}); rerr == nil && len(rows) > 0 && rows[0] != nil {
+			j := rows[0]
+			s.notify.JobFailed(j.OwnerUserID, j, "dispatch", err.Error())
+		}
+	}
+	return fmt.Errorf("start temporal workflow: %w", err)
 }
 
 func (s *jobService) EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error) {
@@ -268,6 +358,19 @@ func (s *jobService) CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*
 	if shouldNotify && s.notify != nil && updated != nil {
 		s.notify.JobCanceled(rd.UserID, updated)
 	}
+
+	// Best-effort: cancel the Temporal workflow(s) backing this job run.
+	if s.temporal != nil && jobID != uuid.Nil {
+		_ = s.temporal.CancelWorkflow(dbc.Ctx, jobID.String(), "")
+		if updated != nil && strings.EqualFold(strings.TrimSpace(updated.JobType), "learning_build") {
+			for _, cid := range extractLearningBuildChildJobIDs(updated.Result) {
+				if cid == uuid.Nil {
+					continue
+				}
+				_ = s.temporal.CancelWorkflow(dbc.Ctx, cid.String(), "")
+			}
+		}
+	}
 	return updated, nil
 }
 
@@ -345,6 +448,16 @@ func (s *jobService) RestartForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (
 	if shouldNotify && s.notify != nil && updated != nil {
 		s.notify.JobRestarted(rd.UserID, updated)
 	}
+
+	if updated != nil && s.temporal != nil && jobID != uuid.Nil {
+		ctx := dbc.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := s.startTemporalJobWorkflow(ctx, jobID, enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE); err != nil {
+			return nil, fmt.Errorf("restart temporal workflow: %w", err)
+		}
+	}
 	return updated, nil
 }
 
@@ -387,6 +500,32 @@ func extractLearningBuildChildJobIDs(result datatypes.JSON) []uuid.UUID {
 		out = append(out, id)
 	}
 	return out
+}
+
+func (s *jobService) startTemporalJobWorkflow(ctx context.Context, jobID uuid.UUID, reusePolicy enums.WorkflowIdReusePolicy) error {
+	if s == nil || s.temporal == nil || jobID == uuid.Nil {
+		return fmt.Errorf("temporal not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tq := strings.TrimSpace(s.temporalTaskQueue)
+	if tq == "" {
+		tq = "neurobridge"
+	}
+	opts := temporalsdkclient.StartWorkflowOptions{
+		ID:                    jobID.String(),
+		TaskQueue:             tq,
+		WorkflowIDReusePolicy: reusePolicy,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    30 * time.Second,
+			BackoffCoefficient: 1.0,
+			MaximumInterval:    30 * time.Second,
+			MaximumAttempts:    5,
+		},
+	}
+	_, err := s.temporal.ExecuteWorkflow(ctx, opts, "job_run")
+	return err
 }
 
 func resetLearningBuildStateForRestart(result datatypes.JSON) datatypes.JSON {

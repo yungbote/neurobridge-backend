@@ -39,4 +39,3 @@ type LearningNodeFigure struct {
 }
 
 func (LearningNodeFigure) TableName() string { return "learning_node_figure" }
-

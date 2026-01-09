@@ -109,6 +109,15 @@ func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInp
 		return out, fmt.Errorf("node_doc_patch: path not found")
 	}
 
+	// Optional: apply intake material allowlist (noise filtering / multi-material alignment).
+	var allowFiles map[uuid.UUID]bool
+	if len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
+		var meta map[string]any
+		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
+			allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
+		}
+	}
+
 	docRow, err := deps.NodeDocs.GetByPathNodeID(dbctx.Context{Ctx: ctx}, in.PathNodeID)
 	if err != nil {
 		return out, err
@@ -203,6 +212,14 @@ func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInp
 			if err != nil {
 				return out, err
 			}
+			if len(allowFiles) > 0 {
+				filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+				if len(filtered) > 0 {
+					files = filtered
+				} else {
+					deps.Log.Warn("node_doc_patch: intake filter excluded all files; ignoring filter", "path_id", node.PathID.String())
+				}
+			}
 			fileIDs := make([]uuid.UUID, 0, len(files))
 			for _, f := range files {
 				if f != nil && f.ID != uuid.Nil {
@@ -248,7 +265,7 @@ func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInp
 
 			retrieved := make([]uuid.UUID, 0)
 			if deps.Vec != nil && len(queryEmb) > 0 {
-				ids, qerr := deps.Vec.QueryIDs(ctx, index.ChunksNamespace(uli.MaterialSetID), queryEmb, semanticK, map[string]any{"type": "chunk"})
+				ids, qerr := deps.Vec.QueryIDs(ctx, index.ChunksNamespace(uli.MaterialSetID), queryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {

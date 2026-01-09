@@ -83,4 +83,3 @@ func (r *libraryPathEmbeddingRepo) UpsertMany(dbc dbctx.Context, rows []*types.L
 		}).
 		Create(&out).Error
 }
-

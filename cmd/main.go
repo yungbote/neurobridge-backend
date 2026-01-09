@@ -29,7 +29,10 @@ func main() {
 	runWorker := envTrue("RUN_WORKER", false)
 
 	// Start background components (worker + redis forwarder)
-	a.Start(runServer, runWorker)
+	if err := a.Start(runServer, runWorker); err != nil {
+		fmt.Printf("Failed to start app: %v\n", err)
+		os.Exit(1)
+	}
 
 	if runServer {
 		port := utils.GetEnv("PORT", "8080", a.Log)
@@ -43,7 +46,3 @@ func main() {
 	// Worker-only container: keep process alive.
 	select {}
 }
-
-
-
-

@@ -22,6 +22,8 @@ type Pipeline struct {
 	genRuns   repos.LearningDocGenerationRunRepo
 	files     repos.MaterialFileRepo
 	chunks    repos.MaterialChunkRepo
+	userProf  repos.UserProfileVectorRepo
+	patterns  repos.TeachingPatternRepo
 	ai        openai.Client
 	vec       pinecone.VectorStore
 	bucket    gcp.BucketService
@@ -39,6 +41,8 @@ func New(
 	genRuns repos.LearningDocGenerationRunRepo,
 	files repos.MaterialFileRepo,
 	chunks repos.MaterialChunkRepo,
+	userProf repos.UserProfileVectorRepo,
+	patterns repos.TeachingPatternRepo,
 	ai openai.Client,
 	vec pinecone.VectorStore,
 	bucket gcp.BucketService,
@@ -55,6 +59,8 @@ func New(
 		genRuns:   genRuns,
 		files:     files,
 		chunks:    chunks,
+		userProf:  userProf,
+		patterns:  patterns,
 		ai:        ai,
 		vec:       vec,
 		bucket:    bucket,

@@ -49,10 +49,10 @@ type NodeFiguresRenderInput struct {
 }
 
 type NodeFiguresRenderOutput struct {
-	PathID         uuid.UUID `json:"path_id"`
-	FiguresRendered int      `json:"figures_rendered"`
-	FiguresExisting int      `json:"figures_existing"`
-	FiguresFailed   int      `json:"figures_failed"`
+	PathID          uuid.UUID `json:"path_id"`
+	FiguresRendered int       `json:"figures_rendered"`
+	FiguresExisting int       `json:"figures_existing"`
+	FiguresFailed   int       `json:"figures_failed"`
 }
 
 const nodeFigureAssetPromptVersion = "figure_asset_v1@1"
@@ -222,15 +222,15 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 			var assetID *uuid.UUID
 			if deps.Assets != nil {
 				meta := map[string]any{
-					"asset_kind":      "generated_figure",
-					"semantic_type":   strings.TrimSpace(plan.SemanticType),
-					"caption":         strings.TrimSpace(plan.Caption),
-					"alt_text":        strings.TrimSpace(plan.AltText),
-					"placement_hint":  strings.TrimSpace(plan.PlacementHint),
-					"citations":       content.NormalizeConceptKeys(plan.Citations), // stable-ish string slice cleanup
-					"prompt_hash":     strings.TrimSpace(row.PromptHash),
-					"sources_hash":    strings.TrimSpace(row.SourcesHash),
-					"revised_prompt":  strings.TrimSpace(img.RevisedPrompt),
+					"asset_kind":     "generated_figure",
+					"semantic_type":  strings.TrimSpace(plan.SemanticType),
+					"caption":        strings.TrimSpace(plan.Caption),
+					"alt_text":       strings.TrimSpace(plan.AltText),
+					"placement_hint": strings.TrimSpace(plan.PlacementHint),
+					"citations":      content.NormalizeConceptKeys(plan.Citations), // stable-ish string slice cleanup
+					"prompt_hash":    strings.TrimSpace(row.PromptHash),
+					"sources_hash":   strings.TrimSpace(row.SourcesHash),
+					"revised_prompt": strings.TrimSpace(img.RevisedPrompt),
 				}
 				b, _ := json.Marshal(meta)
 				aid := uuid.New()

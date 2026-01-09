@@ -46,4 +46,3 @@ func CitedChunkIDsFromNodeDocJSON(raw []byte) []string {
 	}
 	return CitedChunkIDsFromNodeDocV1(doc)
 }
-

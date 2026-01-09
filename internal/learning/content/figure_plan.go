@@ -34,11 +34,11 @@ func ValidateFigurePlanV1(doc FigurePlanDocV1, allowedChunkIDs map[string]bool, 
 	}
 
 	semOK := map[string]bool{
-		"setup_illustration":  true,
-		"real_world_example":  true,
-		"intuition_picture":   true,
-		"anatomy_schematic":   true,
-		"graphical_metaphor":  true,
+		"setup_illustration": true,
+		"real_world_example": true,
+		"intuition_picture":  true,
+		"anatomy_schematic":  true,
+		"graphical_metaphor": true,
 	}
 
 	prompts := 0

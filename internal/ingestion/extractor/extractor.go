@@ -103,7 +103,6 @@ func New(
 		DocAIProcessorID:   strings.TrimSpace(os.Getenv("DOCUMENTAI_PROCESSOR_ID")),
 		DocAIProcessorVer:  strings.TrimSpace(os.Getenv("DOCUMENTAI_PROCESSOR_VERSION")),
 
-
 		// TODO: Get rid of infile hardcode values
 		MaxBytesDownload:          1024 * 1024 * 1024,
 		MaxPDFPagesRender:         200,

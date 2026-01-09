@@ -21,4 +21,3 @@ type UserPersonalizationPrefs struct {
 }
 
 func (UserPersonalizationPrefs) TableName() string { return "user_personalization_prefs" }
-

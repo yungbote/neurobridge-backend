@@ -110,4 +110,3 @@ func validateSchemaNode(node any, path string) error {
 
 	return nil
 }
-

@@ -44,11 +44,12 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/variant_stats_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/web_resources_seed"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	jobworker "github.com/yungbote/neurobridge-backend/internal/jobs/worker"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"github.com/yungbote/neurobridge-backend/internal/temporalx"
+	"github.com/yungbote/neurobridge-backend/internal/temporalx/temporalworker"
 )
 
 type Services struct {
@@ -79,8 +80,8 @@ type Services struct {
 	ContentExtractor ingestion.ContentExtractionService
 
 	// Job infra
-	JobRegistry *jobruntime.Registry
-	JobWorker   *jobworker.Worker
+	JobRegistry    *jobruntime.Registry
+	TemporalWorker *temporalworker.Runner
 
 	// Keep bus here for convenience/compat
 	SSEBus bus.Bus
@@ -136,7 +137,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	jobNotifier := services.NewJobNotifier(emitter)
-	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier)
+	tc := clients.Temporal
+	tcfg := temporalx.LoadConfig()
+	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier, tc, tcfg.TaskQueue)
 
 	// Shared bootstrap service (used by workflows + learning pipelines).
 	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
@@ -249,7 +252,19 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	// --------------------
 	// Learning build (Path-centric) pipelines
 	// --------------------
-	webResourcesSeed := web_resources_seed.New(db, log, repos.MaterialFile, repos.Path, clients.GcpBucket, clients.OpenaiClient, sagaSvc, bootstrapSvc)
+	webResourcesSeed := web_resources_seed.New(
+		db,
+		log,
+		repos.MaterialFile,
+		repos.Path,
+		clients.GcpBucket,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
+		clients.OpenaiClient,
+		sagaSvc,
+		bootstrapSvc,
+	)
 	if err := jobRegistry.Register(webResourcesSeed); err != nil {
 		return Services{}, err
 	}
@@ -269,7 +284,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
 		return Services{}, err
 	}
@@ -456,6 +471,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.DocGenerationRun,
 		repos.MaterialFile,
 		repos.MaterialChunk,
+		repos.UserProfileVector,
+		repos.TeachingPattern,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -500,6 +517,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialFile,
 		repos.MaterialChunk,
 		repos.UserProfileVector,
+		repos.TeachingPattern,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -641,9 +659,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	var worker *jobworker.Worker
+	var temporalRunner *temporalworker.Runner
 	if runWorker {
-		worker = jobworker.NewWorker(db, log, repos.JobRun, jobRegistry, jobNotifier)
+		w, err := temporalworker.NewRunner(log, clients.Temporal, db, repos.JobRun, jobRegistry, jobNotifier)
+		if err != nil {
+			return Services{}, fmt.Errorf("init temporal worker: %w", err)
+		}
+		temporalRunner = w
 	}
 
 	chatService := services.NewChatService(
@@ -673,7 +695,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Chat:             chatService,
 		ContentExtractor: extractor,
 		JobRegistry:      jobRegistry,
-		JobWorker:        worker,
+		TemporalWorker:   temporalRunner,
 		SSEBus:           clients.SSEBus,
 	}, nil
 }

@@ -137,4 +137,3 @@ func (r *libraryTaxonomyMembershipRepo) SoftDeleteByPathIDs(dbc dbctx.Context, u
 		Where("user_id = ? AND facet = ? AND path_id IN ?", userID, facet, pathIDs).
 		Delete(&types.LibraryTaxonomyMembership{}).Error
 }
-

@@ -10,10 +10,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
 	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	"github.com/yungbote/neurobridge-backend/internal/clients/twilio"
 	"github.com/yungbote/neurobridge-backend/internal/clients/sendgrid"
+	"github.com/yungbote/neurobridge-backend/internal/clients/twilio"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
+	"github.com/yungbote/neurobridge-backend/internal/temporalx"
+
+	temporalsdkclient "go.temporal.io/sdk/client"
 )
 
 type Clients struct {
@@ -21,28 +24,31 @@ type Clients struct {
 	SSEBus bus.Bus
 
 	// OpenAI
-	OpenaiClient				openai.Client
-	OpenaiCaption				openai.Caption
+	OpenaiClient  openai.Client
+	OpenaiCaption openai.Caption
 
 	// Pinecone
 	PineconeClient      pinecone.Client
 	PineconeVectorStore pinecone.VectorStore
 
 	// GCP
-	GcpBucket						gcp.BucketService
-	GcpDocument					gcp.Document
-	GcpSpeech						gcp.Speech
-	GcpVideo						gcp.Video
-	GcpVision						gcp.Vision
+	GcpBucket   gcp.BucketService
+	GcpDocument gcp.Document
+	GcpSpeech   gcp.Speech
+	GcpVideo    gcp.Video
+	GcpVision   gcp.Vision
 
 	// Twilio
-	TwilioClient				twilio.Client
+	TwilioClient twilio.Client
 
 	// Sendgrid
-	SendgridClient			sendgrid.Client
+	SendgridClient sendgrid.Client
 
 	// Local Media
 	LMTools localmedia.MediaToolsService
+
+	// Temporal
+	Temporal temporalsdkclient.Client
 }
 
 func wireClients(log *logger.Logger) (Clients, error) {
@@ -138,6 +144,14 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	// ---------------- Local Media Tools ----------------
 	out.LMTools = localmedia.New(log)
 
+	// ---------------- Temporal ----------------
+	tc, err := temporalx.NewClient(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init temporal client: %w", err)
+	}
+	out.Temporal = tc
+
 	// ----------------------- Twilio -------------------
 	if strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID")) != "" {
 		tw, err := twilio.NewFromEnv(log)
@@ -162,13 +176,16 @@ func wireClients(log *logger.Logger) (Clients, error) {
 		log.Warn("SENDGRID_API_KEY not set; email disabled")
 	}
 
-
 	return out, nil
 }
 
 func (c *Clients) Close() {
 	if c == nil {
 		return
+	}
+	if c.Temporal != nil {
+		c.Temporal.Close()
+		c.Temporal = nil
 	}
 	if c.SSEBus != nil {
 		_ = c.SSEBus.Close()

@@ -16,6 +16,9 @@ type Pipeline struct {
 	files     repos.MaterialFileRepo
 	path      repos.PathRepo
 	bucket    gcp.BucketService
+	threads   repos.ChatThreadRepo
+	messages  repos.ChatMessageRepo
+	notify    services.ChatNotifier
 	ai        openai.Client
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
@@ -27,6 +30,9 @@ func New(
 	files repos.MaterialFileRepo,
 	path repos.PathRepo,
 	bucket gcp.BucketService,
+	threads repos.ChatThreadRepo,
+	messages repos.ChatMessageRepo,
+	notify services.ChatNotifier,
 	ai openai.Client,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
@@ -37,6 +43,9 @@ func New(
 		files:     files,
 		path:      path,
 		bucket:    bucket,
+		threads:   threads,
+		messages:  messages,
+		notify:    notify,
 		ai:        ai,
 		saga:      saga,
 		bootstrap: bootstrap,

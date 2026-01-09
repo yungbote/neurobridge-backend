@@ -24,12 +24,12 @@ type Client interface {
 }
 
 type Config struct {
-	APIKey							string
-	BaseURL							string
-	DefaultFromEmail		string
-	DefaultFromName			string
-	Timeout							time.Duration
-	MaxRetries					int
+	APIKey           string
+	BaseURL          string
+	DefaultFromEmail string
+	DefaultFromName  string
+	Timeout          time.Duration
+	MaxRetries       int
 }
 
 func ConfigFromEnv() Config {
@@ -45,12 +45,12 @@ func ConfigFromEnv() Config {
 	}
 
 	return Config{
-		APIKey:						apiKey,
-		BaseURL:					strings.TrimSpace(os.Getenv("SENDGRID_BASE_URL")),
-		DefaultFromEmail:	strings.TrimSpace(os.Getenv("SENDGRID_FROM_EMAIL")),
+		APIKey:           apiKey,
+		BaseURL:          strings.TrimSpace(os.Getenv("SENDGRID_BASE_URL")),
+		DefaultFromEmail: strings.TrimSpace(os.Getenv("SENDGRID_FROM_EMAIL")),
 		DefaultFromName:  fromName,
-		Timeout:					time.Duration(timeoutSec) * time.Second,
-		MaxRetries:				maxRetries,
+		Timeout:          time.Duration(timeoutSec) * time.Second,
+		MaxRetries:       maxRetries,
 	}
 }
 
@@ -69,7 +69,7 @@ func New(log *logger.Logger, cfg Config) (Client, error) {
 		cfg.BaseURL = "https://api.sendgrid.com"
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
 	}
@@ -81,96 +81,96 @@ func New(log *logger.Logger, cfg Config) (Client, error) {
 	}
 
 	return &client{
-		log:					log.With("client", "SendGridClient"),
-		cfg:					cfg,
-		httpClient:		&http.Client{Timeout: cfg.Timeout},
-		maxRetries:		cfg.MaxRetries,
+		log:        log.With("client", "SendGridClient"),
+		cfg:        cfg,
+		httpClient: &http.Client{Timeout: cfg.Timeout},
+		maxRetries: cfg.MaxRetries,
 	}, nil
 }
 
 type client struct {
-	log										*logger.Logger
-	cfg										Config
-	httpClient						*http.Client
-	maxRetries						int
+	log        *logger.Logger
+	cfg        Config
+	httpClient *http.Client
+	maxRetries int
 }
 
 // --- public request/response types ---
 
 type EmailAddress struct {
-	Email									string				`json:"email"`
-	Name									string				`json:"name,omitempty"`
+	Email string `json:"email"`
+	Name  string `json:"name,omitempty"`
 }
 
 type Attachment struct {
-	Filename							string
-	MIMEType							string
-	Content								[]byte
-	ContentBase64					string
-	Disposition						string
-	ContentID							string
+	Filename      string
+	MIMEType      string
+	Content       []byte
+	ContentBase64 string
+	Disposition   string
+	ContentID     string
 }
 
 type SendEmailRequest struct {
-	From									EmailAddress
-	ReplyTo								*EmailAddress
-	To										[]EmailAddress
-	CC										[]EmailAddress
-	BCC										[]EmailAddress
-	Subject								string
-	Text									string
-	HTML									string
-	TemplateID						string
-	DynamicTemplateData		map[string]any
-	Categories						[]string
-	Headers								map[string]string
-	CustomArgs						map[string]string
-	SendAt								*time.Time
-	Attachments						[]Attachment
+	From                EmailAddress
+	ReplyTo             *EmailAddress
+	To                  []EmailAddress
+	CC                  []EmailAddress
+	BCC                 []EmailAddress
+	Subject             string
+	Text                string
+	HTML                string
+	TemplateID          string
+	DynamicTemplateData map[string]any
+	Categories          []string
+	Headers             map[string]string
+	CustomArgs          map[string]string
+	SendAt              *time.Time
+	Attachments         []Attachment
 }
 
 type SendEmailResult struct {
-	StatusCode						int
-	MessageID							string
-	RequestID							string
+	StatusCode int
+	MessageID  string
+	RequestID  string
 }
 
 // --- SendGrid mail send wire types ---
 type mailSendRequest struct {
-	Personalizations			[]personalization			`json:"personalizations"`
-	From									EmailAddress					`json:"from"`
-	ReplyTo								*EmailAddress					`json:"reply_to,omitempty"`
-	Subject								string								`json:"subject,omitempty"`
-	Content								[]mailContent					`json:"content,omitempty"`
-	TemplateID						string								`json:"template_id,omitempty"`
-	Categories						[]string							`json:"categories,omitempty"`
-	Headers								map[string]string			`json:"headers,omitempty"`
-	CustomArgs						map[string]string			`json:"custom_args,omitempty"`
-	SendAt								*int64								`json:"send_at,omitempty"`
-	Attachments						[]sgAttachment				`json:"attachments,omitempty"`
+	Personalizations []personalization `json:"personalizations"`
+	From             EmailAddress      `json:"from"`
+	ReplyTo          *EmailAddress     `json:"reply_to,omitempty"`
+	Subject          string            `json:"subject,omitempty"`
+	Content          []mailContent     `json:"content,omitempty"`
+	TemplateID       string            `json:"template_id,omitempty"`
+	Categories       []string          `json:"categories,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
+	CustomArgs       map[string]string `json:"custom_args,omitempty"`
+	SendAt           *int64            `json:"send_at,omitempty"`
+	Attachments      []sgAttachment    `json:"attachments,omitempty"`
 }
 
 type personalization struct {
-	To										[]EmailAddress				`json:"to"`
-	Cc										[]EmailAddress				`json:"cc,omitempty"`
-	Bcc										[]EmailAddress				`json:"bcc,omitempty"`
-	DynamicTemplateData		map[string]any				`json:"dynamic_template_data,omitempty"`
-	Headers								map[string]string			`json:"headers,omitempty"`
-	CustomArgs						map[string]string			`json:"curstom_args,omitempty"`
-	SendAt								*int64								`json:"send_at,omitempty"`
+	To                  []EmailAddress    `json:"to"`
+	Cc                  []EmailAddress    `json:"cc,omitempty"`
+	Bcc                 []EmailAddress    `json:"bcc,omitempty"`
+	DynamicTemplateData map[string]any    `json:"dynamic_template_data,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	CustomArgs          map[string]string `json:"curstom_args,omitempty"`
+	SendAt              *int64            `json:"send_at,omitempty"`
 }
 
 type mailContent struct {
-	Type									string								`json:"type"`
-	Value									string								`json:"value"`
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 type sgAttachment struct {
-	Content								string								`json:"content"`
-	Type									string								`json:"type,omitempty"`
-	Filename							string								`json:"filename"`
-	Disposition						string								`json:"disposition,omitempty"`
-	ContentID							string								`json:"content_id,omitempty"`
+	Content     string `json:"content"`
+	Type        string `json:"type,omitempty"`
+	Filename    string `json:"filename"`
+	Disposition string `json:"disposition,omitempty"`
+	ContentID   string `json:"content_id,omitempty"`
 }
 
 func (c *client) Send(ctx context.Context, req SendEmailRequest) (*SendEmailResult, error) {
@@ -250,15 +250,15 @@ func (c *client) Send(ctx context.Context, req SendEmailRequest) (*SendEmailResu
 	}
 
 	wire := mailSendRequest{
-		Personalizations:				[]personalization{p},
-		From:										req.From,
-		ReplyTo:								req.ReplyTo,
-		Subject:								req.Subject,
-		Content:								contents,
-		TemplateID:							req.TemplateID,
-		Categories:							req.Categories,
-		SendAt:									sendAt,
-		Attachments:						atts,
+		Personalizations: []personalization{p},
+		From:             req.From,
+		ReplyTo:          req.ReplyTo,
+		Subject:          req.Subject,
+		Content:          contents,
+		TemplateID:       req.TemplateID,
+		Categories:       req.Categories,
+		SendAt:           sendAt,
+		Attachments:      atts,
 	}
 
 	resp, _, err := c.do(ctx, "POST", "/v3/mail/send", wire)
@@ -267,9 +267,9 @@ func (c *client) Send(ctx context.Context, req SendEmailRequest) (*SendEmailResu
 	}
 
 	return &SendEmailResult{
-		StatusCode:						resp.StatusCode,
-		MessageID:						strings.TrimSpace(resp.Header.Get("X-Message-Id")),
-		RequestID:						strings.TrimSpace(resp.Header.Get("X-Request-Id")),
+		StatusCode: resp.StatusCode,
+		MessageID:  strings.TrimSpace(resp.Header.Get("X-Message-Id")),
+		RequestID:  strings.TrimSpace(resp.Header.Get("X-Request-Id")),
 	}, nil
 }
 
@@ -289,13 +289,13 @@ func buildAttachments(in []Attachment) ([]sgAttachment, error) {
 			b64 = base64.StdEncoding.EncodeToString(a.Content)
 		}
 		if b64 == "" {
-			return nil, fmt.Errorf("sendgrid: attachment %q missing content")
+			return nil, fmt.Errorf("sendgrid: attachment %q missing content", fn)
 		}
 
 		att := sgAttachment{
-			Content:				b64,
-			Type:						strings.TrimSpace(a.MIMEType),
-			Filename:				fn,
+			Content:  b64,
+			Type:     strings.TrimSpace(a.MIMEType),
+			Filename: fn,
 		}
 		if d := strings.TrimSpace(a.Disposition); d != "" {
 			att.Disposition = d
@@ -311,20 +311,20 @@ func buildAttachments(in []Attachment) ([]sgAttachment, error) {
 // ---------- HTTP / retry helpers ----------
 
 type errorItem struct {
-	Message				string					`json:"message"`
-	Field					any							`json:"field,omitempty"`
-	Help					any							`json:"help,omitempty"`
-	ID						string					`json:"id,omitempty"`
+	Message string `json:"message"`
+	Field   any    `json:"field,omitempty"`
+	Help    any    `json:"help,omitempty"`
+	ID      string `json:"id,omitempty"`
 }
 
 type errorResponse struct {
-	Errors				[]errorItem			`json:"errors"`
+	Errors []errorItem `json:"errors"`
 }
 
 type HTTPError struct {
-	StatusCode		int
-	Body					string
-	Errors				[]errorItem
+	StatusCode int
+	Body       string
+	Errors     []errorItem
 }
 
 func (e *HTTPError) Error() string {
@@ -372,11 +372,11 @@ func (c *client) do(ctx context.Context, method, path string, body any) (*http.R
 		sleepFor = httpx.JitterSleep(sleepFor)
 
 		c.log.Warn("Sendgrid request retrying",
-			"path", 				path,
-			"attempt", 			attempt+1,
-			"max_retries", 	c.maxRetries,
-			"sleep", 				sleepFor.String(),
-			"error", 				err.Error(),
+			"path", path,
+			"attempt", attempt+1,
+			"max_retries", c.maxRetries,
+			"sleep", sleepFor.String(),
+			"error", err.Error(),
 		)
 
 		time.Sleep(sleepFor)

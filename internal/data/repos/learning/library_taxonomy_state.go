@@ -66,16 +66,16 @@ func (r *libraryTaxonomyStateRepo) Upsert(dbc dbctx.Context, row *types.LibraryT
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
-				"version":                  gorm.Expr("EXCLUDED.version"),
-				"dirty":                    gorm.Expr("EXCLUDED.dirty"),
-				"new_paths_since_refine":   gorm.Expr("EXCLUDED.new_paths_since_refine"),
-				"last_routed_at":           gorm.Expr("EXCLUDED.last_routed_at"),
-				"last_refined_at":          gorm.Expr("EXCLUDED.last_refined_at"),
-				"last_snapshot_built_at":   gorm.Expr("EXCLUDED.last_snapshot_built_at"),
-				"refine_lock_until":        gorm.Expr("EXCLUDED.refine_lock_until"),
-				"pending_unsorted_paths":   gorm.Expr("EXCLUDED.pending_unsorted_paths"),
-				"updated_at":               now,
-				"deleted_at":               nil,
+				"version":                gorm.Expr("EXCLUDED.version"),
+				"dirty":                  gorm.Expr("EXCLUDED.dirty"),
+				"new_paths_since_refine": gorm.Expr("EXCLUDED.new_paths_since_refine"),
+				"last_routed_at":         gorm.Expr("EXCLUDED.last_routed_at"),
+				"last_refined_at":        gorm.Expr("EXCLUDED.last_refined_at"),
+				"last_snapshot_built_at": gorm.Expr("EXCLUDED.last_snapshot_built_at"),
+				"refine_lock_until":      gorm.Expr("EXCLUDED.refine_lock_until"),
+				"pending_unsorted_paths": gorm.Expr("EXCLUDED.pending_unsorted_paths"),
+				"updated_at":             now,
+				"deleted_at":             nil,
 			}),
 		}).
 		Create(row).Error
@@ -92,4 +92,3 @@ func (r *libraryTaxonomyStateRepo) UpdateFields(dbc dbctx.Context, userID uuid.U
 	fields["updated_at"] = time.Now().UTC()
 	return t.WithContext(dbc.Ctx).Model(&types.LibraryTaxonomyState{}).Where("user_id = ?", userID).Updates(fields).Error
 }
-

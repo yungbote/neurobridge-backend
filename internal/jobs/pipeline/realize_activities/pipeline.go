@@ -24,8 +24,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
-	jc.Progress("realize", 2, "Writing node content")
-	out, err := steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
+	jc.Progress("node_content", 2, "Writing node content")
+	nodeOut, err := steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
 		DB:          p.db,
 		Log:         p.log,
 		Path:        p.path,
@@ -33,6 +33,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Files:       p.files,
 		Chunks:      p.chunks,
 		UserProfile: p.profile,
+		Patterns:    p.patterns,
 		AI:          p.ai,
 		Vec:         p.vec,
 		Bucket:      p.bucket,
@@ -42,16 +43,50 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		MaterialSetID: setID,
 	})
 	if err != nil {
-		jc.Fail("realize", err)
+		jc.Fail("node_content", err)
+		return nil
+	}
+
+	jc.Progress("activities", 10, "Generating activities")
+	actOut, err := steps.RealizeActivities(jc.Ctx, steps.RealizeActivitiesDeps{
+		DB:                p.db,
+		Log:               p.log,
+		Path:              p.path,
+		PathNodes:         p.nodes,
+		PathNodeActivities: p.nodeActivities,
+
+		Activities:        p.activities,
+		Variants:          p.variants,
+		ActivityConcepts:  p.activityConcepts,
+		ActivityCitations: p.activityCites,
+
+		Concepts:     p.concepts,
+		Files:        p.files,
+		Chunks:       p.chunks,
+		UserProfile:  p.profile,
+		Patterns:     p.patterns,
+		AI:           p.ai,
+		Vec:          p.vec,
+		Saga:         p.saga,
+		Bootstrap:    p.bootstrap,
+	}, steps.RealizeActivitiesInput{
+		OwnerUserID:   jc.Job.OwnerUserID,
+		MaterialSetID: setID,
+		SagaID:        sagaID,
+	})
+	if err != nil {
+		jc.Fail("activities", err)
 		return nil
 	}
 
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),
 		"saga_id":         sagaID.String(),
-		"path_id":         out.PathID.String(),
-		"nodes_written":   out.NodesWritten,
-		"nodes_existing":  out.NodesExisting,
+		"path_id":         actOut.PathID.String(),
+		"nodes_written":   nodeOut.NodesWritten,
+		"nodes_existing":  nodeOut.NodesExisting,
+		"activities_made": actOut.ActivitiesMade,
+		"variants_made":   actOut.VariantsMade,
 	})
 	return nil
 }

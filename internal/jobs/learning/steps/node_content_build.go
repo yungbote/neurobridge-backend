@@ -38,6 +38,7 @@ type NodeContentBuildDeps struct {
 	Chunks repos.MaterialChunkRepo
 
 	UserProfile repos.UserProfileVectorRepo
+	Patterns    repos.TeachingPatternRepo
 
 	AI  openai.Client
 	Vec pc.VectorStore
@@ -92,9 +93,11 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		return out, err
 	}
 	charterJSON := ""
+	var allowFiles map[uuid.UUID]bool
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
+			allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
 			if v, ok := meta["charter"]; ok && v != nil {
 				if b, err := json.Marshal(v); err == nil {
 					charterJSON = string(b)
@@ -121,6 +124,14 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
+	}
+	if len(allowFiles) > 0 {
+		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+		if len(filtered) > 0 {
+			files = filtered
+		} else {
+			deps.Log.Warn("node_content_build: intake filter excluded all files; ignoring filter", "path_id", pathID.String())
+		}
 	}
 	fileIDs := make([]uuid.UUID, 0, len(files))
 	for _, f := range files {
@@ -213,7 +224,17 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		}
 		nodeGoal := strings.TrimSpace(stringFromAny(nodeMeta["goal"]))
 		nodeConceptKeys := dedupeStrings(stringSliceFromAny(nodeMeta["concept_keys"]))
-		conceptCSV := strings.Join(nodeConceptKeys, ", ")
+		conceptCSV := strings.TrimSpace(strings.Join(nodeConceptKeys, ", "))
+		if conceptCSV == "" {
+			// Keep PromptActivityContent validators satisfied for legacy nodes missing concept keys / titles.
+			conceptCSV = strings.TrimSpace(node.Title)
+		}
+		if conceptCSV == "" {
+			conceptCSV = nodeGoal
+		}
+		if conceptCSV == "" {
+			conceptCSV = "general"
+		}
 		queryText := strings.TrimSpace(node.Title + " " + nodeGoal + " " + conceptCSV)
 
 		work = append(work, nodeWork{
@@ -274,7 +295,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 
 			var chunkIDs []uuid.UUID
 			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, 14, map[string]any{"type": "chunk"})
+				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, 14, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
@@ -297,14 +318,17 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 
 			assetsJSON := buildAvailableAssetsJSON(deps.Bucket, files, chunkByID, chunkIDs, nil)
 
+			teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.Patterns, w.QueryEmb, 4)
+
 			p, err := prompts.Build(prompts.PromptActivityContent, prompts.Input{
-				UserProfileDoc:   up.ProfileDoc,
-				PathCharterJSON:  charterJSON,
-				ActivityKind:     "lesson",
-				ActivityTitle:    w.Node.Title,
-				ConceptKeysCSV:   w.ConceptCSV,
-				ActivityExcerpts: excerpts,
-				AssetsJSON:       assetsJSON,
+				UserProfileDoc:       up.ProfileDoc,
+				TeachingPatternsJSON: teachingJSON,
+				PathCharterJSON:      charterJSON,
+				ActivityKind:         "lesson",
+				ActivityTitle:        w.Node.Title,
+				ConceptKeysCSV:       w.ConceptCSV,
+				ActivityExcerpts:     excerpts,
+				AssetsJSON:           assetsJSON,
 			})
 			if err != nil {
 				return err
@@ -357,42 +381,75 @@ type mediaAssetCandidate struct {
 
 func buildAvailableAssetsJSON(bucket gcp.BucketService, files []*types.MaterialFile, chunkByID map[uuid.UUID]*types.MaterialChunk, chunkIDs []uuid.UUID, extras []*mediaAssetCandidate) string {
 	seen := map[string]*mediaAssetCandidate{}
+	allowedChunkIDs := map[string]bool{}
+	for _, id := range chunkIDs {
+		if id != uuid.Nil {
+			allowedChunkIDs[id.String()] = true
+		}
+	}
+
+	filterChunkIDs := func(in []string) []string {
+		if len(in) == 0 || len(allowedChunkIDs) == 0 {
+			return dedupeStrings(in)
+		}
+		out := make([]string, 0, len(in))
+		seen := map[string]bool{}
+		for _, s := range in {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			id, err := uuid.Parse(s)
+			if err != nil || id == uuid.Nil {
+				continue
+			}
+			s = id.String()
+			if !allowedChunkIDs[s] || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+		return out
+	}
 
 	add := func(c *mediaAssetCandidate) {
 		if c == nil {
 			return
 		}
-		c.URL = strings.TrimSpace(c.URL)
-		if c.URL == "" {
+		cc := *c // defensive copy; avoid mutating shared candidates
+		cc.URL = strings.TrimSpace(cc.URL)
+		if cc.URL == "" {
 			return
 		}
-		if _, ok := seen[c.URL]; ok {
-			ex := seen[c.URL]
-			ex.ChunkIDs = dedupeStrings(append(ex.ChunkIDs, c.ChunkIDs...))
+		cc.ChunkIDs = filterChunkIDs(cc.ChunkIDs)
+		if _, ok := seen[cc.URL]; ok {
+			ex := seen[cc.URL]
+			ex.ChunkIDs = dedupeStrings(append(ex.ChunkIDs, cc.ChunkIDs...))
 			if ex.Notes == "" {
-				ex.Notes = c.Notes
+				ex.Notes = cc.Notes
 			}
 			if ex.Kind == "" {
-				ex.Kind = c.Kind
+				ex.Kind = cc.Kind
 			}
 			if ex.Key == "" {
-				ex.Key = c.Key
+				ex.Key = cc.Key
 			}
 			if ex.Source == "" {
-				ex.Source = c.Source
+				ex.Source = cc.Source
 			}
-			if ex.Page == nil && c.Page != nil {
-				ex.Page = c.Page
+			if ex.Page == nil && cc.Page != nil {
+				ex.Page = cc.Page
 			}
-			if ex.StartSec == nil && c.StartSec != nil {
-				ex.StartSec = c.StartSec
+			if ex.StartSec == nil && cc.StartSec != nil {
+				ex.StartSec = cc.StartSec
 			}
-			if ex.EndSec == nil && c.EndSec != nil {
-				ex.EndSec = c.EndSec
+			if ex.EndSec == nil && cc.EndSec != nil {
+				ex.EndSec = cc.EndSec
 			}
 			return
 		}
-		seen[c.URL] = c
+		seen[cc.URL] = &cc
 	}
 
 	// (0) Extras (e.g., generated figures) should be preferred if we have to truncate.

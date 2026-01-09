@@ -95,9 +95,9 @@ func New() (*App, error) {
 	}, nil
 }
 
-func (a *App) Start(runServer bool, runWorker bool) {
+func (a *App) Start(runServer bool, runWorker bool) error {
 	if a == nil || a.cancel != nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
@@ -114,9 +114,13 @@ func (a *App) Start(runServer bool, runWorker bool) {
 	}
 
 	// (B) Worker container: start worker pool
-	if runWorker && a.Services.JobWorker != nil {
-		a.Services.JobWorker.Start(ctx)
+	if runWorker && a.Services.TemporalWorker != nil {
+		if err := a.Services.TemporalWorker.Start(ctx); err != nil {
+			a.Log.Error("Failed to start Temporal worker", "error", err)
+			return err
+		}
 	}
+	return nil
 }
 
 func (a *App) Run(addr string) error {

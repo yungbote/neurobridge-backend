@@ -70,6 +70,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Log:       p.log,
 		Files:     p.files,
 		Chunks:    p.chunks,
+		Path:      p.path,
 		Concepts:  p.concepts,
 		Evidence:  p.evidence,
 		Edges:     p.edges,

@@ -44,14 +44,13 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"material_set_id":   setID.String(),
-		"saga_id":           sagaID.String(),
-		"path_id":           out.PathID.String(),
-		"nodes_planned":     out.NodesPlanned,
-		"nodes_skipped":     out.NodesSkipped,
-		"figures_planned":   out.FiguresPlanned,
-		"figures_existing":  out.FiguresExisting,
+		"material_set_id":  setID.String(),
+		"saga_id":          sagaID.String(),
+		"path_id":          out.PathID.String(),
+		"nodes_planned":    out.NodesPlanned,
+		"nodes_skipped":    out.NodesSkipped,
+		"figures_planned":  out.FiguresPlanned,
+		"figures_existing": out.FiguresExisting,
 	})
 	return nil
 }
-

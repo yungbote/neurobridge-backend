@@ -66,4 +66,3 @@ func (r *userPersonalizationPrefsRepo) Upsert(dbc dbctx.Context, row *types.User
 		}).
 		Create(row).Error
 }
-

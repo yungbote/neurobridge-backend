@@ -80,6 +80,17 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 	}
 	out.PathID = pathID
 
+	// Optional: apply intake material allowlist (noise filtering / multi-material alignment).
+	var allowFiles map[uuid.UUID]bool
+	if deps.Path != nil {
+		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
+			var meta map[string]any
+			if json.Unmarshal(row.Metadata, &meta) == nil {
+				allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
+			}
+		}
+	}
+
 	// Feature gate: require image model configured, otherwise skip (no-op).
 	if strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL")) == "" {
 		deps.Log.Warn("OPENAI_IMAGE_MODEL missing; skipping node_figures_plan_build")
@@ -132,6 +143,14 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
+	}
+	if len(allowFiles) > 0 {
+		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+		if len(filtered) > 0 {
+			files = filtered
+		} else {
+			deps.Log.Warn("node_figures_plan_build: intake filter excluded all files; ignoring filter", "path_id", pathID.String())
+		}
 	}
 	fileIDs := make([]uuid.UUID, 0, len(files))
 	for _, f := range files {
@@ -279,7 +298,7 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 
 			var chunkIDs []uuid.UUID
 			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, map[string]any{"type": "chunk"})
+				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {

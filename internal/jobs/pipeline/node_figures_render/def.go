@@ -50,4 +50,3 @@ func New(
 }
 
 func (p *Pipeline) Type() string { return "node_figures_render" }
-

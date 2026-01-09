@@ -8,8 +8,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
 )
 
 type LearningNodeFigureRepo interface {
@@ -112,4 +112,3 @@ func (r *learningNodeFigureRepo) Upsert(dbc dbctx.Context, row *types.LearningNo
 		}).
 		Create(row).Error
 }
-

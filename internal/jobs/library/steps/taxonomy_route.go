@@ -66,20 +66,20 @@ type routeCandidateNode struct {
 }
 
 type routeCandidatesPayload struct {
-	RootNodeID  string              `json:"root_node_id"`
-	InboxNodeID string              `json:"inbox_node_id"`
-	MaxMemberships int              `json:"max_memberships"`
-	MaxNewNodes    int              `json:"max_new_nodes"`
+	RootNodeID     string               `json:"root_node_id"`
+	InboxNodeID    string               `json:"inbox_node_id"`
+	MaxMemberships int                  `json:"max_memberships"`
+	MaxNewNodes    int                  `json:"max_new_nodes"`
 	ExistingNodes  []routeCandidateNode `json:"existing_nodes"`
 }
 
 type routePathSummary struct {
-	PathID          string   `json:"path_id"`
-	Title           string   `json:"title"`
-	Description     string   `json:"description"`
-	NodeTitles      []string `json:"node_titles"`
-	ClusterLabels   []string `json:"cluster_labels"`
-	ClusterTags     []string `json:"cluster_tags"`
+	PathID        string   `json:"path_id"`
+	Title         string   `json:"title"`
+	Description   string   `json:"description"`
+	NodeTitles    []string `json:"node_titles"`
+	ClusterLabels []string `json:"cluster_labels"`
+	ClusterTags   []string `json:"cluster_tags"`
 }
 
 type routeModelMembership struct {
@@ -100,10 +100,10 @@ type routeModelNewNode struct {
 }
 
 type routeModelOut struct {
-	Version     int                  `json:"version"`
-	Warnings    []string             `json:"warnings"`
-	Diagnostics map[string]any       `json:"diagnostics"`
-	Facet       string               `json:"facet"`
+	Version     int                    `json:"version"`
+	Warnings    []string               `json:"warnings"`
+	Diagnostics map[string]any         `json:"diagnostics"`
+	Facet       string                 `json:"facet"`
 	Memberships []routeModelMembership `json:"memberships"`
 	NewNodes    []routeModelNewNode    `json:"new_nodes"`
 }
@@ -201,12 +201,12 @@ func LibraryTaxonomyRoute(ctx context.Context, deps LibraryTaxonomyRouteDeps, in
 		}
 
 		constraints := map[string]any{
-			"max_memberships":        maxMemberships,
-			"max_new_nodes":          maxNewNodesForFacet,
-			"prefer_existing":        true,
-			"avoid_duplicate_names":  true,
-			"require_seeded_anchor":  facet == "topic",
-			"disallow_new_nodes":     maxNewNodesForFacet == 0,
+			"max_memberships":       maxMemberships,
+			"max_new_nodes":         maxNewNodesForFacet,
+			"prefer_existing":       true,
+			"avoid_duplicate_names": true,
+			"require_seeded_anchor": facet == "topic",
+			"disallow_new_nodes":    maxNewNodesForFacet == 0,
 		}
 
 		// Idempotency: if this path already has memberships in this facet (and not forced), skip.
@@ -537,14 +537,14 @@ func getOrComputePathEmbedding(ctx context.Context, deps LibraryTaxonomyRouteDep
 	// Persist cache.
 	_ = deps.PathVectors.UpsertMany(dbctx.Context{Ctx: ctx}, []*types.LibraryPathEmbedding{
 		{
-			ID:         uuid.New(),
-			UserID:     userID,
-			PathID:     path.ID,
-			Model:      model,
-			Embedding:  datatypes.JSON(toJSON(out)),
+			ID:          uuid.New(),
+			UserID:      userID,
+			PathID:      path.ID,
+			Model:       model,
+			Embedding:   datatypes.JSON(toJSON(out)),
 			SourcesHash: sourcesHash,
-			CreatedAt:  time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
 		},
 	})
 	return out, nil

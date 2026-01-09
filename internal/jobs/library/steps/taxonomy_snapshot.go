@@ -18,19 +18,19 @@ import (
 const snapshotMaxPathsPerNode = 12
 
 type taxonomySnapshotV1 struct {
-	Version     int                             `json:"version"`
-	GeneratedAt string                          `json:"generated_at"`
-	UserID      string                          `json:"user_id"`
-	Facets      map[string]taxonomyFacetSnapV1  `json:"facets"`
+	Version     int                            `json:"version"`
+	GeneratedAt string                         `json:"generated_at"`
+	UserID      string                         `json:"user_id"`
+	Facets      map[string]taxonomyFacetSnapV1 `json:"facets"`
 }
 
 type taxonomyFacetSnapV1 struct {
-	Facet       string                     `json:"facet"`
-	Title       string                     `json:"title"`
-	RootNodeID  string                     `json:"root_node_id"`
-	InboxNodeID string                     `json:"inbox_node_id"`
-	Nodes       []taxonomyNodeSnapV1       `json:"nodes"`
-	Edges       []taxonomyEdgeSnapV1       `json:"edges"`
+	Facet       string                      `json:"facet"`
+	Title       string                      `json:"title"`
+	RootNodeID  string                      `json:"root_node_id"`
+	InboxNodeID string                      `json:"inbox_node_id"`
+	Nodes       []taxonomyNodeSnapV1        `json:"nodes"`
+	Edges       []taxonomyEdgeSnapV1        `json:"edges"`
 	Memberships []taxonomyNodeMembersSnapV1 `json:"memberships"`
 }
 

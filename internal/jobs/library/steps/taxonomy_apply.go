@@ -295,8 +295,8 @@ func applyRouteResult(
 		// anchor picks, but still cap to 1-2 anchors deterministically.
 		if primaryID == uuid.Nil {
 			type scoredModelAnchor struct {
-				id    uuid.UUID
-				key   string
+				id     uuid.UUID
+				key    string
 				weight float64
 			}
 			modelAnchors := make([]scoredModelAnchor, 0, len(anchorIDs))

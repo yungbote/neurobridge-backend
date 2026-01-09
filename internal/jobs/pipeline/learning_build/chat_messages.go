@@ -59,9 +59,9 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 		Count(&conceptCount).Error
 
 	stats := map[string]any{
-		"node_count":    nodeCount,
+		"node_count":     nodeCount,
 		"activity_count": actCount,
-		"concept_count": conceptCount,
+		"concept_count":  conceptCount,
 	}
 
 	lines := []string{
@@ -269,4 +269,3 @@ func (p *Pipeline) maybeAppendPathBuildFailedMessage(jc *jobrt.Context, pathID u
 		p.chatNotif.MessageCreated(owner, threadID, created, nil)
 	}
 }
-

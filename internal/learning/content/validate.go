@@ -132,22 +132,40 @@ func NodeDocMetrics(doc NodeDocV1) map[string]any {
 }
 
 type NodeDocRequirements struct {
-	MinWordCount   int
-	MinHeadings    int
-	MinQuickChecks int
-	MinDiagrams    int
-	RequireMedia   bool
-	RequireExample bool
+	MinWordCount    int
+	MinHeadings     int
+	MinParagraphs   int
+	MinCallouts     int
+	MinQuickChecks  int
+	MinDiagrams     int
+	MinTables       int
+	MinWhyItMatters int
+	MinIntuition    int
+	MinMentalModels int
+	MinPitfalls     int // misconceptions + common_mistakes
+	MinSteps        int
+	MinChecklist    int
+	MinConnections  int
+	RequireMedia    bool
+	RequireExample  bool
 }
 
 func DefaultNodeDocRequirements() NodeDocRequirements {
 	return NodeDocRequirements{
-		MinWordCount:   700,
-		MinHeadings:    2,
-		MinQuickChecks: 6,
-		MinDiagrams:    1,
-		RequireMedia:   true,
-		RequireExample: true,
+		// Default to a course-quality "concept" lesson: narrative + worked example + retrieval.
+		MinWordCount:    1100,
+		MinHeadings:     3,
+		MinParagraphs:   8,
+		MinCallouts:     2,
+		MinQuickChecks:  3,
+		MinDiagrams:     0,
+		MinTables:       0,
+		MinWhyItMatters: 1,
+		MinIntuition:    1,
+		MinMentalModels: 1,
+		MinPitfalls:     1,
+		RequireMedia:    false,
+		RequireExample:  true,
 	}
 }
 
@@ -179,12 +197,42 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 	if req.MinHeadings > 0 && headingCount < req.MinHeadings {
 		errs = append(errs, fmt.Sprintf("need >=%d headings (got %d)", req.MinHeadings, headingCount))
 	}
+	if req.MinParagraphs > 0 && bc["paragraph"] < req.MinParagraphs {
+		errs = append(errs, fmt.Sprintf("need >=%d paragraph blocks (got %d)", req.MinParagraphs, bc["paragraph"]))
+	}
+	if req.MinCallouts > 0 && bc["callout"] < req.MinCallouts {
+		errs = append(errs, fmt.Sprintf("need >=%d callout blocks (got %d)", req.MinCallouts, bc["callout"]))
+	}
 	qcCount := bc["quick_check"]
 	if req.MinQuickChecks > 0 && qcCount < req.MinQuickChecks {
 		errs = append(errs, fmt.Sprintf("need >=%d quick_check blocks (got %d)", req.MinQuickChecks, qcCount))
 	}
 	if req.MinDiagrams > 0 && bc["diagram"] < req.MinDiagrams {
 		errs = append(errs, fmt.Sprintf("need >=%d diagram blocks (got %d)", req.MinDiagrams, bc["diagram"]))
+	}
+	if req.MinTables > 0 && bc["table"] < req.MinTables {
+		errs = append(errs, fmt.Sprintf("need >=%d table blocks (got %d)", req.MinTables, bc["table"]))
+	}
+	if req.MinWhyItMatters > 0 && bc["why_it_matters"] < req.MinWhyItMatters {
+		errs = append(errs, fmt.Sprintf("need >=%d why_it_matters blocks (got %d)", req.MinWhyItMatters, bc["why_it_matters"]))
+	}
+	if req.MinIntuition > 0 && bc["intuition"] < req.MinIntuition {
+		errs = append(errs, fmt.Sprintf("need >=%d intuition blocks (got %d)", req.MinIntuition, bc["intuition"]))
+	}
+	if req.MinMentalModels > 0 && bc["mental_model"] < req.MinMentalModels {
+		errs = append(errs, fmt.Sprintf("need >=%d mental_model blocks (got %d)", req.MinMentalModels, bc["mental_model"]))
+	}
+	if req.MinPitfalls > 0 && bc["misconceptions"]+bc["common_mistakes"] < req.MinPitfalls {
+		errs = append(errs, fmt.Sprintf("need >=%d misconceptions|common_mistakes blocks (got %d)", req.MinPitfalls, bc["misconceptions"]+bc["common_mistakes"]))
+	}
+	if req.MinSteps > 0 && bc["steps"] < req.MinSteps {
+		errs = append(errs, fmt.Sprintf("need >=%d steps blocks (got %d)", req.MinSteps, bc["steps"]))
+	}
+	if req.MinChecklist > 0 && bc["checklist"] < req.MinChecklist {
+		errs = append(errs, fmt.Sprintf("need >=%d checklist blocks (got %d)", req.MinChecklist, bc["checklist"]))
+	}
+	if req.MinConnections > 0 && bc["connections"] < req.MinConnections {
+		errs = append(errs, fmt.Sprintf("need >=%d connections blocks (got %d)", req.MinConnections, bc["connections"]))
 	}
 	hasMedia := bc["figure"] > 0 || bc["diagram"] > 0 || bc["table"] > 0
 	if req.RequireMedia && !hasMedia {

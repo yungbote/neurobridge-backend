@@ -32,6 +32,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		GenRuns:   p.genRuns,
 		Files:     p.files,
 		Chunks:    p.chunks,
+		UserProfile:      p.userProf,
+		TeachingPatterns: p.patterns,
 		AI:        p.ai,
 		Vec:       p.vec,
 		Bucket:    p.bucket,

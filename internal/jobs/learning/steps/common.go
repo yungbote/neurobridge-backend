@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -97,6 +98,134 @@ func dedupeStrings(in []string) []string {
 		}
 		seen[s] = true
 		out = append(out, s)
+	}
+	return out
+}
+
+func fallbackConceptKeysForNode(title, goal string, concepts []*types.Concept, max int) []string {
+	if max <= 0 {
+		max = 8
+	}
+	if max > 25 {
+		max = 25
+	}
+	if len(concepts) == 0 {
+		return nil
+	}
+	nodeText := normalizeForMatchString(title + " " + goal)
+	if nodeText == "" {
+		return nil
+	}
+	nodeTokens := tokenSetForMatch(nodeText)
+
+	type scored struct {
+		Key       string
+		Score     int
+		SortIndex int
+	}
+	scoredArr := make([]scored, 0, len(concepts))
+	for _, c := range concepts {
+		if c == nil {
+			continue
+		}
+		key := strings.TrimSpace(c.Key)
+		if key == "" {
+			continue
+		}
+		keyText := normalizeForMatchString(strings.ReplaceAll(key, "_", " "))
+		nameText := normalizeForMatchString(c.Name)
+
+		score := 0
+		if keyText != "" && strings.Contains(" "+nodeText+" ", " "+keyText+" ") {
+			score += 3
+		}
+		if nameText != "" && strings.Contains(" "+nodeText+" ", " "+nameText+" ") {
+			score += 6
+		}
+
+		for t := range tokenSetForMatch(keyText + " " + nameText) {
+			if nodeTokens[t] {
+				score++
+			}
+		}
+
+		scoredArr = append(scoredArr, scored{Key: key, Score: score, SortIndex: c.SortIndex})
+	}
+	if len(scoredArr) == 0 {
+		return nil
+	}
+
+	sort.Slice(scoredArr, func(i, j int) bool {
+		if scoredArr[i].Score != scoredArr[j].Score {
+			return scoredArr[i].Score > scoredArr[j].Score
+		}
+		if scoredArr[i].SortIndex != scoredArr[j].SortIndex {
+			return scoredArr[i].SortIndex > scoredArr[j].SortIndex
+		}
+		return scoredArr[i].Key < scoredArr[j].Key
+	})
+
+	out := make([]string, 0, max)
+	for _, s := range scoredArr {
+		if len(out) >= max {
+			break
+		}
+		if s.Score <= 0 {
+			break
+		}
+		out = append(out, s.Key)
+	}
+	if len(out) > 0 {
+		return dedupeStrings(out)
+	}
+
+	// No lexical matches; fall back to the most "important" concepts for the path.
+	for _, s := range scoredArr {
+		if len(out) >= max {
+			break
+		}
+		out = append(out, s.Key)
+	}
+	return dedupeStrings(out)
+}
+
+func normalizeForMatchString(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	needSpace := false
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			needSpace = true
+			continue
+		}
+		if needSpace {
+			b.WriteByte(' ')
+			needSpace = false
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func tokenSetForMatch(s string) map[string]bool {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	raw := strings.Fields(b.String())
+	out := make(map[string]bool, len(raw))
+	for _, tok := range raw {
+		if len(tok) < 2 {
+			continue
+		}
+		out[tok] = true
 	}
 	return out
 }

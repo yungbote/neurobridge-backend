@@ -28,17 +28,17 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	jc.Progress("route", 10, "Organizing path in your library")
 
 	out, err := steps.LibraryTaxonomyRoute(jc.Ctx, steps.LibraryTaxonomyRouteDeps{
-		DB:         p.db,
-		Log:        p.log,
-		AI:         p.ai,
-		Path:       p.path,
-		PathNodes:  p.pathNodes,
-		Clusters:   p.clusters,
-		TaxNodes:   p.taxNodes,
-		TaxEdges:   p.taxEdges,
-		Membership: p.membership,
-		State:      p.state,
-		Snapshots:  p.snapshots,
+		DB:          p.db,
+		Log:         p.log,
+		AI:          p.ai,
+		Path:        p.path,
+		PathNodes:   p.pathNodes,
+		Clusters:    p.clusters,
+		TaxNodes:    p.taxNodes,
+		TaxEdges:    p.taxEdges,
+		Membership:  p.membership,
+		State:       p.state,
+		Snapshots:   p.snapshots,
 		PathVectors: p.pathVectors,
 	}, steps.LibraryTaxonomyRouteInput{PathID: pathID})
 	if err != nil {
@@ -59,16 +59,15 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"user_id":                out.UserID.String(),
-		"path_id":                out.PathID.String(),
-		"facets_processed":       out.FacetsProcessed,
-		"nodes_created":          out.NodesCreated,
-		"edges_upserted":         out.EdgesUpserted,
-		"members_upserted":       out.MembersUpserted,
+		"user_id":                  out.UserID.String(),
+		"path_id":                  out.PathID.String(),
+		"facets_processed":         out.FacetsProcessed,
+		"nodes_created":            out.NodesCreated,
+		"edges_upserted":           out.EdgesUpserted,
+		"members_upserted":         out.MembersUpserted,
 		"assigned_to_inbox_facets": out.AssignedToInboxFacets,
-		"should_enqueue_refine":  out.ShouldEnqueueRefine,
-		"enqueued_refine":        enqueuedRefine,
+		"should_enqueue_refine":    out.ShouldEnqueueRefine,
+		"enqueued_refine":          enqueuedRefine,
 	})
 	return nil
 }
-

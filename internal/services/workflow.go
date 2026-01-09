@@ -249,6 +249,13 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		return nil, uuid.Nil, nil, nil, err
 	}
 
+	// Dispatch the Temporal workflow only after the DB transaction commits.
+	if w.jobs != nil && job != nil && job.ID != uuid.Nil {
+		if err := w.jobs.Dispatch(dbctx.Context{Ctx: dbc.Ctx}, job.ID); err != nil {
+			return set, pathID, thread, job, err
+		}
+	}
+
 	// Keep behavior similar: return immediately; worker will run the job.
 	return set, pathID, thread, job, nil
 }

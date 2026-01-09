@@ -1,12 +1,17 @@
 package web_resources_seed
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 
 	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,6 +30,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	threadID, _ := jc.PayloadUUID("thread_id")
+
 	prompt := ""
 	if v, ok := jc.Payload()["prompt"]; ok && v != nil {
 		prompt = fmt.Sprint(v)
@@ -37,6 +44,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Files:     p.files,
 		Path:      p.path,
 		Bucket:    p.bucket,
+		Threads:   p.threads,
+		Messages:  p.messages,
+		Notify:    p.notify,
 		AI:        p.ai,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
@@ -45,9 +55,17 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		MaterialSetID: setID,
 		SagaID:        sagaID,
 		Prompt:        prompt,
+		ThreadID:      threadID,
+		JobID:         jc.Job.ID,
+		WaitForUser:   true,
 	})
 	if err != nil {
 		jc.Fail("seed", err)
+		return nil
+	}
+
+	if strings.EqualFold(strings.TrimSpace(out.Status), "waiting_user") {
+		pauseForUser(jc, setID, sagaID, out)
 		return nil
 	}
 
@@ -61,4 +79,43 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"resources_fetched": out.ResourcesFetched,
 	})
 	return nil
+}
+
+func pauseForUser(jc *jobrt.Context, setID, sagaID uuid.UUID, out steps.WebResourcesSeedOutput) {
+	if jc == nil || jc.Job == nil || jc.Repo == nil {
+		return
+	}
+	now := time.Now().UTC()
+	resObj := map[string]any{
+		"material_set_id": setID.String(),
+		"saga_id":         sagaID.String(),
+		"path_id":         out.PathID.String(),
+		"status":          "waiting_user",
+		"meta":            out.Meta,
+	}
+	b, _ := json.Marshal(resObj)
+
+	_, _ = jc.Repo.UpdateFieldsUnlessStatus(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.ID, []string{"canceled"}, map[string]interface{}{
+		"status":       "waiting_user",
+		"stage":        "waiting_user",
+		"progress":     3,
+		"message":      "Waiting for your response…",
+		"error":        "",
+		"result":       datatypes.JSON(b),
+		"locked_at":    nil,
+		"heartbeat_at": now,
+		"updated_at":   now,
+	})
+
+	jc.Job.Status = "waiting_user"
+	jc.Job.Stage = "waiting_user"
+	jc.Job.Progress = 3
+	jc.Job.Message = "Waiting for your response…"
+	jc.Job.Error = ""
+	jc.Job.Result = datatypes.JSON(b)
+	jc.Job.LockedAt = nil
+	jc.Job.HeartbeatAt = &now
+	jc.Job.UpdatedAt = now
+
+	jc.Progress("waiting_user", 3, "Waiting for your response…")
 }

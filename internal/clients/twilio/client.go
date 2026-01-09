@@ -24,16 +24,16 @@ type Client interface {
 }
 
 type Config struct {
-	AccountSID											string
-	AuthToken												string
-	APIKey													string
-	APIKeySecret										string
-	BaseURL													string
-	DefaultFrom											string
-	DefaultMessagingServiceSID			string
-	DefaultStatusCallbackURL				string
-	Timeout													time.Duration
-	MaxRetries											int
+	AccountSID                 string
+	AuthToken                  string
+	APIKey                     string
+	APIKeySecret               string
+	BaseURL                    string
+	DefaultFrom                string
+	DefaultMessagingServiceSID string
+	DefaultStatusCallbackURL   string
+	Timeout                    time.Duration
+	MaxRetries                 int
 }
 
 func ConfigFromEnv() Config {
@@ -41,16 +41,16 @@ func ConfigFromEnv() Config {
 	maxRetries := envutil.Int("TWILIO_MAX_RETRIES", 4)
 
 	return Config{
-		AccountSID:									strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID")),
-		AuthToken:									strings.TrimSpace(os.Getenv("TWILIO_AUTH_TOKEN")),
-		APIKey:											strings.TrimSpace(os.Getenv("TWILIO_API_KEY")),
-		APIKeySecret:								strings.TrimSpace(os.Getenv("TWILIO_API_KEY_SECRET")),
-		BaseURL:										strings.TrimSpace(os.Getenv("TWILIO_BASE_URL")),
-		DefaultFrom:								strings.TrimSpace(os.Getenv("TWILIO_FROM_NUMBER")),
+		AccountSID:                 strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID")),
+		AuthToken:                  strings.TrimSpace(os.Getenv("TWILIO_AUTH_TOKEN")),
+		APIKey:                     strings.TrimSpace(os.Getenv("TWILIO_API_KEY")),
+		APIKeySecret:               strings.TrimSpace(os.Getenv("TWILIO_API_KEY_SECRET")),
+		BaseURL:                    strings.TrimSpace(os.Getenv("TWILIO_BASE_URL")),
+		DefaultFrom:                strings.TrimSpace(os.Getenv("TWILIO_FROM_NUMBER")),
 		DefaultMessagingServiceSID: strings.TrimSpace(os.Getenv("TWILIO_MESSAGING_SERVICE_SID")),
-		DefaultStatusCallbackURL:		strings.TrimSpace(os.Getenv("TWILIO_STAUTS_CALLBACK_URL")),
-		Timeout:										time.Duration(timeoutSec) * time.Second,
-		MaxRetries:									maxRetries,
+		DefaultStatusCallbackURL:   strings.TrimSpace(os.Getenv("TWILIO_STAUTS_CALLBACK_URL")),
+		Timeout:                    time.Duration(timeoutSec) * time.Second,
+		MaxRetries:                 maxRetries,
 	}
 }
 
@@ -85,7 +85,7 @@ func New(log *logger.Logger, cfg Config) (Client, error) {
 		cfg.BaseURL = "https://api.twilio.com/2010-04-01"
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
 	}
@@ -97,53 +97,53 @@ func New(log *logger.Logger, cfg Config) (Client, error) {
 	}
 
 	return &client{
-		log:				log.With("client", "TwilioClient"),
-		cfg:				cfg,
+		log:        log.With("client", "TwilioClient"),
+		cfg:        cfg,
 		httpClient: &http.Client{Timeout: cfg.Timeout},
 		maxRetries: cfg.MaxRetries,
 	}, nil
 }
 
 type client struct {
-	log						*logger.Logger
-	cfg						Config
-	httpClient		*http.Client
-	maxRetries		int
+	log        *logger.Logger
+	cfg        Config
+	httpClient *http.Client
+	maxRetries int
 }
 
 type SendMessageRequest struct {
-	To										string
-	From									string
-	MessagingServiceSID		string
-	Body									string
-	MediaURLs							[]string
-	ContentSID						string
-	StatusCallbackURL			string
-	ApplicationSID				string
-	ProvideFeedback				*bool
-	ValidityPeriodSec			int
+	To                  string
+	From                string
+	MessagingServiceSID string
+	Body                string
+	MediaURLs           []string
+	ContentSID          string
+	StatusCallbackURL   string
+	ApplicationSID      string
+	ProvideFeedback     *bool
+	ValidityPeriodSec   int
 }
 
 type Message struct {
-	SID										string								`json:"sid,omitempty"`
-	AccountSID						string								`json:"account_sid,omitempty"`
-	To										string								`json:"to,omitempty"`
-	From									string								`json:"from,omitempty"`
-	Body									string								`json:"body,omitempty"`
-	MessagingServiceSID		string								`json:"messaging_service_sid,omitempty"`
-	Status								string								`json:"status,omitempty"`
-	NumSegments						string								`json:"num_segments,omitempty"`
-	ErrorCode							*int									`json:"error_code,omitempty"`
-	ErrorMessage					*string								`json:"error_message,omitempty"`
-	DateCreated						string								`json:"date_created,omitempty"`
-	DateSent							string								`json:"date_sent,omitempty"`
-	URI										string								`json:"uri,omitempty"`
+	SID                 string  `json:"sid,omitempty"`
+	AccountSID          string  `json:"account_sid,omitempty"`
+	To                  string  `json:"to,omitempty"`
+	From                string  `json:"from,omitempty"`
+	Body                string  `json:"body,omitempty"`
+	MessagingServiceSID string  `json:"messaging_service_sid,omitempty"`
+	Status              string  `json:"status,omitempty"`
+	NumSegments         string  `json:"num_segments,omitempty"`
+	ErrorCode           *int    `json:"error_code,omitempty"`
+	ErrorMessage        *string `json:"error_message,omitempty"`
+	DateCreated         string  `json:"date_created,omitempty"`
+	DateSent            string  `json:"date_sent,omitempty"`
+	URI                 string  `json:"uri,omitempty"`
 }
 
 func (c *client) SendSMS(ctx context.Context, to string, body string) (*Message, error) {
 	return c.SendMessage(ctx, SendMessageRequest{
-		To:		to,
-		Body:	body,
+		To:   to,
+		Body: body,
 	})
 }
 
@@ -230,16 +230,16 @@ func (c *client) SendMessage(ctx context.Context, req SendMessageRequest) (*Mess
 // ---------- HTTP / retry helpers ----------
 
 type apiError struct {
-	Code				int					`json:"code"`
-	Message			string			`json:"message"`
-	MoreInfo		string			`json:"more_info"`
-	Status			int					`json:"status"`
+	Code     int    `json:"code"`
+	Message  string `json:"message"`
+	MoreInfo string `json:"more_info"`
+	Status   int    `json:"status"`
 }
 
 type HTTPError struct {
-	StatusCode	int
-	Body				string
-	APIError		*apiError
+	StatusCode int
+	Body       string
+	APIError   *apiError
 }
 
 func (e *HTTPError) Error() string {
@@ -297,11 +297,11 @@ func doForm[T any](c *client, ctx context.Context, method, urlStr string, form u
 		sleepFor = httpx.JitterSleep(sleepFor)
 
 		c.log.Warn("Twilio request retrying",
-			"url",					urlStr,
-			"attempt",			attempt+1,
-			"max_retries",	c.maxRetries,
-			"sleep",				sleepFor.String(),
-			"error",				err.Error(),
+			"url", urlStr,
+			"attempt", attempt+1,
+			"max_retries", c.maxRetries,
+			"sleep", sleepFor.String(),
+			"error", err.Error(),
 		)
 
 		time.Sleep(sleepFor)

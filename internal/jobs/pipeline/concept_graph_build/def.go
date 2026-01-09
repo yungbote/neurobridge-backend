@@ -15,6 +15,7 @@ type Pipeline struct {
 	log       *logger.Logger
 	files     repos.MaterialFileRepo
 	chunks    repos.MaterialChunkRepo
+	path      repos.PathRepo
 	concepts  repos.ConceptRepo
 	evidence  repos.ConceptEvidenceRepo
 	edges     repos.ConceptEdgeRepo
@@ -29,6 +30,7 @@ func New(
 	baseLog *logger.Logger,
 	files repos.MaterialFileRepo,
 	chunks repos.MaterialChunkRepo,
+	path repos.PathRepo,
 	concepts repos.ConceptRepo,
 	evidence repos.ConceptEvidenceRepo,
 	edges repos.ConceptEdgeRepo,
@@ -42,6 +44,7 @@ func New(
 		log:       baseLog.With("job", "concept_graph_build"),
 		files:     files,
 		chunks:    chunks,
+		path:      path,
 		concepts:  concepts,
 		evidence:  evidence,
 		edges:     edges,

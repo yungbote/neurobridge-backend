@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,9 @@ type NodeDocBuildDeps struct {
 	Files  repos.MaterialFileRepo
 	Chunks repos.MaterialChunkRepo
 
+	UserProfile      repos.UserProfileVectorRepo
+	TeachingPatterns repos.TeachingPatternRepo
+
 	AI  openai.Client
 	Vec pc.VectorStore
 
@@ -73,7 +77,7 @@ const nodeDocPromptVersion = "node_doc_v1@4"
 
 func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	out := NodeDocBuildOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.Path == nil || deps.PathNodes == nil || deps.NodeDocs == nil || deps.Files == nil || deps.Chunks == nil || deps.AI == nil || deps.Bootstrap == nil {
+	if deps.DB == nil || deps.Log == nil || deps.Path == nil || deps.PathNodes == nil || deps.NodeDocs == nil || deps.Files == nil || deps.Chunks == nil || deps.UserProfile == nil || deps.AI == nil || deps.Bootstrap == nil {
 		return out, fmt.Errorf("node_doc_build: missing deps")
 	}
 	if in.OwnerUserID == uuid.Nil {
@@ -95,18 +99,26 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, nil
 	}
 
+	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
+	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
+		return out, fmt.Errorf("node_doc_build: missing user_profile_doc (run user_profile_refresh first)")
+	}
+	userProfileDoc := strings.TrimSpace(up.ProfileDoc)
+
 	pathRow, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
 	if err != nil {
 		return out, err
 	}
 	pathStyleJSON := ""
 	pathIntentMD := ""
+	var allowFiles map[uuid.UUID]bool
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
 			if v, ok := meta["intake_md"]; ok && v != nil {
 				pathIntentMD = strings.TrimSpace(stringFromAny(v))
 			}
+			allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
 			if v, ok := meta["charter"]; ok && v != nil {
 				// Extract just the stable style fields (avoid charter warnings like "ask 2-4 questions").
 				if charter, ok := v.(map[string]any); ok {
@@ -303,6 +315,14 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
+	}
+	if len(allowFiles) > 0 {
+		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+		if len(filtered) > 0 {
+			files = filtered
+		} else {
+			deps.Log.Warn("node_doc_build: intake filter excluded all files; ignoring filter", "path_id", pathID.String())
+		}
 	}
 	fileIDs := make([]uuid.UUID, 0, len(files))
 	for _, f := range files {
@@ -596,7 +616,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 
 			var retrieved []uuid.UUID
 			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, map[string]any{"type": "chunk"})
+				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
@@ -642,6 +662,15 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			for _, id := range chunkIDs {
 				allowedChunkIDs[id.String()] = true
 			}
+			mustCiteIDsAllowed := make([]uuid.UUID, 0, len(mustCiteIDs))
+			for _, id := range mustCiteIDs {
+				if id == uuid.Nil {
+					continue
+				}
+				if allowedChunkIDs[id.String()] {
+					mustCiteIDsAllowed = append(mustCiteIDsAllowed, id)
+				}
+			}
 
 			// ---- Learner-facing doc with validation + retry ----
 			reqs := nodeDocRequirementsForTemplate(w.NodeKind, w.DocTemplate)
@@ -653,54 +682,71 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			if diagramsDisabled {
 				reqs.MinDiagrams = 0
 			}
-			requireGeneratedFigure := len(figAssetsByNode[w.Node.ID]) > 0
-			// Best-effort: if a video is available in the allowed assets list, include it (we can auto-inject on fallback).
+			hasGeneratedFigures := len(figAssetsByNode[w.Node.ID]) > 0
+			// Optional: if a video is available in the allowed assets list, suggest it (the model may include it if helpful).
 			videoAsset := firstVideoAssetFromAssetsJSON(assetsJSON)
 
 			requireDiagrams := !diagramsDisabled && reqs.MinDiagrams > 0
 
-			mediaRequirementLine := "- Must include at least one of: figure | diagram | table"
-			generatedFigureRequirementLine := `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any diagrams/tables you include).`
+			mediaRequirementLine := "- Media blocks (figure/diagram/table) are optional; include only if they materially improve learning."
+			if reqs.RequireMedia {
+				if diagramsDisabled {
+					mediaRequirementLine = "- Must include at least one of: figure | table"
+				} else {
+					mediaRequirementLine = "- Must include at least one of: figure | diagram | table"
+				}
+			}
+
+			generatedFigureRequirementLine := ""
+			if hasGeneratedFigures {
+				generatedFigureRequirementLine = `- GENERATED_FIGURE_ASSETS is available; include a figure block using one of those URLs only if it genuinely helps (optional).`
+			}
+
 			citationsRequirementLine := "- Every content block (everything except heading/divider/video/code) must have citations (non-empty)"
-			outlineDiagramLine := "- Include at least one diagram early."
-			diagramRuleLine := "- Include at least one diagram block (SVG preferred)."
-			diagramPrefRule := `- Prefer diagram.kind="svg" (simple, readable SVG).`
+			outlineDiagramLine := "- Diagrams are optional (include one only if it genuinely improves clarity)."
+			diagramRuleLine := "- Diagrams are optional."
+			diagramPrefRule := ""
 			templateRequirementLine := docTemplateRequirementLine(w.DocTemplate, diagramsDisabled)
 			if diagramsDisabled {
-				mediaRequirementLine = "- Must include at least one of: figure | table"
-				generatedFigureRequirementLine = `- If GENERATED_FIGURE_ASSETS is non-empty, include at least 1 figure block using one of those URLs (in addition to any tables you include).`
-				citationsRequirementLine = "- Every content block (everything except heading/divider/video/code) must have citations (non-empty)"
 				outlineDiagramLine = "- Do not include any diagram blocks."
 				diagramRuleLine = "- Do not include any diagram blocks."
-				diagramPrefRule = ""
-			} else if !requireDiagrams {
-				outlineDiagramLine = "- Diagrams are optional (include one only if it genuinely improves clarity)."
-				diagramRuleLine = "- Diagrams are optional."
-				diagramPrefRule = ""
+			} else if requireDiagrams {
+				outlineDiagramLine = "- Include at least one diagram early."
+				diagramRuleLine = "- Include at least one diagram block (SVG preferred)."
+				diagramPrefRule = `- Prefer diagram.kind="svg" (simple, readable SVG).`
 			}
 
 			system := fmt.Sprintf(`
 	MODE: STATIC_UNIT_DOC
 
-	You write dense, structured learning unit docs in a "docs page" style.
-	The quality bar is elite: crisp, high-signal, and engaging (like excellent study notes).
+	You write course-quality unit lessons for self-study: clear narrative, vivid intuition, a mental model, worked examples, and retrieval practice.
+	The quality bar is elite: engaging and teacherly — not terse "lecture notes".
 	This is NOT an interactive chat: do not ask the learner any questions or solicit preferences.
 	Do not include any onboarding sections ("Entry Check", "Your goal/level", "Format preferences", etc).
 	The only questions in the entire doc must be inside quick_check blocks.
 
-	Signal density + style rules:
-	- No repetition. Do not restate the same sentence/definition in multiple places.
-	- Prefer short paragraphs (<= 4 sentences) and use bullets/tables when it improves clarity.
-	- Do not include filler/boilerplate (e.g., "This module pins down..." / "The key idea is..." repeated).
-	- Do not output raw concept keys (snake_case). Write concept names in natural language.
+		Teaching style rules:
+		- Write in a direct, friendly, confident voice (like a great tutor).
+		- Use paragraphs for explanation and transitions; bullets/tables are support, not the entire lesson.
+		- Early in the lesson, include a short "Roadmap" section that previews the structure (3-6 bullets). If a diagram would help orientation, include a simple diagram block near the roadmap.
+		- Use intentional repetition only as brief recap; do not copy/paste or restate the same line multiple times.
+		- Be concrete: prefer a small toy example before abstraction when possible.
+		- Do not include filler/boilerplate (e.g., repeating "The key idea is..." in every section).
+		- Do not output raw concept keys (snake_case). Write concept names in natural language.
 	- Summary is already provided via the summary field; do NOT include a "Summary" heading/section that repeats it.
 	  If you include an ending recap, title it "Key takeaways" and make it additive (not a rephrase).
 
-	Media rules (diagrams vs figures):
-	- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
-	- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
-	- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
-- Do NOT put labels/text inside figures; keep labels in captions and use diagrams for labeled visuals.
+	Pedagogy:
+	- If TEACHING_PATTERNS_JSON is provided, pick 1-2 patterns and apply them (without naming keys) so the lesson teaches, not a page of facts.
+	- Spread quick checks throughout the doc (not all at the end).
+
+		Media rules (diagrams vs figures):
+		- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
+		- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
+		- If diagram.kind="mermaid": diagram.source MUST be ONLY the Mermaid spec (no prose, no "Diagram" label, no backticks/code fences). Put explanation in diagram.caption.
+		- If diagram.kind="svg": diagram.source MUST be ONLY a standalone <svg>…</svg> string (no prose). Put explanation in diagram.caption.
+		- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
+	- Do NOT put labels/text inside figures; keep labels in captions and use diagrams for labeled visuals.
 
 	Schema contract:
 	- Use "order" as the only render order. Each order item is {kind,id}.
@@ -748,7 +794,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				}
 
 				generatedFigures := ""
-				if requireGeneratedFigure {
+				if hasGeneratedFigures {
 					var b strings.Builder
 					b.WriteString("\nGENERATED_FIGURE_ASSETS (use these URLs for figure blocks; do not use them as diagrams):\n")
 					for _, a := range figAssetsByNode[w.Node.ID] {
@@ -762,8 +808,26 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 							b.WriteString(strings.TrimSpace(a.Notes))
 						}
 						if len(a.ChunkIDs) > 0 {
-							b.WriteString(" chunk_ids=")
-							b.WriteString(strings.Join(dedupeStrings(a.ChunkIDs), ","))
+							cids := make([]string, 0, len(a.ChunkIDs))
+							for _, s := range dedupeStrings(a.ChunkIDs) {
+								s = strings.TrimSpace(s)
+								if s == "" {
+									continue
+								}
+								id, err := uuid.Parse(s)
+								if err != nil || id == uuid.Nil {
+									continue
+								}
+								s = id.String()
+								if allowedChunkIDs != nil && len(allowedChunkIDs) > 0 && !allowedChunkIDs[s] {
+									continue
+								}
+								cids = append(cids, s)
+							}
+							if len(cids) > 0 {
+								b.WriteString(" chunk_ids=")
+								b.WriteString(strings.Join(cids, ","))
+							}
 						}
 						b.WriteString("\n")
 					}
@@ -776,12 +840,23 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				}
 				suggestedOutline := docTemplateSuggestedOutline(w.NodeKind, w.DocTemplate)
 
+				teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.TeachingPatterns, w.QueryEmb, 4)
+				if strings.TrimSpace(teachingJSON) == "" {
+					teachingJSON = "(none)"
+				}
+
 				user := fmt.Sprintf(`
 NODE_TITLE: %s
 NODE_GOAL: %s
 CONCEPT_KEYS: %s
 NODE_KIND: %s
 DOC_TEMPLATE: %s
+
+USER_PROFILE_DOC (learner personalization; do not mention explicitly):
+%s
+
+TEACHING_PATTERNS_JSON (optional; pick 1-2 patterns and apply them without naming pattern keys):
+%s
 
 PATH_INTENT_MD (optional; global goal context):
 %s
@@ -791,9 +866,18 @@ MUST_CITE_CHUNK_IDS (each must appear at least once in citations; if empty, igno
 
 REQUIREMENTS:
 - Minimum word_count: %d
+- Minimum paragraph blocks: %d
+- Minimum callout blocks: %d
 - Minimum quick_check blocks: %d
 - Minimum headings (level 2-4): %d
 - Minimum diagram blocks: %d
+- Minimum table blocks: %d
+- Minimum why_it_matters blocks: %d
+- Minimum intuition blocks: %d
+- Minimum mental_model blocks: %d
+- Minimum misconceptions/common_mistakes blocks: %d
+- Minimum steps blocks: %d
+- Minimum checklist blocks: %d
 - Must include a tip callout titled exactly "Worked example"
 %s
 %s
@@ -811,12 +895,15 @@ SUGGESTED_SECTION_OUTLINE (internal guidance; learner-facing doc should NOT ment
 GROUNDING_EXCERPTS (chunk_id lines):
 %s
 
+ALLOWED_CITATION_CHUNK_IDS (use ONLY these chunk_id values; do not invent new ones):
+%s
+
 AVAILABLE_MEDIA_ASSETS_JSON (optional; ONLY use listed URLs):
 %s
 %s
 
 Output:
-Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, assetsJSON, generatedFigures) + feedback
+Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, userProfileDoc, teachingJSON, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinParagraphs, reqs.MinCallouts, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, reqs.MinTables, reqs.MinWhyItMatters, reqs.MinIntuition, reqs.MinMentalModels, reqs.MinPitfalls, reqs.MinSteps, reqs.MinChecklist, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, formatChunkIDBullets(chunkIDs), assetsJSON, generatedFigures) + feedback
 
 				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
 				latency := int(time.Since(start).Milliseconds())
@@ -879,11 +966,8 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 				if requireDiagrams {
 					doc = ensureNodeDocHasDiagram(doc, allowedChunkIDs, chunkIDs)
 				}
-				if requireGeneratedFigure {
+				if hasGeneratedFigures && shouldAutoInjectGeneratedFigure(reqs) {
 					doc = ensureNodeDocHasGeneratedFigure(doc, figAssetsByNode[w.Node.ID], allowedChunkIDs, chunkIDs)
-				}
-				if videoAsset != nil {
-					doc = ensureNodeDocHasVideo(doc, videoAsset)
 				}
 				if diagramsDisabled {
 					doc = removeNodeDocBlockType(doc, "diagram")
@@ -898,15 +982,31 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 					doc = withIDs
 				}
 
+				if patched, changed := sanitizeNodeDocDiagrams(doc); changed {
+					doc = patched
+				}
+
+				var citationStats citationSanitizeStats
+				citationsSanitized := false
+				if patched, stats, changed := sanitizeNodeDocCitations(doc, allowedChunkIDs, chunkByID, chunkIDs); changed {
+					doc = patched
+					citationStats = stats
+					citationsSanitized = true
+				}
+
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
+				if citationsSanitized {
+					metrics["citations_sanitized"] = true
+					metrics["citations_sanitize"] = citationStats.Map()
+				}
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
-				if len(mustCiteIDs) > 0 {
-					missing := missingMustCiteIDs(doc, mustCiteIDs)
+				if len(mustCiteIDsAllowed) > 0 {
+					missing := missingMustCiteIDs(doc, mustCiteIDsAllowed)
 					if len(missing) > 0 {
 						if patched, ok := injectMissingMustCiteCitations(doc, missing, chunkByID); ok {
 							doc = patched
 							errs, metrics = content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
-							missing = missingMustCiteIDs(doc, mustCiteIDs)
+							missing = missingMustCiteIDs(doc, mustCiteIDsAllowed)
 							if len(missing) == 0 {
 								metrics["must_cite_injected"] = true
 							}
@@ -915,25 +1015,6 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 					if len(missing) > 0 {
 						metrics["must_cite_missing"] = missing
 						errs = append(errs, "missing required citations for chunk_ids: "+strings.Join(missing, ", "))
-					}
-				}
-				if requireGeneratedFigure {
-					figCount := 0
-					if bcAny, ok := metrics["block_counts"]; ok && bcAny != nil {
-						if bc, ok := bcAny.(map[string]int); ok {
-							figCount = bc["figure"]
-						}
-					}
-					if figCount == 0 {
-						// Fallback in case block_counts type assertion failed.
-						if figCount == 0 {
-							if bc, ok := content.NodeDocMetrics(doc)["block_counts"].(map[string]int); ok {
-								figCount = bc["figure"]
-							}
-						}
-					}
-					if figCount == 0 {
-						errs = append(errs, "need at least one figure block (generated figure assets are available)")
 					}
 				}
 				if len(errs) > 0 {
@@ -1116,37 +1197,67 @@ func nodeDocRequirementsForTemplate(nodeKind string, docTemplate string) content
 
 	switch tmpl {
 	case "overview":
-		req.MinWordCount = 450
+		req.MinWordCount = 900
 		req.MinHeadings = 2
-		req.MinQuickChecks = 3
-		req.MinDiagrams = 1
+		req.MinParagraphs = 6
+		req.MinCallouts = 1
+		req.MinQuickChecks = 2
+		req.MinDiagrams = 0
 	case "concept":
 		// defaults
 	case "practice":
-		req.MinWordCount = 650
-		req.MinHeadings = 2
-		req.MinQuickChecks = 8
-		req.MinDiagrams = 1
-	case "cheatsheet":
-		req.MinWordCount = 550
-		req.MinHeadings = 2
+		req.MinWordCount = 1300
+		req.MinHeadings = 3
+		req.MinParagraphs = 7
+		req.MinCallouts = 3
 		req.MinQuickChecks = 4
 		req.MinDiagrams = 0
-	case "project":
+	case "cheatsheet":
 		req.MinWordCount = 900
-		req.MinHeadings = 3
-		req.MinQuickChecks = 4
-		req.MinDiagrams = 1
-	case "review":
-		req.MinWordCount = 550
 		req.MinHeadings = 2
-		req.MinQuickChecks = 10
+		req.MinParagraphs = 3
+		req.MinCallouts = 1
+		req.MinQuickChecks = 2
+		req.MinDiagrams = 0
+		req.MinTables = 1
+	case "project":
+		req.MinWordCount = 1600
+		req.MinHeadings = 3
+		req.MinParagraphs = 8
+		req.MinCallouts = 2
+		req.MinQuickChecks = 2
+		req.MinDiagrams = 0
+		req.MinSteps = 1
+		req.MinChecklist = 1
+	case "review":
+		req.MinWordCount = 1000
+		req.MinHeadings = 2
+		req.MinParagraphs = 4
+		req.MinCallouts = 1
+		req.MinQuickChecks = 6
 		req.MinDiagrams = 0
 	}
 
-	// Guardrails: keep modules concise by default.
-	if kind == "module" && req.MinWordCount > 650 {
-		req.MinWordCount = 650
+	switch qualityMode() {
+	case "premium", "openai", "high":
+		// Premium mode: longer, more tutor-like lessons.
+		req.MinWordCount = int(float64(req.MinWordCount) * 1.35)
+		if req.MinParagraphs > 0 {
+			req.MinParagraphs += 2
+		}
+		if req.MinCallouts > 0 {
+			req.MinCallouts++
+		}
+		if tmpl == "practice" {
+			req.MinQuickChecks += 2
+			req.MinCallouts++
+		}
+		// Premium polish: ensure at least one simple visual for core narrative lesson templates.
+		if tmpl == "concept" || tmpl == "overview" {
+			if req.MinDiagrams < 1 {
+				req.MinDiagrams = 1
+			}
+		}
 	}
 
 	return req
@@ -1179,22 +1290,23 @@ func docTemplateSuggestedOutline(nodeKind string, docTemplate string) string {
 	switch tmpl {
 	case "overview":
 		lines = append(lines,
-			"Start with a level-2 heading that states the module goal in 1 sentence.",
-			"Add a short \"map\" of what the upcoming lessons will cover (bullets).",
+			"Start with a why_it_matters block that connects this module to the learner's goal.",
+			"Add an intuition block (the big-picture story) and a mental_model block (how to think about it).",
+			"Add a short map of what the upcoming lessons will cover (bullets).",
 			"Define key terms and prerequisites at a high level (no deep dive yet).",
 			"Include a tip callout titled exactly \"Worked example\" with a small motivating example.",
 			"End with common misconceptions + how this module will address them.",
 		)
 	case "practice":
 		lines = append(lines,
-			"Start with a brief recap of the core idea and when to use it.",
+			"Start with a why_it_matters block and a 2–3 paragraph recap of the core idea and when to use it.",
 			"Include 2–4 worked examples that increase in difficulty (one MUST be the \"Worked example\" tip callout).",
 			"Add a short section on common traps and how to debug mistakes.",
-			"End with a compact checklist the learner can apply to new problems.",
+			"End with a compact checklist the learner can apply to new problems (plus a few quick checks).",
 		)
 	case "cheatsheet":
 		lines = append(lines,
-			"Start with a tight definition section (key terms only).",
+			"Start with a tight definition section (key terms only) + a mental_model block (how to recognize the pattern).",
 			"Include a table that summarizes the most important rules/formulas/patterns.",
 			"Add 1 worked example (the \"Worked example\" tip callout) that demonstrates the table in action.",
 			"End with \"gotchas\" and edge cases.",
@@ -1202,6 +1314,7 @@ func docTemplateSuggestedOutline(nodeKind string, docTemplate string) string {
 	case "project":
 		lines = append(lines,
 			"Start with a clear deliverable and constraints.",
+			"Include a why_it_matters block (why this project is worth doing) and a mental_model block (how the pieces fit).",
 			"List prerequisites and the concepts this project integrates.",
 			"Provide a step-by-step build plan with checkpoints.",
 			"Include a tip callout titled exactly \"Worked example\" that walks through a representative slice end-to-end.",
@@ -1209,15 +1322,15 @@ func docTemplateSuggestedOutline(nodeKind string, docTemplate string) string {
 		)
 	case "review":
 		lines = append(lines,
-			"Start with a high-level recap of the core ideas (1–2 short sections).",
-			"Include a short \"common misconceptions\" section.",
+			"Start with a high-level recap of the core ideas (1–2 short sections) + an intuition block if it helps memory.",
+			"Include a short misconceptions/common mistakes section.",
 			"Focus on many quick checks throughout the doc to reinforce memory.",
 			"Include a tip callout titled exactly \"Worked example\" with a compact example.",
 		)
 	default: // concept
 		lines = append(lines,
-			"Start with a level-2 heading that frames the core idea in 1 sentence.",
-			"Define key terms and connect them to the goal.",
+			"Start with why_it_matters + intuition + mental_model (short, vivid).",
+			"Define key terms and connect them to the learner's goal.",
 			"Explain the main mechanism/logic step-by-step.",
 			"Include a tip callout titled exactly \"Worked example\".",
 			"End with common misconceptions + corrections.",
@@ -1236,6 +1349,198 @@ func docTemplateSuggestedOutline(nodeKind string, docTemplate string) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+type citationSanitizeStats struct {
+	BlocksTouched       int
+	CitationsKept       int
+	CitationsDropped    int
+	BlocksBackfilled    int
+	ChunkIDsNormalized  int
+	QuotesTruncated     int
+	NegativeLocRepaired int
+}
+
+func (s citationSanitizeStats) Map() map[string]any {
+	return map[string]any{
+		"blocks_touched":       s.BlocksTouched,
+		"citations_kept":       s.CitationsKept,
+		"citations_dropped":    s.CitationsDropped,
+		"blocks_backfilled":    s.BlocksBackfilled,
+		"chunk_ids_normalized": s.ChunkIDsNormalized,
+		"quotes_truncated":     s.QuotesTruncated,
+		"loc_repaired":         s.NegativeLocRepaired,
+	}
+}
+
+func sanitizeNodeDocCitations(doc content.NodeDocV1, allowedChunkIDs map[string]bool, chunkByID map[uuid.UUID]*types.MaterialChunk, fallbackChunkIDs []uuid.UUID) (content.NodeDocV1, citationSanitizeStats, bool) {
+	stats := citationSanitizeStats{}
+	if len(doc.Blocks) == 0 {
+		return doc, stats, false
+	}
+
+	pickFallbackID := func() string {
+		if allowedChunkIDs != nil && len(allowedChunkIDs) > 0 {
+			for _, id := range fallbackChunkIDs {
+				if id == uuid.Nil {
+					continue
+				}
+				s := id.String()
+				if allowedChunkIDs[s] {
+					return s
+				}
+			}
+			for s := range allowedChunkIDs {
+				if strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+			return ""
+		}
+		for _, id := range fallbackChunkIDs {
+			if id != uuid.Nil {
+				return id.String()
+			}
+		}
+		return ""
+	}
+
+	normalizeChunkID := func(s string) (string, bool) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return "", false
+		}
+		id, err := uuid.Parse(s)
+		if err != nil || id == uuid.Nil {
+			return "", false
+		}
+		return id.String(), true
+	}
+
+	blockNeedsCitations := func(t string) bool {
+		t = strings.ToLower(strings.TrimSpace(t))
+		switch t {
+		case "heading", "code", "video", "divider":
+			return false
+		default:
+			return true
+		}
+	}
+
+	changed := false
+	for i := range doc.Blocks {
+		b := doc.Blocks[i]
+		if b == nil {
+			continue
+		}
+		if !blockNeedsCitations(stringFromAny(b["type"])) {
+			continue
+		}
+
+		stats.BlocksTouched++
+		raw, _ := b["citations"].([]any)
+		out := make([]any, 0, len(raw))
+		seen := map[string]bool{}
+
+		for _, x := range raw {
+			m, ok := x.(map[string]any)
+			if !ok {
+				stats.CitationsDropped++
+				changed = true
+				continue
+			}
+
+			origID := strings.TrimSpace(stringFromAny(m["chunk_id"]))
+			cid, ok := normalizeChunkID(origID)
+			if !ok {
+				stats.CitationsDropped++
+				changed = true
+				continue
+			}
+			if origID != cid {
+				stats.ChunkIDsNormalized++
+				changed = true
+			}
+			if allowedChunkIDs != nil && len(allowedChunkIDs) > 0 && !allowedChunkIDs[cid] {
+				stats.CitationsDropped++
+				changed = true
+				continue
+			}
+			if seen[cid] {
+				stats.CitationsDropped++
+				changed = true
+				continue
+			}
+			seen[cid] = true
+
+			quote := strings.TrimSpace(stringFromAny(m["quote"]))
+			if len(quote) > 240 {
+				quote = quote[:240]
+				stats.QuotesTruncated++
+				changed = true
+			}
+
+			locAny, _ := m["loc"].(map[string]any)
+			page := intFromAny(locAny["page"], 0)
+			start := intFromAny(locAny["start"], 0)
+			end := intFromAny(locAny["end"], 0)
+			if page < 0 {
+				page = 0
+				stats.NegativeLocRepaired++
+				changed = true
+			}
+			if start < 0 {
+				start = 0
+				stats.NegativeLocRepaired++
+				changed = true
+			}
+			if end < 0 {
+				end = 0
+				stats.NegativeLocRepaired++
+				changed = true
+			}
+			if end > 0 && start > 0 && end < start {
+				start, end = 0, 0
+				stats.NegativeLocRepaired++
+				changed = true
+			}
+
+			out = append(out, map[string]any{
+				"chunk_id": cid,
+				"quote":    quote,
+				"loc":      map[string]any{"page": page, "start": start, "end": end},
+			})
+			stats.CitationsKept++
+		}
+
+		if len(out) == 0 {
+			cid := pickFallbackID()
+			if cid != "" {
+				quote := ""
+				if parsed, err := uuid.Parse(cid); err == nil && parsed != uuid.Nil && chunkByID != nil {
+					if ch := chunkByID[parsed]; ch != nil {
+						quote = strings.TrimSpace(ch.Text)
+						if len(quote) > 240 {
+							quote = quote[:240]
+						}
+					}
+				}
+				out = []any{map[string]any{
+					"chunk_id": cid,
+					"quote":    quote,
+					"loc":      map[string]any{"page": 0, "start": 0, "end": 0},
+				}}
+				stats.BlocksBackfilled++
+				stats.CitationsKept++
+				changed = true
+			}
+		}
+
+		b["citations"] = out
+		doc.Blocks[i] = b
+	}
+
+	return doc, stats, changed
 }
 
 func removeNodeDocBlockType(doc content.NodeDocV1, blockType string) content.NodeDocV1 {
@@ -1279,6 +1584,174 @@ func capNodeDocBlockType(doc content.NodeDocV1, blockType string, max int) conte
 	doc.Blocks = out
 	return doc
 }
+
+func shouldAutoInjectGeneratedFigure(req content.NodeDocRequirements) bool {
+	if req.RequireMedia {
+		return true
+	}
+	switch qualityMode() {
+	case "premium", "openai", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeNodeDocDiagrams(doc content.NodeDocV1) (content.NodeDocV1, bool) {
+	if len(doc.Blocks) == 0 {
+		return doc, false
+	}
+	changed := false
+	for i, b := range doc.Blocks {
+		if b == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(stringFromAny(b["type"])), "diagram") {
+			continue
+		}
+
+		kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"])))
+		source := strings.TrimSpace(stringFromAny(b["source"]))
+		caption := strings.TrimSpace(stringFromAny(b["caption"]))
+
+		// Best-effort: infer kind when the model drifts.
+		if kind != "svg" && kind != "mermaid" {
+			if strings.Contains(strings.ToLower(source), "<svg") {
+				kind = "svg"
+			} else if source != "" {
+				kind = "mermaid"
+			}
+			b["kind"] = kind
+			changed = true
+		}
+
+		switch kind {
+		case "svg":
+			if cleaned := extractAndSanitizeSVG(source); cleaned != "" && cleaned != source {
+				b["source"] = cleaned
+				changed = true
+			}
+		case "mermaid":
+			cleaned, capFromSource := splitMermaidSourceAndCaption(source)
+			if cleaned != "" && cleaned != source {
+				b["source"] = cleaned
+				changed = true
+			}
+			if caption == "" && capFromSource != "" {
+				b["caption"] = capFromSource
+				changed = true
+			}
+		}
+
+		doc.Blocks[i] = b
+	}
+	return doc, changed
+}
+
+func stripCodeFences(src string) string {
+	s := strings.TrimSpace(src)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) < 2 {
+		return s
+	}
+	first := strings.TrimSpace(lines[0])
+	last := strings.TrimSpace(lines[len(lines)-1])
+	body := lines[1:]
+	if last == "```" {
+		body = lines[1 : len(lines)-1]
+	}
+	_ = first // language tag ignored
+	return strings.TrimSpace(strings.Join(body, "\n"))
+}
+
+func splitMermaidSourceAndCaption(raw string) (source string, caption string) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", ""
+	}
+	s = stripCodeFences(s)
+
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && strings.EqualFold(strings.TrimSpace(lines[0]), "diagram") {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return "", ""
+	}
+
+	// Heuristic: if the last line looks like prose (caption) rather than Mermaid syntax,
+	// move it into caption to make rendering more robust.
+	if len(lines) >= 2 {
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if looksLikeCaptionLine(last) {
+			caption = shorten(last, 220)
+			lines = lines[:len(lines)-1]
+			for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+				lines = lines[:len(lines)-1]
+			}
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n")), caption
+}
+
+func looksLikeCaptionLine(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Mermaid syntax usually has arrows, brackets, pipes, or leading keywords.
+	lc := strings.ToLower(s)
+	if strings.Contains(lc, "-->") || strings.Contains(lc, ":::") || strings.Contains(lc, "--") {
+		return false
+	}
+	if strings.ContainsAny(s, "[]{}<>|") {
+		return false
+	}
+	for _, prefix := range []string{
+		"flowchart", "graph", "sequencediagram", "classdiagram", "statediagram", "erdiagram", "journey", "gantt", "pie", "mindmap", "timeline", "quadrantchart",
+	} {
+		if strings.HasPrefix(strings.TrimSpace(lc), prefix) {
+			return false
+		}
+	}
+	// Prose tends to be longer and has spaces/punctuation.
+	if len(strings.Fields(s)) >= 6 {
+		return true
+	}
+	return strings.HasSuffix(s, ".") || strings.HasSuffix(s, "!") || strings.HasSuffix(s, "?")
+}
+
+func extractAndSanitizeSVG(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	low := strings.ToLower(s)
+	i0 := strings.Index(low, "<svg")
+	i1 := strings.LastIndex(low, "</svg>")
+	if i0 >= 0 && i1 > i0 {
+		s = s[i0 : i1+len("</svg>")]
+	}
+	// Minimal hardening: strip script tags and on* handlers (best-effort).
+	s = reSVGScript.ReplaceAllString(s, "")
+	s = reSVGOnAttr.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+var (
+	reSVGScript = regexp.MustCompile(`(?is)<script[\s\S]*?>[\s\S]*?</script>`)
+	reSVGOnAttr = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*('[^']*'|"[^"]*")`)
+)
 
 func ensureNodeDocHasDiagram(doc content.NodeDocV1, allowedChunkIDs map[string]bool, fallbackChunkIDs []uuid.UUID) content.NodeDocV1 {
 	for _, b := range doc.Blocks {

@@ -31,17 +31,17 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	jc.Progress("refine", 10, "Refining library taxonomy")
 
 	out, err := steps.LibraryTaxonomyRefine(jc.Ctx, steps.LibraryTaxonomyRouteDeps{
-		DB:         p.db,
-		Log:        p.log,
-		AI:         p.ai,
-		Path:       p.path,
-		PathNodes:  p.pathNodes,
-		Clusters:   p.clusters,
-		TaxNodes:   p.taxNodes,
-		TaxEdges:   p.taxEdges,
-		Membership: p.membership,
-		State:      p.state,
-		Snapshots:  p.snapshots,
+		DB:          p.db,
+		Log:         p.log,
+		AI:          p.ai,
+		Path:        p.path,
+		PathNodes:   p.pathNodes,
+		Clusters:    p.clusters,
+		TaxNodes:    p.taxNodes,
+		TaxEdges:    p.taxEdges,
+		Membership:  p.membership,
+		State:       p.state,
+		Snapshots:   p.snapshots,
 		PathVectors: p.pathVectors,
 	}, steps.LibraryTaxonomyRefineInput{UserID: userID})
 	if err != nil {
@@ -50,7 +50,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"user_id":         out.UserID.String(),
+		"user_id":          out.UserID.String(),
 		"facets_processed": out.FacetsProcessed,
 		"paths_considered": out.PathsConsidered,
 		"paths_reassigned": out.PathsReassigned,
@@ -61,4 +61,3 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	return nil
 }
-

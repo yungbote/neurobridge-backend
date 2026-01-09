@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -33,6 +34,7 @@ type ConceptGraphBuildDeps struct {
 	Log    *logger.Logger
 	Files  repos.MaterialFileRepo
 	Chunks repos.MaterialChunkRepo
+	Path   repos.PathRepo
 
 	Concepts repos.ConceptRepo
 	Evidence repos.ConceptEvidenceRepo
@@ -59,7 +61,7 @@ type ConceptGraphBuildOutput struct {
 
 func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in ConceptGraphBuildInput) (ConceptGraphBuildOutput, error) {
 	out := ConceptGraphBuildOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
+	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
 		return out, fmt.Errorf("concept_graph_build: missing deps")
 	}
 	if in.OwnerUserID == uuid.Nil {
@@ -87,10 +89,31 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, nil
 	}
 
+	// Optional: incorporate user intent/intake context (written by path_intake) to improve relevance and reduce noise.
+	intentMD := ""
+	var allowFiles map[uuid.UUID]bool
+	if deps.Path != nil {
+		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
+			var meta map[string]any
+			if json.Unmarshal(row.Metadata, &meta) == nil {
+				intentMD = strings.TrimSpace(stringFromAny(meta["intake_md"]))
+				allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
+			}
+		}
+	}
+
 	// ---- Build prompts inputs (grounded excerpts) ----
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
+	}
+	if len(allowFiles) > 0 {
+		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+		if len(filtered) > 0 {
+			files = filtered
+		} else {
+			deps.Log.Warn("concept_graph_build: intake filter excluded all files; ignoring filter", "path_id", pathID.String())
+		}
 	}
 	fileIDs := make([]uuid.UUID, 0, len(files))
 	for _, f := range files {
@@ -105,6 +128,14 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if len(chunks) == 0 {
 		return out, fmt.Errorf("concept_graph_build: no chunks for material set")
 	}
+
+	allowedChunkIDs := map[string]bool{}
+	for _, ch := range chunks {
+		if ch != nil && ch.ID != uuid.Nil {
+			allowedChunkIDs[ch.ID.String()] = true
+		}
+	}
+
 	perFile := envIntAllowZero("CONCEPT_GRAPH_EXCERPTS_PER_FILE", 14)
 	excerpts := stratifiedChunkExcerptsWithLimits(
 		chunks,
@@ -128,7 +159,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Prompt: Concept inventory ----
-	invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{Excerpts: excerpts})
+	invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{Excerpts: excerpts, PathIntentMD: intentMD})
 	if err != nil {
 		return out, err
 	}
@@ -143,6 +174,18 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 	if len(conceptsOut) == 0 {
 		return out, fmt.Errorf("concept_graph_build: concept inventory returned 0 concepts")
+	}
+
+	conceptsOut, normStats := normalizeConceptInventory(conceptsOut, allowedChunkIDs)
+	if normStats.Modified > 0 {
+		deps.Log.Info(
+			"concept inventory normalized",
+			"key_changes", normStats.KeysChanged,
+			"depth_recomputed", normStats.DepthRecomputed,
+			"parents_repaired", normStats.ParentsRepaired,
+			"cycles_broken", normStats.ParentCyclesBroken,
+			"citations_filtered", normStats.CitationsFiltered,
+		)
 	}
 
 	conceptsOut, dupKeys := dedupeConceptInventoryByKey(conceptsOut)
@@ -161,6 +204,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	edgesPrompt, err := prompts.Build(prompts.PromptConceptEdges, prompts.Input{
 		ConceptsJSON: string(conceptsJSONBytes),
 		Excerpts:     edgeExcerpts,
+		PathIntentMD: intentMD,
 	})
 	if err != nil {
 		return out, err
@@ -249,6 +293,18 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	edgesOut := parseConceptEdges(edgesObj)
+	edgesOut, edgeStats := normalizeConceptEdges(edgesOut, conceptsOut, allowedChunkIDs)
+	if edgeStats.Modified > 0 {
+		deps.Log.Info(
+			"concept edges normalized",
+			"dropped_missing_concepts", edgeStats.DroppedMissingConcepts,
+			"dropped_self_loops", edgeStats.DroppedSelfLoops,
+			"type_normalized", edgeStats.TypeNormalized,
+			"strength_clamped", edgeStats.StrengthClamped,
+			"citations_filtered", edgeStats.CitationsFiltered,
+			"deduped", edgeStats.Deduped,
+		)
+	}
 
 	if len(embs) != len(conceptsOut) {
 		return out, fmt.Errorf("concept_graph_build: embedding count mismatch (got %d want %d)", len(embs), len(conceptsOut))
@@ -339,7 +395,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		evRows := make([]*types.ConceptEvidence, 0)
 		for _, c := range conceptsOut {
 			cid := keyToID[c.Key]
-			for _, sid := range uuidSliceFromStrings(dedupeStrings(c.Citations)) {
+			for _, sid := range uuidSliceFromStrings(dedupeStrings(filterChunkIDStrings(c.Citations, allowedChunkIDs))) {
 				evRows = append(evRows, &types.ConceptEvidence{
 					ID:              uuid.New(),
 					ConceptID:       cid,
@@ -366,7 +422,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				ToConceptID:   tid,
 				EdgeType:      e.EdgeType,
 				Strength:      e.Strength,
-				Evidence:      datatypes.JSON(mustJSON(map[string]any{"rationale": e.Rationale, "citations": e.Citations})),
+				Evidence:      datatypes.JSON(mustJSON(map[string]any{"rationale": e.Rationale, "citations": filterChunkIDStrings(e.Citations, allowedChunkIDs)})),
 			}
 			_ = deps.Edges.Upsert(dbc, edge)
 			out.EdgesMade++
@@ -521,6 +577,363 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	return out, nil
+}
+
+type conceptNormStats struct {
+	Modified          int
+	KeysChanged       int
+	DepthRecomputed   int
+	ParentsRepaired   int
+	ParentCyclesBroken int
+	CitationsFiltered int
+}
+
+func normalizeConceptInventory(in []conceptInvItem, allowedChunkIDs map[string]bool) ([]conceptInvItem, conceptNormStats) {
+	stats := conceptNormStats{}
+	if len(in) == 0 {
+		return in, stats
+	}
+
+	// Normalize keys + parent keys (may create new collisions; merge best-effort).
+	merged := map[string]conceptInvItem{}
+	for _, c := range in {
+		origKey := strings.TrimSpace(c.Key)
+		key := normalizeConceptKey(origKey)
+		if key == "" {
+			continue
+		}
+		if key != origKey {
+			stats.KeysChanged++
+			stats.Modified++
+		}
+		c.Key = key
+
+		origParent := strings.TrimSpace(c.ParentKey)
+		parent := normalizeConceptKey(origParent)
+		if parent != origParent {
+			stats.ParentsRepaired++
+			stats.Modified++
+		}
+		c.ParentKey = parent
+
+		origCits := c.Citations
+		filteredCits := filterChunkIDStrings(origCits, allowedChunkIDs)
+		if !stringSlicesEqual(origCits, filteredCits) {
+			if len(origCits) > len(filteredCits) {
+				stats.CitationsFiltered += len(origCits) - len(filteredCits)
+			} else {
+				stats.CitationsFiltered++
+			}
+			stats.Modified++
+		}
+		c.Citations = filteredCits
+
+		if existing, ok := merged[c.Key]; ok {
+			// Merge duplicates: keep best name/summary, union lists.
+			stats.Modified++
+			existing.Name = stringsOrExisting(existing.Name, c.Name)
+			existing.Summary = longerString(existing.Summary, c.Summary)
+			existing.KeyPoints = dedupeStrings(append(existing.KeyPoints, c.KeyPoints...))
+			existing.Aliases = dedupeStrings(append(existing.Aliases, c.Aliases...))
+			existing.Citations = dedupeStrings(append(existing.Citations, c.Citations...))
+			if existing.ParentKey == "" && c.ParentKey != "" {
+				existing.ParentKey = c.ParentKey
+			}
+			if c.Importance > existing.Importance {
+				existing.Importance = c.Importance
+			}
+			merged[c.Key] = existing
+			continue
+		}
+		merged[c.Key] = c
+	}
+
+	// Ensure parents exist and break parent cycles.
+	items := map[string]*conceptInvItem{}
+	for k := range merged {
+		c := merged[k]
+		// Parent must exist and not self.
+		if c.ParentKey == c.Key {
+			c.ParentKey = ""
+			stats.ParentsRepaired++
+			stats.Modified++
+		}
+		if c.ParentKey != "" {
+			if _, ok := merged[c.ParentKey]; !ok {
+				c.ParentKey = ""
+				stats.ParentsRepaired++
+				stats.Modified++
+			}
+		}
+		tmp := c
+		items[k] = &tmp
+	}
+
+	for key, c := range items {
+		if c == nil {
+			continue
+		}
+		seen := map[string]bool{key: true}
+		p := strings.TrimSpace(c.ParentKey)
+		for p != "" {
+			if seen[p] {
+				// Break the cycle by dropping this node's parent.
+				c.ParentKey = ""
+				stats.ParentCyclesBroken++
+				stats.Modified++
+				break
+			}
+			seen[p] = true
+			parent := items[p]
+			if parent == nil {
+				break
+			}
+			p = strings.TrimSpace(parent.ParentKey)
+		}
+	}
+
+	// Recompute depths deterministically from parent links.
+	memo := map[string]int{}
+	var depthFor func(k string, visiting map[string]bool) int
+	depthFor = func(k string, visiting map[string]bool) int {
+		if v, ok := memo[k]; ok {
+			return v
+		}
+		if visiting[k] {
+			return 0
+		}
+		visiting[k] = true
+		d := 0
+		if c := items[k]; c != nil && strings.TrimSpace(c.ParentKey) != "" {
+			p := strings.TrimSpace(c.ParentKey)
+			if _, ok := items[p]; ok && p != k {
+				d = depthFor(p, visiting) + 1
+			}
+		}
+		delete(visiting, k)
+		memo[k] = d
+		return d
+	}
+
+	out := make([]conceptInvItem, 0, len(items))
+	for k, c := range items {
+		if c == nil {
+			continue
+		}
+		newDepth := depthFor(k, map[string]bool{})
+		if c.Depth != newDepth {
+			stats.DepthRecomputed++
+			stats.Modified++
+		}
+		c.Depth = newDepth
+		out = append(out, *c)
+	}
+
+	// Stable ordering for deterministic downstream IDs.
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, stats
+}
+
+type edgeNormStats struct {
+	Modified              int
+	DroppedMissingConcepts int
+	DroppedSelfLoops      int
+	TypeNormalized        int
+	StrengthClamped       int
+	CitationsFiltered     int
+	Deduped               int
+}
+
+func normalizeConceptEdges(in []conceptEdgeItem, concepts []conceptInvItem, allowedChunkIDs map[string]bool) ([]conceptEdgeItem, edgeNormStats) {
+	stats := edgeNormStats{}
+	if len(in) == 0 {
+		return nil, stats
+	}
+	known := map[string]bool{}
+	for _, c := range concepts {
+		if strings.TrimSpace(c.Key) != "" {
+			known[strings.TrimSpace(c.Key)] = true
+		}
+	}
+
+	outMap := map[string]conceptEdgeItem{}
+	for _, e := range in {
+		fk0 := strings.TrimSpace(e.FromKey)
+		tk0 := strings.TrimSpace(e.ToKey)
+		et0 := strings.TrimSpace(e.EdgeType)
+		fk := normalizeConceptKey(fk0)
+		tk := normalizeConceptKey(tk0)
+		et := strings.ToLower(strings.TrimSpace(et0))
+		if fk == "" || tk == "" {
+			continue
+		}
+		if fk != fk0 || tk != tk0 {
+			stats.Modified++
+		}
+		if fk == tk {
+			stats.DroppedSelfLoops++
+			stats.Modified++
+			continue
+		}
+		if !known[fk] || !known[tk] {
+			stats.DroppedMissingConcepts++
+			stats.Modified++
+			continue
+		}
+		if et != "prereq" && et != "related" && et != "analogy" {
+			et = "related"
+			stats.TypeNormalized++
+			stats.Modified++
+		}
+		str := e.Strength
+		if str < 0 {
+			str = 0
+			stats.StrengthClamped++
+			stats.Modified++
+		} else if str > 1 {
+			str = 1
+			stats.StrengthClamped++
+			stats.Modified++
+		}
+
+		cits := filterChunkIDStrings(e.Citations, allowedChunkIDs)
+		if len(cits) != len(e.Citations) {
+			stats.CitationsFiltered++
+			stats.Modified++
+		}
+
+		key := fk + "|" + tk + "|" + et
+		item := conceptEdgeItem{
+			FromKey:   fk,
+			ToKey:     tk,
+			EdgeType:  et,
+			Strength:  str,
+			Rationale: strings.TrimSpace(e.Rationale),
+			Citations: cits,
+		}
+
+		if existing, ok := outMap[key]; ok {
+			stats.Deduped++
+			stats.Modified++
+			// Keep strongest, keep longer rationale, union citations.
+			if item.Strength > existing.Strength {
+				existing.Strength = item.Strength
+			}
+			existing.Rationale = longerString(existing.Rationale, item.Rationale)
+			existing.Citations = dedupeStrings(append(existing.Citations, item.Citations...))
+			outMap[key] = existing
+			continue
+		}
+		outMap[key] = item
+	}
+
+	out := make([]conceptEdgeItem, 0, len(outMap))
+	for _, v := range outMap {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FromKey != out[j].FromKey {
+			return out[i].FromKey < out[j].FromKey
+		}
+		if out[i].ToKey != out[j].ToKey {
+			return out[i].ToKey < out[j].ToKey
+		}
+		return out[i].EdgeType < out[j].EdgeType
+	})
+	return out, stats
+}
+
+func normalizeConceptKey(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	lastUnderscore := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r == '_' || r == '-' || unicode.IsSpace(r):
+			if !lastUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		default:
+			// Drop punctuation/symbols.
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return ""
+	}
+	// Keep keys compact.
+	if len(out) > 64 {
+		out = out[:64]
+		out = strings.Trim(out, "_")
+	}
+	return out
+}
+
+func filterChunkIDStrings(in []string, allowed map[string]bool) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		id, err := uuid.Parse(s)
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		s = id.String()
+		if allowed != nil && len(allowed) > 0 && !allowed[s] {
+			continue
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func stringsOrExisting(existing, candidate string) string {
+	if strings.TrimSpace(existing) != "" {
+		return existing
+	}
+	return strings.TrimSpace(candidate)
+}
+
+func longerString(a, b string) string {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if len(b) > len(a) {
+		return b
+	}
+	return a
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func advisoryXactLock(tx *gorm.DB, namespace string, id uuid.UUID) error {

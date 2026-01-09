@@ -22,17 +22,17 @@ import (
 var stageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
+	// Ask clarifying questions early; downstream graph/planning uses intake context.
+	"path_intake",
 	"embed_chunks",
 	"material_set_summarize",
+	"user_profile_refresh",
+	"teaching_patterns_seed",
 	"concept_graph_build",
 	"concept_cluster_build",
 	"chain_signature_build",
-	"user_profile_refresh",
-	"teaching_patterns_seed",
-	"path_intake",
 	"path_plan_build",
 	"path_cover_render",
-	"node_avatar_render",
 	"node_figures_plan_build",
 	"node_figures_render",
 	"node_videos_plan_build",
@@ -170,6 +170,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 			_ = p.saga.MarkSagaStatus(ctx.Ctx, sagaID, services.SagaStatusSucceeded)
 		}
 		p.enqueueChatPathIndex(ctx, pathID)
+		p.enqueueNodeAvatarRender(ctx, setID, pathID)
 		p.enqueueLibraryTaxonomyRoute(ctx, pathID)
 		p.maybeAppendPathBuildReadyMessage(ctx, setID, pathID)
 		return nil
@@ -286,6 +287,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				Log:       p.log,
 				Files:     p.inline.Files,
 				Chunks:    p.inline.Chunks,
+				Path:      p.inline.Path,
 				Concepts:  p.inline.Concepts,
 				Evidence:  p.inline.Evidence,
 				Edges:     p.inline.Edges,
@@ -585,6 +587,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 	// Best-effort: project canonical path artifacts into chat_doc (ScopePath) for retrieval.
 	p.enqueueChatPathIndex(jc, pathID)
+	p.enqueueNodeAvatarRender(jc, setID, pathID)
 	p.enqueueLibraryTaxonomyRoute(jc, pathID)
 	p.maybeAppendPathBuildReadyMessage(jc, setID, pathID)
 
@@ -669,6 +672,22 @@ func (p *Pipeline) enqueueLibraryTaxonomyRoute(jc *jobrt.Context, pathID uuid.UU
 	entityID := pathID
 	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "library_taxonomy_route", "path", &entityID, payload); err != nil {
 		p.log.Warn("Failed to enqueue library_taxonomy_route", "error", err, "path_id", pathID.String())
+	}
+}
+
+func (p *Pipeline) enqueueNodeAvatarRender(jc *jobrt.Context, setID uuid.UUID, pathID uuid.UUID) {
+	if p == nil || p.jobs == nil || jc == nil || jc.Job == nil || setID == uuid.Nil {
+		return
+	}
+	payload := map[string]any{
+		"material_set_id": setID.String(),
+	}
+	if pathID != uuid.Nil {
+		payload["path_id"] = pathID.String()
+	}
+	entityID := setID
+	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "node_avatar_render", "material_set", &entityID, payload); err != nil {
+		p.log.Warn("Failed to enqueue node_avatar_render", "error", err, "material_set_id", setID.String())
 	}
 }
 

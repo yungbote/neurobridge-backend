@@ -49,11 +49,15 @@ Every concept must be grounded in the excerpts with citations (chunk_id strings)
 Concept keys must be stable snake_case.
 Return JSON only.`,
 		User: `
+PATH_INTENT_MD (optional; user goal context for relevance/noise filtering):
+{{.PathIntentMD}}
+
 EXCERPTS (each line includes chunk_id):
 {{.Excerpts}}
 
 Task:
-- Extract ALL distinct concepts present in excerpts.
+- Extract ALL distinct concepts present in excerpts, but prioritize those that support the PATH_INTENT_MD.
+- If PATH_INTENT_MD implies deprioritized topics, include them only if they are prerequisite scaffolding.
 - Organize into hierarchy via parent_key + depth.
 - Provide summary + key_points + aliases + importance.
 - citations must be chunk_id strings actually used.
@@ -74,6 +78,9 @@ Edges must be supported by excerpts.
 Avoid dense graphs; keep only meaningful edges.
 Return JSON only.`,
 		User: `
+PATH_INTENT_MD (optional; user goal context for relevance/noise filtering):
+{{.PathIntentMD}}
+
 CONCEPTS_JSON:
 {{.ConceptsJSON}}
 
@@ -533,8 +540,9 @@ Include citations per question.`,
 		SchemaName: "activity_content",
 		Schema:     ActivityContentSchema,
 		System: `
-You generate canonical activity content in block-based JSON.
-You MUST ground all facts in the provided excerpts (chunk_id lines).
+You generate canonical learning activity content in block-based JSON.
+Write like a great tutor: engaging, coherent, and concrete — not terse lecture notes.
+You MUST ground all factual claims in the provided excerpts (chunk_id lines).
 Do not invent facts or sources.
 Return JSON only.`,
 		User: `
@@ -543,6 +551,9 @@ USER_PROFILE_DOC:
 
 PATH_CHARTER_JSON (optional):
 {{.PathCharterJSON}}
+
+TEACHING_PATTERNS_JSON (optional; pick 1-2 and apply them; do not mention pattern_key values):
+{{.TeachingPatternsJSON}}
 
 ACTIVITY_KIND: {{.ActivityKind}}
 ACTIVITY_TITLE: {{.ActivityTitle}}
@@ -556,6 +567,11 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional):
 
 Rules:
 - Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed|diagram
+- If ACTIVITY_KIND is lesson-like, target ~800–1400 words and enough prose to feel like a real lesson (not a sparse outline).
+- For lesson-like activities, aim for a narrative arc: why it matters → intuition/mental model → explanation → worked example → guided practice → recap.
+- Prefer paragraphs + callouts over wall-of-bullets. Bullets/steps should support, not replace, explanation.
+- Include at least one worked example and at least one quick self-check prompt.
+- Include 1-2 common misconceptions/common mistakes when it fits the concept and helps the learner avoid errors.
 - If you use image or video_embed blocks, asset_refs MUST be a URL from AVAILABLE_MEDIA_ASSETS_JSON. Do not invent URLs.
 - If AVAILABLE_MEDIA_ASSETS_JSON is empty, do not include image/video_embed blocks.
 - If AVAILABLE_MEDIA_ASSETS_JSON includes images/videos, prefer including 1-2 relevant image blocks and at most 1 relevant video_embed block.

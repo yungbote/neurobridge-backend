@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
@@ -37,6 +38,10 @@ type WebResourcesSeedDeps struct {
 	Path   repos.PathRepo
 	Bucket gcp.BucketService
 
+	Threads  repos.ChatThreadRepo
+	Messages repos.ChatMessageRepo
+	Notify   services.ChatNotifier
+
 	AI   openai.Client
 	Saga services.SagaService
 
@@ -48,12 +53,19 @@ type WebResourcesSeedInput struct {
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
 	Prompt        string
+	ThreadID      uuid.UUID
+	JobID         uuid.UUID
+
+	// WaitForUser controls whether we are allowed to pause for user consent.
+	WaitForUser bool
 }
 
 type WebResourcesSeedOutput struct {
 	PathID uuid.UUID `json:"path_id"`
 
 	Skipped bool `json:"skipped"`
+	Status  string `json:"status"` // "succeeded" | "waiting_user"
+	Meta    any    `json:"meta,omitempty"`
 
 	FilesCreated     int `json:"files_created"`
 	ResourcesPlanned int `json:"resources_planned"`
@@ -90,7 +102,7 @@ type webResourceCoverageV2 struct {
 }
 
 func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebResourcesSeedInput) (WebResourcesSeedOutput, error) {
-	out := WebResourcesSeedOutput{}
+	out := WebResourcesSeedOutput{Status: "succeeded"}
 	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Path == nil || deps.Bucket == nil || deps.AI == nil || deps.Saga == nil || deps.Bootstrap == nil {
 		return out, fmt.Errorf("web_resources_seed: missing deps")
 	}
@@ -154,6 +166,33 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 			Sections:       nil,
 		}, webResourcePlanV2{}, 0, "uploads_only")
 		return out, nil
+	}
+
+	// Production polish: permissioned web enrichment. We never fetch external resources without explicit consent.
+	// If we can't ask (no thread), default to uploads-only rather than surprising the user.
+	if envBool("WEB_RESOURCES_REQUIRE_CONSENT", true) {
+		consentAllowed, consentStatus, consentMeta, err := ensureWebResourcesConsent(ctx, deps, in, pathID, prompt, hasUploads)
+		if err != nil {
+			return out, err
+		}
+		if consentMeta != nil {
+			out.Meta = consentMeta
+		}
+		if consentStatus == "waiting_user" {
+			out.Status = "waiting_user"
+			return out, nil
+		}
+		if !consentAllowed {
+			out.Skipped = true
+			_ = deps.persistWebPlanV2(ctx, pathID, CurriculumSpecV1{
+				SchemaVersion:  1,
+				Goal:           prompt,
+				Domain:         "",
+				CoverageTarget: InferCoverageTargetFromPrompt(prompt),
+				Sections:       nil,
+			}, webResourcePlanV2{}, 0, "consent_denied")
+			return out, nil
+		}
 	}
 
 	spec, sErr := BuildCurriculumSpecV1(ctx, deps.AI, prompt)
@@ -323,6 +362,273 @@ func hasUserUploadedFiles(files []*types.MaterialFile) bool {
 func shouldAugmentUploadsWithWeb(prompt string) bool {
 	// Conservative heuristic: only auto-augment uploads when the user clearly asks for full coverage.
 	return InferCoverageTargetFromPrompt(prompt) == "mastery"
+}
+
+func ensureWebResourcesConsent(
+	ctx context.Context,
+	deps WebResourcesSeedDeps,
+	in WebResourcesSeedInput,
+	pathID uuid.UUID,
+	prompt string,
+	hasUploads bool,
+) (allowed bool, status string, meta any, err error) {
+	status = "succeeded"
+
+	allowedPtr, _ := loadWebResourcesConsentFromPathMeta(ctx, deps, pathID)
+	if allowedPtr != nil {
+		return *allowedPtr, status, nil, nil
+	}
+
+	// If we can't ask, default to "no" and record it (so we don't keep re-checking).
+	if in.ThreadID == uuid.Nil || deps.Threads == nil || deps.Messages == nil || deps.DB == nil {
+		_ = persistWebResourcesConsent(ctx, deps, pathID, false, "no_thread_or_chat_deps")
+		return false, status, map[string]any{"reason": "no_thread_or_chat_deps"}, nil
+	}
+
+	msgs, _ := deps.Messages.ListByThread(dbctx.Context{Ctx: ctx}, in.ThreadID, 300)
+	qMsg := latestWebResourcesConsentMessage(msgs)
+	if qMsg != nil {
+		answer := userAnswerAfter(msgs, qMsg.Seq)
+		if strings.TrimSpace(answer) != "" {
+			parsed, ok := parseYesNo(answer)
+			if ok {
+				_ = persistWebResourcesConsent(ctx, deps, pathID, parsed, "user")
+				return parsed, status, nil, nil
+			}
+			if !in.WaitForUser {
+				_ = persistWebResourcesConsent(ctx, deps, pathID, false, "ambiguous_user_answer")
+				return false, status, map[string]any{"reason": "ambiguous_user_answer"}, nil
+			}
+		}
+	}
+
+	if !in.WaitForUser {
+		_ = persistWebResourcesConsent(ctx, deps, pathID, false, "non_interactive_default")
+		return false, status, map[string]any{"reason": "non_interactive_default"}, nil
+	}
+
+	question := buildWebResourcesConsentQuestion(prompt, hasUploads)
+	asked, askErr := appendWebResourcesConsentMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, question)
+	if askErr != nil {
+		// If we failed to ask, do not block the build.
+		return false, status, map[string]any{"reason": "failed_to_ask", "error": askErr.Error()}, nil
+	}
+
+	return false, "waiting_user", map[string]any{
+		"reason":       "awaiting_user_consent",
+		"question_id":  asked.ID.String(),
+		"question_seq": asked.Seq,
+	}, nil
+}
+
+func loadWebResourcesConsentFromPathMeta(ctx context.Context, deps WebResourcesSeedDeps, pathID uuid.UUID) (*bool, error) {
+	if deps.Path == nil || pathID == uuid.Nil {
+		return nil, nil
+	}
+	row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	if len(row.Metadata) == 0 || strings.TrimSpace(string(row.Metadata)) == "" || strings.TrimSpace(string(row.Metadata)) == "null" {
+		return nil, nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(row.Metadata, &meta); err != nil || meta == nil {
+		return nil, nil
+	}
+	raw, ok := meta["web_resources_consent"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok || m == nil {
+		return nil, nil
+	}
+	switch v := m["allowed"].(type) {
+	case bool:
+		return &v, nil
+	default:
+		return nil, nil
+	}
+}
+
+func persistWebResourcesConsent(ctx context.Context, deps WebResourcesSeedDeps, pathID uuid.UUID, allowed bool, source string) error {
+	if deps.Path == nil || pathID == uuid.Nil {
+		return nil
+	}
+	row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
+	if err != nil || row == nil {
+		return err
+	}
+	meta := map[string]any{}
+	if len(row.Metadata) > 0 && strings.TrimSpace(string(row.Metadata)) != "" && strings.TrimSpace(string(row.Metadata)) != "null" {
+		_ = json.Unmarshal(row.Metadata, &meta)
+	}
+	meta["web_resources_consent"] = map[string]any{
+		"allowed":     allowed,
+		"source":      strings.TrimSpace(source),
+		"updated_at":  time.Now().UTC().Format(time.RFC3339Nano),
+		"version":     1,
+		"description": "Controls whether Neurobridge may fetch external web resources for this path.",
+	}
+	return deps.Path.UpdateFields(dbctx.Context{Ctx: ctx}, pathID, map[string]any{
+		"metadata": mustJSON(meta),
+	})
+}
+
+func latestWebResourcesConsentMessage(msgs []*types.ChatMessage) *types.ChatMessage {
+	var best *types.ChatMessage
+	for _, m := range msgs {
+		if m == nil {
+			continue
+		}
+		if messageKind(m) != "web_resources_consent" {
+			continue
+		}
+		if best == nil || m.Seq > best.Seq {
+			best = m
+		}
+	}
+	return best
+}
+
+func parseYesNo(text string) (bool, bool) {
+	s := strings.ToLower(strings.TrimSpace(text))
+	if s == "" {
+		return false, false
+	}
+	if s == "y" || s == "yes" || s == "yeah" || s == "yep" || s == "sure" || s == "ok" || s == "okay" {
+		return true, true
+	}
+	if s == "n" || s == "no" || s == "nope" {
+		return false, true
+	}
+	if strings.Contains(s, "don't") || strings.Contains(s, "do not") || strings.Contains(s, "no ") || strings.Contains(s, "skip") {
+		return false, true
+	}
+	if strings.Contains(s, "yes") || strings.Contains(s, "go ahead") || strings.Contains(s, "do it") || strings.Contains(s, "fetch") || strings.Contains(s, "sounds good") {
+		return true, true
+	}
+	return false, false
+}
+
+func buildWebResourcesConsentQuestion(prompt string, hasUploads bool) string {
+	goal := strings.TrimSpace(prompt)
+	if goal == "" {
+		goal = "(not provided)"
+	}
+	mode := "your prompt"
+	if hasUploads {
+		mode = "your uploads + prompt"
+	}
+	return strings.TrimSpace(strings.Join([]string{
+		"I can optionally pull in a handful of high-quality web sources to fill gaps and cross-check while I build your learning path.",
+		"",
+		"**What this does**",
+		"- Adds a few curated sources (articles / docs / open course pages) alongside " + mode + ".",
+		"- Helps when your materials are sparse, incomplete, or you want mastery-level coverage.",
+		"",
+		"**Your goal**",
+		goal,
+		"",
+		"Reply **yes** to allow web enrichment, or **no** to use only your provided materials.",
+	}, "\n"))
+}
+
+func appendWebResourcesConsentMessage(
+	ctx context.Context,
+	deps WebResourcesSeedDeps,
+	owner uuid.UUID,
+	threadID uuid.UUID,
+	jobID uuid.UUID,
+	materialSetID uuid.UUID,
+	pathID uuid.UUID,
+	content string,
+) (*types.ChatMessage, error) {
+	if deps.DB == nil || deps.Threads == nil || deps.Messages == nil {
+		return nil, fmt.Errorf("web_resources_seed: missing chat deps")
+	}
+	if owner == uuid.Nil || threadID == uuid.Nil || jobID == uuid.Nil {
+		return nil, fmt.Errorf("web_resources_seed: missing ids")
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, fmt.Errorf("web_resources_seed: empty consent prompt")
+	}
+
+	var created *types.ChatMessage
+	createdNew := false
+
+	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		inner := dbctx.Context{Ctx: ctx, Tx: tx}
+		th, err := deps.Threads.LockByID(inner, threadID)
+		if err != nil {
+			return err
+		}
+		if th == nil || th.ID == uuid.Nil || th.UserID != owner {
+			return fmt.Errorf("thread not found")
+		}
+
+		// Idempotency: one consent message per job.
+		var existing types.ChatMessage
+		e := tx.WithContext(ctx).
+			Model(&types.ChatMessage{}).
+			Where("thread_id = ? AND user_id = ? AND metadata->>'kind' = ? AND metadata->>'job_id' = ?", threadID, owner, "web_resources_consent", jobID.String()).
+			First(&existing).Error
+		if e == nil && existing.ID != uuid.Nil {
+			created = &existing
+			return nil
+		}
+		if e != nil && e != gorm.ErrRecordNotFound {
+			return e
+		}
+
+		now := time.Now().UTC()
+		meta := map[string]any{
+			"kind":            "web_resources_consent",
+			"job_id":          jobID.String(),
+			"path_id":         pathID.String(),
+			"material_set_id": materialSetID.String(),
+		}
+		metaJSON, _ := json.Marshal(meta)
+
+		nextSeq := th.NextSeq + 1
+		msg := &types.ChatMessage{
+			ID:        uuid.New(),
+			ThreadID:  threadID,
+			UserID:    owner,
+			Seq:       nextSeq,
+			Role:      "assistant",
+			Status:    "sent",
+			Content:   content,
+			Model:     "",
+			Metadata:  datatypes.JSON(metaJSON),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if _, err := deps.Messages.Create(inner, []*types.ChatMessage{msg}); err != nil {
+			return err
+		}
+		if err := deps.Threads.UpdateFields(inner, threadID, map[string]interface{}{
+			"next_seq":        nextSeq,
+			"last_message_at": now,
+			"updated_at":      now,
+		}); err != nil {
+			return err
+		}
+
+		created = msg
+		createdNew = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if createdNew && created != nil && deps.Notify != nil {
+		deps.Notify.MessageCreated(owner, threadID, created, nil)
+	}
+	return created, nil
 }
 
 func (deps WebResourcesSeedDeps) ensureGoalFile(ctx context.Context, in WebResourcesSeedInput, prompt string, files []*types.MaterialFile) (int, error) {

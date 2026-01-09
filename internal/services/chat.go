@@ -536,6 +536,13 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		}
 	}
 
+	// Dispatch the Temporal workflow only after the DB transaction commits.
+	if job != nil && job.ID != uuid.Nil && s.jobs != nil {
+		if err := s.jobs.Dispatch(dbctx.Context{Ctx: dbc.Ctx}, job.ID); err != nil {
+			return userMsg, asstMsg, job, err
+		}
+	}
+
 	return userMsg, asstMsg, job, nil
 }
 
@@ -585,24 +592,47 @@ func (s *chatService) maybeResumePausedPathBuild(dbc dbctx.Context, userID uuid.
 		return nil, nil
 	}
 
+	pausedStage := ""
+	stage := strings.ToLower(strings.TrimSpace(buildJob.Stage))
+	if strings.HasPrefix(stage, "waiting_user_") {
+		pausedStage = strings.TrimSpace(strings.TrimPrefix(stage, "waiting_user_"))
+	}
+
 	childJobID := uuid.Nil
 	if len(buildJob.Result) > 0 && strings.TrimSpace(string(buildJob.Result)) != "" && strings.TrimSpace(string(buildJob.Result)) != "null" {
 		var st pausedBuildState
 		if err := json.Unmarshal(buildJob.Result, &st); err == nil && st.Stages != nil {
-			if ss, ok := st.Stages["path_intake"]; ok {
-				if id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID)); err == nil {
-					childJobID = id
+			// Prefer the stage that actually paused the parent job (e.g., waiting_user_path_intake, waiting_user_web_resources_seed).
+			if pausedStage != "" {
+				if ss, ok := st.Stages[pausedStage]; ok {
+					if id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID)); err == nil {
+						childJobID = id
+					}
+				}
+			}
+			// Back-compat: older builds only paused on intake.
+			if childJobID == uuid.Nil {
+				if ss, ok := st.Stages["path_intake"]; ok {
+					if id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID)); err == nil {
+						childJobID = id
+					}
 				}
 			}
 		}
 	}
 	if childJobID == uuid.Nil && buildJob.EntityID != nil && *buildJob.EntityID != uuid.Nil {
-		// Fallback: find a waiting path_intake job for this material_set entity.
+		// Fallback: find a waiting child job for this material_set entity.
+		// Prefer the paused stage name, otherwise fall back to path_intake (legacy).
+		targetJobType := pausedStage
+		if targetJobType == "" {
+			targetJobType = "path_intake"
+		}
+
 		var tmp types.JobRun
 		_ = transaction.WithContext(dbc.Ctx).
 			Model(&types.JobRun{}).
 			Where("owner_user_id = ? AND job_type = ? AND entity_type = ? AND entity_id = ? AND status = ?",
-				userID, "path_intake", buildJob.EntityType, *buildJob.EntityID, "waiting_user",
+				userID, targetJobType, buildJob.EntityType, *buildJob.EntityID, "waiting_user",
 			).
 			Order("created_at DESC").
 			Limit(1).
@@ -611,7 +641,8 @@ func (s *chatService) maybeResumePausedPathBuild(dbc dbctx.Context, userID uuid.
 			childJobID = tmp.ID
 		}
 	}
-	if childJobID == uuid.Nil && !strings.Contains(strings.ToLower(strings.TrimSpace(buildJob.Stage)), "path_intake") {
+	// If we can't identify a paused child stage, do nothing (avoid resuming unrelated waiting jobs).
+	if childJobID == uuid.Nil && pausedStage == "" {
 		return nil, nil
 	}
 
@@ -767,6 +798,13 @@ func (s *chatService) DeleteThread(dbc dbctx.Context, threadID uuid.UUID) (*type
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Dispatch the Temporal workflow only after the DB transaction commits.
+	if job != nil && job.ID != uuid.Nil && s.jobs != nil {
+		if err := s.jobs.Dispatch(dbctx.Context{Ctx: dbc.Ctx}, job.ID); err != nil {
+			return job, err
+		}
 	}
 	return job, nil
 }

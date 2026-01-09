@@ -402,7 +402,7 @@ func LibraryTaxonomyRefine(ctx context.Context, deps LibraryTaxonomyRouteDeps, i
 						continue
 					}
 					primary := scoredAnchors[0]
-					secondary := scored{ id: uuid.Nil }
+					secondary := scored{id: uuid.Nil}
 					if len(scoredAnchors) > 1 {
 						secondary = scoredAnchors[1]
 					}
@@ -711,11 +711,11 @@ func LibraryTaxonomyRefine(ctx context.Context, deps LibraryTaxonomyRouteDeps, i
 				}
 
 				constraints := map[string]any{
-					"max_new_nodes":        maxNewNodes,
-					"min_category_paths":   minCategoryPaths,
-					"existing_nodes":       existingNodes,
+					"max_new_nodes":         maxNewNodes,
+					"min_category_paths":    minCategoryPaths,
+					"existing_nodes":        existingNodes,
 					"avoid_duplicate_names": true,
-					"seeded_anchors_only":  true,
+					"seeded_anchors_only":   true,
 				}
 
 				prompt, err := prompts.Build(prompts.PromptLibraryTaxonomyRefine, prompts.Input{

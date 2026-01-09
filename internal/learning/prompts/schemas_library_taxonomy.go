@@ -15,12 +15,12 @@ func LibraryTaxonomyRouteSchema() map[string]any {
 	newNode := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"client_id":       map[string]any{"type": "string"},
-			"kind":            map[string]any{"type": "string"},
-			"name":            map[string]any{"type": "string"},
-			"description":     map[string]any{"type": "string"},
-			"parent_node_ids": StringArraySchema(),
-			"related_node_ids": StringArraySchema(),
+			"client_id":         map[string]any{"type": "string"},
+			"kind":              map[string]any{"type": "string"},
+			"name":              map[string]any{"type": "string"},
+			"description":       map[string]any{"type": "string"},
+			"parent_node_ids":   StringArraySchema(),
+			"related_node_ids":  StringArraySchema(),
 			"membership_weight": NumberSchema(),
 			"reason":            map[string]any{"type": "string"},
 		},
@@ -71,4 +71,3 @@ func LibraryTaxonomyRefineSchema() map[string]any {
 		},
 	}, []string{"facet", "decisions"})
 }
-

@@ -8,7 +8,6 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 func SeedUser(tb testing.TB, dbc dbctx.Context, email string) *types.User {

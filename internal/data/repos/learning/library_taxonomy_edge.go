@@ -97,15 +97,14 @@ func (r *libraryTaxonomyEdgeRepo) UpsertMany(dbc dbctx.Context, edges []*types.L
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "kind"}, {Name: "from_node_id"}, {Name: "to_node_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
-				"user_id":     gorm.Expr("EXCLUDED.user_id"),
-				"facet":       gorm.Expr("EXCLUDED.facet"),
-				"weight":      gorm.Expr("EXCLUDED.weight"),
-				"metadata":    gorm.Expr("EXCLUDED.metadata"),
-				"version":     gorm.Expr("EXCLUDED.version"),
-				"updated_at":  now,
-				"deleted_at":  nil,
+				"user_id":    gorm.Expr("EXCLUDED.user_id"),
+				"facet":      gorm.Expr("EXCLUDED.facet"),
+				"weight":     gorm.Expr("EXCLUDED.weight"),
+				"metadata":   gorm.Expr("EXCLUDED.metadata"),
+				"version":    gorm.Expr("EXCLUDED.version"),
+				"updated_at": now,
+				"deleted_at": nil,
 			}),
 		}).
 		Create(&rows).Error
 }
-

@@ -7,6 +7,8 @@ type Input struct {
 	Excerpts string
 	// Material set summary
 	BundleExcerpt string
+	// Optional global goal context (from path_intake)
+	PathIntentMD string
 	// Concepts
 	ConceptsJSON string
 	EdgesJSON    string
@@ -14,6 +16,7 @@ type Input struct {
 	UserFactsJSON       string
 	RecentEventsSummary string
 	UserProfileDoc      string
+	TeachingPatternsJSON string
 	// Planning context
 	PathCharterJSON    string
 	PathStructureJSON  string

@@ -5,6 +5,103 @@ import (
 	"strings"
 )
 
+func stripMarkdownCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) < 2 {
+		return s
+	}
+	// Drop first fence line (``` or ```mermaid) and last fence line if present.
+	first := strings.TrimSpace(lines[0])
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if strings.HasPrefix(first, "```") {
+		if last == "```" {
+			return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+		}
+		return strings.TrimSpace(strings.Join(lines[1:], "\n"))
+	}
+	return s
+}
+
+func looksLikeMermaidCaption(line string) bool {
+	l := strings.TrimSpace(line)
+	if l == "" {
+		return false
+	}
+	if len(l) < 24 {
+		return false
+	}
+	lo := strings.ToLower(l)
+	for _, p := range []string{
+		"flowchart", "graph", "sequencediagram", "classdiagram", "statediagram", "erdiagram", "journey", "gantt", "pie", "mindmap", "timeline",
+	} {
+		if strings.HasPrefix(lo, p) {
+			return false
+		}
+	}
+	// Common Mermaid syntax tokens: if present, treat as code not caption.
+	if strings.Contains(l, "-->") || strings.Contains(l, "---") || strings.Contains(l, "==>") || strings.Contains(l, ":::") {
+		return false
+	}
+	for _, kw := range []string{"subgraph", "end", "classdef", "class ", "style ", "click ", "linkstyle", "%%"} {
+		if strings.Contains(lo, kw) {
+			return false
+		}
+	}
+	if strings.ContainsAny(l, "[](){}|") {
+		return false
+	}
+	if !strings.Contains(l, " ") {
+		return false
+	}
+	return true
+}
+
+func sanitizeDiagram(d NodeDocGenDiagramV1) NodeDocGenDiagramV1 {
+	d.Kind = strings.ToLower(strings.TrimSpace(d.Kind))
+	d.Source = strings.TrimSpace(d.Source)
+	d.Caption = strings.TrimSpace(d.Caption)
+
+	if d.Kind == "mermaid" {
+		d.Source = stripMarkdownCodeFences(d.Source)
+		lines := strings.Split(d.Source, "\n")
+		if len(lines) > 0 && strings.EqualFold(strings.TrimSpace(lines[0]), "diagram") {
+			lines = lines[1:]
+		}
+		d.Source = strings.TrimSpace(strings.Join(lines, "\n"))
+
+		// Best-effort: if the model appended explanatory prose into the source field,
+		// move a trailing line (or paragraph) into caption when caption is empty.
+		if d.Caption == "" && d.Source != "" {
+			// Prefer a paragraph split first (blank line separator).
+			if parts := strings.Split(d.Source, "\n\n"); len(parts) > 1 {
+				tail := strings.TrimSpace(parts[len(parts)-1])
+				head := strings.TrimSpace(strings.Join(parts[:len(parts)-1], "\n\n"))
+				if head != "" && looksLikeMermaidCaption(tail) {
+					d.Source = head
+					d.Caption = tail
+					return d
+				}
+			}
+			// Otherwise try the last line.
+			ll := strings.Split(d.Source, "\n")
+			if len(ll) > 2 {
+				tail := strings.TrimSpace(ll[len(ll)-1])
+				head := strings.TrimSpace(strings.Join(ll[:len(ll)-1], "\n"))
+				if head != "" && looksLikeMermaidCaption(tail) {
+					d.Source = head
+					d.Caption = tail
+					return d
+				}
+			}
+		}
+	}
+	return d
+}
+
 // NodeDocGenV1 is the compact "generation" shape used with OpenAI structured outputs.
 // It is converted into NodeDocV1 (blocks array) for storage and rendering.
 type NodeDocGenV1 struct {
@@ -320,14 +417,15 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			videoSeq = append(videoSeq, v)
 		}
 	}
-	{
-		seen := map[string]bool{}
-		for _, d := range gen.Diagrams {
-			id, ok := addUnique("diagram", d.ID, seen)
-			if !ok {
-				continue
-			}
-			d.ID = id
+		{
+			seen := map[string]bool{}
+			for _, d := range gen.Diagrams {
+				d = sanitizeDiagram(d)
+				id, ok := addUnique("diagram", d.ID, seen)
+				if !ok {
+					continue
+				}
+				d.ID = id
 			diagrams[id] = d
 			diagramSeq = append(diagramSeq, d)
 		}

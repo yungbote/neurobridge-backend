@@ -41,6 +41,7 @@ type RealizeActivitiesDeps struct {
 	Chunks   repos.MaterialChunkRepo
 
 	UserProfile repos.UserProfileVectorRepo
+	Patterns    repos.TeachingPatternRepo
 
 	AI        openai.Client
 	Vec       pc.VectorStore
@@ -94,9 +95,11 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, err
 	}
 	charterJSON := ""
+	var allowFiles map[uuid.UUID]bool
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
+			allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
 			if v, ok := meta["charter"]; ok && v != nil {
 				if b, err := json.Marshal(v); err == nil {
 					charterJSON = string(b)
@@ -153,6 +156,14 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 	if err != nil {
 		return out, err
 	}
+	if len(allowFiles) > 0 {
+		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
+		if len(filtered) > 0 {
+			files = filtered
+		} else {
+			deps.Log.Warn("realize_activities: intake filter excluded all files; ignoring filter", "path_id", pathID.String())
+		}
+	}
 	fileIDs := make([]uuid.UUID, 0, len(files))
 	for _, f := range files {
 		if f != nil && f.ID != uuid.Nil {
@@ -195,6 +206,13 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		}
 		nodeGoal := strings.TrimSpace(stringFromAny(nodeMeta["goal"]))
 		nodeConceptKeys := dedupeStrings(stringSliceFromAny(nodeMeta["concept_keys"]))
+		fallbackKeys := nodeConceptKeys
+		if len(fallbackKeys) == 0 {
+			fallbackKeys = fallbackConceptKeysForNode(node.Title, nodeGoal, concepts, 8)
+			if len(fallbackKeys) > 0 {
+				deps.Log.Warn("realize_activities: missing concept_keys on path node; using inferred keys", "path_node_id", node.ID.String(), "concept_keys", strings.Join(fallbackKeys, ","))
+			}
+		}
 
 		rawSlots, _ := nodeMeta["activity_slots"].([]any)
 		if len(rawSlots) == 0 {
@@ -218,9 +236,22 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			estimatedMinutes := intFromAny(slotObj["estimated_minutes"], 10)
 			primaryKeys := dedupeStrings(stringSliceFromAny(slotObj["primary_concept_keys"]))
 			if len(primaryKeys) == 0 {
-				primaryKeys = nodeConceptKeys
+				primaryKeys = fallbackKeys
 			}
-			conceptCSV := strings.Join(primaryKeys, ", ")
+			conceptCSV := strings.TrimSpace(strings.Join(primaryKeys, ", "))
+			if conceptCSV == "" {
+				// Keep the prompt validator satisfied even for legacy nodes missing concept keys / titles.
+				conceptCSV = strings.TrimSpace(node.Title)
+			}
+			if conceptCSV == "" {
+				conceptCSV = nodeGoal
+			}
+			if conceptCSV == "" {
+				conceptCSV = kind
+			}
+			if conceptCSV == "" {
+				conceptCSV = "general"
+			}
 
 			queryText := strings.TrimSpace(node.Title + " " + nodeGoal + " " + kind + " " + conceptCSV)
 			qEmb, err := deps.AI.Embed(ctx, []string{queryText})
@@ -233,7 +264,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 			var chunkIDs []uuid.UUID
 			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(ctx, chunksNS, qEmb[0], 12, map[string]any{"type": "chunk"})
+				ids, qerr := deps.Vec.QueryIDs(ctx, chunksNS, qEmb[0], 12, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
@@ -272,20 +303,45 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 			// Prompt: canonical activity content.
 			titleHint := strings.TrimSpace(kind + ": " + node.Title)
+			teachingJSON, _ := teachingPatternsJSON(ctx, deps.Vec, deps.Patterns, qEmb[0], 4)
 			p, err := prompts.Build(prompts.PromptActivityContent, prompts.Input{
-				UserProfileDoc:   up.ProfileDoc,
-				PathCharterJSON:  charterJSON,
-				ActivityKind:     kind,
-				ActivityTitle:    titleHint,
-				ConceptKeysCSV:   conceptCSV,
-				ActivityExcerpts: excerpts,
+				UserProfileDoc:       up.ProfileDoc,
+				TeachingPatternsJSON: teachingJSON,
+				PathCharterJSON:      charterJSON,
+				ActivityKind:         kind,
+				ActivityTitle:        titleHint,
+				ConceptKeysCSV:       conceptCSV,
+				ActivityExcerpts:     excerpts,
 			})
 			if err != nil {
 				return out, err
 			}
-			obj, err := deps.AI.GenerateJSON(ctx, p.System, p.User, p.SchemaName, p.Schema)
-			if err != nil {
-				return out, err
+			allowedChunkIDs := map[string]bool{}
+			for _, id := range chunkIDs {
+				if id != uuid.Nil {
+					allowedChunkIDs[id.String()] = true
+				}
+			}
+
+			var obj map[string]any
+			var lastErrs []string
+			for attempt := 1; attempt <= 3; attempt++ {
+				userPrompt := p.User
+				if len(lastErrs) > 0 {
+					userPrompt = userPrompt + "\n\nVALIDATION_ERRORS_TO_FIX:\n- " + strings.Join(lastErrs, "\n- ")
+				}
+				obj, err = deps.AI.GenerateJSON(ctx, p.System, userPrompt, p.SchemaName, p.Schema)
+				if err != nil {
+					lastErrs = []string{"generate_failed: " + err.Error()}
+					continue
+				}
+				lastErrs = validateActivityContent(obj, kind)
+				if len(lastErrs) == 0 {
+					break
+				}
+			}
+			if len(lastErrs) > 0 {
+				return out, fmt.Errorf("realize_activities: activity_content failed validation: %s", strings.Join(lastErrs, "; "))
 			}
 
 			actTitle := strings.TrimSpace(stringFromAny(obj["title"]))
@@ -298,7 +354,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			}
 			actMinutes := intFromAny(obj["estimated_minutes"], estimatedMinutes)
 			contentJSON, _ := json.Marshal(obj["content_json"])
-			citations := dedupeStrings(stringSliceFromAny(obj["citations"]))
+			citations := filterAllowedChunkIDStrings(dedupeStrings(stringSliceFromAny(obj["citations"])), allowedChunkIDs, chunkIDs)
 
 			// Embed a lightweight variant doc for retrieval.
 			varDoc := strings.TrimSpace(actTitle + "\n" + actKind + "\n" + shorten(excerpts, 1200))
@@ -465,4 +521,170 @@ func buildActivityExcerpts(byID map[uuid.UUID]*types.MaterialChunk, ids []uuid.U
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func validateActivityContent(obj map[string]any, activityKind string) []string {
+	if obj == nil {
+		return []string{"missing object"}
+	}
+
+	title := strings.TrimSpace(stringFromAny(obj["title"]))
+	kind := strings.ToLower(strings.TrimSpace(stringFromAny(obj["kind"])))
+	if kind == "" {
+		kind = strings.ToLower(strings.TrimSpace(activityKind))
+	}
+
+	rawContent := obj["content_json"]
+	content, ok := rawContent.(map[string]any)
+	if !ok || content == nil {
+		return []string{"content_json missing or invalid"}
+	}
+	rawBlocks, _ := content["blocks"].([]any)
+	if len(rawBlocks) == 0 {
+		return []string{"content_json.blocks missing"}
+	}
+
+	metrics := activityContentMetrics(rawBlocks)
+	minWords, minParagraphs, minCallouts := activityMinima(kind)
+
+	errs := make([]string, 0, 8)
+	if strings.TrimSpace(title) == "" {
+		errs = append(errs, "title missing")
+	}
+	if minWords > 0 && metrics.WordCount < minWords {
+		errs = append(errs, fmt.Sprintf("word_count too low (%d < %d)", metrics.WordCount, minWords))
+	}
+	if minParagraphs > 0 && metrics.Paragraphs < minParagraphs {
+		errs = append(errs, fmt.Sprintf("need >=%d paragraph blocks (got %d)", minParagraphs, metrics.Paragraphs))
+	}
+	if minCallouts > 0 && metrics.Callouts < minCallouts {
+		errs = append(errs, fmt.Sprintf("need >=%d callout blocks (got %d)", minCallouts, metrics.Callouts))
+	}
+	if metrics.Headings < 1 {
+		errs = append(errs, "need at least 1 heading block")
+	}
+	if metrics.HasWorkedExample == false && isLessonLikeActivityKind(kind) {
+		errs = append(errs, "missing worked example (include a Worked example heading or callout)")
+	}
+	if metrics.HasSelfCheck == false && isLessonLikeActivityKind(kind) {
+		errs = append(errs, "missing self-check prompt (include a Quick check/Self-check section)")
+	}
+	return errs
+}
+
+type activityMetrics struct {
+	WordCount      int
+	Headings       int
+	Paragraphs     int
+	Callouts       int
+	BulletBlocks   int
+	HasWorkedExample bool
+	HasSelfCheck     bool
+}
+
+func activityContentMetrics(rawBlocks []any) activityMetrics {
+	out := activityMetrics{}
+	for _, x := range rawBlocks {
+		b, ok := x.(map[string]any)
+		if !ok || b == nil {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"])))
+		contentMD := strings.TrimSpace(stringFromAny(b["content_md"]))
+		items := stringSliceFromAny(b["items"])
+
+		text := contentMD
+		if len(items) > 0 {
+			if text != "" {
+				text += "\n"
+			}
+			text += strings.Join(items, "\n")
+		}
+		out.WordCount += len(strings.Fields(text))
+
+		lc := strings.ToLower(text)
+		if strings.Contains(lc, "worked example") || strings.Contains(lc, "example:") {
+			out.HasWorkedExample = true
+		}
+		if strings.Contains(lc, "quick check") || strings.Contains(lc, "self-check") || strings.Contains(lc, "check yourself") {
+			out.HasSelfCheck = true
+		}
+		if strings.Contains(lc, "?") {
+			out.HasSelfCheck = true
+		}
+
+		switch kind {
+		case "heading":
+			out.Headings++
+		case "paragraph":
+			out.Paragraphs++
+		case "callout":
+			out.Callouts++
+		case "bullets", "steps":
+			out.BulletBlocks++
+		}
+	}
+	return out
+}
+
+func isLessonLikeActivityKind(kind string) bool {
+	k := strings.ToLower(strings.TrimSpace(kind))
+	switch k {
+	case "reading", "case", "lesson":
+		return true
+	default:
+		return false
+	}
+}
+
+func activityMinima(activityKind string) (minWords int, minParagraphs int, minCallouts int) {
+	k := strings.ToLower(strings.TrimSpace(activityKind))
+	switch k {
+	case "reading", "case", "lesson":
+		return 900, 6, 1
+	case "drill":
+		return 350, 2, 1
+	case "quiz":
+		return 220, 1, 0
+	default:
+		return 600, 4, 1
+	}
+}
+
+func filterAllowedChunkIDStrings(in []string, allowed map[string]bool, fallback []uuid.UUID) []string {
+	if len(in) == 0 && len(fallback) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		id, err := uuid.Parse(s)
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		s = id.String()
+		if len(allowed) > 0 && !allowed[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, id := range fallback {
+		if id == uuid.Nil {
+			continue
+		}
+		s := id.String()
+		if len(allowed) > 0 && !allowed[s] {
+			continue
+		}
+		return []string{s}
+	}
+	return nil
 }
