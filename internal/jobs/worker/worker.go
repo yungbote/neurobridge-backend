@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
@@ -83,6 +84,9 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			}
 
 			func() {
+				stopHB := w.startHeartbeat(ctx, job.ID)
+				defer stopHB()
+
 				defer func() {
 					if r := recover(); r != nil {
 						w.log.Error("Job handler panic",
@@ -102,6 +106,28 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 			}()
 		}
 	}
+}
+
+func (w *Worker) startHeartbeat(ctx context.Context, jobID uuid.UUID) func() {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if w == nil || w.repo == nil || w.db == nil || jobID == uuid.Nil {
+					continue
+				}
+				_ = w.repo.Heartbeat(dbctx.Context{Ctx: ctx, Tx: w.db}, jobID)
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 type missingHandlerError struct{ JobType string }

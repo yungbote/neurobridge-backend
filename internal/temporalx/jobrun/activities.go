@@ -69,7 +69,7 @@ func (a *Activities) Tick(ctx context.Context, jobID string) (TickResult, error)
 		return res, nil
 	}
 
-	stopHB := a.startHeartbeat(ctx)
+	stopHB := a.startHeartbeat(ctx, parsedJobID)
 	defer stopHB()
 
 	// Mark running (best-effort; if canceled concurrently, do nothing).
@@ -163,19 +163,27 @@ func (a *Activities) loadJob(ctx context.Context, jobID uuid.UUID) (*types.JobRu
 	return rows[0], nil
 }
 
-func (a *Activities) startHeartbeat(ctx context.Context) func() {
+func (a *Activities) startHeartbeat(ctx context.Context, jobID uuid.UUID) func() {
 	done := make(chan struct{})
 	go func() {
-		t := time.NewTicker(10 * time.Second)
-		defer t.Stop()
+		temporalHB := time.NewTicker(10 * time.Second)
+		defer temporalHB.Stop()
+
+		dbHB := time.NewTicker(30 * time.Second)
+		defer dbHB.Stop()
 		for {
 			select {
 			case <-done:
 				return
 			case <-ctx.Done():
 				return
-			case <-t.C:
+			case <-temporalHB.C:
 				activity.RecordHeartbeat(ctx)
+			case <-dbHB.C:
+				if a == nil || a.DB == nil || a.Jobs == nil || jobID == uuid.Nil {
+					continue
+				}
+				_ = a.Jobs.Heartbeat(dbctx.Context{Ctx: ctx, Tx: a.DB}, jobID)
 			}
 		}
 	}()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -909,7 +910,169 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		}
 	}
 
+	// Generated figures are stored in a private bucket; rewrite figure URLs to a protected streaming endpoint.
+	// This avoids mixed public/private bucket configs and prevents stale/signed URLs from breaking the UI.
+	if withAssetURLs, changed := h.rewriteNodeDocFigureAssetURLs(doc, nodeID); changed {
+		doc = withAssetURLs
+	}
+
 	response.RespondOK(c, gin.H{"doc": doc})
+}
+
+// GET /api/path-nodes/:id/assets/view?key=...
+func (h *PathHandler) ViewPathNodeAsset(c *gin.Context) {
+	rd := ctxutil.GetRequestData(c.Request.Context())
+	if rd == nil || rd.UserID == uuid.Nil {
+		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+	if h.pathNodes == nil || h.path == nil {
+		response.RespondError(c, http.StatusInternalServerError, "path_repo_missing", nil)
+		return
+	}
+	if h.bucket == nil {
+		response.RespondError(c, http.StatusInternalServerError, "bucket_unavailable", nil)
+		return
+	}
+
+	nodeID, err := uuid.Parse(c.Param("id"))
+	if err != nil || nodeID == uuid.Nil {
+		response.RespondError(c, http.StatusBadRequest, "invalid_path_node_id", err)
+		return
+	}
+	storageKey := strings.TrimSpace(c.Query("key"))
+	if storageKey == "" {
+		response.RespondError(c, http.StatusBadRequest, "missing_storage_key", nil)
+		return
+	}
+
+	node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID)
+	if err != nil {
+		h.log.Error("ViewPathNodeAsset failed (load node)", "error", err, "path_node_id", nodeID)
+		response.RespondError(c, http.StatusInternalServerError, "load_node_failed", err)
+		return
+	}
+	if node == nil || node.PathID == uuid.Nil {
+		response.RespondError(c, http.StatusNotFound, "node_not_found", nil)
+		return
+	}
+
+	pathRow, err := h.path.GetByID(dbctx.Context{Ctx: c.Request.Context()}, node.PathID)
+	if err != nil {
+		h.log.Error("ViewPathNodeAsset failed (load path)", "error", err, "path_id", node.PathID)
+		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
+		return
+	}
+	if pathRow == nil || pathRow.UserID == nil || *pathRow.UserID != rd.UserID {
+		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
+		return
+	}
+
+	// Prevent arbitrary bucket reads: only allow generated node figure assets for this node.
+	allowedPrefix := fmt.Sprintf("generated/node_figures/%s/%s/", node.PathID.String(), node.ID.String())
+	if !strings.HasPrefix(storageKey, allowedPrefix) {
+		response.RespondError(c, http.StatusNotFound, "asset_not_found", nil)
+		return
+	}
+
+	ctx := c.Request.Context()
+	attrs, err := h.bucket.GetObjectAttrs(ctx, gcp.BucketCategoryMaterial, storageKey)
+	if err != nil {
+		h.log.Error("ViewPathNodeAsset failed (GetObjectAttrs)", "error", err, "storage_key", storageKey)
+		response.RespondError(c, http.StatusNotFound, "asset_not_found", err)
+		return
+	}
+
+	contentType := resolveContentType("", attrs.ContentType, storageKey, storageKey)
+	disposition := buildContentDisposition(storageKey, c.Query("download") != "")
+	size := attrs.Size
+	rangeHeader := c.GetHeader("Range")
+
+	if rangeHeader != "" && size > 0 {
+		rng, ok, rErr := parseByteRangeHeader(rangeHeader, size)
+		if rErr != nil {
+			c.Header("Content-Range", fmt.Sprintf("bytes */%d", size))
+			response.RespondError(c, http.StatusRequestedRangeNotSatisfiable, "invalid_range", rErr)
+			return
+		}
+		if ok {
+			reader, err := h.bucket.OpenRangeReader(ctx, gcp.BucketCategoryMaterial, storageKey, rng.start, rng.end-rng.start+1)
+			if err != nil {
+				h.log.Error("ViewPathNodeAsset failed (OpenRangeReader)", "error", err, "storage_key", storageKey)
+				response.RespondError(c, http.StatusInternalServerError, "stream_failed", err)
+				return
+			}
+			defer reader.Close()
+			headers := map[string]string{
+				"Content-Range":       fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, size),
+				"Accept-Ranges":       "bytes",
+				"Content-Disposition": disposition,
+			}
+			c.DataFromReader(http.StatusPartialContent, rng.end-rng.start+1, contentType, reader, headers)
+			return
+		}
+	}
+
+	reader, err := h.bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, storageKey)
+	if err != nil {
+		h.log.Error("ViewPathNodeAsset failed (DownloadFile)", "error", err, "storage_key", storageKey)
+		response.RespondError(c, http.StatusInternalServerError, "stream_failed", err)
+		return
+	}
+	defer reader.Close()
+	contentLength := size
+	if contentLength <= 0 {
+		contentLength = -1
+	}
+	headers := map[string]string{
+		"Accept-Ranges":       "bytes",
+		"Content-Disposition": disposition,
+	}
+	c.DataFromReader(http.StatusOK, contentLength, contentType, reader, headers)
+}
+
+func (h *PathHandler) rewriteNodeDocFigureAssetURLs(doc content.NodeDocV1, nodeID uuid.UUID) (content.NodeDocV1, bool) {
+	if h == nil || h.bucket == nil || nodeID == uuid.Nil || len(doc.Blocks) == 0 {
+		return doc, false
+	}
+
+	changed := false
+	base := fmt.Sprintf("/api/path-nodes/%s/assets/view?key=", nodeID.String())
+
+	for i := range doc.Blocks {
+		b := doc.Blocks[i]
+		if b == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(stringFromAny(b["type"]))) != "figure" {
+			continue
+		}
+		assetAny, ok := b["asset"]
+		if !ok || assetAny == nil {
+			continue
+		}
+		asset, ok := assetAny.(map[string]any)
+		if !ok || asset == nil {
+			continue
+		}
+		source := strings.ToLower(strings.TrimSpace(stringFromAny(asset["source"])))
+		if source == "external" {
+			continue
+		}
+		storageKey := strings.TrimSpace(stringFromAny(asset["storage_key"]))
+		if storageKey == "" {
+			continue
+		}
+		wantURL := base + url.QueryEscape(storageKey)
+		if strings.TrimSpace(stringFromAny(asset["url"])) == wantURL {
+			continue
+		}
+		asset["url"] = wantURL
+		b["asset"] = asset
+		changed = true
+	}
+
+	return doc, changed
 }
 
 type DocPatchSelection struct {

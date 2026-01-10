@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -9,6 +10,9 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,14 +175,161 @@ func thumbnailKeyForMaterial(mf *types.MaterialFile) string {
 	return base + "/derived/thumbnail.png"
 }
 
+func (s *service) EnsureThumbnail(dbc dbctx.Context, mf *types.MaterialFile) error {
+	if s == nil || mf == nil || mf.ID == uuid.Nil {
+		return nil
+	}
+	if s.ex == nil || s.ex.Bucket == nil {
+		return nil
+	}
+
+	kind := inferThumbKind(mf)
+	assets := s.discoverThumbCandidates(dbc.Ctx, mf, kind)
+	_, err := s.ensureThumbnailAsset(dbc, mf, kind, assets)
+	return err
+}
+
+func inferThumbKind(mf *types.MaterialFile) string {
+	if mf == nil {
+		return "unknown"
+	}
+
+	if v := strings.ToLower(strings.TrimSpace(mf.AIType)); v != "" {
+		switch v {
+		case "pdf", "docx", "pptx", "image", "video", "audio":
+			return v
+		}
+	}
+
+	name := strings.ToLower(strings.TrimSpace(mf.OriginalName))
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(name)))
+	mime := strings.ToLower(strings.TrimSpace(mf.MimeType))
+
+	switch {
+	case strings.HasPrefix(mime, "image/"):
+		return "image"
+	case strings.HasPrefix(mime, "video/"):
+		return "video"
+	case strings.HasPrefix(mime, "audio/"):
+		return "audio"
+	case mime == "application/pdf" || ext == ".pdf":
+		return "pdf"
+	case ext == ".docx" || ext == ".doc" || strings.Contains(mime, "wordprocessingml"):
+		return "docx"
+	case ext == ".pptx" || ext == ".ppt" || strings.Contains(mime, "presentationml"):
+		return "pptx"
+	default:
+		return "unknown"
+	}
+}
+
+func (s *service) discoverThumbCandidates(ctx context.Context, mf *types.MaterialFile, kind string) []AssetRef {
+	if s == nil || s.ex == nil || s.ex.Bucket == nil || mf == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	base := strings.TrimRight(strings.TrimSpace(mf.StorageKey), "/")
+	if base == "" {
+		return nil
+	}
+
+	k := strings.ToLower(strings.TrimSpace(kind))
+
+	switch k {
+	case "pdf", "docx", "pptx":
+		prefix := base + "/derived/pages/"
+		keys, err := s.ex.Bucket.ListKeys(ctx, gcp.BucketCategoryMaterial, prefix)
+		if err != nil || len(keys) == 0 {
+			return nil
+		}
+		sort.Strings(keys)
+		out := make([]AssetRef, 0, len(keys))
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key == "" || !strings.HasSuffix(strings.ToLower(key), ".png") {
+				continue
+			}
+			page := parseSuffixInt(key, "page_", ".png")
+			meta := map[string]any{"format": "png"}
+			if page > 0 {
+				meta["page"] = page
+			}
+			out = append(out, AssetRef{
+				Kind:     "pdf_page",
+				Key:      key,
+				URL:      s.ex.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, key),
+				Metadata: meta,
+			})
+		}
+		return out
+
+	case "video":
+		prefix := base + "/derived/frames/"
+		keys, err := s.ex.Bucket.ListKeys(ctx, gcp.BucketCategoryMaterial, prefix)
+		if err != nil || len(keys) == 0 {
+			return nil
+		}
+		sort.Strings(keys)
+		out := make([]AssetRef, 0, len(keys))
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			lk := strings.ToLower(key)
+			if !strings.HasSuffix(lk, ".jpg") && !strings.HasSuffix(lk, ".jpeg") {
+				continue
+			}
+			frame := parseSuffixInt(key, "frame_", filepath.Ext(key))
+			meta := map[string]any{}
+			if frame > 0 {
+				meta["frame_index"] = frame
+			}
+			out = append(out, AssetRef{
+				Kind:     "frame",
+				Key:      key,
+				URL:      s.ex.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, key),
+				Metadata: meta,
+			})
+		}
+		return out
+
+	default:
+		return nil
+	}
+}
+
+func parseSuffixInt(key string, prefix string, suffix string) int {
+	key = strings.TrimSpace(key)
+	prefix = strings.TrimSpace(prefix)
+	suffix = strings.TrimSpace(suffix)
+	if key == "" || prefix == "" || suffix == "" {
+		return 0
+	}
+	base := filepath.Base(key)
+	if !strings.HasPrefix(base, prefix) || !strings.HasSuffix(base, suffix) {
+		return 0
+	}
+	s := strings.TrimSuffix(strings.TrimPrefix(base, prefix), suffix)
+	s = strings.TrimLeft(s, "0")
+	if s == "" {
+		s = "0"
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
 func (s *service) ensureThumbnailAsset(dbc dbctx.Context, mf *types.MaterialFile, kind string, assets []AssetRef) (*types.MaterialAsset, error) {
 	if s == nil || s.ex == nil || s.ex.Bucket == nil || mf == nil || mf.ID == uuid.Nil {
 		return nil, nil
 	}
 	if s.materialAssets == nil {
-		return nil, nil
-	}
-	if mf.ThumbnailAssetID != nil && *mf.ThumbnailAssetID != uuid.Nil {
 		return nil, nil
 	}
 
@@ -189,6 +340,52 @@ func (s *service) ensureThumbnailAsset(dbc dbctx.Context, mf *types.MaterialFile
 	}
 	if tx == nil {
 		return nil, nil
+	}
+
+	// Validate existing linkage if present; repair if broken.
+	if mf.ThumbnailAssetID != nil && *mf.ThumbnailAssetID != uuid.Nil {
+		existing, err := s.materialAssets.GetByID(dbc, *mf.ThumbnailAssetID)
+		if err == nil && existing != nil && existing.ID != uuid.Nil &&
+			existing.MaterialFileID == mf.ID &&
+			strings.EqualFold(strings.TrimSpace(existing.Kind), "thumbnail") &&
+			strings.TrimSpace(existing.StorageKey) != "" {
+			return existing, nil
+		}
+		// Clear invalid pointer so we can re-link.
+		_ = tx.WithContext(dbc.Ctx).Model(&types.MaterialFile{}).
+			Where("id = ?", mf.ID).
+			Updates(map[string]any{
+				"thumbnail_asset_id": nil,
+				"updated_at":         now,
+			}).Error
+		mf.ThumbnailAssetID = nil
+	}
+
+	// Reuse an existing thumbnail asset row if one exists (avoid duplicates).
+	existingRows, err := s.materialAssets.GetByMaterialFileIDs(dbc, []uuid.UUID{mf.ID})
+	if err == nil && len(existingRows) > 0 {
+		for _, r := range existingRows {
+			if r == nil || r.ID == uuid.Nil {
+				continue
+			}
+			if r.MaterialFileID != mf.ID {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(r.Kind), "thumbnail") {
+				continue
+			}
+			if strings.TrimSpace(r.StorageKey) == "" {
+				continue
+			}
+			_ = tx.WithContext(dbc.Ctx).Model(&types.MaterialFile{}).
+				Where("id = ?", mf.ID).
+				Updates(map[string]any{
+					"thumbnail_asset_id": r.ID,
+					"updated_at":         now,
+				}).Error
+			mf.ThumbnailAssetID = &r.ID
+			return r, nil
+		}
 	}
 
 	candidate := pickThumbnailCandidate(kind, mf, assets)

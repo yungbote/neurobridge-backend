@@ -288,21 +288,6 @@ func (e *DAGEngine) pollChild(ctx *jobrt.Context, st *OrchestratorState, def Sta
 		ss.StartedAt = &t
 	}
 
-	if ss.StartedAt != nil && e.ChildMaxWait > 0 && time.Since(*ss.StartedAt) > e.ChildMaxWait {
-		now := time.Now().UTC()
-		if ctx.Repo != nil {
-			_ = ctx.Repo.UpdateFields(dbctx.Context{Ctx: ctx.Ctx, Tx: ctx.DB}, childID, map[string]interface{}{
-				"status":        "failed",
-				"stage":         "timeout",
-				"error":         fmt.Sprintf("timed out after %s waiting for parent stage %s", e.ChildMaxWait.String(), def.Name),
-				"last_error_at": now,
-				"locked_at":     nil,
-				"updated_at":    now,
-			})
-		}
-		return e.failStage(ctx, st, def, ss, fmt.Errorf("child stage %s timed out after %s (child_job_id=%s)", def.Name, e.ChildMaxWait.String(), childID.String()), "timeout_"+def.Name)
-	}
-
 	if e.ChildStaleRunning > 0 && strings.EqualFold(strings.TrimSpace(child.Status), "running") {
 		stale := false
 		if child.HeartbeatAt != nil && !child.HeartbeatAt.IsZero() {

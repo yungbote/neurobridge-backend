@@ -128,6 +128,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/path-nodes/:id/activities", cfg.PathHandler.ListPathNodeActivities)
 			protected.GET("/path-nodes/:id/content", cfg.PathHandler.GetPathNodeContent)
 			protected.GET("/path-nodes/:id/doc", cfg.PathHandler.GetPathNodeDoc)
+			protected.GET("/path-nodes/:id/assets/view", cfg.PathHandler.ViewPathNodeAsset)
 			protected.POST("/path-nodes/:id/doc/patch", cfg.PathHandler.EnqueuePathNodeDocPatch)
 			protected.GET("/path-nodes/:id/doc/revisions", cfg.PathHandler.ListPathNodeDocRevisions)
 			protected.GET("/path-nodes/:id/doc/materials", cfg.PathHandler.ListPathNodeDocMaterials)

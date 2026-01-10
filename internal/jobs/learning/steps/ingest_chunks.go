@@ -121,6 +121,22 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 			out.FilesAlreadyChunked++
 			done := out.FilesAlreadyChunked + out.FilesProcessed
 			report("ingest", ingestProgress(done, out.FilesTotal), fmt.Sprintf("Already chunked %d/%d", done, out.FilesTotal))
+
+			// Ensure thumbnails exist even when extraction is skipped via idempotency.
+			// This fixes older/partial ingestions where chunks exist but thumbnail_asset_id is empty.
+			func() {
+				mt := strings.ToLower(strings.TrimSpace(mf.MimeType))
+				if strings.HasPrefix(mt, "image/") {
+					// Images already have a built-in thumbnail fallback (the original upload).
+					return
+				}
+				fileCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				_ = deps.DB.WithContext(fileCtx).Transaction(func(tx *gorm.DB) error {
+					return deps.Extract.EnsureThumbnail(dbctx.Context{Ctx: fileCtx, Tx: tx}, mf)
+				})
+			}()
+
 			continue
 		}
 

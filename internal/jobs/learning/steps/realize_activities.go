@@ -335,6 +335,10 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					lastErrs = []string{"generate_failed: " + err.Error()}
 					continue
 				}
+				// Auto-repair: some valid content can come back without explicit heading blocks.
+				// We enforce a stable minimum structure (at least one heading) without re-prompting
+				// or changing the semantic content/quality of the generation.
+				ensureActivityContentHasHeadingBlock(obj, titleHint)
 				lastErrs = validateActivityContent(obj, kind)
 				if len(lastErrs) == 0 {
 					break
@@ -570,6 +574,52 @@ func validateActivityContent(obj map[string]any, activityKind string) []string {
 		errs = append(errs, "missing self-check prompt (include a Quick check/Self-check section)")
 	}
 	return errs
+}
+
+func ensureActivityContentHasHeadingBlock(obj map[string]any, fallbackHeading string) bool {
+	if obj == nil {
+		return false
+	}
+	rawContent := obj["content_json"]
+	content, ok := rawContent.(map[string]any)
+	if !ok || content == nil {
+		return false
+	}
+	rawBlocks, ok := content["blocks"].([]any)
+	if !ok || len(rawBlocks) == 0 {
+		return false
+	}
+
+	for _, x := range rawBlocks {
+		b, ok := x.(map[string]any)
+		if !ok || b == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"]))) == "heading" {
+			return false
+		}
+	}
+
+	heading := strings.TrimSpace(stringFromAny(obj["title"]))
+	if heading == "" {
+		heading = strings.TrimSpace(fallbackHeading)
+	}
+	if heading == "" {
+		heading = "Overview"
+	}
+
+	hb := map[string]any{
+		"kind":       "heading",
+		"content_md": heading,
+		"items":      []any{},
+		"asset_refs": []any{},
+	}
+	out := make([]any, 0, len(rawBlocks)+1)
+	out = append(out, hb)
+	out = append(out, rawBlocks...)
+	content["blocks"] = out
+	obj["content_json"] = content
+	return true
 }
 
 type activityMetrics struct {

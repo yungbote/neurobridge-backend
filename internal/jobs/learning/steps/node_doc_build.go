@@ -764,14 +764,15 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	  - Use items_md: each entry is one checklist item (no leading "- [ ]").
 	- glossary:
 	  - Use terms: {term, definition_md}. Definitions are short and operational (not textbooky).
-	- faq:
-	  - Use qas: {question_md, answer_md}. Keep answers tight; no rambling.
-	- intuition/mental_model/why_it_matters:
-	  - Use md: a short, vivid section that adds insight (not generic filler).
+		- faq:
+		  - Use qas: {question_md, answer_md}. Keep answers tight; no rambling.
+		- intuition/mental_model/why_it_matters:
+		  - Use md: a short, vivid section that adds insight (not generic filler).
+		  - For intuition and mental_model blocks: if a visualization would materially improve comprehension or memory, include a supporting visual block immediately before/after it (figure/video/diagram) and make the visual caption explicitly reinforce that specific intuition/mental model.
 
-	Hard rules:
-	- Output ONLY valid JSON that matches the schema. No surrounding text.
-	- Do not include planning/meta/check-in language. Do not offer customization options.
+		Hard rules:
+		- Output ONLY valid JSON that matches the schema. No surrounding text.
+		- Do not include planning/meta/check-in language. Do not offer customization options.
 	- Quick checks must be short-answer or true/false (no multiple choice).
 	- Heading levels must be 2, 3, or 4 (never use 1).
 	- Include a tip callout titled exactly "Worked example".

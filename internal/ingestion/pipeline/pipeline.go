@@ -30,6 +30,9 @@ type ExtractionSummary = extractor.ExtractionSummary
 
 type ContentExtractionService interface {
 	ExtractAndPersist(dbc dbctx.Context, mf *types.MaterialFile) (*ExtractionSummary, error)
+	// EnsureThumbnail is a best-effort helper to guarantee a UI thumbnail exists for a file,
+	// even if chunk extraction is skipped due to idempotency.
+	EnsureThumbnail(dbc dbctx.Context, mf *types.MaterialFile) error
 }
 
 type service struct {
