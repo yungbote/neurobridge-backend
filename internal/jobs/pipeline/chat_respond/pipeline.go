@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -35,7 +35,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("respond", 5, "Generating response")
-	out, err := steps.Respond(jc.Ctx, steps.RespondDeps{
+	out, err := chatmod.New(chatmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		AI:        p.ai,
@@ -49,7 +49,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		JobRuns:   p.jobRuns,
 		Jobs:      p.jobs,
 		Notify:    p.notify,
-	}, steps.RespondInput{
+	}).Respond(jc.Ctx, chatmod.RespondInput{
 		UserID:             jc.Job.OwnerUserID,
 		ThreadID:           threadID,
 		UserMessageID:      userMsgID,

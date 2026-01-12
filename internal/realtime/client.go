@@ -3,7 +3,7 @@ package realtime
 import (
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 )
 
 type SSEClient struct {

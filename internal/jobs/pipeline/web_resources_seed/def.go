@@ -3,10 +3,10 @@ package web_resources_seed
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 

@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,7 +25,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("user_profile", 2, "Refreshing user profile")
-	out, err := steps.UserProfileRefresh(jc.Ctx, steps.UserProfileRefreshDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:          p.db,
 		Log:         p.log,
 		StylePrefs:  p.stylePrefs,
@@ -36,7 +36,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:         p.vec,
 		Saga:        p.saga,
 		Bootstrap:   p.bootstrap,
-	}, steps.UserProfileRefreshInput{
+	}).UserProfileRefresh(jc.Ctx, learningmod.UserProfileRefreshInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

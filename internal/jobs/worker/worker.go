@@ -11,8 +11,8 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 

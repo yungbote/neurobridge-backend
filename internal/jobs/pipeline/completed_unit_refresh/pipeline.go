@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,18 +25,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("completed", 2, "Refreshing completed units")
-	out, err := steps.CompletedUnitRefresh(jc.Ctx, steps.CompletedUnitRefreshDeps{
-		DB:        p.db,
-		Log:       p.log,
-		Completed: p.completed,
-		Progress:  p.progress,
-		Concepts:  p.concepts,
-		Act:       p.act,
-		ActCon:    p.actCon,
-		Chains:    p.chains,
-		Mastery:   p.mastery,
-		Bootstrap: p.bootstrap,
-	}, steps.CompletedUnitRefreshInput{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		CompletedUnits:   p.completed,
+		ProgEvents:       p.progress,
+		Concepts:         p.concepts,
+		Activities:       p.act,
+		ActivityConcepts: p.actCon,
+		ChainSignatures:  p.chains,
+		ConceptState:     p.mastery,
+		Graph:            p.graph,
+		Bootstrap:        p.bootstrap,
+	}).CompletedUnitRefresh(jc.Ctx, learningmod.CompletedUnitRefreshInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

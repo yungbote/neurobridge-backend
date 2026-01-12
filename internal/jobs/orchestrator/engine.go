@@ -15,7 +15,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 // -------------------- Public API --------------------

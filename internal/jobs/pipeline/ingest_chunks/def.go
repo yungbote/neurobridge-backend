@@ -4,8 +4,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 

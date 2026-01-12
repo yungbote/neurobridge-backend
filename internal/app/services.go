@@ -7,7 +7,6 @@ import (
 
 	"gorm.io/gorm"
 
-	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chain_signature_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_maintain"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_path_index"
@@ -44,7 +43,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/variant_stats_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/web_resources_seed"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -192,6 +192,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
+		clients.Neo4j,
 		repos.ChatThread,
 		repos.ChatMessage,
 		repos.ChatThreadState,
@@ -284,7 +285,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
 		return Services{}, err
 	}
@@ -327,7 +328,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, clients.OpenaiClient, bootstrapSvc)
+	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
 		return Services{}, err
 	}
@@ -336,6 +337,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.OpenaiClient,
+		clients.Neo4j,
 		jobService,
 		repos.JobRun,
 		repos.Path,
@@ -356,6 +358,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.OpenaiClient,
+		clients.Neo4j,
 		repos.Path,
 		repos.PathNode,
 		repos.ConceptCluster,
@@ -518,6 +521,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialChunk,
 		repos.UserProfileVector,
 		repos.TeachingPattern,
+		clients.Neo4j,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -570,6 +574,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ActivityConcept,
 		repos.ChainSignature,
 		repos.UserConceptState,
+		clients.Neo4j,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(completedUnits); err != nil {
@@ -595,6 +600,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Extract: extractor,
 			AI:      clients.OpenaiClient,
 			Vec:     clients.PineconeVectorStore,
+			Graph:   clients.Neo4j,
 			Bucket:  clients.GcpBucket,
 			Avatar:  avatarService,
 
@@ -653,6 +659,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.UserEventCursor,
 		repos.UserConceptState,
 		repos.UserStylePreference,
+		clients.Neo4j,
 		repos.JobRun,
 	)
 	if err := jobRegistry.Register(userModel); err != nil {

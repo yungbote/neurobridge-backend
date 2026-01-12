@@ -3,9 +3,10 @@ package library_taxonomy_route
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -13,6 +14,7 @@ type Pipeline struct {
 	db     *gorm.DB
 	log    *logger.Logger
 	ai     openai.Client
+	graph  *neo4jdb.Client
 	jobs   services.JobService
 	jobRun repos.JobRunRepo
 
@@ -32,6 +34,7 @@ func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
 	ai openai.Client,
+	graph *neo4jdb.Client,
 	jobs services.JobService,
 	jobRun repos.JobRunRepo,
 	path repos.PathRepo,
@@ -48,6 +51,7 @@ func New(
 		db:          db,
 		log:         baseLog.With("job", "library_taxonomy_route"),
 		ai:          ai,
+		graph:       graph,
 		jobs:        jobs,
 		jobRun:      jobRun,
 		path:        path,

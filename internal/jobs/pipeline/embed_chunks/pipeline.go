@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,7 +25,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("embed", 2, "Embedding chunks")
-	out, err := steps.EmbedChunks(jc.Ctx, steps.EmbedChunksDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
@@ -34,7 +34,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:       p.vec,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
-	}, steps.EmbedChunksInput{
+	}).EmbedChunks(jc.Ctx, learningmod.EmbedChunksInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

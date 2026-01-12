@@ -18,20 +18,18 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
-	libsteps "github.com/yungbote/neurobridge-backend/internal/jobs/library/steps"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/ctxutil"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/envutil"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
-	"github.com/yungbote/neurobridge-backend/internal/services"
+	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
+	"github.com/yungbote/neurobridge-backend/internal/platform/apierr"
+	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 )
 
 type LibraryHandler struct {
 	log *logger.Logger
 	db  *gorm.DB
 
-	jobSvc services.JobService
-	jobRun repos.JobRunRepo
+	library librarymod.Usecases
 
 	nodes      repos.LibraryTaxonomyNodeRepo
 	edges      repos.LibraryTaxonomyEdgeRepo
@@ -43,8 +41,7 @@ type LibraryHandler struct {
 func NewLibraryHandler(
 	log *logger.Logger,
 	db *gorm.DB,
-	jobSvc services.JobService,
-	jobRun repos.JobRunRepo,
+	library librarymod.Usecases,
 	nodes repos.LibraryTaxonomyNodeRepo,
 	edges repos.LibraryTaxonomyEdgeRepo,
 	membership repos.LibraryTaxonomyMembershipRepo,
@@ -54,8 +51,7 @@ func NewLibraryHandler(
 	return &LibraryHandler{
 		log:        log.With("handler", "LibraryHandler"),
 		db:         db,
-		jobSvc:     jobSvc,
-		jobRun:     jobRun,
+		library:    library,
 		nodes:      nodes,
 		edges:      edges,
 		membership: membership,
@@ -71,67 +67,18 @@ func (h *LibraryHandler) GetTaxonomySnapshot(c *gin.Context) {
 		response.RespondError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
-	if h == nil || h.snapshots == nil || h.nodes == nil || h.edges == nil || h.membership == nil || h.state == nil {
-		response.RespondError(c, http.StatusInternalServerError, "library_not_configured", nil)
-		return
-	}
 
 	userID := rd.UserID
-	ctx := c.Request.Context()
 
-	snap, err := h.snapshots.GetByUserID(dbctx.Context{Ctx: ctx}, userID)
+	snapshotAny, enqueuedRefine, err := h.library.GetTaxonomySnapshot(c.Request.Context(), userID)
 	if err != nil {
-		h.log.Error("GetTaxonomySnapshot failed (load snapshot)", "error", err, "user_id", userID.String())
+		var ae *apierr.Error
+		if errors.As(err, &ae) {
+			response.RespondError(c, ae.Status, ae.Code, ae.Err)
+			return
+		}
 		response.RespondError(c, http.StatusInternalServerError, "load_snapshot_failed", err)
 		return
-	}
-
-	// If missing, build a snapshot synchronously (no AI calls).
-	if snap == nil || len(snap.SnapshotJSON) == 0 || string(snap.SnapshotJSON) == "null" {
-		_ = libsteps.BuildAndPersistLibraryTaxonomySnapshot(ctx, libsteps.LibraryTaxonomyRouteDeps{
-			TaxNodes:   h.nodes,
-			TaxEdges:   h.edges,
-			Membership: h.membership,
-			State:      h.state,
-			Snapshots:  h.snapshots,
-		}, userID)
-		snap, _ = h.snapshots.GetByUserID(dbctx.Context{Ctx: ctx}, userID)
-	}
-
-	var snapshotAny any
-	if snap != nil && len(snap.SnapshotJSON) > 0 && string(snap.SnapshotJSON) != "null" {
-		_ = json.Unmarshal(snap.SnapshotJSON, &snapshotAny)
-	}
-
-	// Optional: enqueue refine if thresholds are crossed and no refine job is already runnable.
-	enqueuedRefine := false
-	if h.jobSvc != nil && h.jobRun != nil {
-		state, err := h.state.GetByUserID(dbctx.Context{Ctx: ctx}, userID)
-		if err == nil {
-			refineNewPathsThreshold := envutil.Int("LIBRARY_TAXONOMY_REFINE_NEW_PATHS_THRESHOLD", 5)
-			if refineNewPathsThreshold < 1 {
-				refineNewPathsThreshold = 1
-			}
-			refineUnsortedThreshold := envutil.Int("LIBRARY_TAXONOMY_REFINE_UNSORTED_THRESHOLD", 3)
-			if refineUnsortedThreshold < 1 {
-				refineUnsortedThreshold = 1
-			}
-
-			locked := state != nil && state.RefineLockUntil != nil && state.RefineLockUntil.After(time.Now().UTC())
-			should := state == nil || state.LastRefinedAt == nil
-			if !should && state != nil {
-				should = state.NewPathsSinceRefine >= refineNewPathsThreshold || state.PendingUnsortedPaths >= refineUnsortedThreshold
-			}
-			if should && !locked {
-				entityID := userID
-				exists, err := h.jobRun.ExistsRunnable(dbctx.Context{Ctx: ctx}, userID, "library_taxonomy_refine", "user", &entityID)
-				if err == nil && !exists {
-					if _, err := h.jobSvc.Enqueue(dbctx.Context{Ctx: ctx}, userID, "library_taxonomy_refine", "user", &entityID, map[string]any{"user_id": userID.String()}); err == nil {
-						enqueuedRefine = true
-					}
-				}
-			}
-		}
 	}
 
 	response.RespondOK(c, gin.H{

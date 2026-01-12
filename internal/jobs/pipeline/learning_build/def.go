@@ -8,12 +8,13 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	ingestion "github.com/yungbote/neurobridge-backend/internal/ingestion/pipeline"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -21,6 +22,7 @@ type InlineDeps struct {
 	Extract ingestion.ContentExtractionService
 	AI      openai.Client
 	Vec     pinecone.VectorStore
+	Graph   *neo4jdb.Client
 	Bucket  gcp.BucketService
 	Avatar  services.AvatarService
 

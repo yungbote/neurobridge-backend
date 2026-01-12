@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -38,7 +38,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("seed", 2, "Seeding learning materials")
-	out, err := steps.WebResourcesSeed(jc.Ctx, steps.WebResourcesSeedDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
@@ -50,7 +50,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		AI:        p.ai,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
-	}, steps.WebResourcesSeedInput{
+	}).WebResourcesSeed(jc.Ctx, learningmod.WebResourcesSeedInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
@@ -81,7 +81,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	return nil
 }
 
-func pauseForUser(jc *jobrt.Context, setID, sagaID uuid.UUID, out steps.WebResourcesSeedOutput) {
+func pauseForUser(jc *jobrt.Context, setID, sagaID uuid.UUID, out learningmod.WebResourcesSeedOutput) {
 	if jc == nil || jc.Job == nil || jc.Repo == nil {
 		return
 	}

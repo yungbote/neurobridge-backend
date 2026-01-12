@@ -7,7 +7,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/learning"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/materials"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/user"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"gorm.io/gorm"
 )
 

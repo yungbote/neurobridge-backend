@@ -1,8 +1,8 @@
 package saga_cleanup
 
 import (
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -11,13 +11,13 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("cleanup", 2, "Cleaning up old sagas")
-	out, err := steps.SagaCleanup(jc.Ctx, steps.SagaCleanupDeps{
-		DB:      p.db,
-		Log:     p.log,
-		Sagas:   p.sagas,
-		SagaSvc: p.saga,
-		Bucket:  p.bucket,
-	}, steps.SagaCleanupInput{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:     p.db,
+		Log:    p.log,
+		Sagas:  p.sagas,
+		Saga:   p.saga,
+		Bucket: p.bucket,
+	}).SagaCleanup(jc.Ctx, learningmod.SagaCleanupInput{
 		OwnerUserID: jc.Job.OwnerUserID,
 	})
 	if err != nil {

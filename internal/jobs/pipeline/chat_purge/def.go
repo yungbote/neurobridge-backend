@@ -3,8 +3,8 @@ package chat_purge
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 )
 
 type Pipeline struct {

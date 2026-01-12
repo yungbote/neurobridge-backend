@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 

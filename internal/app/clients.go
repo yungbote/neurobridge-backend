@@ -1,18 +1,20 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/localmedia"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
-	"github.com/yungbote/neurobridge-backend/internal/clients/sendgrid"
-	"github.com/yungbote/neurobridge-backend/internal/clients/twilio"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/platform/localmedia"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/platform/sendgrid"
+	"github.com/yungbote/neurobridge-backend/internal/platform/twilio"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
 	"github.com/yungbote/neurobridge-backend/internal/temporalx"
 
@@ -22,6 +24,9 @@ import (
 type Clients struct {
 	// Redis
 	SSEBus bus.Bus
+
+	// Neo4j (graph)
+	Neo4j *neo4jdb.Client
 
 	// OpenAI
 	OpenaiClient  openai.Client
@@ -63,6 +68,17 @@ func wireClients(log *logger.Logger) (Clients, error) {
 			return Clients{}, fmt.Errorf("init redis SSE bus: %w", err)
 		}
 		out.SSEBus = b
+	}
+
+	// ---------------- Neo4j (optional) ----------------
+	neo, err := neo4jdb.NewFromEnv(log)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init neo4j client: %w", err)
+	}
+	if neo != nil {
+		out.Neo4j = neo
+		log.Info("Neo4j enabled", "database", neo.Database)
 	}
 
 	// ---------------- GCP Bucket ----------------
@@ -182,6 +198,12 @@ func wireClients(log *logger.Logger) (Clients, error) {
 func (c *Clients) Close() {
 	if c == nil {
 		return
+	}
+	if c.Neo4j != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.Neo4j.Close(ctx)
+		cancel()
+		c.Neo4j = nil
 	}
 	if c.Temporal != nil {
 		c.Temporal.Close()

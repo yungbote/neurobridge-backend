@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -34,7 +34,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	threadID, _ := jc.PayloadUUID("thread_id")
 
 	jc.Progress("intake", 2, "Reviewing your materials")
-	out, err := steps.PathIntake(jc.Ctx, steps.PathIntakeDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
@@ -47,7 +47,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		AI:        p.ai,
 		Notify:    p.notify,
 		Bootstrap: p.bootstrap,
-	}, steps.PathIntakeInput{
+	}).PathIntake(jc.Ctx, learningmod.PathIntakeInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
@@ -76,7 +76,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	return nil
 }
 
-func pauseForUser(jc *jobrt.Context, setID, sagaID uuid.UUID, out steps.PathIntakeOutput) {
+func pauseForUser(jc *jobrt.Context, setID, sagaID uuid.UUID, out learningmod.PathIntakeOutput) {
 	if jc == nil || jc.Job == nil || jc.Repo == nil {
 		return
 	}

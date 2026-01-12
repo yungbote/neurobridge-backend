@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -65,7 +65,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	defer stopTicker()
 
 	jc.Progress("concept_graph", 2, "Building concept graph")
-	out, err := steps.ConceptGraphBuild(jc.Ctx, steps.ConceptGraphBuildDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
@@ -74,11 +74,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Concepts:  p.concepts,
 		Evidence:  p.evidence,
 		Edges:     p.edges,
+		Graph:     p.graph,
 		AI:        p.ai,
 		Vec:       p.vec,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
-	}, steps.ConceptGraphBuildInput{
+	}).ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

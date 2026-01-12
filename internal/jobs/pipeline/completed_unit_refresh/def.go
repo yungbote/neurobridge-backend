@@ -4,7 +4,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -18,6 +19,7 @@ type Pipeline struct {
 	actCon    repos.ActivityConceptRepo
 	chains    repos.ChainSignatureRepo
 	mastery   repos.UserConceptStateRepo
+	graph     *neo4jdb.Client
 	bootstrap services.LearningBuildBootstrapService
 }
 
@@ -31,6 +33,7 @@ func New(
 	actCon repos.ActivityConceptRepo,
 	chains repos.ChainSignatureRepo,
 	mastery repos.UserConceptStateRepo,
+	graph *neo4jdb.Client,
 	bootstrap services.LearningBuildBootstrapService,
 ) *Pipeline {
 	return &Pipeline{
@@ -43,6 +46,7 @@ func New(
 		actCon:    actCon,
 		chains:    chains,
 		mastery:   mastery,
+		graph:     graph,
 		bootstrap: bootstrap,
 	}
 }

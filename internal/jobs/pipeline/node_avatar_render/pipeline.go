@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -78,12 +78,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
-	out, err := steps.NodeAvatarRender(jc.Ctx, steps.NodeAvatarRenderDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		Log:       p.log,
 		Path:      p.path,
 		PathNodes: p.nodes,
 		Avatar:    p.avatar,
-	}, steps.NodeAvatarRenderInput{PathID: pathID})
+	}).NodeAvatarRender(jc.Ctx, learningmod.NodeAvatarRenderInput{PathID: pathID})
 	stopTicker()
 	if err != nil {
 		if p.log != nil {

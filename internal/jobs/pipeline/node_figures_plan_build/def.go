@@ -3,10 +3,10 @@ package node_figures_plan_build
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 

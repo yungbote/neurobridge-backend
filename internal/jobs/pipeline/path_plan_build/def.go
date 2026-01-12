@@ -3,9 +3,10 @@ package path_plan_build
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -18,6 +19,7 @@ type Pipeline struct {
 	edges     repos.ConceptEdgeRepo
 	summaries repos.MaterialSetSummaryRepo
 	profile   repos.UserProfileVectorRepo
+	graph     *neo4jdb.Client
 	ai        openai.Client
 	bootstrap services.LearningBuildBootstrapService
 }
@@ -31,6 +33,7 @@ func New(
 	edges repos.ConceptEdgeRepo,
 	summaries repos.MaterialSetSummaryRepo,
 	profile repos.UserProfileVectorRepo,
+	graph *neo4jdb.Client,
 	ai openai.Client,
 	bootstrap services.LearningBuildBootstrapService,
 ) *Pipeline {
@@ -43,6 +46,7 @@ func New(
 		edges:     edges,
 		summaries: summaries,
 		profile:   profile,
+		graph:     graph,
 		ai:        ai,
 		bootstrap: bootstrap,
 	}

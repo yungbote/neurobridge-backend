@@ -13,7 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/temporalx"
 	"github.com/yungbote/neurobridge-backend/internal/temporalx/jobrun"

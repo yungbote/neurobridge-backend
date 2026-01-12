@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,7 +25,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("audit", 2, "Auditing coverage/coherence")
-	out, err := steps.CoverageCoherenceAudit(jc.Ctx, steps.CoverageCoherenceAuditDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:         p.db,
 		Log:        p.log,
 		Path:       p.path,
@@ -35,7 +35,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Variants:   p.variants,
 		AI:         p.ai,
 		Bootstrap:  p.bootstrap,
-	}, steps.CoverageCoherenceAuditInput{
+	}).CoverageCoherenceAudit(jc.Ctx, learningmod.CoverageCoherenceAuditInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

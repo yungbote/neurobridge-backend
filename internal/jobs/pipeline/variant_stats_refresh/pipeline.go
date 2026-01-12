@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,15 +25,15 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("variant_stats", 2, "Refreshing variant stats")
-	out, err := steps.VariantStatsRefresh(jc.Ctx, steps.VariantStatsRefreshDeps{
-		DB:        p.db,
-		Log:       p.log,
-		Events:    p.events,
-		Cursors:   p.cursors,
-		Variants:  p.variants,
-		Stats:     p.stats,
-		Bootstrap: p.bootstrap,
-	}, steps.VariantStatsRefreshInput{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		UserEvents:       p.events,
+		UserEventCursors: p.cursors,
+		Variants:         p.variants,
+		VariantStats:     p.stats,
+		Bootstrap:        p.bootstrap,
+	}).VariantStatsRefresh(jc.Ctx, learningmod.VariantStatsRefreshInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

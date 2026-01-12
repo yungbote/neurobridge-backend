@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -21,24 +21,24 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	sagaID, _ := jc.PayloadUUID("saga_id")
 
 	jc.Progress("docs", 2, "Writing unit docs")
-	out, err := steps.NodeDocBuild(jc.Ctx, steps.NodeDocBuildDeps{
-		DB:        p.db,
-		Log:       p.log,
-		Path:      p.path,
-		PathNodes: p.nodes,
-		NodeDocs:  p.docs,
-		Figures:   p.figures,
-		Videos:    p.videos,
-		GenRuns:   p.genRuns,
-		Files:     p.files,
-		Chunks:    p.chunks,
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		Path:             p.path,
+		PathNodes:        p.nodes,
+		NodeDocs:         p.docs,
+		Figures:          p.figures,
+		Videos:           p.videos,
+		GenRuns:          p.genRuns,
+		Files:            p.files,
+		Chunks:           p.chunks,
 		UserProfile:      p.userProf,
 		TeachingPatterns: p.patterns,
-		AI:        p.ai,
-		Vec:       p.vec,
-		Bucket:    p.bucket,
-		Bootstrap: p.bootstrap,
-	}, steps.NodeDocBuildInput{
+		AI:               p.ai,
+		Vec:              p.vec,
+		Bucket:           p.bucket,
+		Bootstrap:        p.bootstrap,
+	}).NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

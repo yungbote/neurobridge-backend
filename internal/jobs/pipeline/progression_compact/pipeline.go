@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,14 +25,14 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("compact", 2, "Compacting progression events")
-	out, err := steps.ProgressionCompact(jc.Ctx, steps.ProgressionCompactDeps{
-		DB:        p.db,
-		Log:       p.log,
-		Events:    p.events,
-		Cursors:   p.cursors,
-		Progress:  p.progress,
-		Bootstrap: p.bootstrap,
-	}, steps.ProgressionCompactInput{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		UserEvents:       p.events,
+		UserEventCursors: p.cursors,
+		ProgEvents:       p.progress,
+		Bootstrap:        p.bootstrap,
+	}).ProgressionCompact(jc.Ctx, learningmod.ProgressionCompactInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

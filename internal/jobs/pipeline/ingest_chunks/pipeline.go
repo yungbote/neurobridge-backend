@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -88,7 +88,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	defer stopTicker()
 
 	jc.Progress("ingest", 2, "Ensuring chunks exist")
-	out, err := steps.IngestChunks(jobCtx, steps.IngestChunksDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
@@ -96,11 +96,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Extract:   p.extract,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
-	}, steps.IngestChunksInput{
+	}).IngestChunks(jobCtx, learningmod.IngestChunksInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
-	}, steps.IngestChunksOptions{
+	}, learningmod.IngestChunksOptions{
 		FileTimeout: time.Duration(fileTimeoutMin) * time.Minute,
 		Report: func(stage string, pct int, message string) {
 			_ = stage

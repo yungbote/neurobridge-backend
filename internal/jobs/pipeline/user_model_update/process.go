@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) applyQuestionAnswered(dbc dbctx.Context, userID uuid.UUID, ev *types.UserEvent, data map[string]any) error {

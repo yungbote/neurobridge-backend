@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -27,7 +27,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	instruction := strings.TrimSpace(fmt.Sprint(payload["instruction"]))
 	citationPolicy := strings.TrimSpace(fmt.Sprint(payload["citation_policy"]))
 
-	var sel steps.NodeDocPatchSelection
+	var sel learningmod.NodeDocPatchSelection
 	if raw, ok := payload["selection"].(map[string]any); ok {
 		sel.Text = strings.TrimSpace(fmt.Sprint(raw["text"]))
 		sel.Start = parseInt(raw["start"], 0)
@@ -35,7 +35,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("patch", 2, "Patching doc")
-	out, err := steps.NodeDocPatch(jc.Ctx, steps.NodeDocPatchDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Path:      p.path,
@@ -51,7 +51,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		AI:        p.ai,
 		Vec:       p.vec,
 		Bucket:    p.bucket,
-	}, steps.NodeDocPatchInput{
+	}).NodeDocPatch(jc.Ctx, learningmod.NodeDocPatchInput{
 		OwnerUserID:    jc.Job.OwnerUserID,
 		PathNodeID:     nodeID,
 		BlockID:        blockID,

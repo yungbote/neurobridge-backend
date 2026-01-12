@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/library/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -30,10 +30,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	jc.Progress("refine", 10, "Refining library taxonomy")
 
-	out, err := steps.LibraryTaxonomyRefine(jc.Ctx, steps.LibraryTaxonomyRouteDeps{
+	out, err := librarymod.New(librarymod.UsecasesDeps{
 		DB:          p.db,
 		Log:         p.log,
 		AI:          p.ai,
+		Graph:       p.graph,
 		Path:        p.path,
 		PathNodes:   p.pathNodes,
 		Clusters:    p.clusters,
@@ -43,7 +44,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		State:       p.state,
 		Snapshots:   p.snapshots,
 		PathVectors: p.pathVectors,
-	}, steps.LibraryTaxonomyRefineInput{UserID: userID})
+	}).LibraryTaxonomyRefine(jc.Ctx, librarymod.LibraryTaxonomyRefineInput{UserID: userID})
 	if err != nil {
 		jc.Fail("refine", err)
 		return nil

@@ -3,15 +3,17 @@ package library_taxonomy_refine
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 )
 
 type Pipeline struct {
-	db  *gorm.DB
-	log *logger.Logger
-	ai  openai.Client
+	db    *gorm.DB
+	log   *logger.Logger
+	ai    openai.Client
+	graph *neo4jdb.Client
 
 	path      repos.PathRepo
 	pathNodes repos.PathNodeRepo
@@ -29,6 +31,7 @@ func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
 	ai openai.Client,
+	graph *neo4jdb.Client,
 	path repos.PathRepo,
 	pathNodes repos.PathNodeRepo,
 	clusters repos.ConceptClusterRepo,
@@ -43,6 +46,7 @@ func New(
 		db:          db,
 		log:         baseLog.With("job", "library_taxonomy_refine"),
 		ai:          ai,
+		graph:       graph,
 		path:        path,
 		pathNodes:   pathNodes,
 		clusters:    clusters,

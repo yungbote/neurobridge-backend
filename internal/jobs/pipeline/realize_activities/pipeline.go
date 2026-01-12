@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,20 +25,20 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("node_content", 2, "Writing node content")
-	nodeOut, err := steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
-		DB:          p.db,
-		Log:         p.log,
-		Path:        p.path,
-		PathNodes:   p.nodes,
-		Files:       p.files,
-		Chunks:      p.chunks,
-		UserProfile: p.profile,
-		Patterns:    p.patterns,
-		AI:          p.ai,
-		Vec:         p.vec,
-		Bucket:      p.bucket,
-		Bootstrap:   p.bootstrap,
-	}, steps.NodeContentBuildInput{
+	nodeOut, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		Path:             p.path,
+		PathNodes:        p.nodes,
+		Files:            p.files,
+		Chunks:           p.chunks,
+		UserProfile:      p.profile,
+		TeachingPatterns: p.patterns,
+		AI:               p.ai,
+		Vec:              p.vec,
+		Bucket:           p.bucket,
+		Bootstrap:        p.bootstrap,
+	}).NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 	})
@@ -48,28 +48,27 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("activities", 10, "Generating activities")
-	actOut, err := steps.RealizeActivities(jc.Ctx, steps.RealizeActivitiesDeps{
-		DB:                p.db,
-		Log:               p.log,
-		Path:              p.path,
-		PathNodes:         p.nodes,
+	actOut, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:                 p.db,
+		Log:                p.log,
+		Path:               p.path,
+		PathNodes:          p.nodes,
 		PathNodeActivities: p.nodeActivities,
-
-		Activities:        p.activities,
-		Variants:          p.variants,
-		ActivityConcepts:  p.activityConcepts,
-		ActivityCitations: p.activityCites,
-
-		Concepts:     p.concepts,
-		Files:        p.files,
-		Chunks:       p.chunks,
-		UserProfile:  p.profile,
-		Patterns:     p.patterns,
-		AI:           p.ai,
-		Vec:          p.vec,
-		Saga:         p.saga,
-		Bootstrap:    p.bootstrap,
-	}, steps.RealizeActivitiesInput{
+		Activities:         p.activities,
+		Variants:           p.variants,
+		ActivityConcepts:   p.activityConcepts,
+		ActivityCitations:  p.activityCites,
+		Concepts:           p.concepts,
+		Files:              p.files,
+		Chunks:             p.chunks,
+		UserProfile:        p.profile,
+		TeachingPatterns:   p.patterns,
+		Graph:              p.graph,
+		AI:                 p.ai,
+		Vec:                p.vec,
+		Saga:               p.saga,
+		Bootstrap:          p.bootstrap,
+	}).RealizeActivities(jc.Ctx, learningmod.RealizeActivitiesInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

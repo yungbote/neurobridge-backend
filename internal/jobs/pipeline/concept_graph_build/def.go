@@ -3,10 +3,11 @@ package concept_graph_build
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -19,6 +20,7 @@ type Pipeline struct {
 	concepts  repos.ConceptRepo
 	evidence  repos.ConceptEvidenceRepo
 	edges     repos.ConceptEdgeRepo
+	graph     *neo4jdb.Client
 	ai        openai.Client
 	vec       pinecone.VectorStore
 	saga      services.SagaService
@@ -34,6 +36,7 @@ func New(
 	concepts repos.ConceptRepo,
 	evidence repos.ConceptEvidenceRepo,
 	edges repos.ConceptEdgeRepo,
+	graph *neo4jdb.Client,
 	ai openai.Client,
 	vec pinecone.VectorStore,
 	saga services.SagaService,
@@ -48,6 +51,7 @@ func New(
 		concepts:  concepts,
 		evidence:  evidence,
 		edges:     edges,
+		graph:     graph,
 		ai:        ai,
 		vec:       vec,
 		saga:      saga,

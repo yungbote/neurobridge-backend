@@ -3,18 +3,20 @@ package chat_maintain
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 )
 
 type Pipeline struct {
 	db  *gorm.DB
 	log *logger.Logger
 
-	ai  openai.Client
-	vec pinecone.VectorStore
+	ai    openai.Client
+	vec   pinecone.VectorStore
+	graph *neo4jdb.Client
 
 	threads   repos.ChatThreadRepo
 	messages  repos.ChatMessageRepo
@@ -33,6 +35,7 @@ func New(
 	baseLog *logger.Logger,
 	ai openai.Client,
 	vec pinecone.VectorStore,
+	graph *neo4jdb.Client,
 	threads repos.ChatThreadRepo,
 	messages repos.ChatMessageRepo,
 	state repos.ChatThreadStateRepo,
@@ -48,6 +51,7 @@ func New(
 		log:       baseLog.With("job", "chat_maintain"),
 		ai:        ai,
 		vec:       vec,
+		graph:     graph,
 		threads:   threads,
 		messages:  messages,
 		state:     state,

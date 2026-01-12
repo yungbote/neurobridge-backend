@@ -4,7 +4,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
 )
 
 type Pipeline struct {
@@ -15,6 +16,7 @@ type Pipeline struct {
 	cursors      repos.UserEventCursorRepo
 	conceptState repos.UserConceptStateRepo
 	stylePrefs   repos.UserStylePreferenceRepo
+	graph        *neo4jdb.Client
 
 	// kept for future expansion / wiring compatibility
 	jobRuns repos.JobRunRepo
@@ -27,6 +29,7 @@ func New(
 	cursors repos.UserEventCursorRepo,
 	conceptState repos.UserConceptStateRepo,
 	stylePrefs repos.UserStylePreferenceRepo,
+	graph *neo4jdb.Client,
 	jobRuns repos.JobRunRepo,
 ) *Pipeline {
 	return &Pipeline{
@@ -36,6 +39,7 @@ func New(
 		cursors:      cursors,
 		conceptState: conceptState,
 		stylePrefs:   stylePrefs,
+		graph:        graph,
 		jobRuns:      jobRuns,
 	}
 }

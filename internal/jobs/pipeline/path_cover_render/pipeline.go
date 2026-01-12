@@ -5,9 +5,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -33,12 +33,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
-	out, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		Log:       p.log,
 		Path:      p.path,
 		PathNodes: p.nodes,
 		Avatar:    p.avatar,
-	}, steps.PathCoverRenderInput{PathID: pathID})
+	}).PathCoverRender(jc.Ctx, learningmod.PathCoverRenderInput{PathID: pathID})
 	if err != nil {
 		if p.log != nil {
 			p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())

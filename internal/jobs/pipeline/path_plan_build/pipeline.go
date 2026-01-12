@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,7 +25,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("path_plan", 2, "Building path plan")
-	out, err := steps.PathPlanBuild(jc.Ctx, steps.PathPlanBuildDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:          p.db,
 		Log:         p.log,
 		Path:        p.path,
@@ -34,9 +34,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Edges:       p.edges,
 		Summaries:   p.summaries,
 		UserProfile: p.profile,
+		Graph:       p.graph,
 		AI:          p.ai,
 		Bootstrap:   p.bootstrap,
-	}, steps.PathPlanBuildInput{
+	}).PathPlanBuild(jc.Ctx, learningmod.PathPlanBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

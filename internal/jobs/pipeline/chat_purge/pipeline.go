@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -20,11 +20,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("purge", 5, "Purging chat artifacts")
-	if err := steps.PurgeThreadArtifacts(jc.Ctx, steps.RebuildDeps{
+	if err := chatmod.New(chatmod.UsecasesDeps{
 		DB:  p.db,
 		Log: p.log,
 		Vec: p.vec,
-	}, steps.RebuildInput{
+	}).PurgeThreadArtifacts(jc.Ctx, chatmod.RebuildInput{
 		UserID:   jc.Job.OwnerUserID,
 		ThreadID: threadID,
 	}); err != nil {

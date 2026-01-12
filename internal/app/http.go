@@ -5,7 +5,9 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/http"
 	httpH "github.com/yungbote/neurobridge-backend/internal/http/handlers"
 	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"gorm.io/gorm"
 )
@@ -31,6 +33,29 @@ type Handlers struct {
 
 func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
+	learningUC := learningmod.New(learningmod.UsecasesDeps{
+		DB:        db,
+		Log:       log.With("module", "learning"),
+		AI:        clients.OpenaiClient,
+		Avatar:    services.Avatar,
+		Path:      repos.Path,
+		PathNodes: repos.PathNode,
+		NodeDocs:  repos.LearningNodeDoc,
+		Chunks:    repos.MaterialChunk,
+		Drills:    repos.DrillInstance,
+		GenRuns:   repos.DocGenerationRun,
+	})
+	libraryUC := librarymod.New(librarymod.UsecasesDeps{
+		DB:         db,
+		Log:        log.With("module", "library"),
+		Jobs:       services.JobService,
+		JobRuns:    repos.JobRun,
+		TaxNodes:   repos.LibraryTaxonomyNode,
+		TaxEdges:   repos.LibraryTaxonomyEdge,
+		Membership: repos.LibraryTaxonomyMember,
+		State:      repos.LibraryTaxonomyState,
+		Snapshots:  repos.LibraryTaxonomySnapshot,
+	})
 	return Handlers{
 		Health:   httpH.NewHealthHandler(),
 		Auth:     httpH.NewAuthHandler(services.Auth),
@@ -50,8 +75,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 		Library: httpH.NewLibraryHandler(
 			log,
 			db,
-			services.JobService,
-			repos.JobRun,
+			libraryUC,
 			repos.LibraryTaxonomyNode,
 			repos.LibraryTaxonomyEdge,
 			repos.LibraryTaxonomyMember,
@@ -67,8 +91,6 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 			repos.Activity,
 			repos.LearningNodeDoc,
 			repos.LearningNodeDocRevision,
-			repos.DrillInstance,
-			repos.DocGenerationRun,
 			repos.MaterialChunk,
 			repos.MaterialSet,
 			repos.MaterialFile,
@@ -80,8 +102,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 			repos.JobRun,
 			services.JobService,
 			services.Avatar,
-			repos.UserProfileVector,
-			clients.OpenaiClient,
+			learningUC,
 			clients.GcpBucket,
 		),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),

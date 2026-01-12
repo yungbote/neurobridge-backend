@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -25,19 +25,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("priors", 2, "Refreshing priors")
-	out, err := steps.PriorsRefresh(jc.Ctx, steps.PriorsRefreshDeps{
-		DB:           p.db,
-		Log:          p.log,
-		Activities:   p.activities,
-		Variants:     p.variants,
-		VariantStats: p.stats,
-		Chains:       p.chains,
-		Concepts:     p.concepts,
-		ActConcepts:  p.actConcept,
-		ChainPriors:  p.chain,
-		CohortPriors: p.cohort,
-		Bootstrap:    p.bootstrap,
-	}, steps.PriorsRefreshInput{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
+		DB:               p.db,
+		Log:              p.log,
+		Activities:       p.activities,
+		Variants:         p.variants,
+		VariantStats:     p.stats,
+		ChainSignatures:  p.chains,
+		Concepts:         p.concepts,
+		ActivityConcepts: p.actConcept,
+		ChainPriors:      p.chain,
+		CohortPriors:     p.cohort,
+		Bootstrap:        p.bootstrap,
+	}).PriorsRefresh(jc.Ctx, learningmod.PriorsRefreshInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

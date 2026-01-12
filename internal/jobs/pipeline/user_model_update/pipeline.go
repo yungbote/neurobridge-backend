@@ -8,9 +8,10 @@ import (
 
 	"github.com/google/uuid"
 
+	graphstore "github.com/yungbote/neurobridge-backend/internal/data/graph"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(ctx *jobrt.Context) error {
@@ -44,6 +45,8 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 	ctx.Progress("scan", 1, "Scanning user events")
 
+	updatedConceptIDs := map[uuid.UUID]bool{}
+
 	for {
 		events, err := p.events.ListAfterCursor(dbc, userID, afterAt, afterID, pageSize)
 		if err != nil {
@@ -68,6 +71,15 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 			// ---- Concept mastery updates (question_answered) ----
 			if strings.TrimSpace(ev.Type) == types.EventQuestionAnswered {
+				conceptIDs := extractUUIDsFromAny(d["concept_ids"])
+				if ev.ConceptID != nil && *ev.ConceptID != uuid.Nil && len(conceptIDs) == 0 {
+					conceptIDs = []uuid.UUID{*ev.ConceptID}
+				}
+				for _, cid := range conceptIDs {
+					if cid != uuid.Nil {
+						updatedConceptIDs[cid] = true
+					}
+				}
 				_ = p.applyQuestionAnswered(dbc, userID, ev, d)
 			}
 
@@ -126,6 +138,23 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 			UpdatedAt:     time.Now(),
 		}
 		_ = p.cursors.Upsert(dbc, curRow)
+	}
+
+	// Best-effort: sync updated mastery edges into Neo4j.
+	if p.graph != nil && p.graph.Driver != nil && p.conceptState != nil && len(updatedConceptIDs) > 0 {
+		conceptIDs := make([]uuid.UUID, 0, len(updatedConceptIDs))
+		for id := range updatedConceptIDs {
+			if id != uuid.Nil {
+				conceptIDs = append(conceptIDs, id)
+			}
+		}
+		if len(conceptIDs) > 0 {
+			if rows, err := p.conceptState.ListByUserAndConceptIDs(dbc, userID, conceptIDs); err == nil && len(rows) > 0 {
+				if err := graphstore.UpsertUserConceptStates(ctx.Ctx, p.graph, p.log, userID, rows); err != nil && p.log != nil {
+					p.log.Warn("neo4j user learning graph sync failed (continuing)", "error", err, "user_id", userID.String())
+				}
+			}
+		}
 	}
 
 	ctx.Succeed("done", map[string]any{"processed": processed})

@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -20,23 +20,22 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("index", 10, "Indexing path docs for chat retrieval")
-	out, err := steps.IndexPathDocsForChat(jc.Ctx, steps.PathIndexDeps{
-		DB:         p.db,
-		Log:        p.log,
-		AI:         p.ai,
-		Vec:        p.vec,
-		Docs:       p.docs,
-		Path:       p.path,
-		PathNodes:  p.pathNodes,
-		NodeActs:   p.nodeActs,
-		Activities: p.activities,
-		Concepts:   p.concepts,
-		NodeDocs:   p.nodeDocs,
-
+	out, err := chatmod.New(chatmod.UsecasesDeps{
+		DB:                   p.db,
+		Log:                  p.log,
+		AI:                   p.ai,
+		Vec:                  p.vec,
+		Docs:                 p.docs,
+		Path:                 p.path,
+		PathNodes:            p.pathNodes,
+		NodeActs:             p.nodeActs,
+		Activities:           p.activities,
+		Concepts:             p.concepts,
+		NodeDocs:             p.nodeDocs,
 		UserLibraryIndex:     p.userLibraryIndex,
 		MaterialFiles:        p.materialFiles,
 		MaterialSetSummaries: p.materialSetSummaries,
-	}, steps.PathIndexInput{
+	}).IndexPathDocsForChat(jc.Ctx, chatmod.PathIndexInput{
 		UserID: jc.Job.OwnerUserID,
 		PathID: pathID,
 	})

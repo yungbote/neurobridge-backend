@@ -12,10 +12,10 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	orchestrator "github.com/yungbote/neurobridge-backend/internal/jobs/orchestrator"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -211,6 +211,72 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		return nil
 	}
 
+	uc := learningmod.New(learningmod.UsecasesDeps{
+		DB:      p.db,
+		Log:     p.log,
+		Extract: p.inline.Extract,
+
+		AI:    p.inline.AI,
+		Vec:   p.inline.Vec,
+		Graph: p.inline.Graph,
+
+		Bucket: p.inline.Bucket,
+		Avatar: p.inline.Avatar,
+
+		Files:     p.inline.Files,
+		Chunks:    p.inline.Chunks,
+		Summaries: p.inline.Summaries,
+
+		Path:               p.inline.Path,
+		PathNodes:          p.inline.PathNodes,
+		PathNodeActivities: p.inline.PathNodeActivities,
+
+		Concepts: p.inline.Concepts,
+		Evidence: p.inline.Evidence,
+		Edges:    p.inline.Edges,
+
+		Clusters: p.inline.Clusters,
+		Members:  p.inline.Members,
+
+		ChainSignatures: p.inline.ChainSignatures,
+
+		StylePrefs:  p.inline.StylePrefs,
+		ProgEvents:  p.inline.UserProgressionEvents,
+		Prefs:       p.inline.UserPrefs,
+		UserProfile: p.inline.UserProfile,
+
+		TeachingPatterns: p.inline.TeachingPatterns,
+
+		NodeDocs: p.inline.NodeDocs,
+		Figures:  p.inline.NodeFigures,
+		Videos:   p.inline.NodeVideos,
+		GenRuns:  p.inline.DocGenRuns,
+
+		Assets: p.inline.Assets,
+
+		Activities:        p.inline.Activities,
+		Variants:          p.inline.Variants,
+		ActivityConcepts:  p.inline.ActivityConcepts,
+		ActivityCitations: p.inline.ActivityCitations,
+
+		UserEvents:       p.inline.UserEvents,
+		UserEventCursors: p.inline.UserEventCursors,
+		VariantStats:     p.inline.VariantStats,
+
+		ChainPriors:  p.inline.ChainPriors,
+		CohortPriors: p.inline.CohortPriors,
+
+		CompletedUnits: p.inline.CompletedUnits,
+		ConceptState:   p.inline.ConceptState,
+
+		Threads:  p.threads,
+		Messages: p.messages,
+		Notify:   p.chatNotif,
+
+		Saga:      p.saga,
+		Bootstrap: p.bootstrap,
+	})
+
 	total := len(stageOrder)
 	for i, stageName := range stageOrder {
 		if p.isCanceled(jc) {
@@ -228,16 +294,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		var stageErr error
 		switch stageName {
 		case "web_resources_seed":
-			_, stageErr = steps.WebResourcesSeed(jc.Ctx, steps.WebResourcesSeedDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Path:      p.inline.Path,
-				Bucket:    p.inline.Bucket,
-				AI:        p.inline.AI,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.WebResourcesSeedInput{
+			_, stageErr = uc.WebResourcesSeed(jc.Ctx, learningmod.WebResourcesSeedInput{
 				OwnerUserID:   jc.Job.OwnerUserID,
 				MaterialSetID: setID,
 				SagaID:        sagaID,
@@ -249,118 +306,23 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				}(),
 			})
 		case "ingest_chunks":
-			_, stageErr = steps.IngestChunks(jc.Ctx, steps.IngestChunksDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				Extract:   p.inline.Extract,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.IngestChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.IngestChunks(jc.Ctx, learningmod.IngestChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "embed_chunks":
-			_, stageErr = steps.EmbedChunks(jc.Ctx, steps.EmbedChunksDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.EmbedChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.EmbedChunks(jc.Ctx, learningmod.EmbedChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "material_set_summarize":
-			_, stageErr = steps.MaterialSetSummarize(jc.Ctx, steps.MaterialSetSummarizeDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				Summaries: p.inline.Summaries,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "concept_graph_build":
-			_, stageErr = steps.ConceptGraphBuild(jc.Ctx, steps.ConceptGraphBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				Path:      p.inline.Path,
-				Concepts:  p.inline.Concepts,
-				Evidence:  p.inline.Evidence,
-				Edges:     p.inline.Edges,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "concept_cluster_build":
-			_, stageErr = steps.ConceptClusterBuild(jc.Ctx, steps.ConceptClusterBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Concepts:  p.inline.Concepts,
-				Clusters:  p.inline.Clusters,
-				Members:   p.inline.Members,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.ConceptClusterBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ConceptClusterBuild(jc.Ctx, learningmod.ConceptClusterBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "chain_signature_build":
-			_, stageErr = steps.ChainSignatureBuild(jc.Ctx, steps.ChainSignatureBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Concepts:  p.inline.Concepts,
-				Clusters:  p.inline.Clusters,
-				Members:   p.inline.Members,
-				Edges:     p.inline.Edges,
-				Chains:    p.inline.ChainSignatures,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Saga:      p.saga,
-				Bootstrap: p.bootstrap,
-			}, steps.ChainSignatureBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ChainSignatureBuild(jc.Ctx, learningmod.ChainSignatureBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "user_profile_refresh":
-			_, stageErr = steps.UserProfileRefresh(jc.Ctx, steps.UserProfileRefreshDeps{
-				DB:          p.db,
-				Log:         p.log,
-				StylePrefs:  p.inline.StylePrefs,
-				ProgEvents:  p.inline.UserProgressionEvents,
-				UserProfile: p.inline.UserProfile,
-				Prefs:       p.inline.UserPrefs,
-				AI:          p.inline.AI,
-				Vec:         p.inline.Vec,
-				Saga:        p.saga,
-				Bootstrap:   p.bootstrap,
-			}, steps.UserProfileRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.UserProfileRefresh(jc.Ctx, learningmod.UserProfileRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "teaching_patterns_seed":
-			_, stageErr = steps.TeachingPatternsSeed(jc.Ctx, steps.TeachingPatternsSeedDeps{
-				DB:          p.db,
-				Log:         p.log,
-				Patterns:    p.inline.TeachingPatterns,
-				UserProfile: p.inline.UserProfile,
-				AI:          p.inline.AI,
-				Vec:         p.inline.Vec,
-				Saga:        p.saga,
-				Bootstrap:   p.bootstrap,
-			}, steps.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.TeachingPatternsSeed(jc.Ctx, learningmod.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "path_intake":
-			_, stageErr = steps.PathIntake(jc.Ctx, steps.PathIntakeDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				Summaries: p.inline.Summaries,
-				Path:      p.inline.Path,
-				Prefs:     p.inline.UserPrefs,
-				Threads:   p.threads,
-				Messages:  p.messages,
-				AI:        p.inline.AI,
-				Notify:    p.chatNotif,
-				Bootstrap: p.bootstrap,
-			}, steps.PathIntakeInput{
+			_, stageErr = uc.PathIntake(jc.Ctx, learningmod.PathIntakeInput{
 				OwnerUserID:   jc.Job.OwnerUserID,
 				MaterialSetID: setID,
 				SagaID:        sagaID,
@@ -373,183 +335,44 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				WaitForUser: false,
 			})
 		case "path_plan_build":
-			_, stageErr = steps.PathPlanBuild(jc.Ctx, steps.PathPlanBuildDeps{
-				DB:          p.db,
-				Log:         p.log,
-				Path:        p.inline.Path,
-				PathNodes:   p.inline.PathNodes,
-				Concepts:    p.inline.Concepts,
-				Edges:       p.inline.Edges,
-				Summaries:   p.inline.Summaries,
-				UserProfile: p.inline.UserProfile,
-				AI:          p.inline.AI,
-				Bootstrap:   p.bootstrap,
-			}, steps.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.PathPlanBuild(jc.Ctx, learningmod.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "path_cover_render":
-			_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Avatar:    p.inline.Avatar,
-			}, steps.PathCoverRenderInput{PathID: pathID})
+			_, err := uc.PathCoverRender(jc.Ctx, learningmod.PathCoverRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {
 				p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
 			}
 			stageErr = nil
 		case "node_avatar_render":
-			_, err := steps.NodeAvatarRender(jc.Ctx, steps.NodeAvatarRenderDeps{
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Avatar:    p.inline.Avatar,
-			}, steps.NodeAvatarRenderInput{PathID: pathID})
+			_, err := uc.NodeAvatarRender(jc.Ctx, learningmod.NodeAvatarRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {
 				p.log.Warn("node_avatar_render failed", "error", err, "path_id", pathID.String())
 			}
 			stageErr = nil
 		case "node_figures_plan_build":
-			_, stageErr = steps.NodeFiguresPlanBuild(jc.Ctx, steps.NodeFiguresPlanBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Figures:   p.inline.NodeFigures,
-				GenRuns:   p.inline.DocGenRuns,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Bootstrap: p.bootstrap,
-			}, steps.NodeFiguresPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeFiguresPlanBuild(jc.Ctx, learningmod.NodeFiguresPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "node_figures_render":
-			_, stageErr = steps.NodeFiguresRender(jc.Ctx, steps.NodeFiguresRenderDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Figures:   p.inline.NodeFigures,
-				Assets:    p.inline.Assets,
-				GenRuns:   p.inline.DocGenRuns,
-				AI:        p.inline.AI,
-				Bucket:    p.inline.Bucket,
-				Bootstrap: p.bootstrap,
-			}, steps.NodeFiguresRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeFiguresRender(jc.Ctx, learningmod.NodeFiguresRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "node_videos_plan_build":
-			_, stageErr = steps.NodeVideosPlanBuild(jc.Ctx, steps.NodeVideosPlanBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Videos:    p.inline.NodeVideos,
-				GenRuns:   p.inline.DocGenRuns,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Bootstrap: p.bootstrap,
-			}, steps.NodeVideosPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeVideosPlanBuild(jc.Ctx, learningmod.NodeVideosPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "node_videos_render":
-			_, stageErr = steps.NodeVideosRender(jc.Ctx, steps.NodeVideosRenderDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				Videos:    p.inline.NodeVideos,
-				Assets:    p.inline.Assets,
-				GenRuns:   p.inline.DocGenRuns,
-				AI:        p.inline.AI,
-				Bucket:    p.inline.Bucket,
-				Bootstrap: p.bootstrap,
-			}, steps.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "node_doc_build":
-			_, stageErr = steps.NodeDocBuild(jc.Ctx, steps.NodeDocBuildDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Path:      p.inline.Path,
-				PathNodes: p.inline.PathNodes,
-				NodeDocs:  p.inline.NodeDocs,
-				Figures:   p.inline.NodeFigures,
-				Videos:    p.inline.NodeVideos,
-				GenRuns:   p.inline.DocGenRuns,
-				Files:     p.inline.Files,
-				Chunks:    p.inline.Chunks,
-				AI:        p.inline.AI,
-				Vec:       p.inline.Vec,
-				Bucket:    p.inline.Bucket,
-				Bootstrap: p.bootstrap,
-			}, steps.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "realize_activities":
-			_, stageErr = steps.NodeContentBuild(jc.Ctx, steps.NodeContentBuildDeps{
-				DB:          p.db,
-				Log:         p.log,
-				Path:        p.inline.Path,
-				PathNodes:   p.inline.PathNodes,
-				Files:       p.inline.Files,
-				Chunks:      p.inline.Chunks,
-				UserProfile: p.inline.UserProfile,
-				AI:          p.inline.AI,
-				Vec:         p.inline.Vec,
-				Bucket:      p.inline.Bucket,
-				Bootstrap:   p.bootstrap,
-			}, steps.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID})
+			_, stageErr = uc.NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID})
+			if stageErr == nil {
+				_, stageErr = uc.RealizeActivities(jc.Ctx, learningmod.RealizeActivitiesInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			}
 		case "coverage_coherence_audit":
-			_, stageErr = steps.CoverageCoherenceAudit(jc.Ctx, steps.CoverageCoherenceAuditDeps{
-				DB:         p.db,
-				Log:        p.log,
-				Path:       p.inline.Path,
-				PathNodes:  p.inline.PathNodes,
-				Concepts:   p.inline.Concepts,
-				Activities: p.inline.Activities,
-				Variants:   p.inline.Variants,
-				AI:         p.inline.AI,
-				Bootstrap:  p.bootstrap,
-			}, steps.CoverageCoherenceAuditInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.CoverageCoherenceAudit(jc.Ctx, learningmod.CoverageCoherenceAuditInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "progression_compact":
-			_, stageErr = steps.ProgressionCompact(jc.Ctx, steps.ProgressionCompactDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Events:    p.inline.UserEvents,
-				Cursors:   p.inline.UserEventCursors,
-				Progress:  p.inline.UserProgressionEvents,
-				Bootstrap: p.bootstrap,
-			}, steps.ProgressionCompactInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ProgressionCompact(jc.Ctx, learningmod.ProgressionCompactInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "variant_stats_refresh":
-			_, stageErr = steps.VariantStatsRefresh(jc.Ctx, steps.VariantStatsRefreshDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Events:    p.inline.UserEvents,
-				Cursors:   p.inline.UserEventCursors,
-				Variants:  p.inline.Variants,
-				Stats:     p.inline.VariantStats,
-				Bootstrap: p.bootstrap,
-			}, steps.VariantStatsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.VariantStatsRefresh(jc.Ctx, learningmod.VariantStatsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "priors_refresh":
-			_, stageErr = steps.PriorsRefresh(jc.Ctx, steps.PriorsRefreshDeps{
-				DB:           p.db,
-				Log:          p.log,
-				Activities:   p.inline.Activities,
-				Variants:     p.inline.Variants,
-				VariantStats: p.inline.VariantStats,
-				Chains:       p.inline.ChainSignatures,
-				Concepts:     p.inline.Concepts,
-				ActConcepts:  p.inline.ActivityConcepts,
-				ChainPriors:  p.inline.ChainPriors,
-				CohortPriors: p.inline.CohortPriors,
-				Bootstrap:    p.bootstrap,
-			}, steps.PriorsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.PriorsRefresh(jc.Ctx, learningmod.PriorsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "completed_unit_refresh":
-			_, stageErr = steps.CompletedUnitRefresh(jc.Ctx, steps.CompletedUnitRefreshDeps{
-				DB:        p.db,
-				Log:       p.log,
-				Completed: p.inline.CompletedUnits,
-				Progress:  p.inline.UserProgressionEvents,
-				Concepts:  p.inline.Concepts,
-				Act:       p.inline.Activities,
-				ActCon:    p.inline.ActivityConcepts,
-				Chains:    p.inline.ChainSignatures,
-				Mastery:   p.inline.ConceptState,
-				Bootstrap: p.bootstrap,
-			}, steps.CompletedUnitRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.CompletedUnitRefresh(jc.Ctx, learningmod.CompletedUnitRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		default:
 			stageErr = fmt.Errorf("unknown stage %q", stageName)
 		}
@@ -642,12 +465,12 @@ func (p *Pipeline) maybeGeneratePathCover(jc *jobrt.Context, pathID uuid.UUID) {
 	if p.inline.Path == nil || p.inline.PathNodes == nil || p.inline.Avatar == nil {
 		return
 	}
-	_, err := steps.PathCoverRender(jc.Ctx, steps.PathCoverRenderDeps{
+	_, err := learningmod.New(learningmod.UsecasesDeps{
 		Log:       p.log,
 		Path:      p.inline.Path,
 		PathNodes: p.inline.PathNodes,
 		Avatar:    p.inline.Avatar,
-	}, steps.PathCoverRenderInput{PathID: pathID})
+	}).PathCoverRender(jc.Ctx, learningmod.PathCoverRenderInput{PathID: pathID})
 	if err != nil && p.log != nil {
 		p.log.Warn("path_cover_render failed", "error", err, "path_id", pathID.String())
 	}

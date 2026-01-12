@@ -3,11 +3,12 @@ package realize_activities
 import (
 	"gorm.io/gorm"
 
-	"github.com/yungbote/neurobridge-backend/internal/clients/gcp"
-	"github.com/yungbote/neurobridge-backend/internal/clients/openai"
-	"github.com/yungbote/neurobridge-backend/internal/clients/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
+	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
@@ -26,6 +27,7 @@ type Pipeline struct {
 	chunks           repos.MaterialChunkRepo
 	profile          repos.UserProfileVectorRepo
 	patterns         repos.TeachingPatternRepo
+	graph            *neo4jdb.Client
 	ai               openai.Client
 	vec              pinecone.VectorStore
 	bucket           gcp.BucketService
@@ -48,6 +50,7 @@ func New(
 	chunks repos.MaterialChunkRepo,
 	profile repos.UserProfileVectorRepo,
 	patterns repos.TeachingPatternRepo,
+	graph *neo4jdb.Client,
 	ai openai.Client,
 	vec pinecone.VectorStore,
 	bucket gcp.BucketService,
@@ -69,6 +72,7 @@ func New(
 		chunks:           chunks,
 		profile:          profile,
 		patterns:         patterns,
+		graph:            graph,
 		ai:               ai,
 		vec:              vec,
 		bucket:           bucket,

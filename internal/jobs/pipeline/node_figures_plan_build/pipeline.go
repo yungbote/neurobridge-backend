@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -21,7 +21,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	sagaID, _ := jc.PayloadUUID("saga_id")
 
 	jc.Progress("figures_plan", 2, "Planning figures")
-	out, err := steps.NodeFiguresPlanBuild(jc.Ctx, steps.NodeFiguresPlanBuildDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Path:      p.path,
@@ -33,7 +33,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		AI:        p.ai,
 		Vec:       p.vec,
 		Bootstrap: p.bootstrap,
-	}, steps.NodeFiguresPlanBuildInput{
+	}).NodeFiguresPlanBuild(jc.Ctx, learningmod.NodeFiguresPlanBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

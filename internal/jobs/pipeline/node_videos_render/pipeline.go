@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/learning/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -73,7 +73,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	defer stopTicker()
 
 	jc.Progress("videos_render", 2, "Rendering videos")
-	out, err := steps.NodeVideosRender(jc.Ctx, steps.NodeVideosRenderDeps{
+	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Path:      p.path,
@@ -84,7 +84,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		AI:        p.ai,
 		Bucket:    p.bucket,
 		Bootstrap: p.bootstrap,
-	}, steps.NodeVideosRenderInput{
+	}).NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,

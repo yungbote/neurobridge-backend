@@ -5,8 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -20,11 +20,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("maintain", 5, "Updating chat indexes")
-	if err := steps.MaintainThread(jc.Ctx, steps.MaintainDeps{
+	if err := chatmod.New(chatmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		AI:        p.ai,
 		Vec:       p.vec,
+		Graph:     p.graph,
 		Threads:   p.threads,
 		Messages:  p.messages,
 		State:     p.state,
@@ -34,7 +35,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Entities:  p.entities,
 		Edges:     p.edges,
 		Claims:    p.claims,
-	}, steps.MaintainInput{
+	}).MaintainThread(jc.Ctx, chatmod.MaintainInput{
 		UserID:   jc.Job.OwnerUserID,
 		ThreadID: threadID,
 	}); err != nil {

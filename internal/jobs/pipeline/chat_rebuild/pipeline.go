@@ -5,9 +5,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/chat/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -21,11 +21,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Progress("rebuild", 5, "Rebuilding chat projections")
-	if err := steps.RebuildThreadProjections(jc.Ctx, steps.RebuildDeps{
+	if err := chatmod.New(chatmod.UsecasesDeps{
 		DB:  p.db,
 		Log: p.log,
 		Vec: p.vec,
-	}, steps.RebuildInput{
+	}).RebuildThreadProjections(jc.Ctx, chatmod.RebuildInput{
 		UserID:   jc.Job.OwnerUserID,
 		ThreadID: threadID,
 	}); err != nil {

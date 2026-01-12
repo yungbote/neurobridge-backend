@@ -5,9 +5,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yungbote/neurobridge-backend/internal/jobs/library/steps"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	"github.com/yungbote/neurobridge-backend/internal/pkg/dbctx"
+	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -27,10 +27,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	jc.Progress("route", 10, "Organizing path in your library")
 
-	out, err := steps.LibraryTaxonomyRoute(jc.Ctx, steps.LibraryTaxonomyRouteDeps{
+	out, err := librarymod.New(librarymod.UsecasesDeps{
 		DB:          p.db,
 		Log:         p.log,
 		AI:          p.ai,
+		Graph:       p.graph,
 		Path:        p.path,
 		PathNodes:   p.pathNodes,
 		Clusters:    p.clusters,
@@ -40,7 +41,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		State:       p.state,
 		Snapshots:   p.snapshots,
 		PathVectors: p.pathVectors,
-	}, steps.LibraryTaxonomyRouteInput{PathID: pathID})
+	}).LibraryTaxonomyRoute(jc.Ctx, librarymod.LibraryTaxonomyRouteInput{PathID: pathID})
 	if err != nil {
 		jc.Fail("route", err)
 		return nil
