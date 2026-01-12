@@ -101,6 +101,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 			repos.Asset,
 			repos.JobRun,
 			services.JobService,
+			services.Events,
 			services.Avatar,
 			learningUC,
 			clients.GcpBucket,

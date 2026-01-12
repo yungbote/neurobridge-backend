@@ -8,6 +8,7 @@ const (
 	PromptConceptInventory      PromptName = "concept_inventory"
 	PromptConceptInventoryDelta PromptName = "concept_inventory_delta"
 	PromptConceptEdges          PromptName = "concept_edges"
+	PromptMaterialKGExtract     PromptName = "material_kg_extract"
 	PromptConceptClusters       PromptName = "concept_clusters"
 	PromptLibraryTaxonomyRoute  PromptName = "library_taxonomy_route"
 	PromptLibraryTaxonomyRefine PromptName = "library_taxonomy_refine"

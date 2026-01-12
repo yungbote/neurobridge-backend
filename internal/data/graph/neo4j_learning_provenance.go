@@ -31,10 +31,23 @@ func UpsertConceptEvidenceGraph(ctx context.Context, client *neo4jdb.Client, log
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
+	setNodes := make([]map[string]any, 0, 1)
+	seenSets := map[string]bool{}
+
 	fileNodes := make([]map[string]any, 0, len(files))
 	for _, f := range files {
 		if f == nil || f.ID == uuid.Nil {
 			continue
+		}
+		if f.MaterialSetID != uuid.Nil {
+			sid := f.MaterialSetID.String()
+			if sid != "" && !seenSets[sid] {
+				seenSets[sid] = true
+				setNodes = append(setNodes, map[string]any{
+					"id":        sid,
+					"synced_at": now,
+				})
+			}
 		}
 		fileNodes = append(fileNodes, map[string]any{
 			"id":              f.ID.String(),
@@ -108,6 +121,7 @@ func UpsertConceptEvidenceGraph(ctx context.Context, client *neo4jdb.Client, log
 	// Best-effort schema init.
 	{
 		stmts := []string{
+			`CREATE CONSTRAINT material_set_id_unique IF NOT EXISTS FOR (s:MaterialSet) REQUIRE s.id IS UNIQUE`,
 			`CREATE CONSTRAINT material_file_id_unique IF NOT EXISTS FOR (f:MaterialFile) REQUIRE f.id IS UNIQUE`,
 			`CREATE CONSTRAINT material_chunk_id_unique IF NOT EXISTS FOR (c:MaterialChunk) REQUIRE c.id IS UNIQUE`,
 			`CREATE CONSTRAINT concept_evidence_id_unique IF NOT EXISTS FOR (e:ConceptEvidence) REQUIRE e.id IS UNIQUE`,
@@ -124,11 +138,28 @@ func UpsertConceptEvidenceGraph(ctx context.Context, client *neo4jdb.Client, log
 	}
 
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		if len(setNodes) > 0 {
+			res, err := tx.Run(ctx, `
+UNWIND $sets AS s
+MERGE (ms:MaterialSet {id: s.id})
+SET ms += s
+`, map[string]any{"sets": setNodes})
+			if err != nil {
+				return nil, err
+			}
+			if _, err := res.Consume(ctx); err != nil {
+				return nil, err
+			}
+		}
+
 		if len(fileNodes) > 0 {
 			res, err := tx.Run(ctx, `
 UNWIND $files AS f
 MERGE (mf:MaterialFile {id: f.id})
 SET mf += f
+WITH mf, f
+MERGE (ms:MaterialSet {id: f.material_set_id})
+MERGE (mf)-[:IN_SET]->(ms)
 `, map[string]any{"files": fileNodes})
 			if err != nil {
 				return nil, err

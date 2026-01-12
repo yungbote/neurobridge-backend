@@ -204,8 +204,14 @@ type NodeDocGenTableV1 struct {
 }
 
 type NodeDocGenQuickCheckV1 struct {
-	ID        string          `json:"id"`
-	PromptMD  string          `json:"prompt_md"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"` // short_answer|true_false|mcq|""
+	PromptMD string `json:"prompt_md"`
+
+	// MCQ support (optional for short_answer/true_false).
+	Options  []DrillQuestionOptionV1 `json:"options"`
+	AnswerID string                  `json:"answer_id"`
+
 	AnswerMD  string          `json:"answer_md"`
 	Citations []CitationRefV1 `json:"citations"`
 }
@@ -812,7 +818,10 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			doc.Blocks = append(doc.Blocks, map[string]any{
 				"id":        id,
 				"type":      "quick_check",
+				"kind":      q.Kind,
 				"prompt_md": q.PromptMD,
+				"options":   toAny(q.Options),
+				"answer_id": q.AnswerID,
 				"answer_md": q.AnswerMD,
 				"citations": toAny(q.Citations),
 			})
@@ -1078,7 +1087,16 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 		if refQC[q.ID] {
 			continue
 		}
-		doc.Blocks = append(doc.Blocks, map[string]any{"id": q.ID, "type": "quick_check", "prompt_md": q.PromptMD, "answer_md": q.AnswerMD, "citations": toAny(q.Citations)})
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"id":        q.ID,
+			"type":      "quick_check",
+			"kind":      q.Kind,
+			"prompt_md": q.PromptMD,
+			"options":   toAny(q.Options),
+			"answer_id": q.AnswerID,
+			"answer_md": q.AnswerMD,
+			"citations": toAny(q.Citations),
+		})
 	}
 	for _, d := range dividerSeq {
 		if refDivider[d.ID] {

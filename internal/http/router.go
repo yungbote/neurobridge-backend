@@ -134,6 +134,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/path-nodes/:id/doc/materials", cfg.PathHandler.ListPathNodeDocMaterials)
 			protected.GET("/path-nodes/:id/drills", cfg.PathHandler.ListPathNodeDrills)
 			protected.POST("/path-nodes/:id/drills/:kind", cfg.PathHandler.GeneratePathNodeDrill)
+			protected.POST("/path-nodes/:id/quick-checks/:block_id/attempt", cfg.PathHandler.AttemptPathNodeQuickCheck)
 		}
 
 		if cfg.ActivityHandler != nil {

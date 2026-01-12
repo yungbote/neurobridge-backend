@@ -28,6 +28,12 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.MaterialChunk{},
 		&types.MaterialAsset{},
 		&types.MaterialSetSummary{},
+		&types.MaterialEntity{},
+		&types.MaterialClaim{},
+		&types.MaterialChunkEntity{},
+		&types.MaterialChunkClaim{},
+		&types.MaterialClaimEntity{},
+		&types.MaterialClaimConcept{},
 
 		// =========================
 		// Graph-centric learning (new centerpiece: Path)

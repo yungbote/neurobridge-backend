@@ -72,6 +72,12 @@ type MaterialFile = materials.MaterialFile
 type MaterialChunk = materials.MaterialChunk
 type MaterialAsset = materials.MaterialAsset
 type MaterialSetSummary = materials.MaterialSetSummary
+type MaterialEntity = materials.MaterialEntity
+type MaterialClaim = materials.MaterialClaim
+type MaterialChunkEntity = materials.MaterialChunkEntity
+type MaterialChunkClaim = materials.MaterialChunkClaim
+type MaterialClaimEntity = materials.MaterialClaimEntity
+type MaterialClaimConcept = materials.MaterialClaimConcept
 type Segment = materials.Segment
 
 func PtrFloat(v float64) *float64 { return materials.PtrFloat(v) }

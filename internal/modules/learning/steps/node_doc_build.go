@@ -612,20 +612,17 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			const lexicalK = 10
 			const finalK = 22
 
-			var retrieved []uuid.UUID
-			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
-				if qerr == nil && len(ids) > 0 {
-					for _, s := range ids {
-						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
-							retrieved = append(retrieved, id)
-						}
-					}
-				}
-			}
-
-			lexIDs, _ := lexicalChunkIDs(dbctx.Context{Ctx: gctx, Tx: deps.DB}, fileIDs, w.QueryText, lexicalK)
-			retrieved = append(retrieved, lexIDs...)
+			retrieved, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
+				MaterialSetID: in.MaterialSetID,
+				ChunksNS:      chunksNS,
+				QueryText:     w.QueryText,
+				QueryEmb:      w.QueryEmb,
+				FileIDs:       fileIDs,
+				AllowFiles:    allowFiles,
+				SeedK:         semanticK,
+				LexicalK:      lexicalK,
+				FinalK:        finalK,
+			})
 			retrieved = dedupeUUIDsPreserveOrder(retrieved)
 
 			if len(retrieved) < finalK {
@@ -768,14 +765,18 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		  - Use md: a short, vivid section that adds insight (not generic filler).
 		  - For intuition and mental_model blocks: if a visualization would materially improve comprehension or memory, include a supporting visual block immediately before/after it (figure/video/diagram) and make the visual caption explicitly reinforce that specific intuition/mental model.
 
-		Hard rules:
-		- Output ONLY valid JSON that matches the schema. No surrounding text.
-		- Do not include planning/meta/check-in language. Do not offer customization options.
-	- Quick checks must be short-answer or true/false (no multiple choice).
-	- Heading levels must be 2, 3, or 4 (never use 1).
-	- Include a tip callout titled exactly "Worked example".
-	%s
-	- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
+			Hard rules:
+			- Output ONLY valid JSON that matches the schema. No surrounding text.
+			- Do not include planning/meta/check-in language. Do not offer customization options.
+		- Quick checks may be short-answer, true/false, or multiple choice.
+		  - For quick_checks items, ALWAYS include: kind, options, answer_id (schema requires them).
+		  - short_answer: kind="short_answer", options=[], answer_id=""; answer_md is the reference answer/explanation.
+		  - true_false: kind="true_false", options=[{id:"A",text:"True"},{id:"B",text:"False"}], answer_id="A"|"B".
+		  - mcq: kind="mcq", options has 3-5 options, answer_id matches one option id, answer_md explains why.
+		- Heading levels must be 2, 3, or 4 (never use 1).
+		- Include a tip callout titled exactly "Worked example".
+		%s
+		- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
 	- Every content block (everything except heading/divider/video/code) MUST include non-empty citations.
 	- Citations MUST reference ONLY the provided chunk_ids.
 	- Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
@@ -976,6 +977,11 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 				// Dedupe again after any auto-injection/capping to keep the final doc clean.
 				if deduped, hit := content.DedupNodeDocV1(doc); len(hit) > 0 {
 					doc = deduped
+				}
+				// Best-effort padding for near-miss minima (e.g., missing one paragraph).
+				// This prevents hard failures on small structural omissions without weakening validation.
+				if patched, changed := ensureNodeDocMeetsMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
+					doc = patched
 				}
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
 					doc = withIDs

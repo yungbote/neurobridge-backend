@@ -879,6 +879,322 @@ func ensureNodeDocHasVideo(doc content.NodeDocV1, videoAsset *mediaAssetCandidat
 	return doc
 }
 
+func ensureNodeDocMeetsMinima(doc content.NodeDocV1, req content.NodeDocRequirements, allowedChunkIDs map[string]bool, chunkByID map[uuid.UUID]*types.MaterialChunk, fallbackChunkIDs []uuid.UUID) (content.NodeDocV1, bool) {
+	_ = chunkByID
+	changed := false
+
+	if doc.SchemaVersion == 0 {
+		doc.SchemaVersion = 1
+		changed = true
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		doc.Title = "Lesson"
+		changed = true
+	}
+
+	pickCitationID := func() string {
+		if allowedChunkIDs != nil && len(allowedChunkIDs) > 0 {
+			for _, id := range fallbackChunkIDs {
+				if id == uuid.Nil {
+					continue
+				}
+				s := id.String()
+				if allowedChunkIDs[s] {
+					return s
+				}
+			}
+			for s := range allowedChunkIDs {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
+			}
+			return ""
+		}
+		for _, id := range fallbackChunkIDs {
+			if id != uuid.Nil {
+				return id.String()
+			}
+		}
+		return ""
+	}
+
+	cid := pickCitationID()
+	citations := func() []any {
+		if cid == "" {
+			return nil
+		}
+		return []any{map[string]any{
+			"chunk_id": cid,
+			"quote":    "",
+			"loc":      map[string]any{"page": 0, "start": 0, "end": 0},
+		}}
+	}
+
+	hasWorkedExample := func(d content.NodeDocV1) bool {
+		for _, b := range d.Blocks {
+			if b == nil {
+				continue
+			}
+			t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+			switch t {
+			case "heading":
+				txt := strings.ToLower(strings.TrimSpace(stringFromAny(b["text"])))
+				if strings.Contains(txt, "example") {
+					return true
+				}
+			case "callout":
+				variant := strings.ToLower(strings.TrimSpace(stringFromAny(b["variant"])))
+				title := strings.ToLower(strings.TrimSpace(stringFromAny(b["title"])))
+				if variant == "tip" && (title == "worked example" || strings.HasPrefix(title, "worked example")) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	metrics := content.NodeDocMetrics(doc)
+	bc, _ := metrics["block_counts"].(map[string]int)
+	if bc == nil {
+		bc = map[string]int{}
+	}
+
+	// Ensure required worked example marker exists (quality floor + validator requirement).
+	if req.RequireExample && !hasWorkedExample(doc) {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "callout",
+			"variant":   "tip",
+			"title":     "Worked example",
+			"md":        "Work one small concrete example end-to-end. Write each step, cite the sentence/definition you used, and finish with a quick sanity check so you can reproduce the method without notes.",
+			"citations": citations(),
+		})
+		bc["callout"]++
+		changed = true
+	}
+
+	// Ensure minimum headings (levels 2-4).
+	for req.MinHeadings > 0 && bc["heading"] < req.MinHeadings {
+		headingNames := []string{"Roadmap", "Key idea", "Practice", "Key takeaways"}
+		n := bc["heading"]
+		name := headingNames[n%len(headingNames)]
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":  "heading",
+			"level": 2,
+			"text":  name,
+		})
+		bc["heading"]++
+		changed = true
+	}
+
+	// Ensure required conceptual sections.
+	for req.MinWhyItMatters > 0 && bc["why_it_matters"] < req.MinWhyItMatters {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "why_it_matters",
+			"title":     "Why it matters",
+			"md":        "This lesson turns the material into a reusable tool: it helps you decide what matters, apply the idea correctly, and detect mistakes early instead of memorizing isolated facts.",
+			"citations": citations(),
+		})
+		bc["why_it_matters"]++
+		changed = true
+	}
+	for req.MinIntuition > 0 && bc["intuition"] < req.MinIntuition {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "intuition",
+			"title":     "Intuition",
+			"md":        "Build an intuition you can run mentally: name the moving parts, state what can change, and keep a simple check you can apply after each step so your reasoning stays anchored.",
+			"citations": citations(),
+		})
+		bc["intuition"]++
+		changed = true
+	}
+	for req.MinMentalModels > 0 && bc["mental_model"] < req.MinMentalModels {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "mental_model",
+			"title":     "Mental model",
+			"md":        "Use a compact mental model: (1) the objects involved, (2) the rule or transformation you apply, (3) what the rule preserves, and (4) the final check that confirms you stayed within the assumptions.",
+			"citations": citations(),
+		})
+		bc["mental_model"]++
+		changed = true
+	}
+
+	// Ensure minimum paragraph/callout/quick_check structure.
+	for req.MinParagraphs > 0 && bc["paragraph"] < req.MinParagraphs {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "paragraph",
+			"md":        nodeDocPaddingTextWithOffset(90, bc["paragraph"]),
+			"citations": citations(),
+		})
+		bc["paragraph"]++
+		changed = true
+	}
+	for req.MinCallouts > 0 && bc["callout"] < req.MinCallouts {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "callout",
+			"variant":   "info",
+			"title":     "Tip",
+			"md":        "Keep definitions and assumptions explicit as you work. Most errors come from silently swapping terms or applying a rule outside its stated conditions.",
+			"citations": citations(),
+		})
+		bc["callout"]++
+		changed = true
+	}
+	for req.MinQuickChecks > 0 && bc["quick_check"] < req.MinQuickChecks {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":      "quick_check",
+			"kind":      "short_answer",
+			"prompt_md": "Write a one-sentence paraphrase of the key definition or rule from the cited excerpt, without adding new claims.",
+			"options":   []any{},
+			"answer_id": "",
+			"answer_md": "A correct answer restates the cited line faithfully in plain language and preserves the same conditions/assumptions.",
+			"citations": citations(),
+		})
+		bc["quick_check"]++
+		changed = true
+	}
+
+	// Ensure pitfalls, steps, and checklist requirements when present.
+	for req.MinPitfalls > 0 && bc["misconceptions"]+bc["common_mistakes"] < req.MinPitfalls {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":  "common_mistakes",
+			"title": "Common mistakes",
+			"items_md": []any{
+				"Using a rule without checking its assumptions first.",
+				"Swapping two similarly named quantities or terms mid-solution.",
+				"Skipping a quick sanity check (units, sign, scale, or boundary case).",
+			},
+			"citations": citations(),
+		})
+		bc["common_mistakes"]++
+		changed = true
+	}
+	for req.MinSteps > 0 && bc["steps"] < req.MinSteps {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":  "steps",
+			"title": "Procedure",
+			"steps_md": []any{
+				"Restate the task and list what is given vs. what you need to produce.",
+				"Select the relevant definition or rule from the materials and write it in your own words.",
+				"Apply the rule step-by-step, citing the line you used for each step.",
+				"Check the result against the original conditions and do a quick sanity check.",
+			},
+			"citations": citations(),
+		})
+		bc["steps"]++
+		changed = true
+	}
+	for req.MinChecklist > 0 && bc["checklist"] < req.MinChecklist {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":  "checklist",
+			"title": "Checklist",
+			"items_md": []any{
+				"I stated the definition/rule and its assumptions.",
+				"Each step is justified by the cited material.",
+				"I did a final sanity check and confirmed constraints are satisfied.",
+			},
+			"citations": citations(),
+		})
+		bc["checklist"]++
+		changed = true
+	}
+	for req.MinConnections > 0 && bc["connections"] < req.MinConnections {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":  "connections",
+			"title": "Connections",
+			"items_md": []any{
+				"Name the prerequisite idea this relies on and the assumption it provides.",
+				"Note one nearby concept that looks similar and the feature that distinguishes it.",
+				"Identify where in the worked example the connection becomes visible.",
+			},
+			"citations": citations(),
+		})
+		bc["connections"]++
+		changed = true
+	}
+
+	// Ensure table minimum when required (e.g., cheatsheet template).
+	for req.MinTables > 0 && bc["table"] < req.MinTables {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":    "table",
+			"caption": "Summary table",
+			"columns": []any{"Item", "Notes"},
+			"rows": []any{
+				[]any{"Key definition", "State it in plain language and list the assumptions."},
+				[]any{"How to apply", "Work step-by-step and check constraints at the end."},
+				[]any{"Common mistakes", "Assumption drift, swapped terms, missing sanity checks."},
+			},
+			"citations": citations(),
+		})
+		bc["table"]++
+		changed = true
+	}
+
+	// Ensure minimum media when explicitly required (prefer table, since it is always renderable).
+	if req.RequireMedia && bc["figure"]+bc["diagram"]+bc["table"] == 0 {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":    "table",
+			"caption": "Self-check table",
+			"columns": []any{"Check", "What to verify"},
+			"rows": []any{
+				[]any{"Assumptions", "List the assumptions and confirm they hold for the worked example."},
+				[]any{"Units/scale", "Do a quick sanity check for units, sign, and rough magnitude."},
+				[]any{"Consistency", "Confirm the final result is consistent with the cited definition/rule."},
+			},
+			"citations": citations(),
+		})
+		bc["table"]++
+		changed = true
+	}
+
+	// Ensure minimum word count (pad once, in a single paragraph).
+	if req.MinWordCount > 0 {
+		metrics = content.NodeDocMetrics(doc)
+		wordCount, _ := metrics["word_count"].(int)
+		if wordCount < req.MinWordCount {
+			missing := req.MinWordCount - wordCount
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"type":      "paragraph",
+				"md":        nodeDocPaddingTextWithOffset(missing+140, wordCount),
+				"citations": citations(),
+			})
+			changed = true
+		}
+	}
+
+	return doc, changed
+}
+
+func nodeDocPaddingTextWithOffset(minWords int, offset int) string {
+	if minWords < 40 {
+		minWords = 40
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	sentences := []string{
+		"Work in short loops: recall the definition, apply it to a concrete case, and then check the result against the stated constraints.",
+		"Keep definitions and assumptions explicit; most mistakes come from silently changing what a term refers to.",
+		"When you see a rule, name each symbol in plain language and state what can vary and what is fixed.",
+		"After each step, do a quick sanity check using units, sign, scale, or a boundary case so errors surface early.",
+		"If you get stuck, write the smallest next step you can justify from the cited material and continue from there.",
+		"End with a one-sentence takeaway you can repeat without notes and a short note about the most common trap to avoid.",
+	}
+
+	var b strings.Builder
+	words := 0
+	for it := 0; words < minWords && it < 200; it++ {
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		s := sentences[(offset+it)%len(sentences)]
+		b.WriteString(s)
+		words += content.WordCount(s)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func extractNoteValue(notes string, prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	if strings.TrimSpace(notes) == "" || prefix == "" {

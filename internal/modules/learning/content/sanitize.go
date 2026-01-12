@@ -199,6 +199,29 @@ func ScrubNodeDocV1(doc NodeDocV1) (NodeDocV1, []string) {
 				}
 			}
 		}
+		if raw, ok := b["options"]; ok && raw != nil {
+			if arr, ok := raw.([]any); ok && len(arr) > 0 {
+				changed := false
+				for j := range arr {
+					m, ok := arr[j].(map[string]any)
+					if !ok || m == nil {
+						continue
+					}
+					if s, ok := m["text"].(string); ok && strings.TrimSpace(s) != "" {
+						ns, hh := scrubMetaText(s)
+						if ns != s {
+							m["text"] = ns
+							changed = true
+						}
+						hit = append(hit, hh...)
+					}
+					arr[j] = m
+				}
+				if changed {
+					b["options"] = arr
+				}
+			}
+		}
 
 		doc.Blocks[i] = b
 	}

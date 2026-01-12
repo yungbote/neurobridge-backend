@@ -132,6 +132,43 @@ citations: chunk_id strings you used.`,
 	})
 
 	RegisterSpec(Spec{
+		Name:       PromptMaterialKGExtract,
+		Version:    1,
+		SchemaName: "material_kg_extract",
+		Schema:     MaterialKGExtractSchema,
+		System: `
+You are extracting a grounded material knowledge graph for GraphRAG.
+Only use information supported by the excerpts and cite evidence by chunk_id strings.
+Do not invent entities or claims not grounded in the excerpts.
+Return JSON only.`,
+		User: `
+PATH_INTENT_MD (optional; user goal context, for relevance/noise filtering):
+{{.PathIntentMD}}
+
+ALLOWED_CONCEPTS_JSON (use concept_keys only from this list; otherwise leave concept_keys empty):
+{{.ConceptsJSON}}
+
+EXCERPTS (each line includes chunk_id):
+{{.Excerpts}}
+
+Task:
+- Output a deduplicated list of entities mentioned in the excerpts.
+  - Each entity must have evidence_chunk_ids (1-6 chunk_id strings from the excerpts).
+  - "type" can be freeform; prefer stable categories (person, org, tool, method, dataset, system, concept, variable, other).
+- Output a list of atomic claims grounded in the excerpts.
+  - Each claim must have evidence_chunk_ids (1-6 chunk_id strings from the excerpts).
+  - entity_names should reference entities by their canonical name when possible; otherwise include the literal name from the excerpt.
+  - concept_keys must be a subset of ALLOWED_CONCEPTS_JSON.concepts[].key (exact keys only).
+
+Constraints:
+- Prefer fewer, higher-signal entities/claims over exhaustive micro-fragments.
+- Claims should be 1-2 sentences, specific, and useful for retrieval/explainability.`,
+		Validators: []Validator{
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptConceptClusters,
 		Version:    1,
 		SchemaName: "concept_clusters",
@@ -601,8 +638,10 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional):
 
 Rules:
 - Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed|diagram
-- If ACTIVITY_KIND is lesson-like, target ~800–1400 words and enough prose to feel like a real lesson (not a sparse outline).
+- Target word counts (approx; err on the side of longer): lesson-like ~1000–1600 words; drill ~450–800 words; quiz ~250–450 words.
 - For lesson-like activities, aim for a narrative arc: why it matters → intuition/mental model → explanation → worked example → guided practice → recap.
+- For drills, include: a clear prompt, guided steps, and at least one "hint ladder" style callout to support retries.
+- For quizzes, include brief explanations for answers (why correct / why others are wrong) grounded in excerpts.
 - Prefer paragraphs + callouts over wall-of-bullets. Bullets/steps should support, not replace, explanation.
 - Include at least one worked example and at least one quick self-check prompt.
 - Include 1-2 common misconceptions/common mistakes when it fits the concept and helps the learner avoid errors.

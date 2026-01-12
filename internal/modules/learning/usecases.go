@@ -125,6 +125,9 @@ type (
 	ConceptGraphBuildInput  = steps.ConceptGraphBuildInput
 	ConceptGraphBuildOutput = steps.ConceptGraphBuildOutput
 
+	MaterialKGBuildInput  = steps.MaterialKGBuildInput
+	MaterialKGBuildOutput = steps.MaterialKGBuildOutput
+
 	ConceptClusterBuildInput  = steps.ConceptClusterBuildInput
 	ConceptClusterBuildOutput = steps.ConceptClusterBuildOutput
 
@@ -300,6 +303,20 @@ func (u Usecases) ConceptGraphBuild(ctx context.Context, in ConceptGraphBuildInp
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
 	}, steps.ConceptGraphBuildInput(in))
+}
+
+func (u Usecases) MaterialKGBuild(ctx context.Context, in MaterialKGBuildInput) (MaterialKGBuildOutput, error) {
+	return steps.MaterialKGBuild(ctx, steps.MaterialKGBuildDeps{
+		DB:        u.deps.DB,
+		Log:       u.deps.Log,
+		Files:     u.deps.Files,
+		Chunks:    u.deps.Chunks,
+		Path:      u.deps.Path,
+		Concepts:  u.deps.Concepts,
+		Graph:     u.deps.Graph,
+		AI:        u.deps.AI,
+		Bootstrap: u.deps.Bootstrap,
+	}, steps.MaterialKGBuildInput(in))
 }
 
 func (u Usecases) ConceptClusterBuild(ctx context.Context, in ConceptClusterBuildInput) (ConceptClusterBuildOutput, error) {

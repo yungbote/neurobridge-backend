@@ -12,6 +12,7 @@ import (
 
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/graphrag"
 	learningIndex "github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	pc "github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
 )
@@ -118,6 +119,87 @@ func retrieveMaterialChunkContext(
 	trace["kept"] = len(candidates)
 	if len(candidates) == 0 {
 		return "", trace
+	}
+
+	// Graph-assisted expansion (best-effort): expand via ConceptEvidence/ConceptEdge and material entities/claims.
+	// This improves multi-hop retrieval while keeping vector retrieval as the base (seeds are always retained).
+	{
+		seeds := make([]graphrag.SeedChunk, 0, len(candidates))
+		for _, h := range candidates {
+			if h.Chunk == nil || h.Chunk.ID == uuid.Nil {
+				continue
+			}
+			seeds = append(seeds, graphrag.SeedChunk{ChunkID: h.Chunk.ID, Score: h.Score})
+			if len(seeds) >= 12 {
+				break
+			}
+		}
+		if len(seeds) > 0 {
+			scores, gtrace, err := graphrag.ExpandMaterialChunkScores(ctx, deps.DB, idx.MaterialSetID, seeds, graphrag.MaterialChunkExpandOptions{
+				MaxSeeds:              12,
+				MaxConcepts:           45,
+				MaxEntities:           30,
+				MaxClaims:             30,
+				MaxEvidencePerConcept: 10,
+				MaxOut:                70,
+			})
+			if err != nil {
+				trace["graph_expand_err"] = err.Error()
+			}
+			if len(gtrace) > 0 {
+				trace["graph_expand"] = gtrace
+			}
+			if len(scores) > 0 {
+				type scoredID struct {
+					ID    uuid.UUID
+					Score float64
+				}
+				sorted := make([]scoredID, 0, len(scores))
+				for id, sc := range scores {
+					if id == uuid.Nil || sc <= 0 {
+						continue
+					}
+					sorted = append(sorted, scoredID{ID: id, Score: sc})
+				}
+				sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score > sorted[j].Score })
+
+				ids := make([]uuid.UUID, 0, len(sorted))
+				scoreByID := map[uuid.UUID]float64{}
+				for _, s := range sorted {
+					ids = append(ids, s.ID)
+					scoreByID[s.ID] = s.Score
+				}
+
+				expanded := loadMaterialHitsByChunkIDs(ctx, deps.DB, idx.MaterialSetID, ids, scoreByID, mode+"+graph")
+				if len(expanded) > 0 {
+					mode = mode + "+graph"
+					candidates = expanded
+				}
+			}
+		}
+	}
+
+	// Re-apply hard filters after graph expansion (newly-added chunks are also untrusted).
+	{
+		filtered := make([]materialChunkHit, 0, len(candidates))
+		for _, h := range candidates {
+			if h.Chunk == nil || h.File == nil {
+				continue
+			}
+			text := strings.TrimSpace(h.Chunk.Text)
+			if text == "" || isLowSignal(text) {
+				continue
+			}
+			if looksLikePromptInjection(text) && !allowPrompty {
+				continue
+			}
+			filtered = append(filtered, h)
+		}
+		candidates = filtered
+		trace["kept_after_graph"] = len(candidates)
+		if len(candidates) == 0 {
+			return "", trace
+		}
 	}
 
 	// Sort best-first by relevance.

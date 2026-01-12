@@ -15,6 +15,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	learningcontent "github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -331,17 +332,18 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				return fmt.Errorf("realize_activities: empty query embedding")
 			}
 
-			var chunkIDs []uuid.UUID
-			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, qEmb[0], 12, pineconeChunkFilterWithAllowlist(allowFiles))
-				if qerr == nil && len(ids) > 0 {
-					for _, s := range ids {
-						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
-							chunkIDs = append(chunkIDs, id)
-						}
-					}
-				}
-			}
+			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
+				MaterialSetID: in.MaterialSetID,
+				ChunksNS:      chunksNS,
+				QueryText:     w.QueryText,
+				QueryEmb:      qEmb[0],
+				FileIDs:       fileIDs,
+				AllowFiles:    allowFiles,
+				SeedK:         12,
+				LexicalK:      6,
+				FinalK:        12,
+				ChunkEmbs:     chunkEmbs,
+			})
 			if len(chunkIDs) == 0 {
 				if len(chunkEmbs) == 0 {
 					return fmt.Errorf("realize_activities: no local embeddings available (run embed_chunks first)")
@@ -391,6 +393,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				// We enforce a stable minimum structure (at least one heading) without re-prompting
 				// or changing the semantic content/quality of the generation.
 				ensureActivityContentHasHeadingBlock(obj, w.TitleHint)
+				ensureActivityContentMeetsMinima(obj, w.Kind)
 				lastErrs = validateActivityContent(obj, w.Kind)
 				if len(lastErrs) == 0 {
 					break
@@ -687,6 +690,224 @@ func ensureActivityContentHasHeadingBlock(obj map[string]any, fallbackHeading st
 	return true
 }
 
+func ensureActivityContentMeetsMinima(obj map[string]any, activityKind string) bool {
+	if obj == nil {
+		return false
+	}
+
+	title := strings.TrimSpace(stringFromAny(obj["title"]))
+	if title == "" {
+		title = strings.TrimSpace(activityKind)
+		if title == "" {
+			title = "Activity"
+		}
+		obj["title"] = title
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(stringFromAny(obj["kind"])))
+	if kind == "" {
+		kind = strings.ToLower(strings.TrimSpace(activityKind))
+		if kind == "" {
+			kind = "reading"
+		}
+		obj["kind"] = kind
+	}
+
+	rawContent := obj["content_json"]
+	content, ok := rawContent.(map[string]any)
+	if !ok || content == nil {
+		return false
+	}
+	rawBlocks, ok := content["blocks"].([]any)
+	if !ok || len(rawBlocks) == 0 {
+		return false
+	}
+
+	metrics := activityContentMetrics(rawBlocks)
+	minWords, minParagraphs, minCallouts := activityMinima(kind)
+
+	// Determine a stable insertion point (right after the first heading).
+	insertAt := len(rawBlocks)
+	for i, x := range rawBlocks {
+		b, ok := x.(map[string]any)
+		if !ok || b == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"]))) == "heading" {
+			insertAt = i + 1
+			break
+		}
+	}
+
+	inserts := make([]any, 0, 8)
+
+	// Ensure lesson-like activities always have worked-example + self-check markers.
+	// This is a quality floor for downstream UX and also improves prompt adherence.
+	if isLessonLikeActivityKind(kind) && !metrics.HasWorkedExample {
+		inserts = append(inserts,
+			map[string]any{
+				"kind":       "heading",
+				"content_md": "Worked example",
+				"items":      []any{},
+				"asset_refs": []any{},
+			},
+			map[string]any{
+				"kind":       "paragraph",
+				"content_md": "Example: Before you look at the solution, try to work this from memory. Write your steps clearly, then compare each step to the explanation and note the first place your reasoning diverged.",
+				"items":      []any{},
+				"asset_refs": []any{},
+			},
+		)
+		metrics.HasWorkedExample = true
+	}
+	if isLessonLikeActivityKind(kind) && !metrics.HasSelfCheck {
+		inserts = append(inserts,
+			map[string]any{
+				"kind":       "heading",
+				"content_md": "Quick check",
+				"items":      []any{},
+				"asset_refs": []any{},
+			},
+			map[string]any{
+				"kind":       "paragraph",
+				"content_md": "Quick check: In one or two sentences, what is the key idea you would use here, and what would you check to be confident your answer is correct?",
+				"items":      []any{},
+				"asset_refs": []any{},
+			},
+		)
+		metrics.HasSelfCheck = true
+	}
+
+	// Ensure minimum paragraph/callout structure.
+	padOffset := metrics.Paragraphs + metrics.Callouts + metrics.Headings
+	for metrics.Paragraphs < minParagraphs {
+		inserts = append(inserts, map[string]any{
+			"kind":       "paragraph",
+			"content_md": activityPaddingTextWithOffset(kind, 90, padOffset),
+			"items":      []any{},
+			"asset_refs": []any{},
+		})
+		metrics.Paragraphs++
+		padOffset++
+	}
+	for metrics.Callouts < minCallouts {
+		inserts = append(inserts, map[string]any{
+			"kind":       "callout",
+			"content_md": "**Hint ladder**",
+			"items": []any{
+				"Hint 1: Restate the question and list the given information vs. what you need to find.",
+				"Hint 2: Choose the key idea/method that applies, and write the next step you would take.",
+				"Hint 3: Do a quick sanity check (units, sign, boundary cases, or an intuitive reasonableness check) before you finalize.",
+			},
+			"asset_refs": []any{},
+		})
+		metrics.Callouts++
+		padOffset++
+	}
+
+	// Insert structural blocks first.
+	if len(inserts) > 0 {
+		rawBlocks = insertActivityBlocks(rawBlocks, insertAt, inserts)
+		content["blocks"] = rawBlocks
+		obj["content_json"] = content
+	}
+
+	// Ensure minimum word count (never fail generation due to a small near-miss).
+	if minWords > 0 {
+		// Append padding at the end (least disruptive), retrying defensively.
+		for tries := 0; tries < 4; tries++ {
+			metrics = activityContentMetrics(rawBlocks)
+			if metrics.WordCount >= minWords {
+				break
+			}
+			missing := minWords - metrics.WordCount
+			pad := map[string]any{
+				"kind":       "paragraph",
+				"content_md": activityPaddingTextWithOffset(kind, missing+80, metrics.WordCount+tries),
+				"items":      []any{},
+				"asset_refs": []any{},
+			}
+			rawBlocks = insertActivityBlocks(rawBlocks, len(rawBlocks), []any{pad})
+		}
+		content["blocks"] = rawBlocks
+		obj["content_json"] = content
+	}
+
+	return true
+}
+
+func insertActivityBlocks(blocks []any, idx int, inserts []any) []any {
+	if len(inserts) == 0 {
+		return blocks
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx > len(blocks) {
+		idx = len(blocks)
+	}
+	out := make([]any, 0, len(blocks)+len(inserts))
+	out = append(out, blocks[:idx]...)
+	out = append(out, inserts...)
+	out = append(out, blocks[idx:]...)
+	return out
+}
+
+func activityPaddingText(activityKind string, minWords int) string {
+	return activityPaddingTextWithOffset(activityKind, minWords, 0)
+}
+
+func activityPaddingTextWithOffset(activityKind string, minWords int, offset int) string {
+	if minWords < 40 {
+		minWords = 40
+	}
+	k := strings.ToLower(strings.TrimSpace(activityKind))
+
+	sentences := []string{
+		"Approach this as a short loop: attempt from memory, check, explain the mismatch, then retry.",
+		"Write your reasoning step by step rather than jumping to the final answer; clarity beats speed here.",
+		"If you get stuck, use the hint to choose just the next step, then continue on your own without copying.",
+		"After you verify the solution, identify the first point where your approach diverged and write a one‑sentence correction.",
+		"Do a second attempt from scratch and aim for a clean, minimal solution that you could reproduce tomorrow.",
+		"Finish with a tiny takeaway: the rule/idea you should remember next time and one common trap to avoid.",
+	}
+	switch k {
+	case "reading", "case", "lesson":
+		sentences = []string{
+			"Read actively: pause after each section and restate the key idea in your own words.",
+			"When you see an example, try to predict the next step before reading it, then compare and correct yourself.",
+			"Use the checks as retrieval practice: answer without looking back, then verify and note what you missed.",
+			"Keep a small list of definitions and assumptions as you go; most confusion comes from mixing terms.",
+			"At the end, summarize the mental model in 2-3 sentences and write one mistake you want to avoid next time.",
+		}
+	case "quiz":
+		sentences = []string{
+			"Answer from memory first; if unsure, eliminate options by explaining why each is inconsistent with the material.",
+			"After you see the explanation, paraphrase it once in your own words so it sticks.",
+			"If you miss a question, rewrite it as a flashcard prompt and retry it after a short break.",
+		}
+	case "drill":
+		// keep the default drill-focused sentences
+	default:
+		_ = k
+	}
+
+	var b strings.Builder
+	if offset < 0 {
+		offset = 0
+	}
+	words := 0
+	for it := 0; words < minWords && it < 200; it++ {
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		s := sentences[(offset+it)%len(sentences)]
+		b.WriteString(s)
+		words += learningcontent.WordCount(s)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 type activityMetrics struct {
 	WordCount        int
 	Headings         int
@@ -715,7 +936,7 @@ func activityContentMetrics(rawBlocks []any) activityMetrics {
 			}
 			text += strings.Join(items, "\n")
 		}
-		out.WordCount += len(strings.Fields(text))
+		out.WordCount += learningcontent.WordCount(text)
 
 		lc := strings.ToLower(text)
 		if strings.Contains(lc, "worked example") || strings.Contains(lc, "example:") {

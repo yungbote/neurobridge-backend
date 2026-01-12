@@ -32,6 +32,7 @@ type PathHandler struct {
 	assets repos.AssetRepo
 	jobs   repos.JobRunRepo
 	jobSvc services.JobService
+	events services.EventService
 
 	avatar   services.AvatarService
 	learning learningmod.Usecases
@@ -57,6 +58,7 @@ func NewPathHandler(
 	assets repos.AssetRepo,
 	jobs repos.JobRunRepo,
 	jobSvc services.JobService,
+	events services.EventService,
 	avatar services.AvatarService,
 	learning learningmod.Usecases,
 	bucket gcp.BucketService,
@@ -80,6 +82,7 @@ func NewPathHandler(
 		assets:           assets,
 		jobs:             jobs,
 		jobSvc:           jobSvc,
+		events:           events,
 		avatar:           avatar,
 		learning:         learning,
 		bucket:           bucket,

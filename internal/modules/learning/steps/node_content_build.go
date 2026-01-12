@@ -293,17 +293,18 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				return nil
 			}
 
-			var chunkIDs []uuid.UUID
-			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, 14, pineconeChunkFilterWithAllowlist(allowFiles))
-				if qerr == nil && len(ids) > 0 {
-					for _, s := range ids {
-						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
-							chunkIDs = append(chunkIDs, id)
-						}
-					}
-				}
-			}
+			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
+				MaterialSetID: in.MaterialSetID,
+				ChunksNS:      chunksNS,
+				QueryText:     w.QueryText,
+				QueryEmb:      w.QueryEmb,
+				FileIDs:       fileIDs,
+				AllowFiles:    allowFiles,
+				SeedK:         14,
+				LexicalK:      6,
+				FinalK:        14,
+				ChunkEmbs:     chunkEmbs,
+			})
 			if len(chunkIDs) == 0 {
 				if len(chunkEmbs) == 0 {
 					return fmt.Errorf("node_content_build: no local embeddings available (run embed_chunks first)")

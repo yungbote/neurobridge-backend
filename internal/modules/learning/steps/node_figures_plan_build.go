@@ -296,20 +296,17 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 			const lexicalK = 6
 			const finalK = 14
 
-			var chunkIDs []uuid.UUID
-			if deps.Vec != nil {
-				ids, qerr := deps.Vec.QueryIDs(gctx, chunksNS, w.QueryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
-				if qerr == nil && len(ids) > 0 {
-					for _, s := range ids {
-						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {
-							chunkIDs = append(chunkIDs, id)
-						}
-					}
-				}
-			}
-
-			lexIDs, _ := lexicalChunkIDs(dbctx.Context{Ctx: gctx, Tx: deps.DB}, fileIDs, w.QueryText, lexicalK)
-			chunkIDs = append(chunkIDs, lexIDs...)
+			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
+				MaterialSetID: in.MaterialSetID,
+				ChunksNS:      chunksNS,
+				QueryText:     w.QueryText,
+				QueryEmb:      w.QueryEmb,
+				FileIDs:       fileIDs,
+				AllowFiles:    allowFiles,
+				SeedK:         semanticK,
+				LexicalK:      lexicalK,
+				FinalK:        finalK,
+			})
 			chunkIDs = dedupeUUIDsPreserveOrder(chunkIDs)
 
 			if len(chunkIDs) < finalK {

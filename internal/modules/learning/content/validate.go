@@ -76,8 +76,28 @@ func NodeDocMetrics(doc NodeDocV1) map[string]any {
 			concat = append(concat, stringFromAny(b["caption"]))
 			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
 		case "quick_check":
-			concat = append(concat, stringFromAny(b["prompt_md"]), stringFromAny(b["answer_md"]))
-			wordCount += WordCount(stripMD(stringFromAny(b["prompt_md"]) + " " + stringFromAny(b["answer_md"])))
+			p := stringFromAny(b["prompt_md"])
+			a := stringFromAny(b["answer_md"])
+			concat = append(concat, p, a)
+			wordCount += WordCount(stripMD(p + " " + a))
+			if raw, ok := b["options"].([]any); ok && len(raw) > 0 {
+				opts := make([]string, 0, len(raw))
+				for _, x := range raw {
+					m, ok := x.(map[string]any)
+					if !ok || m == nil {
+						continue
+					}
+					txt := strings.TrimSpace(stringFromAny(m["text"]))
+					if txt != "" {
+						opts = append(opts, txt)
+					}
+				}
+				if len(opts) > 0 {
+					joined := strings.Join(opts, "\n")
+					concat = append(concat, joined)
+					wordCount += WordCount(stripMD(joined))
+				}
+			}
 		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
 			items := stringSliceFromAny(b["items_md"])
 			joined := strings.Join(items, "\n")
@@ -318,6 +338,45 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 			}
 			if strings.TrimSpace(stringFromAny(b["answer_md"])) == "" {
 				errs = append(errs, fmt.Sprintf("block[%d] quick_check.answer_md missing", i))
+			}
+			kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["kind"])))
+			answerID := strings.TrimSpace(stringFromAny(b["answer_id"]))
+			rawOptions, _ := b["options"].([]any)
+			isChoice := kind == "mcq" || kind == "true_false" || len(rawOptions) > 0 || answerID != ""
+			if isChoice {
+				label := kind
+				if strings.TrimSpace(label) == "" {
+					label = "choice"
+				}
+				if len(rawOptions) < 2 {
+					errs = append(errs, fmt.Sprintf("block[%d] quick_check.options needs >=2 options for %s", i, label))
+				}
+				optIDs := map[string]bool{}
+				for j, x := range rawOptions {
+					m, ok := x.(map[string]any)
+					if !ok || m == nil {
+						errs = append(errs, fmt.Sprintf("block[%d] quick_check.options[%d] invalid", i, j))
+						continue
+					}
+					oid := strings.TrimSpace(stringFromAny(m["id"]))
+					txt := strings.TrimSpace(stringFromAny(m["text"]))
+					if oid == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] quick_check.options[%d].id missing", i, j))
+					} else if optIDs[oid] {
+						errs = append(errs, fmt.Sprintf("block[%d] quick_check.options[%d].id duplicate %q", i, j, oid))
+					}
+					if txt == "" {
+						errs = append(errs, fmt.Sprintf("block[%d] quick_check.options[%d].text missing", i, j))
+					}
+					if oid != "" {
+						optIDs[oid] = true
+					}
+				}
+				if strings.TrimSpace(answerID) == "" {
+					errs = append(errs, fmt.Sprintf("block[%d] quick_check.answer_id missing", i))
+				} else if len(optIDs) > 0 && !optIDs[answerID] {
+					errs = append(errs, fmt.Sprintf("block[%d] quick_check.answer_id %q not in options", i, answerID))
+				}
 			}
 			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
 		case "divider":

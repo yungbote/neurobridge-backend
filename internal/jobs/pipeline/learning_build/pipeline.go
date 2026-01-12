@@ -29,6 +29,7 @@ var stageOrder = []string{
 	"user_profile_refresh",
 	"teaching_patterns_seed",
 	"concept_graph_build",
+	"material_kg_build",
 	"concept_cluster_build",
 	"chain_signature_build",
 	"path_plan_build",
@@ -313,6 +314,8 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "concept_graph_build":
 			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+		case "material_kg_build":
+			_, stageErr = uc.MaterialKGBuild(jc.Ctx, learningmod.MaterialKGBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "concept_cluster_build":
 			_, stageErr = uc.ConceptClusterBuild(jc.Ctx, learningmod.ConceptClusterBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
 		case "chain_signature_build":

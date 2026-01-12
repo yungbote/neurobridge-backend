@@ -20,6 +20,7 @@ var stageDeps = map[string][]string{
 	"path_intake": {"ingest_chunks"},
 
 	"concept_graph_build":   {"path_intake"},
+	"material_kg_build":     {"concept_graph_build", "embed_chunks"},
 	"concept_cluster_build": {"concept_graph_build"},
 	"chain_signature_build": {"concept_cluster_build"},
 
@@ -29,14 +30,14 @@ var stageDeps = map[string][]string{
 	"path_plan_build":   {"concept_graph_build", "material_set_summarize", "user_profile_refresh", "path_intake"},
 	"path_cover_render": {"path_plan_build"},
 
-	"node_figures_plan_build": {"path_plan_build", "embed_chunks"},
+	"node_figures_plan_build": {"path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_figures_render":     {"node_figures_plan_build"},
-	"node_videos_plan_build":  {"path_plan_build", "embed_chunks"},
+	"node_videos_plan_build":  {"path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_videos_render":      {"node_videos_plan_build"},
 
-	"node_doc_build": {"path_plan_build", "embed_chunks", "node_figures_render", "node_videos_render"},
+	"node_doc_build": {"path_plan_build", "embed_chunks", "node_figures_render", "node_videos_render", "material_kg_build"},
 
-	"realize_activities":       {"path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_build"},
+	"realize_activities":       {"path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_build", "material_kg_build"},
 	"coverage_coherence_audit": {"realize_activities"},
 	"progression_compact":      {"user_profile_refresh"},
 	"variant_stats_refresh":    {"user_profile_refresh"},
