@@ -36,6 +36,7 @@ type CoverageCoherenceAuditInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type CoverageCoherenceAuditOutput struct {
@@ -54,7 +55,7 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 		return out, fmt.Errorf("coverage_coherence_audit: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}

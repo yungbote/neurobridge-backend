@@ -31,6 +31,7 @@ type IngestChunksInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type IngestChunksOptions struct {
@@ -64,7 +65,7 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 		return out, fmt.Errorf("ingest_chunks: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}

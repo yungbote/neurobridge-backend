@@ -31,6 +31,7 @@ type ProgressionCompactInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type ProgressionCompactOutput struct {
@@ -50,7 +51,7 @@ func ProgressionCompact(ctx context.Context, deps ProgressionCompactDeps, in Pro
 	}
 
 	// Contract: derive/ensure path_id.
-	_, _ = deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	_, _ = resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 
 	consumer := "progression_compact"
 

@@ -15,9 +15,6 @@ type pathWithJob struct {
 	JobStage    string `json:"job_stage,omitempty"`
 	JobProgress int    `json:"job_progress,omitempty"`
 	JobMessage  string `json:"job_message,omitempty"`
-
-	// Derived from user_library_index (Path doesn't store this directly).
-	MaterialSetID *uuid.UUID `json:"material_set_id,omitempty"`
 }
 
 func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, paths []*types.Path) []*pathWithJob {
@@ -69,9 +66,11 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 		}
 		dto := &pathWithJob{Path: p}
 
-		if msid, ok := materialSetByPathID[p.ID]; ok && msid != uuid.Nil {
-			v := msid
-			dto.MaterialSetID = &v
+		// Back-compat: older installs derived material_set_id from user_library_index.
+		// Newer installs store it directly on the path row.
+		if (p.MaterialSetID == nil || *p.MaterialSetID == uuid.Nil) && materialSetByPathID[p.ID] != uuid.Nil {
+			msid := materialSetByPathID[p.ID]
+			p.MaterialSetID = &msid
 		}
 
 		if p.JobID != nil && *p.JobID != uuid.Nil {

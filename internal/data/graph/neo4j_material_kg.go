@@ -117,11 +117,11 @@ func UpsertMaterialEntitiesClaimsGraph(
 			continue
 		}
 		chClaimRels = append(chClaimRels, map[string]any{
-			"id":       r.ID.String(),
-			"chunk_id": r.MaterialChunkID.String(),
-			"claim_id": r.MaterialClaimID.String(),
-			"relation": r.Relation,
-			"weight":   r.Weight,
+			"id":        r.ID.String(),
+			"chunk_id":  r.MaterialChunkID.String(),
+			"claim_id":  r.MaterialClaimID.String(),
+			"relation":  r.Relation,
+			"weight":    r.Weight,
 			"synced_at": now,
 		})
 	}
@@ -147,12 +147,12 @@ func UpsertMaterialEntitiesClaimsGraph(
 			continue
 		}
 		claimConceptRels = append(claimConceptRels, map[string]any{
-			"id":        r.ID.String(),
-			"claim_id":  r.MaterialClaimID.String(),
+			"id":         r.ID.String(),
+			"claim_id":   r.MaterialClaimID.String(),
 			"concept_id": r.ConceptID.String(),
-			"relation":  r.Relation,
-			"weight":    r.Weight,
-			"synced_at": now,
+			"relation":   r.Relation,
+			"weight":     r.Weight,
+			"synced_at":  now,
 		})
 	}
 
@@ -305,4 +305,3 @@ SET e.id = r.id,
 	})
 	return err
 }
-

@@ -24,6 +24,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		// Materials (uploads + extraction)
 		// =========================
 		&types.MaterialSet{},
+		&types.MaterialSetFile{},
 		&types.MaterialFile{},
 		&types.MaterialChunk{},
 		&types.MaterialAsset{},
@@ -295,6 +296,22 @@ func EnsureLearningIndexes(db *gorm.DB) error {
 		WHERE deleted_at IS NULL;
 	`).Error; err != nil {
 		return fmt.Errorf("create idx_material_chunk_fts: %w", err)
+	}
+
+	// Paths: fast hierarchical listing and lookups (nested paths/programs).
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_path_user_parent_sort
+		ON path (user_id, parent_path_id, sort_index, created_at DESC)
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_path_user_parent_sort: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_path_root_sort
+		ON path (root_path_id, sort_index, created_at DESC)
+		WHERE deleted_at IS NULL;
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_path_root_sort: %w", err)
 	}
 
 	// Node docs: canonical per node.

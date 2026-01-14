@@ -15,6 +15,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content/schema"
+	learningsteps "github.com/yungbote/neurobridge-backend/internal/modules/learning/steps"
 	"github.com/yungbote/neurobridge-backend/internal/platform/apierr"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
@@ -154,6 +155,63 @@ func (u Usecases) generateDrillV1(ctx context.Context, userID uuid.UUID, node *t
 		}
 	}
 
+	// Concept key allowlist for tagging (node-scoped; derived from node metadata or node doc).
+	allowedConceptKeys := extractConceptKeysFromPathNode(node)
+	if len(allowedConceptKeys) == 0 && docRow != nil && len(docRow.DocJSON) > 0 && string(docRow.DocJSON) != "null" {
+		allowedConceptKeys = extractConceptKeysFromNodeDocJSON(docRow.DocJSON)
+	}
+	allowedConceptKeys = normalizeConceptKeys(allowedConceptKeys)
+	if len(allowedConceptKeys) > 25 {
+		allowedConceptKeys = allowedConceptKeys[:25]
+	}
+	allowedConceptCSV := strings.Join(allowedConceptKeys, ", ")
+	if strings.TrimSpace(allowedConceptCSV) == "" {
+		allowedConceptCSV = "(none)"
+	}
+
+	// User knowledge context (best-effort): helps drills focus on weak/due topics and avoid redundant basics.
+	userKnowledgeJSON := "(none)"
+	if u.deps.Concepts != nil && u.deps.ConceptState != nil && len(allowedConceptKeys) > 0 {
+		canonicalIDByKey := map[string]uuid.UUID{}
+		canonicalIDs := make([]uuid.UUID, 0, len(allowedConceptKeys))
+		if rows, err := u.deps.Concepts.GetByScopeAndKeys(dbctx.Context{Ctx: ctx}, "path", &node.PathID, allowedConceptKeys); err == nil {
+			for _, c := range rows {
+				if c == nil || c.ID == uuid.Nil {
+					continue
+				}
+				k := strings.TrimSpace(strings.ToLower(c.Key))
+				if k == "" {
+					continue
+				}
+				id := c.ID
+				if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+					id = *c.CanonicalConceptID
+				}
+				if id != uuid.Nil {
+					canonicalIDByKey[k] = id
+					canonicalIDs = append(canonicalIDs, id)
+				}
+			}
+		}
+		canonicalIDs = dedupeUUIDs(canonicalIDs)
+
+		stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+		if len(canonicalIDs) > 0 {
+			if rows, err := u.deps.ConceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, userID, canonicalIDs); err == nil {
+				for _, st := range rows {
+					if st == nil || st.ConceptID == uuid.Nil {
+						continue
+					}
+					stateByConceptID[st.ConceptID] = st
+				}
+			}
+		}
+		uj := learningsteps.BuildUserKnowledgeContextV1(allowedConceptKeys, canonicalIDByKey, stateByConceptID, time.Now().UTC()).JSON()
+		if strings.TrimSpace(uj) != "" {
+			userKnowledgeJSON = uj
+		}
+	}
+
 	// Prefer doc-backed evidence; fallback to legacy node content markdown if doc missing.
 	sourcesHash := ""
 	var evidenceChunkIDs []uuid.UUID
@@ -238,6 +296,12 @@ DRILL_KIND: flashcards
 TARGET_CARD_COUNT: %d
 NODE_TITLE: %s
 
+ALLOWED_CONCEPT_KEYS (use ONLY these; each card must include concept_keys with 1-3 keys):
+%s
+
+USER_KNOWLEDGE_JSON (optional; do not mention explicitly; prioritize weak/due_review concepts):
+%s
+
 GROUNDING_EXCERPTS (chunk_id lines):
 %s
 
@@ -246,14 +310,21 @@ Task:
 - Produce exactly TARGET_CARD_COUNT cards (or as close as possible if constrained by excerpts).
 - Cards should be atomic and test a single idea.
 - Keep fronts short; backs can be 1-4 sentences.
+- If ALLOWED_CONCEPT_KEYS is not "(none)", each card must include concept_keys (1-3 keys) chosen from ALLOWED_CONCEPT_KEYS.
 - citations must reference provided chunk_ids only.
 - Set questions=[].
-Return JSON only.`, count, node.Title, excerpts)
+Return JSON only.`, count, node.Title, allowedConceptCSV, userKnowledgeJSON, excerpts)
 	case "quiz":
 		user = fmt.Sprintf(`
 DRILL_KIND: quiz
 TARGET_QUESTION_COUNT: %d
 NODE_TITLE: %s
+
+ALLOWED_CONCEPT_KEYS (use ONLY these; each question must include concept_keys with 1-3 keys):
+%s
+
+USER_KNOWLEDGE_JSON (optional; do not mention explicitly; prioritize weak/due_review concepts):
+%s
 
 GROUNDING_EXCERPTS (chunk_id lines):
 %s
@@ -264,9 +335,10 @@ Task:
 - Each question must have 4 options with stable ids like "a","b","c","d".
 - answer_id must match one of the option ids.
 - explanation_md should justify using the excerpts (no new facts).
+- If ALLOWED_CONCEPT_KEYS is not "(none)", each question must include concept_keys (1-3 keys) chosen from ALLOWED_CONCEPT_KEYS.
 - citations must reference provided chunk_ids only.
 - Set cards=[].
-Return JSON only.`, count, node.Title, excerpts)
+Return JSON only.`, count, node.Title, allowedConceptCSV, userKnowledgeJSON, excerpts)
 	}
 
 	var lastErrs []string
@@ -281,7 +353,7 @@ Return JSON only.`, count, node.Title, excerpts)
 		latency := int(time.Since(start).Milliseconds())
 		if genErr != nil {
 			lastErrs = []string{"generate_failed: " + genErr.Error()}
-			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@1:"+kind, attempt, latency, lastErrs, nil)
+			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@2:"+kind, attempt, latency, lastErrs, nil)
 			continue
 		}
 
@@ -289,7 +361,7 @@ Return JSON only.`, count, node.Title, excerpts)
 		var payload content.DrillPayloadV1
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			lastErrs = []string{"schema_unmarshal_failed"}
-			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@1:"+kind, attempt, latency, lastErrs, nil)
+			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@2:"+kind, attempt, latency, lastErrs, nil)
 			continue
 		}
 
@@ -314,10 +386,10 @@ Return JSON only.`, count, node.Title, excerpts)
 			maxCount = count
 		}
 
-		errs, qm := content.ValidateDrillPayloadV1(payload, allowed, kind, minCount, maxCount)
+		errs, qm := content.ValidateDrillPayloadV1(payload, allowed, kind, minCount, maxCount, allowedConceptKeys)
 		if len(errs) > 0 {
 			lastErrs = errs
-			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@1:"+kind, attempt, latency, errs, qm)
+			u.recordGenRun(ctx, "drill", nil, userID, node.PathID, node.ID, "failed", "drill_v1@2:"+kind, attempt, latency, errs, qm)
 			continue
 		}
 
@@ -344,7 +416,7 @@ Return JSON only.`, count, node.Title, excerpts)
 			UpdatedAt:     time.Now().UTC(),
 		}
 		_ = u.deps.Drills.Upsert(dbctx.Context{Ctx: ctx}, row)
-		u.recordGenRun(ctx, "drill", &row.ID, userID, node.PathID, node.ID, "succeeded", "drill_v1@1:"+kind, attempt, latency, nil, map[string]any{
+		u.recordGenRun(ctx, "drill", &row.ID, userID, node.PathID, node.ID, "succeeded", "drill_v1@2:"+kind, attempt, latency, nil, map[string]any{
 			"content_hash": contentHash,
 			"sources_hash": sourcesHash,
 		})
@@ -454,6 +526,53 @@ func extractChunkIDsFromNodeDocJSON(raw datatypes.JSON) []uuid.UUID {
 				out = append(out, id)
 			}
 		}
+	}
+	return out
+}
+
+func extractConceptKeysFromPathNode(node *types.PathNode) []string {
+	if node == nil || len(node.Metadata) == 0 || string(node.Metadata) == "null" {
+		return nil
+	}
+	var meta map[string]any
+	if json.Unmarshal(node.Metadata, &meta) != nil || meta == nil {
+		return nil
+	}
+	keys := stringSliceFromAny(meta["concept_keys"])
+	if len(keys) == 0 {
+		keys = stringSliceFromAny(meta["conceptKeys"])
+	}
+	return normalizeConceptKeys(keys)
+}
+
+func extractConceptKeysFromNodeDocJSON(raw datatypes.JSON) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil
+	}
+	keys := stringSliceFromAny(obj["concept_keys"])
+	if len(keys) == 0 {
+		keys = stringSliceFromAny(obj["conceptKeys"])
+	}
+	return normalizeConceptKeys(keys)
+}
+
+func normalizeConceptKeys(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, k := range in {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
 	}
 	return out
 }

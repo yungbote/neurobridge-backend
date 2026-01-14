@@ -23,6 +23,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Fail("validate", fmt.Errorf("missing saga_id"))
 		return nil
 	}
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	jc.Progress("node_content", 2, "Writing node content")
 	nodeOut, err := learningmod.New(learningmod.UsecasesDeps{
@@ -41,6 +42,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}).NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
+		PathID:        pathID,
 	})
 	if err != nil {
 		jc.Fail("node_content", err)
@@ -59,6 +61,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		ActivityConcepts:   p.activityConcepts,
 		ActivityCitations:  p.activityCites,
 		Concepts:           p.concepts,
+		ConceptState:       p.mastery,
 		Files:              p.files,
 		Chunks:             p.chunks,
 		UserProfile:        p.profile,
@@ -72,6 +75,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	if err != nil {
 		jc.Fail("activities", err)

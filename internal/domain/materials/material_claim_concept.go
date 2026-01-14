@@ -14,7 +14,7 @@ type MaterialClaimConcept struct {
 	MaterialClaimID uuid.UUID      `gorm:"type:uuid;not null;index:idx_material_claim_concept,unique,priority:1" json:"material_claim_id"`
 	MaterialClaim   *MaterialClaim `gorm:"constraint:OnDelete:CASCADE;foreignKey:MaterialClaimID;references:ID" json:"material_claim,omitempty"`
 
-	ConceptID uuid.UUID    `gorm:"type:uuid;not null;index:idx_material_claim_concept,unique,priority:2" json:"concept_id"`
+	ConceptID uuid.UUID     `gorm:"type:uuid;not null;index:idx_material_claim_concept,unique,priority:2" json:"concept_id"`
 	Concept   *core.Concept `gorm:"constraint:OnDelete:CASCADE;foreignKey:ConceptID;references:ID" json:"concept,omitempty"`
 
 	Relation string  `gorm:"type:text;not null;default:'about';index" json:"relation"`
@@ -26,4 +26,3 @@ type MaterialClaimConcept struct {
 }
 
 func (MaterialClaimConcept) TableName() string { return "material_claim_concept" }
-

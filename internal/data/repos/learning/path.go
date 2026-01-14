@@ -20,6 +20,7 @@ type PathRepo interface {
 	ListByUser(dbc dbctx.Context, userID *uuid.UUID) ([]*types.Path, error)
 	ListByUserIDs(dbc dbctx.Context, userIDs []uuid.UUID) ([]*types.Path, error)
 	ListByStatus(dbc dbctx.Context, statuses []string) ([]*types.Path, error)
+	ListByParentID(dbc dbctx.Context, userID uuid.UUID, parentPathID uuid.UUID) ([]*types.Path, error)
 
 	Update(dbc dbctx.Context, row *types.Path) error
 	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]interface{}) error
@@ -134,6 +135,24 @@ func (r *pathRepo) ListByStatus(dbc dbctx.Context, statuses []string) ([]*types.
 	if err := t.WithContext(dbc.Ctx).
 		Where("status IN ?", statuses).
 		Order("created_at DESC").
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *pathRepo) ListByParentID(dbc dbctx.Context, userID uuid.UUID, parentPathID uuid.UUID) ([]*types.Path, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	var out []*types.Path
+	if userID == uuid.Nil || parentPathID == uuid.Nil {
+		return out, nil
+	}
+	if err := t.WithContext(dbc.Ctx).
+		Where("user_id = ? AND parent_path_id = ?", userID, parentPathID).
+		Order("sort_index ASC, created_at ASC").
 		Find(&out).Error; err != nil {
 		return nil, err
 	}

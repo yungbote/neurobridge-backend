@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	graphstore "github.com/yungbote/neurobridge-backend/internal/data/graph"
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
@@ -46,6 +47,7 @@ type MaterialKGBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type MaterialKGBuildOutput struct {
@@ -81,33 +83,40 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 		ctx = context.Background()
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
+
+	// Derived material sets share KG products with their source upload batch (no duplication).
+	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID)
+	if err != nil {
+		return out, err
+	}
+	kgSetID := setCtx.SourceMaterialSetID
 
 	// Idempotency: if we already have entities/claims, skip LLM extraction and just ensure Neo4j sync.
 	var (
 		existingEntities int64
 		existingClaims   int64
 	)
-	_ = deps.DB.WithContext(ctx).Model(&types.MaterialEntity{}).Where("material_set_id = ?", in.MaterialSetID).Count(&existingEntities).Error
-	_ = deps.DB.WithContext(ctx).Model(&types.MaterialClaim{}).Where("material_set_id = ?", in.MaterialSetID).Count(&existingClaims).Error
+	_ = deps.DB.WithContext(ctx).Model(&types.MaterialEntity{}).Where("material_set_id = ?", kgSetID).Count(&existingEntities).Error
+	_ = deps.DB.WithContext(ctx).Model(&types.MaterialClaim{}).Where("material_set_id = ?", kgSetID).Count(&existingClaims).Error
 	out.Trace["existing_entities"] = existingEntities
 	out.Trace["existing_claims"] = existingClaims
 	force := strings.EqualFold(strings.TrimSpace(os.Getenv("MATERIAL_KG_FORCE_REBUILD")), "true")
 	if !force && (existingEntities > 0 || existingClaims > 0) {
 		out.Skipped = true
 		if deps.Graph != nil && deps.Graph.Driver != nil {
-			if err := syncMaterialKGToNeo4j(ctx, deps, in.MaterialSetID); err != nil {
-				deps.Log.Warn("neo4j material kg sync failed (continuing)", "error", err, "material_set_id", in.MaterialSetID.String())
+			if err := syncMaterialKGToNeo4j(ctx, deps, kgSetID); err != nil {
+				deps.Log.Warn("neo4j material kg sync failed (continuing)", "error", err, "material_set_id", kgSetID.String())
 			}
 		}
 		return out, nil
 	}
 
-	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
+	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, kgSetID)
 	if err != nil {
 		return out, err
 	}
@@ -197,8 +206,8 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 		// Derived stage: allow the pipeline to continue without GraphRAG enrichment.
 		out.Trace["llm_err"] = gerr.Error()
 		if deps.Graph != nil && deps.Graph.Driver != nil {
-			if err := syncMaterialKGToNeo4j(ctx, deps, in.MaterialSetID); err != nil {
-				deps.Log.Warn("neo4j material kg sync failed (continuing)", "error", err, "material_set_id", in.MaterialSetID.String())
+			if err := syncMaterialKGToNeo4j(ctx, deps, kgSetID); err != nil {
+				deps.Log.Warn("neo4j material kg sync failed (continuing)", "error", err, "material_set_id", kgSetID.String())
 			}
 		}
 		return out, nil
@@ -235,10 +244,10 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 		metaJSON, _ := json.Marshal(meta)
 		aliasesJSON, _ := json.Marshal(dedupeStrings(aliases))
 
-		id := deterministicUUID("material_entity|" + in.MaterialSetID.String() + "|" + key)
+		id := deterministicUUID("material_entity|" + kgSetID.String() + "|" + key)
 		row := &types.MaterialEntity{
 			ID:            id,
-			MaterialSetID: in.MaterialSetID,
+			MaterialSetID: kgSetID,
 			Key:           key,
 			Name:          name,
 			Type:          strings.TrimSpace(etype),
@@ -262,13 +271,13 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 			}
 			edgeID := deterministicUUID("material_chunk_entity|" + chunkID.String() + "|" + row.ID.String())
 			chunkEntityRows = append(chunkEntityRows, &types.MaterialChunkEntity{
-				ID:              edgeID,
-				MaterialChunkID: chunkID,
+				ID:               edgeID,
+				MaterialChunkID:  chunkID,
 				MaterialEntityID: row.ID,
-				Relation:        "mentions",
-				Weight:          1,
-				CreatedAt:       now,
-				UpdatedAt:       now,
+				Relation:         "mentions",
+				Weight:           1,
+				CreatedAt:        now,
+				UpdatedAt:        now,
 			})
 		}
 
@@ -316,7 +325,7 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 		conceptKeys := dedupeStrings(stringSliceFromAny(m["concept_keys"]))
 
 		ckey := materialClaimKey(content)
-		claimID := deterministicUUID("material_claim|" + in.MaterialSetID.String() + "|" + ckey)
+		claimID := deterministicUUID("material_claim|" + kgSetID.String() + "|" + ckey)
 
 		metaJSON, _ := json.Marshal(map[string]any{
 			"evidence_chunk_ids": ev,
@@ -326,7 +335,7 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 
 		claim := &types.MaterialClaim{
 			ID:            claimID,
-			MaterialSetID: in.MaterialSetID,
+			MaterialSetID: kgSetID,
 			Key:           ckey,
 			Kind:          kind,
 			Content:       content,
@@ -363,13 +372,13 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 			}
 			edgeID := deterministicUUID("material_claim_entity|" + claimID.String() + "|" + ent.ID.String())
 			claimEntityRows = append(claimEntityRows, &types.MaterialClaimEntity{
-				ID:              edgeID,
-				MaterialClaimID: claimID,
+				ID:               edgeID,
+				MaterialClaimID:  claimID,
 				MaterialEntityID: ent.ID,
-				Relation:        "about",
-				Weight:          1,
-				CreatedAt:       now,
-				UpdatedAt:       now,
+				Relation:         "about",
+				Weight:           1,
+				CreatedAt:        now,
+				UpdatedAt:        now,
 			})
 		}
 
@@ -395,6 +404,8 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 
 	// Persist (idempotent upserts).
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_ = advisoryXactLock(tx, "material_kg_build", kgSetID)
+
 		if len(entityRows) > 0 {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "id"}},
@@ -476,8 +487,8 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 
 	// Neo4j sync (best-effort; derived).
 	if deps.Graph != nil && deps.Graph.Driver != nil {
-		if err := graphstore.UpsertMaterialEntitiesClaimsGraph(ctx, deps.Graph, deps.Log, in.MaterialSetID, entityRows, claimRows, chunkEntityRows, chunkClaimRows, claimEntityRows, claimConceptRows); err != nil {
-			deps.Log.Warn("neo4j material kg upsert failed (continuing)", "error", err, "material_set_id", in.MaterialSetID.String())
+		if err := graphstore.UpsertMaterialEntitiesClaimsGraph(ctx, deps.Graph, deps.Log, kgSetID, entityRows, claimRows, chunkEntityRows, chunkClaimRows, claimEntityRows, claimConceptRows); err != nil {
+			deps.Log.Warn("neo4j material kg upsert failed (continuing)", "error", err, "material_set_id", kgSetID.String())
 		}
 	}
 

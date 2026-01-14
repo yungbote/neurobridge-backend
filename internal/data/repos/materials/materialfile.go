@@ -71,17 +71,104 @@ func (r *materialFileRepo) GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.
 		transaction = r.db
 	}
 
-	var results []*types.MaterialFile
 	if len(setIDs) == 0 {
+		return []*types.MaterialFile{}, nil
+	}
+
+	// Back-compat: if migrations haven't created the join table yet, fall back to the legacy behavior.
+	if !transaction.Migrator().HasTable(&types.MaterialSetFile{}) {
+		var results []*types.MaterialFile
+		if err := transaction.WithContext(dbc.Ctx).
+			Where("material_set_id IN ?", setIDs).
+			Find(&results).Error; err != nil {
+			return nil, err
+		}
 		return results, nil
 	}
 
+	// Derived material sets declare membership via material_set_file rows.
+	// For backwards compatibility, "upload batch" sets still use material_file.material_set_id.
+	type linkRow struct {
+		MaterialSetID  uuid.UUID `gorm:"column:material_set_id"`
+		MaterialFileID uuid.UUID `gorm:"column:material_file_id"`
+	}
+
+	var links []linkRow
 	if err := transaction.WithContext(dbc.Ctx).
+		Model(&types.MaterialSetFile{}).
+		Select("material_set_id, material_file_id").
 		Where("material_set_id IN ?", setIDs).
-		Find(&results).Error; err != nil {
+		Find(&links).Error; err != nil {
 		return nil, err
 	}
-	return results, nil
+
+	setsWithLinks := map[uuid.UUID]bool{}
+	fileIDs := make([]uuid.UUID, 0, len(links))
+	seenFile := map[uuid.UUID]bool{}
+	for _, l := range links {
+		if l.MaterialSetID == uuid.Nil || l.MaterialFileID == uuid.Nil {
+			continue
+		}
+		setsWithLinks[l.MaterialSetID] = true
+		if !seenFile[l.MaterialFileID] {
+			seenFile[l.MaterialFileID] = true
+			fileIDs = append(fileIDs, l.MaterialFileID)
+		}
+	}
+
+	// Split sets into derived vs legacy.
+	legacySetIDs := make([]uuid.UUID, 0, len(setIDs))
+	for _, sid := range setIDs {
+		if sid == uuid.Nil {
+			continue
+		}
+		if !setsWithLinks[sid] {
+			legacySetIDs = append(legacySetIDs, sid)
+		}
+	}
+
+	results := make([]*types.MaterialFile, 0, 64)
+
+	// 1) Legacy: files are owned by the set.
+	if len(legacySetIDs) > 0 {
+		var direct []*types.MaterialFile
+		if err := transaction.WithContext(dbc.Ctx).
+			Where("material_set_id IN ?", legacySetIDs).
+			Find(&direct).Error; err != nil {
+			return nil, err
+		}
+		results = append(results, direct...)
+	}
+
+	// 2) Derived: membership links point at existing files.
+	if len(fileIDs) > 0 {
+		var linked []*types.MaterialFile
+		if err := transaction.WithContext(dbc.Ctx).
+			Where("id IN ?", fileIDs).
+			Find(&linked).Error; err != nil {
+			return nil, err
+		}
+		results = append(results, linked...)
+	}
+
+	// De-dupe by file ID (defensive).
+	if len(results) <= 1 {
+		return results, nil
+	}
+	byID := map[uuid.UUID]*types.MaterialFile{}
+	for _, f := range results {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		if byID[f.ID] == nil {
+			byID[f.ID] = f
+		}
+	}
+	out := make([]*types.MaterialFile, 0, len(byID))
+	for _, f := range byID {
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 func (r *materialFileRepo) GetByMaterialSetID(dbc dbctx.Context, setID uuid.UUID) ([]*types.MaterialFile, error) {

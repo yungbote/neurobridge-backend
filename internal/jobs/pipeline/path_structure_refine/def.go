@@ -1,0 +1,43 @@
+package path_structure_refine
+
+import (
+	"gorm.io/gorm"
+
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
+)
+
+type Pipeline struct {
+	db       *gorm.DB
+	log      *logger.Logger
+	path     repos.PathRepo
+	concepts repos.ConceptRepo
+
+	threads  repos.ChatThreadRepo
+	messages repos.ChatMessageRepo
+	notify   services.ChatNotifier
+}
+
+func New(
+	db *gorm.DB,
+	baseLog *logger.Logger,
+	path repos.PathRepo,
+	concepts repos.ConceptRepo,
+	threads repos.ChatThreadRepo,
+	messages repos.ChatMessageRepo,
+	notify services.ChatNotifier,
+) *Pipeline {
+	return &Pipeline{
+		db:       db,
+		log:      baseLog.With("job", "path_structure_refine"),
+		path:     path,
+		concepts: concepts,
+		threads:  threads,
+		messages: messages,
+		notify:   notify,
+	}
+}
+
+func (p *Pipeline) Type() string { return "path_structure_refine" }
+

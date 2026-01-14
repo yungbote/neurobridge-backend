@@ -123,9 +123,10 @@ type DrillPayloadV1 struct {
 }
 
 type DrillFlashcardV1 struct {
-	FrontMD   string          `json:"front_md"`
-	BackMD    string          `json:"back_md"`
-	Citations []CitationRefV1 `json:"citations"`
+	FrontMD     string          `json:"front_md"`
+	BackMD      string          `json:"back_md"`
+	ConceptKeys []string        `json:"concept_keys,omitempty"`
+	Citations   []CitationRefV1 `json:"citations"`
 }
 
 type DrillQuestionOptionV1 struct {
@@ -135,6 +136,7 @@ type DrillQuestionOptionV1 struct {
 
 type DrillQuestionV1 struct {
 	ID            string                  `json:"id"`
+	ConceptKeys   []string                `json:"concept_keys,omitempty"`
 	PromptMD      string                  `json:"prompt_md"`
 	Options       []DrillQuestionOptionV1 `json:"options"`
 	AnswerID      string                  `json:"answer_id"`

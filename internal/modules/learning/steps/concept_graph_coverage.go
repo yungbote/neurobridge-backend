@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
@@ -360,7 +361,14 @@ func coverageTargetChunkIDs(
 
 	// Prefer Pinecone for semantic chunk recall when available.
 	if deps.Vec != nil {
-		ns := index.ChunksNamespace(materialSetID)
+		// Derived material sets share the chunk namespace with their source upload batch.
+		sourceSetID := materialSetID
+		if deps.DB != nil {
+			if sc, err := materialsetctx.Resolve(ctx, deps.DB, materialSetID); err == nil && sc.SourceMaterialSetID != uuid.Nil {
+				sourceSetID = sc.SourceMaterialSetID
+			}
+		}
+		ns := index.ChunksNamespace(sourceSetID)
 		filter := pineconeChunkFilterWithAllowlist(allowFiles)
 		for i := range embs {
 			if len(embs[i]) == 0 {

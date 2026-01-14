@@ -50,4 +50,3 @@ func New(
 }
 
 func (p *Pipeline) Type() string { return "material_kg_build" }
-

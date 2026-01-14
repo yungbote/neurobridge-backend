@@ -94,6 +94,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.UserToken{},
 
 		&types.MaterialSet{},
+		&types.MaterialSetFile{},
 		&types.MaterialFile{},
 		&types.MaterialChunk{},
 		&types.MaterialAsset{},

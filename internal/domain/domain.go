@@ -68,6 +68,7 @@ type OAuthNonce = auth.OAuthNonce
 
 type Asset = materials.Asset
 type MaterialSet = materials.MaterialSet
+type MaterialSetFile = materials.MaterialSetFile
 type MaterialFile = materials.MaterialFile
 type MaterialChunk = materials.MaterialChunk
 type MaterialAsset = materials.MaterialAsset

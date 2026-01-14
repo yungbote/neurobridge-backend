@@ -23,6 +23,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Fail("validate", fmt.Errorf("missing saga_id"))
 		return nil
 	}
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	jc.Progress("user_profile", 2, "Refreshing user profile")
 	out, err := learningmod.New(learningmod.UsecasesDeps{
@@ -40,6 +41,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	if err != nil {
 		jc.Fail("user_profile", err)

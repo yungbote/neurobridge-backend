@@ -34,6 +34,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_cover_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_intake"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_dispatch"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_refine"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/realize_activities"
@@ -334,7 +336,35 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
+	pathStructureDispatch := path_structure_dispatch.New(
+		db,
+		log,
+		jobService,
+		repos.JobRun,
+		repos.Path,
+		repos.MaterialFile,
+		repos.MaterialSet,
+		repos.MaterialSetFile,
+		repos.UserLibraryIndex,
+	)
+	if err := jobRegistry.Register(pathStructureDispatch); err != nil {
+		return Services{}, err
+	}
+
+	pathStructureRefine := path_structure_refine.New(
+		db,
+		log,
+		repos.Path,
+		repos.Concept,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
+	)
+	if err := jobRegistry.Register(pathStructureRefine); err != nil {
+		return Services{}, err
+	}
+
+	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, repos.UserConceptState, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
 		return Services{}, err
 	}
@@ -482,6 +512,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialChunk,
 		repos.UserProfileVector,
 		repos.TeachingPattern,
+		repos.Concept,
+		repos.UserConceptState,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -523,6 +555,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ActivityConcept,
 		repos.ActivityCitation,
 		repos.Concept,
+		repos.UserConceptState,
 		repos.MaterialFile,
 		repos.MaterialChunk,
 		repos.UserProfileVector,
@@ -663,6 +696,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		repos.UserEvent,
 		repos.UserEventCursor,
+		repos.Concept,
+		repos.ActivityConcept,
 		repos.UserConceptState,
 		repos.UserStylePreference,
 		clients.Neo4j,

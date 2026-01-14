@@ -25,6 +25,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 	sagaID, _ := jc.PayloadUUID("saga_id")
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	heartbeatSec := getEnvInt("NODE_VIDEOS_RENDER_HEARTBEAT_SECONDS", 5)
 	if heartbeatSec < 1 {
@@ -88,6 +89,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	stopTicker()
 	if err != nil {

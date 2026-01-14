@@ -99,6 +99,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.POST("/chat/threads", cfg.ChatHandler.CreateThread)
 			protected.GET("/chat/threads", cfg.ChatHandler.ListThreads)
 			protected.GET("/chat/threads/:id", cfg.ChatHandler.GetThread)
+			protected.GET("/chat/intake/pending", cfg.ChatHandler.ListPendingIntakeQuestions)
 			protected.POST("/chat/threads/:id/rebuild", cfg.ChatHandler.RebuildThread)
 			protected.DELETE("/chat/threads/:id", cfg.ChatHandler.DeleteThread)
 			protected.POST("/chat/threads/:id/messages", cfg.ChatHandler.SendMessage)

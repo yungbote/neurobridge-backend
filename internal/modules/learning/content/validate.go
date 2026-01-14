@@ -446,7 +446,7 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 	return dedupeStrings(errs), metrics
 }
 
-func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, kind string, minCount int, maxCount int) ([]string, map[string]any) {
+func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, kind string, minCount int, maxCount int, allowedConceptKeys []string) ([]string, map[string]any) {
 	errs := make([]string, 0)
 
 	if p.SchemaVersion != 1 {
@@ -461,6 +461,15 @@ func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, k
 	}
 
 	metrics := map[string]any{}
+	allowedKeys := map[string]bool{}
+	for _, k := range allowedConceptKeys {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k != "" {
+			allowedKeys[k] = true
+		}
+	}
+	enforceConceptKeys := len(allowedKeys) > 0
+	coveredConceptKeys := map[string]bool{}
 
 	switch k {
 	case "flashcards":
@@ -485,6 +494,21 @@ func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, k
 			if strings.TrimSpace(c.BackMD) == "" {
 				errs = append(errs, fmt.Sprintf("card[%d] back_md missing", i))
 			}
+			if enforceConceptKeys && len(c.ConceptKeys) == 0 {
+				errs = append(errs, fmt.Sprintf("card[%d] concept_keys missing", i))
+			}
+			for _, ck := range c.ConceptKeys {
+				ck = strings.TrimSpace(strings.ToLower(ck))
+				if ck == "" {
+					errs = append(errs, fmt.Sprintf("card[%d] concept_keys contains empty key", i))
+					continue
+				}
+				if enforceConceptKeys && !allowedKeys[ck] {
+					errs = append(errs, fmt.Sprintf("card[%d] concept_key %q not allowed", i, ck))
+					continue
+				}
+				coveredConceptKeys[ck] = true
+			}
 			errs = append(errs, validateCitationRefs(fmt.Sprintf("card[%d]", i), c.Citations, allowedChunkIDs)...)
 		}
 	case "quiz":
@@ -506,6 +530,21 @@ func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, k
 			prefix := fmt.Sprintf("question[%d]", i)
 			if strings.TrimSpace(q.ID) == "" {
 				errs = append(errs, prefix+" id missing")
+			}
+			if enforceConceptKeys && len(q.ConceptKeys) == 0 {
+				errs = append(errs, prefix+" concept_keys missing")
+			}
+			for _, ck := range q.ConceptKeys {
+				ck = strings.TrimSpace(strings.ToLower(ck))
+				if ck == "" {
+					errs = append(errs, prefix+" concept_keys contains empty key")
+					continue
+				}
+				if enforceConceptKeys && !allowedKeys[ck] {
+					errs = append(errs, fmt.Sprintf("%s concept_key %q not allowed", prefix, ck))
+					continue
+				}
+				coveredConceptKeys[ck] = true
 			}
 			if strings.TrimSpace(q.PromptMD) == "" {
 				errs = append(errs, prefix+" prompt_md missing")
@@ -539,6 +578,9 @@ func ValidateDrillPayloadV1(p DrillPayloadV1, allowedChunkIDs map[string]bool, k
 			errs = append(errs, validateCitationRefs(prefix, q.Citations, allowedChunkIDs)...)
 		}
 	}
+
+	metrics["concept_keys_enforced"] = enforceConceptKeys
+	metrics["concept_keys_covered"] = len(coveredConceptKeys)
 
 	return dedupeStrings(errs), metrics
 }

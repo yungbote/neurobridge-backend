@@ -12,6 +12,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
@@ -264,7 +265,13 @@ func NodeDocPatch(ctx context.Context, deps NodeDocPatchDeps, in NodeDocPatchInp
 
 			retrieved := make([]uuid.UUID, 0)
 			if deps.Vec != nil && len(queryEmb) > 0 {
-				ids, qerr := deps.Vec.QueryIDs(ctx, index.ChunksNamespace(uli.MaterialSetID), queryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
+				nsSetID := uli.MaterialSetID
+				if deps.DB != nil {
+					if sc, err := materialsetctx.Resolve(ctx, deps.DB, uli.MaterialSetID); err == nil && sc.SourceMaterialSetID != uuid.Nil {
+						nsSetID = sc.SourceMaterialSetID
+					}
+				}
+				ids, qerr := deps.Vec.QueryIDs(ctx, index.ChunksNamespace(nsSetID), queryEmb, semanticK, pineconeChunkFilterWithAllowlist(allowFiles))
 				if qerr == nil && len(ids) > 0 {
 					for _, s := range ids {
 						if id, e := uuid.Parse(strings.TrimSpace(s)); e == nil && id != uuid.Nil {

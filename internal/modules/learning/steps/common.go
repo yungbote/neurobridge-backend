@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,11 +15,23 @@ import (
 	"gorm.io/datatypes"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 func mustJSON(v any) datatypes.JSON {
 	b, _ := json.Marshal(v)
 	return datatypes.JSON(b)
+}
+
+func resolvePathID(ctx context.Context, bootstrap services.LearningBuildBootstrapService, ownerUserID uuid.UUID, materialSetID uuid.UUID, pathID uuid.UUID) (uuid.UUID, error) {
+	if pathID != uuid.Nil {
+		return pathID, nil
+	}
+	if bootstrap == nil {
+		return uuid.Nil, fmt.Errorf("missing bootstrap")
+	}
+	return bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, ownerUserID, materialSetID)
 }
 
 func stringFromAny(v any) string {
@@ -279,6 +292,18 @@ func envIntAllowZero(key string, def int) int {
 		return def
 	}
 	return i
+}
+
+func envFloatAllowZero(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }
 
 func cosineSim(a, b []float32) float64 {

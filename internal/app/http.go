@@ -34,16 +34,18 @@ type Handlers struct {
 func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
 	learningUC := learningmod.New(learningmod.UsecasesDeps{
-		DB:        db,
-		Log:       log.With("module", "learning"),
-		AI:        clients.OpenaiClient,
-		Avatar:    services.Avatar,
-		Path:      repos.Path,
-		PathNodes: repos.PathNode,
-		NodeDocs:  repos.LearningNodeDoc,
-		Chunks:    repos.MaterialChunk,
-		Drills:    repos.DrillInstance,
-		GenRuns:   repos.DocGenerationRun,
+		DB:           db,
+		Log:          log.With("module", "learning"),
+		AI:           clients.OpenaiClient,
+		Avatar:       services.Avatar,
+		Path:         repos.Path,
+		PathNodes:    repos.PathNode,
+		NodeDocs:     repos.LearningNodeDoc,
+		Concepts:     repos.Concept,
+		Chunks:       repos.MaterialChunk,
+		Drills:       repos.DrillInstance,
+		GenRuns:      repos.DocGenerationRun,
+		ConceptState: repos.UserConceptState,
 	})
 	libraryUC := librarymod.New(librarymod.UsecasesDeps{
 		DB:         db,
@@ -107,7 +109,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 			clients.GcpBucket,
 		),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
-		Event:    httpH.NewEventHandler(services.Events, services.JobService),
+		Event:    httpH.NewEventHandler(services.Events, services.JobService, repos.UserLibraryIndex, repos.Path),
 		Job:      httpH.NewJobHandler(services.JobService),
 	}
 }

@@ -35,14 +35,17 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 
 	title := "Your path is ready"
 	desc := ""
+	pathKind := ""
 	if p.path != nil {
 		if row, err := p.path.GetByID(dbctx.Context{Ctx: jc.Ctx, Tx: p.db}, pathID); err == nil && row != nil {
 			if s := strings.TrimSpace(row.Title); s != "" {
 				title = s
 			}
 			desc = strings.TrimSpace(row.Description)
+			pathKind = strings.TrimSpace(row.Kind)
 		}
 	}
+	isProgram := strings.EqualFold(strings.TrimSpace(pathKind), "program")
 
 	nodeCount := int64(0)
 	actCount := int64(0)
@@ -63,6 +66,20 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 		"activity_count": actCount,
 		"concept_count":  conceptCount,
 	}
+	if isProgram {
+		subpathCount := int64(0)
+		subpathReady := int64(0)
+		subpathGenerating := int64(0)
+		_ = p.db.WithContext(jc.Ctx).Model(&types.Path{}).Where("parent_path_id = ?", pathID).Count(&subpathCount).Error
+		_ = p.db.WithContext(jc.Ctx).Model(&types.Path{}).Where("parent_path_id = ? AND status = ?", pathID, "ready").Count(&subpathReady).Error
+		_ = p.db.WithContext(jc.Ctx).Model(&types.Path{}).Where("parent_path_id = ? AND job_id IS NOT NULL", pathID).Count(&subpathGenerating).Error
+		stats["subpath_count"] = subpathCount
+		stats["subpath_ready_count"] = subpathReady
+		stats["subpath_generating_count"] = subpathGenerating
+		stats["kind"] = "program"
+	} else if strings.TrimSpace(pathKind) != "" {
+		stats["kind"] = strings.TrimSpace(pathKind)
+	}
 
 	lines := []string{
 		fmt.Sprintf("**%s**", title),
@@ -72,17 +89,32 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 	}
 
 	countBits := make([]string, 0, 3)
-	if nodeCount > 0 {
-		countBits = append(countBits, fmt.Sprintf("%d units", nodeCount))
-	}
-	if actCount > 0 {
-		countBits = append(countBits, fmt.Sprintf("%d activities", actCount))
-	}
-	if conceptCount > 0 {
-		countBits = append(countBits, fmt.Sprintf("%d concepts", conceptCount))
+	if isProgram {
+		if v, ok := stats["subpath_count"].(int64); ok && v > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d tracks", v))
+		}
+		if v, ok := stats["subpath_ready_count"].(int64); ok && v > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d ready", v))
+		}
+		if v, ok := stats["subpath_generating_count"].(int64); ok && v > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d generating", v))
+		}
+	} else {
+		if nodeCount > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d units", nodeCount))
+		}
+		if actCount > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d activities", actCount))
+		}
+		if conceptCount > 0 {
+			countBits = append(countBits, fmt.Sprintf("%d concepts", conceptCount))
+		}
 	}
 	if len(countBits) > 0 {
 		lines = append(lines, strings.Join(countBits, " • "))
+	}
+	if isProgram {
+		lines = append(lines, "Open it to see the tracks.")
 	}
 	lines = append(lines, "Click the card below to open it.")
 	content := strings.TrimSpace(strings.Join(lines, "\n\n"))

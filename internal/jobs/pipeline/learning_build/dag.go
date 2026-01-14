@@ -13,13 +13,16 @@ var stageDeps = map[string][]string{
 	"ingest_chunks": {"web_resources_seed"},
 
 	// Gate expensive downstream work on intake so we don't burn compute while waiting for user answers.
-	"embed_chunks":           {"path_intake"},
+	"embed_chunks":           {"path_structure_dispatch"},
 	"material_set_summarize": {"ingest_chunks"},
 	// Intake should happen before concept graph so we can incorporate user intent and reduce noise.
 	// Depend only on ingestion so intake can still proceed even if summarization fails.
 	"path_intake": {"ingest_chunks"},
 
-	"concept_graph_build":   {"path_intake"},
+	"path_structure_dispatch": {"path_intake"},
+
+	"concept_graph_build":   {"path_structure_dispatch"},
+	"path_structure_refine": {"concept_graph_build"},
 	"material_kg_build":     {"concept_graph_build", "embed_chunks"},
 	"concept_cluster_build": {"concept_graph_build"},
 	"chain_signature_build": {"concept_cluster_build"},
@@ -46,8 +49,12 @@ var stageDeps = map[string][]string{
 }
 
 func buildChildStages(setID, sagaID, pathID, threadID uuid.UUID) []orchestrator.Stage {
-	stages := make([]orchestrator.Stage, 0, len(stageOrder))
-	for _, name := range stageOrder {
+	return buildChildStagesForNames(stageOrder, setID, sagaID, pathID, threadID)
+}
+
+func buildChildStagesForNames(stageNames []string, setID, sagaID, pathID, threadID uuid.UUID) []orchestrator.Stage {
+	stages := make([]orchestrator.Stage, 0, len(stageNames))
+	for _, name := range stageNames {
 		name := name
 		stage := orchestrator.Stage{
 			Name:         name,

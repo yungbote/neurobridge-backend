@@ -38,6 +38,7 @@ type PriorsRefreshInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type PriorsRefreshOutput struct {
@@ -60,6 +61,11 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 	}
 	if in.MaterialSetID == uuid.Nil {
 		return out, fmt.Errorf("priors_refresh: missing material_set_id")
+	}
+
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
+	if err != nil {
+		return out, err
 	}
 
 	type chainSig struct {
@@ -177,12 +183,8 @@ func PriorsRefresh(ctx context.Context, deps PriorsRefreshDeps, in PriorsRefresh
 		return best
 	}
 
-	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		pathID, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID)
-		if err != nil {
-			return err
-		}
 
 		activities, err := deps.Activities.ListByOwner(dbc, "path", &pathID)
 		if err != nil {

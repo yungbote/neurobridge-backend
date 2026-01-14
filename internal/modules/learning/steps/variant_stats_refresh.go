@@ -31,6 +31,7 @@ type VariantStatsRefreshInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type VariantStatsRefreshOutput struct {
@@ -51,7 +52,7 @@ func VariantStatsRefresh(ctx context.Context, deps VariantStatsRefreshDeps, in V
 	}
 
 	// Contract: derive/ensure path_id.
-	_, _ = deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	_, _ = resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 
 	consumer := "variant_stats_refresh"
 

@@ -351,17 +351,18 @@ func (u Usecases) ChainSignatureBuild(ctx context.Context, in ChainSignatureBuil
 
 func (u Usecases) PathPlanBuild(ctx context.Context, in PathPlanBuildInput) (PathPlanBuildOutput, error) {
 	return steps.PathPlanBuild(ctx, steps.PathPlanBuildDeps{
-		DB:          u.deps.DB,
-		Log:         u.deps.Log,
-		Path:        u.deps.Path,
-		PathNodes:   u.deps.PathNodes,
-		Concepts:    u.deps.Concepts,
-		Edges:       u.deps.Edges,
-		Summaries:   u.deps.Summaries,
-		UserProfile: u.deps.UserProfile,
-		Graph:       u.deps.Graph,
-		AI:          u.deps.AI,
-		Bootstrap:   u.deps.Bootstrap,
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Path:         u.deps.Path,
+		PathNodes:    u.deps.PathNodes,
+		Concepts:     u.deps.Concepts,
+		Edges:        u.deps.Edges,
+		Summaries:    u.deps.Summaries,
+		UserProfile:  u.deps.UserProfile,
+		ConceptState: u.deps.ConceptState,
+		Graph:        u.deps.Graph,
+		AI:           u.deps.AI,
+		Bootstrap:    u.deps.Bootstrap,
 	}, steps.PathPlanBuildInput(in))
 }
 
@@ -476,6 +477,8 @@ func (u Usecases) NodeDocBuild(ctx context.Context, in NodeDocBuildInput) (NodeD
 		Chunks:           u.deps.Chunks,
 		UserProfile:      u.deps.UserProfile,
 		TeachingPatterns: u.deps.TeachingPatterns,
+		Concepts:         u.deps.Concepts,
+		ConceptState:     u.deps.ConceptState,
 		AI:               u.deps.AI,
 		Vec:              u.deps.Vec,
 		Bucket:           u.deps.Bucket,
@@ -515,6 +518,7 @@ func (u Usecases) RealizeActivities(ctx context.Context, in RealizeActivitiesInp
 		ActivityConcepts:   u.deps.ActivityConcepts,
 		ActivityCitations:  u.deps.ActivityCitations,
 		Concepts:           u.deps.Concepts,
+		ConceptState:       u.deps.ConceptState,
 		Files:              u.deps.Files,
 		Chunks:             u.deps.Chunks,
 		UserProfile:        u.deps.UserProfile,

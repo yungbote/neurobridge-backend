@@ -14,6 +14,8 @@ type Pipeline struct {
 
 	events       repos.UserEventRepo
 	cursors      repos.UserEventCursorRepo
+	concepts     repos.ConceptRepo
+	actConcepts  repos.ActivityConceptRepo
 	conceptState repos.UserConceptStateRepo
 	stylePrefs   repos.UserStylePreferenceRepo
 	graph        *neo4jdb.Client
@@ -27,6 +29,8 @@ func New(
 	baseLog *logger.Logger,
 	events repos.UserEventRepo,
 	cursors repos.UserEventCursorRepo,
+	concepts repos.ConceptRepo,
+	actConcepts repos.ActivityConceptRepo,
 	conceptState repos.UserConceptStateRepo,
 	stylePrefs repos.UserStylePreferenceRepo,
 	graph *neo4jdb.Client,
@@ -37,6 +41,8 @@ func New(
 		log:          baseLog.With("job", "user_model_update"),
 		events:       events,
 		cursors:      cursors,
+		concepts:     concepts,
+		actConcepts:  actConcepts,
 		conceptState: conceptState,
 		stylePrefs:   stylePrefs,
 		graph:        graph,

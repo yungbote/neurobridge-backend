@@ -37,6 +37,7 @@ type MaterialSetSummarizeInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type MaterialSetSummarizeOutput struct {
@@ -148,9 +149,11 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		// Contract: derive/ensure path_id via bootstrap.
-		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-			return err
+		// Contract: derive/ensure path_id via bootstrap when the caller didn't supply one.
+		if in.PathID == uuid.Nil {
+			if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
+				return err
+			}
 		}
 
 		if err := deps.Summaries.UpsertByMaterialSetID(dbc, row); err != nil {

@@ -13,6 +13,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	learningcontent "github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
@@ -40,9 +41,10 @@ type RealizeActivitiesDeps struct {
 	ActivityConcepts  repos.ActivityConceptRepo
 	ActivityCitations repos.ActivityCitationRepo
 
-	Concepts repos.ConceptRepo
-	Files    repos.MaterialFileRepo
-	Chunks   repos.MaterialChunkRepo
+	Concepts     repos.ConceptRepo
+	ConceptState repos.UserConceptStateRepo
+	Files        repos.MaterialFileRepo
+	Chunks       repos.MaterialChunkRepo
 
 	UserProfile repos.UserProfileVectorRepo
 	Patterns    repos.TeachingPatternRepo
@@ -59,6 +61,7 @@ type RealizeActivitiesInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type RealizeActivitiesOutput struct {
@@ -85,7 +88,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, fmt.Errorf("realize_activities: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -150,11 +153,24 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, err
 	}
 	keyToConceptID := map[string]uuid.UUID{}
+	canonicalIDByKey := map[string]uuid.UUID{}
 	for _, c := range concepts {
-		if c == nil {
+		if c == nil || c.ID == uuid.Nil {
 			continue
 		}
-		keyToConceptID[c.Key] = c.ID
+		k := strings.TrimSpace(strings.ToLower(c.Key))
+		if k == "" {
+			continue
+		}
+		keyToConceptID[k] = c.ID
+
+		cid := c.ID
+		if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+			cid = *c.CanonicalConceptID
+		}
+		if cid != uuid.Nil {
+			canonicalIDByKey[k] = cid
+		}
 	}
 
 	// Chunks for grounding (Pinecone preferred; local fallback needs embeddings)
@@ -195,7 +211,14 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		}
 	}
 
-	chunksNS := index.ChunksNamespace(in.MaterialSetID)
+	// Derived material sets share the chunk namespace (and KG products) with their source upload batch.
+	sourceSetID := in.MaterialSetID
+	if deps.DB != nil {
+		if sc, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID); err == nil && sc.SourceMaterialSetID != uuid.Nil {
+			sourceSetID = sc.SourceMaterialSetID
+		}
+	}
+	chunksNS := index.ChunksNamespace(sourceSetID)
 	actNS := index.ActivitiesNamespace("path", &pathID)
 
 	// Iterate nodes/slots deterministically.
@@ -310,6 +333,43 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, nil
 	}
 
+	// ---- User knowledge context (cross-path mastery transfer) ----
+	stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+	if deps.ConceptState != nil && len(canonicalIDByKey) > 0 {
+		needed := map[uuid.UUID]bool{}
+		for _, w := range work {
+			for _, k := range w.PrimaryKeys {
+				k = strings.TrimSpace(strings.ToLower(k))
+				if k == "" {
+					continue
+				}
+				if id := canonicalIDByKey[k]; id != uuid.Nil {
+					needed[id] = true
+				}
+			}
+		}
+		ids := make([]uuid.UUID, 0, len(needed))
+		for id := range needed {
+			if id != uuid.Nil {
+				ids = append(ids, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+		if len(ids) > 0 {
+			if rows, err := deps.ConceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, st := range rows {
+					if st == nil || st.ConceptID == uuid.Nil {
+						continue
+					}
+					stateByConceptID[st.ConceptID] = st
+				}
+			} else if deps.Log != nil {
+				deps.Log.Warn("realize_activities: failed to load user concept states (continuing)", "error", err, "user_id", in.OwnerUserID.String())
+			}
+		}
+	}
+	knowledgeNow := time.Now().UTC()
+
 	maxConc := envInt("REALIZE_ACTIVITIES_CONCURRENCY", 4)
 	if maxConc < 1 {
 		maxConc = 1
@@ -333,7 +393,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			}
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
-				MaterialSetID: in.MaterialSetID,
+				MaterialSetID: sourceSetID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      qEmb[0],
@@ -358,6 +418,13 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 			// Prompt: canonical activity content.
 			teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.Patterns, qEmb[0], 4)
+			userKnowledgeJSON := "(none)"
+			if len(w.PrimaryKeys) > 0 && len(canonicalIDByKey) > 0 {
+				uj := BuildUserKnowledgeContextV1(w.PrimaryKeys, canonicalIDByKey, stateByConceptID, knowledgeNow).JSON()
+				if strings.TrimSpace(uj) != "" {
+					userKnowledgeJSON = uj
+				}
+			}
 			p, err := prompts.Build(prompts.PromptActivityContent, prompts.Input{
 				UserProfileDoc:       up.ProfileDoc,
 				TeachingPatternsJSON: teachingJSON,
@@ -365,6 +432,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				ActivityKind:         w.Kind,
 				ActivityTitle:        w.TitleHint,
 				ConceptKeysCSV:       w.ConceptCSV,
+				UserKnowledgeJSON:    userKnowledgeJSON,
 				ActivityExcerpts:     excerpts,
 			})
 			if err != nil {
@@ -432,8 +500,10 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			// Persist canonical activity + joins.
 			if err := deps.DB.WithContext(gctx).Transaction(func(tx *gorm.DB) error {
 				dbc := dbctx.Context{Ctx: gctx, Tx: tx}
-				if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-					return err
+				if in.PathID == uuid.Nil {
+					if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
+						return err
+					}
 				}
 
 				act := &types.Activity{
@@ -472,6 +542,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 				// Concept joins
 				for _, ck := range w.PrimaryKeys {
+					ck = strings.TrimSpace(strings.ToLower(ck))
 					cid := keyToConceptID[ck]
 					if cid == uuid.Nil {
 						continue

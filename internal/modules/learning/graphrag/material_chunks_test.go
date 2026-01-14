@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos/testutil"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
 func TestExpandMaterialChunkScores_ScopesToSetAndAllowFiles(t *testing.T) {
@@ -56,11 +56,11 @@ func TestExpandMaterialChunkScores_ScopesToSetAndAllowFiles(t *testing.T) {
 		t.Fatalf("create file2: %v", err)
 	}
 
-	chA := uuid.New() // seed chunk (file1a)
-	chB := uuid.New() // shares concept X (file1b)
-	chC := uuid.New() // concept Y (neighbor of X) (file1b)
-	chD := uuid.New() // shares entity E (file1a)
-	chE := uuid.New() // shares claim Q (file1b)
+	chA := uuid.New()     // seed chunk (file1a)
+	chB := uuid.New()     // shares concept X (file1b)
+	chC := uuid.New()     // concept Y (neighbor of X) (file1b)
+	chD := uuid.New()     // shares entity E (file1a)
+	chE := uuid.New()     // shares claim Q (file1b)
 	chOther := uuid.New() // other set chunk (file2)
 
 	if err := tx.Create(&types.MaterialChunk{ID: chA, MaterialFileID: file1a, Index: 0, Text: "Seed chunk A"}).Error; err != nil {
@@ -187,4 +187,3 @@ func TestExpandMaterialChunkScores_ScopesToSetAndAllowFiles(t *testing.T) {
 		}
 	}
 }
-

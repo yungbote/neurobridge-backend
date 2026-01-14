@@ -4,10 +4,10 @@ func MaterialKGExtractSchema() map[string]any {
 	entity := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":              map[string]any{"type": "string"},
-			"type":              map[string]any{"type": "string"},
-			"description":       map[string]any{"type": "string"},
-			"aliases":           StringArraySchema(),
+			"name":               map[string]any{"type": "string"},
+			"type":               map[string]any{"type": "string"},
+			"description":        map[string]any{"type": "string"},
+			"aliases":            StringArraySchema(),
 			"evidence_chunk_ids": StringArraySchema(),
 		},
 		"required": []string{
@@ -31,10 +31,10 @@ func MaterialKGExtractSchema() map[string]any {
 				"example",
 				"claim",
 			),
-			"content":           map[string]any{"type": "string"},
-			"confidence":        NumberSchema(),
-			"entity_names":      StringArraySchema(),
-			"concept_keys":      StringArraySchema(),
+			"content":            map[string]any{"type": "string"},
+			"confidence":         NumberSchema(),
+			"entity_names":       StringArraySchema(),
+			"concept_keys":       StringArraySchema(),
 			"evidence_chunk_ids": StringArraySchema(),
 		},
 		"required": []string{
@@ -53,4 +53,3 @@ func MaterialKGExtractSchema() map[string]any {
 		"claims":   map[string]any{"type": "array", "items": claim},
 	}, []string{"entities", "claims"})
 }
-

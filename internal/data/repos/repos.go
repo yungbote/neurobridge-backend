@@ -21,6 +21,7 @@ type OAuthNonceRepo = auth.OAuthNonceRepo
 
 type AssetRepo = materials.AssetRepo
 type MaterialSetRepo = materials.MaterialSetRepo
+type MaterialSetFileRepo = materials.MaterialSetFileRepo
 type MaterialFileRepo = materials.MaterialFileRepo
 type MaterialChunkRepo = materials.MaterialChunkRepo
 type MaterialAssetRepo = materials.MaterialAssetRepo
@@ -112,6 +113,9 @@ func NewAssetRepo(db *gorm.DB, baseLog *logger.Logger) AssetRepo {
 }
 func NewMaterialSetRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetRepo {
 	return materials.NewMaterialSetRepo(db, baseLog)
+}
+func NewMaterialSetFileRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetFileRepo {
+	return materials.NewMaterialSetFileRepo(db, baseLog)
 }
 func NewMaterialFileRepo(db *gorm.DB, baseLog *logger.Logger) MaterialFileRepo {
 	return materials.NewMaterialFileRepo(db, baseLog)

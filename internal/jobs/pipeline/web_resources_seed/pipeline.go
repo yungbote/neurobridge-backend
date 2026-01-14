@@ -31,6 +31,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	threadID, _ := jc.PayloadUUID("thread_id")
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	prompt := ""
 	if v, ok := jc.Payload()["prompt"]; ok && v != nil {
@@ -54,6 +55,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 		Prompt:        prompt,
 		ThreadID:      threadID,
 		JobID:         jc.Job.ID,

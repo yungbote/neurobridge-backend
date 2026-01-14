@@ -13,7 +13,7 @@ import (
 )
 
 type UserConceptStateRepo interface {
-	UpsertDelta(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error
+	Upsert(dbc dbctx.Context, row *types.UserConceptState) error
 	Get(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error)
 	ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error)
 }
@@ -52,31 +52,38 @@ func (r *userConceptStateRepo) Get(dbc dbctx.Context, userID uuid.UUID, conceptI
 	return &row, nil
 }
 
-func (r *userConceptStateRepo) UpsertDelta(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID, newMastery float64, newConfidence float64, lastSeen *time.Time) error {
+func (r *userConceptStateRepo) Upsert(dbc dbctx.Context, row *types.UserConceptState) error {
 	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = r.db
 	}
-	if userID == uuid.Nil || conceptID == uuid.Nil {
+	if row == nil || row.UserID == uuid.Nil || row.ConceptID == uuid.Nil {
 		return nil
 	}
 
 	now := time.Now().UTC()
-	row := &types.UserConceptState{
-		ID:         uuid.New(),
-		UserID:     userID,
-		ConceptID:  conceptID,
-		Mastery:    newMastery,
-		Confidence: newConfidence,
-		LastSeenAt: lastSeen,
-		UpdatedAt:  now,
+	if row.ID == uuid.Nil {
+		row.ID = uuid.New()
 	}
-	// On conflict, overwrite mastery/confidence/last_seen/updated_at
+	if row.CreatedAt.IsZero() {
+		row.CreatedAt = now
+	}
+	row.UpdatedAt = now
+
+	// On conflict, overwrite state fields (job cursor provides idempotency).
 	return transaction.WithContext(dbc.Ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "concept_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"mastery", "confidence", "last_seen_at", "updated_at",
+				"mastery",
+				"confidence",
+				"last_seen_at",
+				"next_review_at",
+				"decay_rate",
+				"misconceptions",
+				"attempts",
+				"correct",
+				"updated_at",
 			}),
 		}).
 		Create(row).Error

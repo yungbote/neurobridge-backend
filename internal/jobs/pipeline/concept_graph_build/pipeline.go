@@ -28,6 +28,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Fail("validate", fmt.Errorf("missing saga_id"))
 		return nil
 	}
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	heartbeatSec := getEnvInt("CONCEPT_GRAPH_HEARTBEAT_SECONDS", 20)
 	if heartbeatSec < 1 {
@@ -83,6 +84,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	stopTicker()
 	if err != nil {

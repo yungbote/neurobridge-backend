@@ -110,6 +110,23 @@ func (h *ChatHandler) ListMessages(c *gin.Context) {
 	response.RespondOK(c, gin.H{"messages": msgs})
 }
 
+// GET /api/chat/intake/pending?limit=10
+func (h *ChatHandler) ListPendingIntakeQuestions(c *gin.Context) {
+	limit := 10
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	dbc := dbctx.Context{Ctx: c.Request.Context()}
+	msgs, err := h.chat.ListPendingIntakeQuestions(dbc, limit)
+	if err != nil {
+		response.RespondError(c, http.StatusBadRequest, "list_pending_intake_failed", err)
+		return
+	}
+	response.RespondOK(c, gin.H{"messages": msgs})
+}
+
 // POST /api/chat/threads/:id/rebuild
 func (h *ChatHandler) RebuildThread(c *gin.Context) {
 	threadID, err := uuid.Parse(c.Param("id"))

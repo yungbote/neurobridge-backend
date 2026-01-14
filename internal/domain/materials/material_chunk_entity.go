@@ -10,10 +10,10 @@ import (
 type MaterialChunkEntity struct {
 	ID uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 
-	MaterialChunkID uuid.UUID     `gorm:"type:uuid;not null;index:idx_material_chunk_entity,unique,priority:1" json:"material_chunk_id"`
+	MaterialChunkID uuid.UUID      `gorm:"type:uuid;not null;index:idx_material_chunk_entity,unique,priority:1" json:"material_chunk_id"`
 	MaterialChunk   *MaterialChunk `gorm:"constraint:OnDelete:CASCADE;foreignKey:MaterialChunkID;references:ID" json:"material_chunk,omitempty"`
 
-	MaterialEntityID uuid.UUID     `gorm:"type:uuid;not null;index:idx_material_chunk_entity,unique,priority:2" json:"material_entity_id"`
+	MaterialEntityID uuid.UUID       `gorm:"type:uuid;not null;index:idx_material_chunk_entity,unique,priority:2" json:"material_entity_id"`
 	MaterialEntity   *MaterialEntity `gorm:"constraint:OnDelete:CASCADE;foreignKey:MaterialEntityID;references:ID" json:"material_entity,omitempty"`
 
 	Relation string  `gorm:"type:text;not null;default:'mentions';index" json:"relation"`
@@ -25,4 +25,3 @@ type MaterialChunkEntity struct {
 }
 
 func (MaterialChunkEntity) TableName() string { return "material_chunk_entity" }
-

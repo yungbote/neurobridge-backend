@@ -81,8 +81,19 @@ func (s *learningBuildBootstrapService) ensurePathInTx(dbc dbctx.Context, userID
 
 	now := time.Now().UTC()
 	path := &types.Path{
-		ID:          uuid.New(),
-		UserID:      &userID,
+		ID:     uuid.New(),
+		UserID: &userID,
+		MaterialSetID: func() *uuid.UUID {
+			id := materialSetID
+			return &id
+		}(),
+		RootPathID: func() *uuid.UUID {
+			id := uuid.Nil // placeholder; filled after ID is set below
+			return &id
+		}(),
+		Depth:       0,
+		SortIndex:   0,
+		Kind:        "path",
 		Title:       "Generating path…",
 		Description: "",
 		Status:      "draft",
@@ -90,6 +101,8 @@ func (s *learningBuildBootstrapService) ensurePathInTx(dbc dbctx.Context, userID
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	// RootPathID should point to itself (materialized root).
+	path.RootPathID = &path.ID
 	if _, err := s.path.Create(dbc, []*types.Path{path}); err != nil {
 		return uuid.Nil, fmt.Errorf("create path: %w", err)
 	}

@@ -39,6 +39,7 @@ type CompletedUnitRefreshInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type CompletedUnitRefreshOutput struct {
@@ -60,6 +61,11 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 	}
 	if in.MaterialSetID == uuid.Nil {
 		return out, fmt.Errorf("completed_unit_refresh: missing material_set_id")
+	}
+
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
+	if err != nil {
+		return out, err
 	}
 
 	// Conservative default: require high confidence to mark completed.
@@ -100,12 +106,8 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 		return best
 	}
 
-	err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		pathID, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID)
-		if err != nil {
-			return err
-		}
 
 		// Chain signatures (chains to evaluate).
 		chainRows, err := deps.Chains.ListByScope(dbc, "path", &pathID)
@@ -150,8 +152,13 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 				continue
 			}
 			k := strings.TrimSpace(strings.ToLower(c.Key))
-			if k != "" {
-				conceptIDByKey[k] = c.ID
+			// Mastery is tracked at the canonical (global) concept level to transfer knowledge across paths.
+			id := c.ID
+			if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+				id = *c.CanonicalConceptID
+			}
+			if k != "" && id != uuid.Nil {
+				conceptIDByKey[k] = id
 			}
 			conceptKeyByID[c.ID] = k
 		}
@@ -380,7 +387,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 	}
 
 	if deps.Graph != nil && deps.Mastery != nil {
-		if err := syncUserConceptStatesToNeo4j(ctx, deps, in.OwnerUserID, in.MaterialSetID); err != nil && deps.Log != nil {
+		if err := syncUserConceptStatesToNeo4j(ctx, deps, in.OwnerUserID, pathID); err != nil && deps.Log != nil {
 			deps.Log.Warn("neo4j user learning graph sync failed (continuing)", "error", err, "user_id", in.OwnerUserID.String())
 		}
 	}

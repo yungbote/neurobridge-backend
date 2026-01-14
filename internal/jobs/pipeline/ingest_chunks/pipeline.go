@@ -31,6 +31,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Fail("validate", fmt.Errorf("missing saga_id"))
 		return nil
 	}
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	fileTimeoutMin := getEnvInt("INGEST_CHUNKS_FILE_TIMEOUT_MINUTES", 10)
 	jobTimeoutMin := getEnvInt("INGEST_CHUNKS_JOB_TIMEOUT_MINUTES", 30)
@@ -100,6 +101,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	}, learningmod.IngestChunksOptions{
 		FileTimeout: time.Duration(fileTimeoutMin) * time.Minute,
 		Report: func(stage string, pct int, message string) {

@@ -24,6 +24,8 @@ type Pipeline struct {
 	chunks    repos.MaterialChunkRepo
 	userProf  repos.UserProfileVectorRepo
 	patterns  repos.TeachingPatternRepo
+	concepts  repos.ConceptRepo
+	mastery   repos.UserConceptStateRepo
 	ai        openai.Client
 	vec       pinecone.VectorStore
 	bucket    gcp.BucketService
@@ -43,6 +45,8 @@ func New(
 	chunks repos.MaterialChunkRepo,
 	userProf repos.UserProfileVectorRepo,
 	patterns repos.TeachingPatternRepo,
+	concepts repos.ConceptRepo,
+	mastery repos.UserConceptStateRepo,
 	ai openai.Client,
 	vec pinecone.VectorStore,
 	bucket gcp.BucketService,
@@ -61,6 +65,8 @@ func New(
 		chunks:    chunks,
 		userProf:  userProf,
 		patterns:  patterns,
+		concepts:  concepts,
+		mastery:   mastery,
 		ai:        ai,
 		vec:       vec,
 		bucket:    bucket,

@@ -38,6 +38,7 @@ type ConceptClusterBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type ConceptClusterBuildOutput struct {
@@ -62,7 +63,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 		return out, fmt.Errorf("concept_cluster_build: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -158,8 +159,10 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-			return err
+		if in.PathID == uuid.Nil {
+			if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
+				return err
+			}
 		}
 
 		toCreate := make([]*types.ConceptCluster, 0, len(rows))

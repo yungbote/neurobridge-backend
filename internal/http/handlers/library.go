@@ -337,11 +337,13 @@ WITH primary_anchor AS (
   ORDER BY m.path_id, m.weight DESC, m.updated_at DESC, m.node_id ASC
 )
 SELECT mf.*
-FROM material_file mf
-JOIN user_library_index uli ON uli.material_set_id = mf.material_set_id AND uli.deleted_at IS NULL
+FROM user_library_index uli
+LEFT JOIN material_set_file msf ON msf.material_set_id = uli.material_set_id AND msf.deleted_at IS NULL
+JOIN material_file mf ON (mf.material_set_id = uli.material_set_id OR mf.id = msf.material_file_id)
 JOIN path p ON p.id = uli.path_id AND p.deleted_at IS NULL
 JOIN primary_anchor pa ON pa.path_id = p.id AND pa.node_id = ?
 WHERE uli.user_id = ?
+  AND uli.deleted_at IS NULL
   AND p.user_id = ?
   AND lower(p.status) = 'ready'
   AND mf.deleted_at IS NULL

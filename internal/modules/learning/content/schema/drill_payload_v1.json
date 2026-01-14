@@ -10,6 +10,10 @@
         "properties": {
           "front_md": { "type": "string" },
           "back_md": { "type": "string" },
+          "concept_keys": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "citations": {
             "type": "array",
             "items": {
@@ -33,7 +37,7 @@
             }
           }
         },
-        "required": ["front_md", "back_md", "citations"],
+        "required": ["front_md", "back_md", "concept_keys", "citations"],
         "additionalProperties": false
       }
     },
@@ -43,6 +47,10 @@
         "type": "object",
         "properties": {
           "id": { "type": "string" },
+          "concept_keys": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "prompt_md": { "type": "string" },
           "options": {
             "type": "array",
@@ -81,7 +89,7 @@
             }
           }
         },
-        "required": ["id", "prompt_md", "options", "answer_id", "explanation_md", "citations"],
+        "required": ["id", "concept_keys", "prompt_md", "options", "answer_id", "explanation_md", "citations"],
         "additionalProperties": false
       }
     }
@@ -89,4 +97,3 @@
   "required": ["schema_version", "kind", "cards", "questions"],
   "additionalProperties": false
 }
-

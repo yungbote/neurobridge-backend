@@ -19,6 +19,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 	sagaID, _ := jc.PayloadUUID("saga_id")
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	jc.Progress("docs", 2, "Writing unit docs")
 	out, err := learningmod.New(learningmod.UsecasesDeps{
@@ -34,6 +35,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Chunks:           p.chunks,
 		UserProfile:      p.userProf,
 		TeachingPatterns: p.patterns,
+		Concepts:         p.concepts,
+		ConceptState:     p.mastery,
 		AI:               p.ai,
 		Vec:              p.vec,
 		Bucket:           p.bucket,
@@ -42,6 +45,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	if err != nil {
 		jc.Fail("docs", err)

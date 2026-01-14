@@ -23,6 +23,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Fail("validate", fmt.Errorf("missing saga_id"))
 		return nil
 	}
+	pathID, _ := jc.PayloadUUID("path_id")
 
 	jc.Progress("concept_clusters", 2, "Building concept clusters")
 	out, err := learningmod.New(learningmod.UsecasesDeps{
@@ -39,6 +40,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
+		PathID:        pathID,
 	})
 	if err != nil {
 		jc.Fail("concept_clusters", err)

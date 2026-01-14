@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
@@ -37,6 +38,7 @@ type EmbedChunksInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type EmbedChunksOutput struct {
@@ -63,11 +65,18 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 	}
 
 	// Contract: derive/ensure path_id (even if this stage doesn't use it further).
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
 	out.PathID = pathID
+
+	// Derived material sets share the underlying chunk vectors namespace with their source upload batch.
+	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID)
+	if err != nil {
+		return out, err
+	}
+	sourceSetID := setCtx.SourceMaterialSetID
 
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
@@ -113,7 +122,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 		maxConc = 1
 	}
 
-	ns := index.ChunksNamespace(in.MaterialSetID)
+	ns := index.ChunksNamespace(sourceSetID)
 
 	var chunksEmbedded int32
 	var pineconeUpserts int32
@@ -164,7 +173,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 						Values: vecs[i],
 						Metadata: map[string]any{
 							"type":             "chunk",
-							"material_set_id":  in.MaterialSetID.String(),
+							"material_set_id":  sourceSetID.String(),
 							"material_file_id": ch.MaterialFileID.String(),
 							"chunk_id":         id,
 							"index":            ch.Index,

@@ -31,4 +31,3 @@ type MaterialEntity struct {
 }
 
 func (MaterialEntity) TableName() string { return "material_entity" }
-

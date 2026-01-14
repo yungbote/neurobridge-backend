@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -53,6 +54,7 @@ type ConceptGraphBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type ConceptGraphBuildOutput struct {
@@ -77,7 +79,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, fmt.Errorf("concept_graph_build: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -88,6 +90,19 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, err
 	}
 	if len(existing) > 0 {
+		// Best-effort: ensure canonical (global) concepts exist and path concepts have canonical IDs,
+		// even for legacy paths that were generated before canonicalization existed.
+		_ = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+			_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
+			rows, err := deps.Concepts.GetByScope(dbc, "path", &pathID)
+			if err != nil {
+				return err
+			}
+			_, _ = canonicalizePathConcepts(dbc, tx, deps.Concepts, rows, nil)
+			return nil
+		})
+
 		// Canonical graph already exists. Skip regeneration to preserve stability.
 		if deps.Graph != nil {
 			if err := syncPathConceptGraphToNeo4j(ctx, deps, pathID); err != nil {
@@ -350,6 +365,197 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, fmt.Errorf("concept_graph_build: embedding count mismatch (got %d want %d)", len(embs), len(conceptsOut))
 	}
 
+	// ---- Semantic canonical concept matching (cross-path key unification) ----
+	//
+	// We keep concept.key stable per-path, but unify canonical/global concept identity using:
+	//  1) explicit aliases (LLM-provided) normalized to keys, then
+	//  2) embedding similarity against global canonical concept vectors.
+	//
+	// This produces a mapping: path_concept_key -> canonical_global_concept_id
+	// used by canonicalizePathConcepts() to create global alias rows and backfill canonical_concept_id.
+	semanticMatchByKey := map[string]uuid.UUID{}
+	if deps.Vec != nil && deps.Concepts != nil && len(conceptsOut) > 0 {
+		minScore := envFloatAllowZero("CANONICAL_CONCEPT_SEMANTIC_MIN_SCORE", 0.885)
+		minGap := envFloatAllowZero("CANONICAL_CONCEPT_SEMANTIC_MIN_GAP", 0.02)
+		topK := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_TOP_K", 6)
+		if topK < 1 {
+			topK = 6
+		}
+		conc := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_CONCURRENCY", 12)
+		if conc < 1 {
+			conc = 1
+		}
+		timeoutMS := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_TIMEOUT_MS", 2500)
+		if timeoutMS < 250 {
+			timeoutMS = 250
+		}
+
+		keys := make([]string, 0, len(conceptsOut))
+		aliasKeysByKey := map[string][]string{}
+		aliasKeys := make([]string, 0, len(conceptsOut)*2)
+		for _, c := range conceptsOut {
+			k := strings.TrimSpace(strings.ToLower(c.Key))
+			if k == "" {
+				continue
+			}
+			keys = append(keys, k)
+			for _, a := range c.Aliases {
+				ak := normalizeConceptKey(a)
+				if ak == "" || ak == k {
+					continue
+				}
+				aliasKeysByKey[k] = append(aliasKeysByKey[k], ak)
+				aliasKeys = append(aliasKeys, ak)
+			}
+		}
+		keys = dedupeStrings(keys)
+		queryKeys := dedupeStrings(append(keys, aliasKeys...))
+
+		globalRootByKey := map[string]uuid.UUID{}
+		if len(queryKeys) > 0 {
+			if rows, err := deps.Concepts.GetByScopeAndKeys(dbctx.Context{Ctx: ctx}, "global", nil, queryKeys); err == nil {
+				for _, g := range rows {
+					if g == nil || g.ID == uuid.Nil {
+						continue
+					}
+					k := strings.TrimSpace(strings.ToLower(g.Key))
+					if k == "" {
+						continue
+					}
+					root := g.ID
+					if g.CanonicalConceptID != nil && *g.CanonicalConceptID != uuid.Nil {
+						root = *g.CanonicalConceptID
+					}
+					if root != uuid.Nil {
+						globalRootByKey[k] = root
+					}
+				}
+			}
+		}
+
+		// Prefer alias-key matches before doing any vector search.
+		todoIdx := make([]int, 0, 8)
+		aliasMatched := 0
+		for i := range conceptsOut {
+			k := strings.TrimSpace(strings.ToLower(conceptsOut[i].Key))
+			if k == "" {
+				continue
+			}
+			if globalRootByKey[k] != uuid.Nil {
+				continue // exact global key already exists; canonicalizePathConcepts will handle redirect chains.
+			}
+			aks := dedupeStrings(aliasKeysByKey[k])
+			found := uuid.Nil
+			for _, ak := range aks {
+				if id := globalRootByKey[ak]; id != uuid.Nil {
+					found = id
+					break
+				}
+			}
+			if found != uuid.Nil {
+				semanticMatchByKey[k] = found
+				aliasMatched++
+				continue
+			}
+			todoIdx = append(todoIdx, i)
+		}
+
+		// Embedding-based semantic matching (global ANN search) for remaining missing keys.
+		semanticMatched := 0
+		if minScore > 0 && len(todoIdx) > 0 {
+			globalNS := index.ConceptsNamespace("global", nil)
+			filter := map[string]any{"type": "concept", "scope": "global", "canonical": true}
+
+			var mu sync.Mutex
+			eg, egctx := errgroup.WithContext(ctx)
+			eg.SetLimit(conc)
+
+			for _, idx := range todoIdx {
+				idx := idx
+				eg.Go(func() error {
+					if idx < 0 || idx >= len(conceptsOut) || idx >= len(embs) {
+						return nil
+					}
+					k := strings.TrimSpace(strings.ToLower(conceptsOut[idx].Key))
+					if k == "" {
+						return nil
+					}
+					if len(embs[idx]) == 0 {
+						return nil
+					}
+					qctx, cancel := context.WithTimeout(egctx, time.Duration(timeoutMS)*time.Millisecond)
+					matches, err := deps.Vec.QueryMatches(qctx, globalNS, embs[idx], topK, filter)
+					cancel()
+					if err != nil || len(matches) == 0 {
+						return nil
+					}
+					best := matches[0]
+					if best.Score < minScore {
+						return nil
+					}
+					if len(matches) > 1 && (best.Score-matches[1].Score) < minGap {
+						return nil
+					}
+					idStr := strings.TrimSpace(best.ID)
+					if strings.HasPrefix(idStr, "concept:") {
+						idStr = strings.TrimPrefix(idStr, "concept:")
+					}
+					cid, err := uuid.Parse(strings.TrimSpace(idStr))
+					if err != nil || cid == uuid.Nil {
+						return nil
+					}
+					mu.Lock()
+					semanticMatchByKey[k] = cid
+					semanticMatched++
+					mu.Unlock()
+					return nil
+				})
+			}
+			_ = eg.Wait()
+		}
+
+		// Resolve any matched global concept IDs that are themselves aliases/redirects (one-hop best-effort).
+		if len(semanticMatchByKey) > 0 {
+			ids := make([]uuid.UUID, 0, len(semanticMatchByKey))
+			seenIDs := map[uuid.UUID]bool{}
+			for _, id := range semanticMatchByKey {
+				if id != uuid.Nil && !seenIDs[id] {
+					seenIDs[id] = true
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) > 0 {
+				if rows, err := deps.Concepts.GetByIDs(dbctx.Context{Ctx: ctx}, ids); err == nil {
+					redir := map[uuid.UUID]uuid.UUID{}
+					for _, r := range rows {
+						if r == nil || r.ID == uuid.Nil {
+							continue
+						}
+						if r.CanonicalConceptID != nil && *r.CanonicalConceptID != uuid.Nil {
+							redir[r.ID] = *r.CanonicalConceptID
+						}
+					}
+					if len(redir) > 0 {
+						for k, id := range semanticMatchByKey {
+							if to := redir[id]; to != uuid.Nil {
+								semanticMatchByKey[k] = to
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if deps.Log != nil && (aliasMatched > 0 || semanticMatched > 0) {
+			deps.Log.Info(
+				"canonical concept semantic matches",
+				"alias_matches", aliasMatched,
+				"semantic_matches", semanticMatched,
+				"candidates", len(conceptsOut),
+			)
+		}
+	}
+
 	// ---- Persist canonical state + append saga actions (single tx) ----
 	type conceptRow struct {
 		Row *types.Concept
@@ -393,8 +599,10 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		}
 
 		// EnsurePath inside the tx (no-op if already set).
-		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-			return err
+		if in.PathID == uuid.Nil {
+			if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
+				return err
+			}
 		}
 
 		// Race-safe idempotency guard: if another worker already persisted the canonical graph,
@@ -428,7 +636,9 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			if childID == uuid.Nil || parentID == uuid.Nil {
 				continue
 			}
-			_ = deps.Concepts.UpdateFields(dbc, childID, map[string]interface{}{"parent_id": parentID})
+			if err := deps.Concepts.UpdateFields(dbc, childID, map[string]interface{}{"parent_id": parentID}); err != nil {
+				return err
+			}
 		}
 
 		// Create evidences (canonical).
@@ -447,7 +657,9 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				})
 			}
 		}
-		_, _ = deps.Evidence.CreateIgnoreDuplicates(dbc, evRows)
+		if _, err := deps.Evidence.CreateIgnoreDuplicates(dbc, evRows); err != nil {
+			return err
+		}
 
 		// Create edges (canonical).
 		for _, e := range edgesOut {
@@ -464,7 +676,9 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				Strength:      e.Strength,
 				Evidence:      datatypes.JSON(mustJSON(map[string]any{"rationale": e.Rationale, "citations": filterChunkIDStrings(e.Citations, allowedChunkIDs)})),
 			}
-			_ = deps.Edges.Upsert(dbc, edge)
+			if err := deps.Edges.Upsert(dbc, edge); err != nil {
+				return err
+			}
 			out.EdgesMade++
 		}
 
@@ -581,6 +795,30 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		return out, nil
 	}
 
+	// ---- Canonicalize concepts (best-effort; do not fail the core graph build) ----
+	//
+	// This links each path-scoped concept to a canonical/global concept ID (Concept.canonical_concept_id),
+	// enabling cross-path mastery transfer and semantic matching.
+	if deps.Concepts != nil && len(rows) > 0 {
+		pathConcepts := make([]*types.Concept, 0, len(rows))
+		for _, r := range rows {
+			if r.Row != nil && r.Row.ID != uuid.Nil {
+				pathConcepts = append(pathConcepts, r.Row)
+			}
+		}
+		if len(pathConcepts) > 0 {
+			if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+				// Serialize canonicalization per path to avoid conflict churn under retries.
+				_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
+				_, err := canonicalizePathConcepts(dbc, tx, deps.Concepts, pathConcepts, semanticMatchByKey)
+				return err
+			}); err != nil {
+				deps.Log.Warn("concept_graph_build: canonicalization failed (continuing)", "error", err, "path_id", pathID.String())
+			}
+		}
+	}
+
 	// ---- Upsert to Pinecone (best-effort; cache only) ----
 	if deps.Vec != nil {
 		pineconeConc := envIntAllowZero("CONCEPT_GRAPH_PINECONE_CONCURRENCY", 20)
@@ -629,6 +867,47 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		}
 		_ = g.Wait()
 		out.PineconeBatches = int(atomic.LoadInt32(&batches))
+
+		// Also upsert canonical/global concept vectors for cross-path semantic matching.
+		//
+		// We index by canonical concept ID (vector_id = "concept:<canonical_uuid>") into the global namespace,
+		// which allows new paths to semantically match previously-learned concepts even when their keys differ.
+		globalNS := index.ConceptsNamespace("global", nil)
+		globalVectors := make([]pc.Vector, 0, len(rows))
+		seenGlobal := map[string]bool{}
+		for _, r := range rows {
+			if r.Row == nil || len(r.Emb) == 0 || r.Row.CanonicalConceptID == nil || *r.Row.CanonicalConceptID == uuid.Nil {
+				continue
+			}
+			cid := *r.Row.CanonicalConceptID
+			vid := "concept:" + cid.String()
+			if seenGlobal[vid] {
+				continue
+			}
+			seenGlobal[vid] = true
+			globalVectors = append(globalVectors, pc.Vector{
+				ID:     vid,
+				Values: r.Emb,
+				Metadata: map[string]any{
+					"type":        "concept",
+					"scope":       "global",
+					"canonical":   true,
+					"concept_id":  cid.String(),
+					"observedKey": r.Row.Key,
+					"observedName": func() string {
+						if strings.TrimSpace(r.Row.Name) != "" {
+							return r.Row.Name
+						}
+						return r.Row.Key
+					}(),
+				},
+			})
+		}
+		if len(globalVectors) > 0 {
+			if err := deps.Vec.Upsert(ctx, globalNS, globalVectors); err != nil {
+				deps.Log.Warn("pinecone global concept upsert failed (continuing)", "namespace", globalNS, "err", err.Error())
+			}
+		}
 	}
 
 	// ---- Upsert to Neo4j (best-effort; cache only) ----

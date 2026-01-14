@@ -19,6 +19,7 @@ type Pipeline struct {
 	edges     repos.ConceptEdgeRepo
 	summaries repos.MaterialSetSummaryRepo
 	profile   repos.UserProfileVectorRepo
+	mastery   repos.UserConceptStateRepo
 	graph     *neo4jdb.Client
 	ai        openai.Client
 	bootstrap services.LearningBuildBootstrapService
@@ -33,6 +34,7 @@ func New(
 	edges repos.ConceptEdgeRepo,
 	summaries repos.MaterialSetSummaryRepo,
 	profile repos.UserProfileVectorRepo,
+	mastery repos.UserConceptStateRepo,
 	graph *neo4jdb.Client,
 	ai openai.Client,
 	bootstrap services.LearningBuildBootstrapService,
@@ -46,6 +48,7 @@ func New(
 		edges:     edges,
 		summaries: summaries,
 		profile:   profile,
+		mastery:   mastery,
 		graph:     graph,
 		ai:        ai,
 		bootstrap: bootstrap,

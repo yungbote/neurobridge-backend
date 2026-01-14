@@ -9,8 +9,19 @@ import (
 )
 
 type Path struct {
-	ID                    uuid.UUID      `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
-	UserID                *uuid.UUID     `gorm:"type:uuid;index" json:"user_id,omitempty"`
+	ID            uuid.UUID  `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
+	UserID        *uuid.UUID `gorm:"type:uuid;index" json:"user_id,omitempty"`
+	MaterialSetID *uuid.UUID `gorm:"type:uuid;column:material_set_id;index" json:"material_set_id,omitempty"`
+
+	// Hierarchy (nested paths / programs).
+	// A path may have a parent path, enabling arbitrary nesting (program -> subpaths -> ...).
+	ParentPathID *uuid.UUID `gorm:"type:uuid;column:parent_path_id;index" json:"parent_path_id,omitempty"`
+	ParentPath   *Path      `gorm:"constraint:OnDelete:CASCADE;foreignKey:ParentPathID;references:ID" json:"parent_path,omitempty"`
+	RootPathID   *uuid.UUID `gorm:"type:uuid;column:root_path_id;index" json:"root_path_id,omitempty"`
+	Depth        int        `gorm:"column:depth;not null;default:0" json:"depth"`
+	SortIndex    int        `gorm:"column:sort_index;not null;default:0;index" json:"sort_index"`
+	Kind         string     `gorm:"column:kind;not null;default:'path';index" json:"kind"`
+
 	Title                 string         `gorm:"column:title;not null" json:"title"`
 	Description           string         `gorm:"column:description;type:text" json:"description,omitempty"`
 	Status                string         `gorm:"column:status;not null;default:'draft';index" json:"status"`

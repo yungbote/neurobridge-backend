@@ -37,6 +37,25 @@ func (h *PathHandler) ListUserPaths(c *gin.Context) {
 		return
 	}
 
+	// Default UX: hide archived paths unless explicitly requested.
+	includeArchived := false
+	if v := strings.ToLower(strings.TrimSpace(c.Query("include_archived"))); v != "" {
+		includeArchived = v == "1" || v == "true" || v == "yes" || v == "y"
+	}
+	if !includeArchived && len(paths) > 0 {
+		filtered := make([]*types.Path, 0, len(paths))
+		for _, p := range paths {
+			if p == nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(p.Status), "archived") {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		paths = filtered
+	}
+
 	// Refresh-safe UX: include a durable job snapshot (status/stage/progress/message) for any path with job_id.
 	pathsWithJobs := h.attachJobSnapshot(c.Request.Context(), rd.UserID, paths)
 
@@ -164,8 +183,12 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 	if h.userLibraryIndex != nil {
 		idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
 		if err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
-			msid := idx.MaterialSetID
-			dto.MaterialSetID = &msid
+			// Back-compat: older installs derived material_set_id from user_library_index.
+			// Newer installs store it directly on the path row.
+			if row.MaterialSetID == nil || *row.MaterialSetID == uuid.Nil {
+				msid := idx.MaterialSetID
+				row.MaterialSetID = &msid
+			}
 		}
 	}
 
@@ -226,8 +249,10 @@ func (h *PathHandler) ViewPath(c *gin.Context) {
 	if h.userLibraryIndex != nil {
 		idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
 		if err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
-			msid := idx.MaterialSetID
-			dto.MaterialSetID = &msid
+			if row.MaterialSetID == nil || *row.MaterialSetID == uuid.Nil {
+				msid := idx.MaterialSetID
+				row.MaterialSetID = &msid
+			}
 		}
 	}
 
@@ -328,22 +353,40 @@ func (h *PathHandler) ListPathMaterials(c *gin.Context) {
 		return
 	}
 
-	idxRow, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
-	if err != nil {
-		h.log.Error("ListPathMaterials failed (load library index)", "error", err, "path_id", pathID)
-		response.RespondError(c, http.StatusInternalServerError, "load_library_index_failed", err)
-		return
+	// Resolve material_set_id for this path:
+	// - prefer the value stored on the path row (supports subpaths),
+	// - fall back to user_library_index for older installs / root paths.
+	materialSetID := uuid.Nil
+	if pathRow.MaterialSetID != nil && *pathRow.MaterialSetID != uuid.Nil {
+		materialSetID = *pathRow.MaterialSetID
+	} else {
+		idxRow, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, pathID)
+		if err != nil {
+			h.log.Error("ListPathMaterials failed (load library index)", "error", err, "path_id", pathID)
+			response.RespondError(c, http.StatusInternalServerError, "load_library_index_failed", err)
+			return
+		}
+		if idxRow != nil && idxRow.MaterialSetID != uuid.Nil {
+			materialSetID = idxRow.MaterialSetID
+			// Backfill on the path row for future calls (best-effort).
+			_ = h.path.UpdateFields(dbctx.Context{Ctx: c.Request.Context()}, pathID, map[string]interface{}{"material_set_id": materialSetID})
+		}
 	}
-	if idxRow == nil || idxRow.MaterialSetID == uuid.Nil {
+	if materialSetID == uuid.Nil {
 		response.RespondOK(c, gin.H{"files": []any{}, "assets": []any{}, "assets_by_file": gin.H{}})
 		return
 	}
 
-	files, err := h.materialFiles.GetByMaterialSetID(dbctx.Context{Ctx: c.Request.Context()}, idxRow.MaterialSetID)
+	files, err := h.materialFiles.GetByMaterialSetID(dbctx.Context{Ctx: c.Request.Context()}, materialSetID)
 	if err != nil {
-		h.log.Error("ListPathMaterials failed (load files)", "error", err, "material_set_id", idxRow.MaterialSetID)
+		h.log.Error("ListPathMaterials failed (load files)", "error", err, "material_set_id", materialSetID)
 		response.RespondError(c, http.StatusInternalServerError, "load_files_failed", err)
 		return
+	}
+
+	// If this path has an intake material filter allowlist (e.g., subpaths), apply it.
+	if allow := materialFileAllowlistFromPathMetaJSON(pathRow.Metadata); len(allow) > 0 {
+		files = filterMaterialFilesByAllowlist(files, allow)
 	}
 
 	fileIDs := make([]uuid.UUID, 0, len(files))
@@ -359,7 +402,7 @@ func (h *PathHandler) ListPathMaterials(c *gin.Context) {
 	if h.materialAssets != nil && len(fileIDs) > 0 {
 		rows, err := h.materialAssets.GetByMaterialFileIDs(dbctx.Context{Ctx: c.Request.Context()}, fileIDs)
 		if err != nil {
-			h.log.Error("ListPathMaterials failed (load assets)", "error", err, "material_set_id", idxRow.MaterialSetID)
+			h.log.Error("ListPathMaterials failed (load assets)", "error", err, "material_set_id", materialSetID)
 			response.RespondError(c, http.StatusInternalServerError, "load_assets_failed", err)
 			return
 		}
@@ -377,7 +420,7 @@ func (h *PathHandler) ListPathMaterials(c *gin.Context) {
 		"files":           files,
 		"assets":          assets,
 		"assets_by_file":  assetsByFile,
-		"material_set_id": idxRow.MaterialSetID.String(),
+		"material_set_id": materialSetID.String(),
 	})
 }
 

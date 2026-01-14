@@ -30,4 +30,3 @@ type MaterialClaim struct {
 }
 
 func (MaterialClaim) TableName() string { return "material_claim" }
-

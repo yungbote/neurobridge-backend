@@ -49,6 +49,7 @@ type NodeVideosRenderInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type NodeVideosRenderOutput struct {
@@ -72,7 +73,7 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, fmt.Errorf("node_videos_render: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}

@@ -40,7 +40,7 @@ Output rules:
 
 	RegisterSpec(Spec{
 		Name:       PromptConceptInventory,
-		Version:    1, // schema version is inside ConceptInventorySchema() (currently const 3)
+		Version:    2, // schema version is inside ConceptInventorySchema() (currently const 3)
 		SchemaName: "concept_inventory",
 		Schema:     ConceptInventorySchema,
 		System: `
@@ -60,6 +60,8 @@ Task:
 - If PATH_INTENT_MD implies deprioritized topics, include them only if they are prerequisite scaffolding.
 - Organize into hierarchy via parent_key + depth.
 - Provide summary + key_points + aliases + importance.
+  - Prefer full descriptive concept keys over abbreviations (put abbreviations/acronyms in aliases).
+  - aliases should include common shorthands and expanded names (e.g. "SGD" and "stochastic gradient descent").
 - citations must be chunk_id strings actually used.
 - coverage: estimate completeness and list suspected missing topics.`,
 		Validators: []Validator{
@@ -69,7 +71,7 @@ Task:
 
 	RegisterSpec(Spec{
 		Name:       PromptConceptInventoryDelta,
-		Version:    1,
+		Version:    2,
 		SchemaName: "concept_inventory_delta",
 		Schema:     ConceptInventoryDeltaSchema,
 		System: `
@@ -93,6 +95,8 @@ Task:
 - Prefer missing high-signal concepts and prerequisite scaffolding; avoid exploding into micro-topics.
 - Organize into hierarchy via parent_key + depth (parent_key should reference an existing key when possible; otherwise null).
 - Provide summary + key_points + aliases + importance.
+  - Prefer full descriptive concept keys over abbreviations (put abbreviations/acronyms in aliases).
+  - aliases should include common shorthands and expanded names (e.g. "SGD" and "stochastic gradient descent").
 - citations must be chunk_id strings actually used.
 - coverage: estimate whether more passes are needed and list suspected missing topics.`,
 		Validators: []Validator{
@@ -326,7 +330,7 @@ For each proposed node:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathCharter,
-		Version:    1,
+		Version:    2,
 		SchemaName: "path_charter",
 		Schema:     PathCharterSchema,
 		System: `
@@ -340,6 +344,9 @@ USER_PROFILE_DOC:
 MATERIAL_SET_SUMMARY (optional):
 {{.BundleExcerpt}}
 
+USER_KNOWLEDGE_JSON (optional; mastery/exposure from prior learning; do not mention explicitly):
+{{.UserKnowledgeJSON}}
+
 Task:
 Output path_style with:
 - tone, reading_level, verbosity, pace, analogy_style
@@ -352,7 +359,7 @@ Output path_style with:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathStructure,
-		Version:    3,
+		Version:    5,
 		SchemaName: "path_structure",
 		Schema:     PathStructureSchema,
 		System: `
@@ -370,11 +377,17 @@ MATERIAL_SET_SUMMARY_MD (optional):
 CURRICULUM_SPEC_JSON (optional):
 {{.CurriculumSpecJSON}}
 
+MATERIAL_TRACKS_JSON (optional):
+{{.MaterialTracksJSON}}
+
 CONCEPTS_JSON:
 {{.ConceptsJSON}}
 
 EDGES_JSON:
 {{.EdgesJSON}}
+
+USER_KNOWLEDGE_JSON (optional; mastery/exposure from prior learning; use to avoid reteaching):
+{{.UserKnowledgeJSON}}
 
 Task:
 Create a dynamic path outline that covers all concepts.
@@ -382,6 +395,9 @@ Create a dynamic path outline that covers all concepts.
 Guidance:
 - If CURRICULUM_SPEC_JSON is present and coverage_target is "mastery", start with fundamentals and core semantics before specialized tooling.
 - Use CURRICULUM_SPEC_JSON sections to decide high-level module ordering and ensure no major area is omitted.
+- If MATERIAL_TRACKS_JSON contains multiple tracks (divergent goals), create a top-level module per track (and optionally a shared foundations module) so the curriculum feels organized rather than mixed.
+- If USER_KNOWLEDGE_JSON marks a concept as "known", compress it into brief review or integrate it into harder nodes (avoid redundant full lessons).
+- If USER_KNOWLEDGE_JSON marks a concept as "weak" or "unseen", include more scaffolding + practice slots before relying on it.
 
 You may include hierarchy:
 - "module" nodes are grouping/overview nodes.
@@ -607,7 +623,7 @@ Include citations per question.`,
 
 	RegisterSpec(Spec{
 		Name:       PromptActivityContent,
-		Version:    1,
+		Version:    2,
 		SchemaName: "activity_content",
 		Schema:     ActivityContentSchema,
 		System: `
@@ -630,6 +646,9 @@ ACTIVITY_KIND: {{.ActivityKind}}
 ACTIVITY_TITLE: {{.ActivityTitle}}
 CONCEPT_KEYS: {{.ConceptKeysCSV}}
 
+USER_KNOWLEDGE_JSON (optional; mastery/exposure for CONCEPT_KEYS; do not mention explicitly):
+{{.UserKnowledgeJSON}}
+
 EXCERPTS (each line includes chunk_id):
 {{.ActivityExcerpts}}
 
@@ -639,6 +658,8 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional):
 Rules:
 - Use blocks: heading|paragraph|bullets|steps|callout|divider|image|video_embed|diagram
 - Target word counts (approx; err on the side of longer): lesson-like ~1000–1600 words; drill ~450–800 words; quiz ~250–450 words.
+- If USER_KNOWLEDGE_JSON marks a concept as "known", skip basics and focus on nuance, integration, and faster recall prompts.
+- If USER_KNOWLEDGE_JSON marks a concept as "weak" or "unseen", add extra scaffolding, more step-by-step explanation, and more guided practice.
 - For lesson-like activities, aim for a narrative arc: why it matters → intuition/mental model → explanation → worked example → guided practice → recap.
 - For drills, include: a clear prompt, guided steps, and at least one "hint ladder" style callout to support retries.
 - For quizzes, include brief explanations for answers (why correct / why others are wrong) grounded in excerpts.

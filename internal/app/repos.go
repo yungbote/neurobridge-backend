@@ -16,6 +16,7 @@ type Repos struct {
 	OAuthNonce               repos.OAuthNonceRepo
 	Asset                    repos.AssetRepo
 	MaterialSet              repos.MaterialSetRepo
+	MaterialSetFile          repos.MaterialSetFileRepo
 	MaterialFile             repos.MaterialFileRepo
 	MaterialChunk            repos.MaterialChunkRepo
 	MaterialAsset            repos.MaterialAssetRepo
@@ -86,6 +87,7 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		OAuthNonce:               repos.NewOAuthNonceRepo(db, log),
 		Asset:                    repos.NewAssetRepo(db, log),
 		MaterialSet:              repos.NewMaterialSetRepo(db, log),
+		MaterialSetFile:          repos.NewMaterialSetFileRepo(db, log),
 		MaterialFile:             repos.NewMaterialFileRepo(db, log),
 		MaterialChunk:            repos.NewMaterialChunkRepo(db, log),
 		MaterialAsset:            repos.NewMaterialAssetRepo(db, log),

@@ -17,10 +17,14 @@ type Input struct {
 	RecentEventsSummary  string
 	UserProfileDoc       string
 	TeachingPatternsJSON string
+	// Knowledge graph (user mastery / exposure signals)
+	UserKnowledgeJSON string
 	// Planning context
 	PathCharterJSON    string
 	PathStructureJSON  string
 	CurriculumSpecJSON string
+	// Optional: multi-track / subpath planning context (from path_intake)
+	MaterialTracksJSON string
 	// Node / Chain planning
 	NodeIndex           int
 	NodeTitle           string

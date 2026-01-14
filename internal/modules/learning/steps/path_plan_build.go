@@ -24,23 +24,25 @@ import (
 )
 
 type PathPlanBuildDeps struct {
-	DB          *gorm.DB
-	Log         *logger.Logger
-	Path        repos.PathRepo
-	PathNodes   repos.PathNodeRepo
-	Concepts    repos.ConceptRepo
-	Edges       repos.ConceptEdgeRepo
-	Summaries   repos.MaterialSetSummaryRepo
-	UserProfile repos.UserProfileVectorRepo
-	Graph       *neo4jdb.Client
-	AI          openai.Client
-	Bootstrap   services.LearningBuildBootstrapService
+	DB           *gorm.DB
+	Log          *logger.Logger
+	Path         repos.PathRepo
+	PathNodes    repos.PathNodeRepo
+	Concepts     repos.ConceptRepo
+	Edges        repos.ConceptEdgeRepo
+	Summaries    repos.MaterialSetSummaryRepo
+	UserProfile  repos.UserProfileVectorRepo
+	ConceptState repos.UserConceptStateRepo
+	Graph        *neo4jdb.Client
+	AI           openai.Client
+	Bootstrap    services.LearningBuildBootstrapService
 }
 
 type PathPlanBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type PathPlanBuildOutput struct {
@@ -60,7 +62,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, fmt.Errorf("path_plan_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -91,6 +93,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		summaryText = strings.TrimSpace(rows[0].SummaryMD)
 	}
 	curriculumSpecJSON := ""
+	materialTracksJSON := ""
 	// Optionally prepend user intent/intake context (written by the path_intake stage).
 	if deps.Path != nil {
 		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
@@ -105,6 +108,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 					}
 				}
 				curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
+				materialTracksJSON = IntakeTracksBriefJSONFromPathMeta(meta, 4)
 			}
 		}
 	}
@@ -120,6 +124,49 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	edges, err := deps.Edges.GetByConceptIDs(dbctx.Context{Ctx: ctx}, conceptIDs(concepts))
 	if err != nil {
 		return out, err
+	}
+
+	// ---- User knowledge context (cross-path mastery transfer) ----
+	userKnowledgeJSON := ""
+	canonicalIDByKey := map[string]uuid.UUID{}
+	allConceptKeys := make([]string, 0, len(concepts))
+	canonicalIDs := make([]uuid.UUID, 0, len(concepts))
+	for _, c := range concepts {
+		if c == nil || c.ID == uuid.Nil {
+			continue
+		}
+		k := strings.TrimSpace(strings.ToLower(c.Key))
+		if k == "" {
+			continue
+		}
+		id := c.ID
+		if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+			id = *c.CanonicalConceptID
+		}
+		if id == uuid.Nil {
+			continue
+		}
+		canonicalIDByKey[k] = id
+		allConceptKeys = append(allConceptKeys, c.Key)
+		canonicalIDs = append(canonicalIDs, id)
+	}
+	canonicalIDs = dedupeUUIDs(canonicalIDs)
+	stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+	if deps.ConceptState != nil && len(canonicalIDs) > 0 {
+		if rows, err := deps.ConceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, canonicalIDs); err == nil {
+			for _, st := range rows {
+				if st == nil || st.ConceptID == uuid.Nil {
+					continue
+				}
+				stateByConceptID[st.ConceptID] = st
+			}
+		}
+	}
+	if len(allConceptKeys) > 0 {
+		userKnowledgeJSON = BuildUserKnowledgeContextV1(allConceptKeys, canonicalIDByKey, stateByConceptID, time.Now().UTC()).JSON()
+	}
+	if strings.TrimSpace(userKnowledgeJSON) == "" {
+		userKnowledgeJSON = "(none)"
 	}
 
 	// ConceptsJSON + EdgesJSON for prompt input.
@@ -162,8 +209,9 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 
 	// ---- Prompt: Path charter ----
 	charterPrompt, err := prompts.Build(prompts.PromptPathCharter, prompts.Input{
-		UserProfileDoc: up.ProfileDoc,
-		BundleExcerpt:  summaryText,
+		UserProfileDoc:    up.ProfileDoc,
+		BundleExcerpt:     summaryText,
+		UserKnowledgeJSON: userKnowledgeJSON,
 	})
 	if err != nil {
 		return out, err
@@ -179,8 +227,10 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		PathCharterJSON:    string(charterJSON),
 		BundleExcerpt:      summaryText,
 		CurriculumSpecJSON: curriculumSpecJSON,
+		MaterialTracksJSON: materialTracksJSON,
 		ConceptsJSON:       string(conceptsJSON),
 		EdgesJSON:          string(edgesJSON),
+		UserKnowledgeJSON:  userKnowledgeJSON,
 	})
 	if err != nil {
 		return out, err
@@ -194,7 +244,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 
 	// Optional refinement pass for higher-quality structure.
 	if shouldRefinePathStructure(structObj) {
-		if refined, ok := refinePathStructure(ctx, deps, string(charterJSON), string(conceptsJSON), string(edgesJSON), structDraft); ok {
+		if refined, ok := refinePathStructure(ctx, deps, string(charterJSON), string(conceptsJSON), string(edgesJSON), userKnowledgeJSON, structDraft); ok {
 			structObj = refined
 			didRefine = true
 		}
@@ -211,8 +261,10 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-			return err
+		if in.PathID == uuid.Nil {
+			if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
+				return err
+			}
 		}
 
 		// Update path title/description + metadata.
@@ -339,6 +391,7 @@ func refinePathStructure(
 	pathCharterJSON string,
 	conceptsJSON string,
 	edgesJSON string,
+	userKnowledgeJSON string,
 	draft map[string]any,
 ) (map[string]any, bool) {
 	if deps.AI == nil {
@@ -359,6 +412,10 @@ Return JSON only that matches the schema.`)
 	user.WriteString(conceptsJSON)
 	user.WriteString("\n\nEDGES_JSON:\n")
 	user.WriteString(edgesJSON)
+	if strings.TrimSpace(userKnowledgeJSON) != "" && strings.TrimSpace(userKnowledgeJSON) != "(none)" {
+		user.WriteString("\n\nUSER_KNOWLEDGE_JSON:\n")
+		user.WriteString(userKnowledgeJSON)
+	}
 	user.WriteString("\n\nDRAFT_PATH_STRUCTURE_JSON:\n")
 	user.WriteString(string(draftJSON))
 	user.WriteString("\n")

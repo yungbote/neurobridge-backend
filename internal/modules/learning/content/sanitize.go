@@ -241,11 +241,13 @@ func ScrubDrillPayloadV1(p DrillPayloadV1) (DrillPayloadV1, []string) {
 		hit = append(hit, h...)
 		p.Cards[i].BackMD, h = scrubMetaText(p.Cards[i].BackMD)
 		hit = append(hit, h...)
+		p.Cards[i].ConceptKeys = normalizeConceptKeys(p.Cards[i].ConceptKeys, 3)
 	}
 
 	for i := range p.Questions {
 		p.Questions[i].ID, h = scrubMetaText(p.Questions[i].ID)
 		hit = append(hit, h...)
+		p.Questions[i].ConceptKeys = normalizeConceptKeys(p.Questions[i].ConceptKeys, 3)
 		p.Questions[i].PromptMD, h = scrubMetaText(p.Questions[i].PromptMD)
 		hit = append(hit, h...)
 		p.Questions[i].ExplanationMD, h = scrubMetaText(p.Questions[i].ExplanationMD)
@@ -262,6 +264,32 @@ func ScrubDrillPayloadV1(p DrillPayloadV1) (DrillPayloadV1, []string) {
 	}
 
 	return p, dedupeStringsLocal(hit)
+}
+
+func normalizeConceptKeys(in []string, max int) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	if max <= 0 {
+		max = 3
+	}
+	if max > 8 {
+		max = 8
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, k := range in {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
 }
 
 // PruneNodeDocMetaBlocks removes obviously meta / onboarding blocks that sometimes slip into

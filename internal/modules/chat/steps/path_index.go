@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -148,18 +149,39 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		materialFiles []*types.MaterialFile
 		setSummary    *types.MaterialSetSummary
 	)
-	if deps.UserLibraryIndex != nil {
+	if path != nil && path.MaterialSetID != nil && *path.MaterialSetID != uuid.Nil {
+		materialSetID = *path.MaterialSetID
+	}
+	if materialSetID == uuid.Nil && deps.UserLibraryIndex != nil {
 		if idx, err := deps.UserLibraryIndex.GetByUserAndPathID(dbc, in.UserID, in.PathID); err == nil && idx != nil && idx.MaterialSetID != uuid.Nil {
 			materialSetID = idx.MaterialSetID
-			if deps.MaterialFiles != nil {
-				if rows, err := deps.MaterialFiles.GetByMaterialSetID(dbc, materialSetID); err == nil {
-					materialFiles = rows
+		}
+	}
+	if materialSetID != uuid.Nil {
+		if deps.MaterialFiles != nil {
+			if rows, err := deps.MaterialFiles.GetByMaterialSetID(dbc, materialSetID); err == nil {
+				materialFiles = rows
+			}
+		}
+		if deps.MaterialSetSummaries != nil {
+			if rows, err := deps.MaterialSetSummaries.GetByMaterialSetIDs(dbc, []uuid.UUID{materialSetID}); err == nil && len(rows) > 0 {
+				setSummary = rows[0]
+			}
+		}
+		allowFiles := intakeMaterialAllowlistFromPath(path)
+		if len(allowFiles) > 0 && len(materialFiles) > 0 {
+			filtered := make([]*types.MaterialFile, 0, len(materialFiles))
+			for _, f := range materialFiles {
+				if f == nil || f.ID == uuid.Nil {
+					continue
+				}
+				if allowFiles[f.ID] {
+					filtered = append(filtered, f)
 				}
 			}
-			if deps.MaterialSetSummaries != nil {
-				if rows, err := deps.MaterialSetSummaries.GetByMaterialSetIDs(dbc, []uuid.UUID{materialSetID}); err == nil && len(rows) > 0 {
-					setSummary = rows[0]
-				}
+			// If filter excluded everything (misconfigured), ignore it.
+			if len(filtered) > 0 {
+				materialFiles = filtered
 			}
 		}
 	}
@@ -591,4 +613,69 @@ func materialFileTypeLabel(f *types.MaterialFile) string {
 	default:
 		return ""
 	}
+}
+
+func intakeMaterialAllowlistFromPath(p *types.Path) map[uuid.UUID]bool {
+	if p == nil || len(p.Metadata) == 0 || strings.TrimSpace(string(p.Metadata)) == "" || strings.TrimSpace(string(p.Metadata)) == "null" {
+		return nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(p.Metadata, &meta); err != nil || meta == nil {
+		return nil
+	}
+	filter, _ := meta["intake_material_filter"].(map[string]any)
+	if filter == nil {
+		return nil
+	}
+	include := stringSliceFromAny(filter["include_file_ids"])
+	if len(include) == 0 {
+		return nil
+	}
+	out := map[uuid.UUID]bool{}
+	for _, s := range include {
+		id, err := uuid.Parse(strings.TrimSpace(s))
+		if err == nil && id != uuid.Nil {
+			out[id] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func stringFromAny(v any) string {
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func stringSliceFromAny(v any) []string {
+	if v == nil {
+		return nil
+	}
+	if ss, ok := v.([]string); ok {
+		out := make([]string, 0, len(ss))
+		for _, s := range ss {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		s := strings.TrimSpace(stringFromAny(v))
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	}
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		s := strings.TrimSpace(stringFromAny(x))
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

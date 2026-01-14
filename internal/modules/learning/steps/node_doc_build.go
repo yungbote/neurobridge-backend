@@ -14,6 +14,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
@@ -44,6 +45,8 @@ type NodeDocBuildDeps struct {
 
 	UserProfile      repos.UserProfileVectorRepo
 	TeachingPatterns repos.TeachingPatternRepo
+	Concepts         repos.ConceptRepo
+	ConceptState     repos.UserConceptStateRepo
 
 	AI  openai.Client
 	Vec pc.VectorStore
@@ -57,6 +60,7 @@ type NodeDocBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type NodeDocBuildOutput struct {
@@ -71,7 +75,7 @@ type NodeDocBuildOutput struct {
 	TablesWritten   int `json:"tables_written"`
 }
 
-const nodeDocPromptVersion = "node_doc_v1@4"
+const nodeDocPromptVersion = "node_doc_v1@5"
 
 func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	out := NodeDocBuildOutput{}
@@ -85,7 +89,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, fmt.Errorf("node_doc_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -445,9 +449,12 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		NodeKind    string
 		DocTemplate string
 		Goal        string
+		ConceptKeys []string
 		ConceptCSV  string
-		QueryText   string
-		QueryEmb    []float32
+		// Prompt-friendly knowledge graph context for ConceptKeys (cross-path mastery transfer).
+		UserKnowledgeJSON string
+		QueryText         string
+		QueryEmb          []float32
 	}
 	work := make([]nodeWork, 0, len(nodes))
 	for _, node := range nodes {
@@ -476,12 +483,89 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			NodeKind:    nodeKind,
 			DocTemplate: docTemplate,
 			Goal:        nodeGoal,
+			ConceptKeys: nodeConceptKeys,
 			ConceptCSV:  conceptCSV,
 			QueryText:   queryText,
 		})
 	}
 	if len(work) == 0 {
 		return out, nil
+	}
+
+	// ---- User knowledge context (cross-path mastery transfer) ----
+	//
+	// Best-effort: map node concept keys -> canonical concept IDs -> user concept state rows.
+	// We compute this once per run and attach a compact JSON context per node to keep prompts consistent and scalable.
+	if deps.Concepts != nil && deps.ConceptState != nil {
+		canonicalIDByKey := map[string]uuid.UUID{}
+		if concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID); err == nil {
+			for _, c := range concepts {
+				if c == nil || c.ID == uuid.Nil {
+					continue
+				}
+				k := strings.TrimSpace(strings.ToLower(c.Key))
+				if k == "" {
+					continue
+				}
+				id := c.ID
+				if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+					id = *c.CanonicalConceptID
+				}
+				if id != uuid.Nil {
+					canonicalIDByKey[k] = id
+				}
+			}
+		} else if deps.Log != nil {
+			deps.Log.Warn("node_doc_build: failed to load concepts for knowledge context (continuing)", "error", err, "path_id", pathID.String())
+		}
+
+		needed := map[uuid.UUID]bool{}
+		for _, w := range work {
+			for _, k := range w.ConceptKeys {
+				k = strings.TrimSpace(strings.ToLower(k))
+				if k == "" {
+					continue
+				}
+				if id := canonicalIDByKey[k]; id != uuid.Nil {
+					needed[id] = true
+				}
+			}
+		}
+
+		ids := make([]uuid.UUID, 0, len(needed))
+		for id := range needed {
+			if id != uuid.Nil {
+				ids = append(ids, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+
+		stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+		if len(ids) > 0 {
+			if rows, err := deps.ConceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, st := range rows {
+					if st == nil || st.ConceptID == uuid.Nil {
+						continue
+					}
+					stateByConceptID[st.ConceptID] = st
+				}
+			} else if deps.Log != nil {
+				deps.Log.Warn("node_doc_build: failed to load user concept states (continuing)", "error", err, "user_id", in.OwnerUserID.String())
+			}
+		}
+
+		now := time.Now().UTC()
+		for i := range work {
+			uj := BuildUserKnowledgeContextV1(work[i].ConceptKeys, canonicalIDByKey, stateByConceptID, now).JSON()
+			if strings.TrimSpace(uj) == "" {
+				uj = "(none)"
+			}
+			work[i].UserKnowledgeJSON = uj
+		}
+	} else {
+		for i := range work {
+			work[i].UserKnowledgeJSON = "(none)"
+		}
 	}
 
 	// Batch query embeddings to minimize API calls.
@@ -584,7 +668,14 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, err
 	}
 
-	chunksNS := index.ChunksNamespace(in.MaterialSetID)
+	// Derived material sets share the chunk namespace (and KG products) with their source upload batch.
+	sourceSetID := in.MaterialSetID
+	if deps.DB != nil {
+		if sc, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID); err == nil && sc.SourceMaterialSetID != uuid.Nil {
+			sourceSetID = sc.SourceMaterialSetID
+		}
+	}
+	chunksNS := index.ChunksNamespace(sourceSetID)
 
 	maxConc := envInt("NODE_DOC_BUILD_CONCURRENCY", 4)
 	if maxConc < 1 {
@@ -613,7 +704,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			const finalK = 22
 
 			retrieved, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
-				MaterialSetID: in.MaterialSetID,
+				MaterialSetID: sourceSetID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      w.QueryEmb,
@@ -731,13 +822,14 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	- Summary is already provided via the summary field; do NOT include a "Summary" heading/section that repeats it.
 	  If you include an ending recap, title it "Key takeaways" and make it additive (not a rephrase).
 
-	Pedagogy:
-	- If TEACHING_PATTERNS_JSON is provided, pick 1-2 patterns and apply them (without naming keys) so the lesson teaches, not a page of facts.
-	- Spread quick checks throughout the doc (not all at the end).
+		Pedagogy:
+		- If TEACHING_PATTERNS_JSON is provided, pick 1-2 patterns and apply them (without naming keys) so the lesson teaches, not a page of facts.
+		- Spread quick checks throughout the doc (not all at the end).
+		- Teach before test: place each quick_check only after you've already taught the idea it checks (never before introducing the referenced definition/step).
 
-		Media rules (diagrams vs figures):
-		- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
-		- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
+			Media rules (diagrams vs figures):
+			- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
+			- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
 		- If diagram.kind="mermaid": diagram.source MUST be ONLY the Mermaid spec (no prose, no "Diagram" label, no backticks/code fences). Put explanation in diagram.caption.
 		- If diagram.kind="svg": diagram.source MUST be ONLY a standalone <svg>…</svg> string (no prose). Put explanation in diagram.caption.
 		- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
@@ -852,6 +944,9 @@ CONCEPT_KEYS: %s
 NODE_KIND: %s
 DOC_TEMPLATE: %s
 
+USER_KNOWLEDGE_JSON (optional; mastery/exposure for CONCEPT_KEYS; do not mention explicitly):
+%s
+
 USER_PROFILE_DOC (learner personalization; do not mention explicitly):
 %s
 
@@ -903,7 +998,7 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional; ONLY use listed URLs):
 %s
 
 Output:
-Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, userProfileDoc, teachingJSON, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinParagraphs, reqs.MinCallouts, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, reqs.MinTables, reqs.MinWhyItMatters, reqs.MinIntuition, reqs.MinMentalModels, reqs.MinPitfalls, reqs.MinSteps, reqs.MinChecklist, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, formatChunkIDBullets(chunkIDs), assetsJSON, generatedFigures) + feedback
+Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, w.UserKnowledgeJSON, userProfileDoc, teachingJSON, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinParagraphs, reqs.MinCallouts, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, reqs.MinTables, reqs.MinWhyItMatters, reqs.MinIntuition, reqs.MinMentalModels, reqs.MinPitfalls, reqs.MinSteps, reqs.MinChecklist, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, formatChunkIDBullets(chunkIDs), assetsJSON, generatedFigures) + feedback
 
 				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
 				latency := int(time.Since(start).Milliseconds())
@@ -999,10 +1094,24 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 					citationsSanitized = true
 				}
 
+				var teachOrderStats quickCheckTeachOrderStats
+				teachOrderChanged := false
+				if patched, stats, changed := ensureQuickChecksAfterTeaching(doc, chunkByID); changed {
+					doc = patched
+					teachOrderStats = stats
+					teachOrderChanged = true
+					if withIDs, changedIDs := content.EnsureNodeDocBlockIDs(doc); changedIDs {
+						doc = withIDs
+					}
+				}
+
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
 				if citationsSanitized {
 					metrics["citations_sanitized"] = true
 					metrics["citations_sanitize"] = citationStats.Map()
+				}
+				if teachOrderChanged {
+					metrics["quick_check_teach_order"] = teachOrderStats.Map()
 				}
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
 				if len(mustCiteIDsAllowed) > 0 {

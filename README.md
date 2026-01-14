@@ -2,6 +2,15 @@
 
 Go API + worker service.
 
+## Docs
+- Backend docs index: `docs/backend/README.md`
+- Abstracted overview: `docs/backend/abstracted-overview.md`
+- Developer guide: `docs/backend/developer.md`
+- Module walkthrough: `docs/backend/module-walkthrough.md`
+- API endpoint index: `docs/backend/api.md`
+- Operations runbook: `docs/backend/operations.md`
+- End-to-end pipeline: `docs/file-uploads-to-path-generation.md`
+
 ## Run locally
 Recommended: use Docker Compose from `neurobridge-infra/local/`:
 - `cd ../neurobridge-infra/local`
@@ -18,4 +27,3 @@ Worker:
 
 ## Configuration
 See `neurobridge-infra/local/.env.example` for the full env var list.
-

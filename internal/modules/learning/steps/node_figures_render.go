@@ -46,6 +46,7 @@ type NodeFiguresRenderInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type NodeFiguresRenderOutput struct {
@@ -69,7 +70,7 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, fmt.Errorf("node_figures_render: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}

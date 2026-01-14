@@ -15,6 +15,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
@@ -50,6 +51,7 @@ type NodeFiguresPlanBuildInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 }
 
 type NodeFiguresPlanBuildOutput struct {
@@ -74,7 +76,7 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 		return out, fmt.Errorf("node_figures_plan_build: missing material_set_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}
@@ -271,7 +273,14 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 		}
 	}
 
-	chunksNS := index.ChunksNamespace(in.MaterialSetID)
+	// Derived material sets share the chunk namespace (and KG products) with their source upload batch.
+	sourceSetID := in.MaterialSetID
+	if deps.DB != nil {
+		if sc, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID); err == nil && sc.SourceMaterialSetID != uuid.Nil {
+			sourceSetID = sc.SourceMaterialSetID
+		}
+	}
+	chunksNS := index.ChunksNamespace(sourceSetID)
 
 	maxConc := envInt("NODE_FIGURES_PLAN_CONCURRENCY", 4)
 	if maxConc < 1 {
@@ -297,7 +306,7 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 			const finalK = 14
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
-				MaterialSetID: in.MaterialSetID,
+				MaterialSetID: sourceSetID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      w.QueryEmb,

@@ -1231,6 +1231,174 @@ func insertAfterFirstBodyBlock(blocks []map[string]any, block map[string]any) []
 	return out
 }
 
+type quickCheckTeachOrderStats struct {
+	QuickChecksSeen            int
+	QuickChecksReordered       int
+	ContextParagraphsInserted  int
+	PendingQuickChecksResolved int
+}
+
+func (s quickCheckTeachOrderStats) Map() map[string]any {
+	return map[string]any{
+		"quick_checks_seen":             s.QuickChecksSeen,
+		"quick_checks_reordered":        s.QuickChecksReordered,
+		"context_paragraphs_inserted":   s.ContextParagraphsInserted,
+		"pending_quick_checks_resolved": s.PendingQuickChecksResolved,
+	}
+}
+
+// ensureQuickChecksAfterTeaching enforces "teach before test" in static node docs:
+// any quick_check block must appear only after at least one earlier teaching block cites the
+// same chunk_id(s). If a quick_check cites chunks that were never cited by any earlier teaching
+// block, we insert a short grounding paragraph with those citations immediately before it.
+func ensureQuickChecksAfterTeaching(doc content.NodeDocV1, chunkByID map[uuid.UUID]*types.MaterialChunk) (content.NodeDocV1, quickCheckTeachOrderStats, bool) {
+	stats := quickCheckTeachOrderStats{}
+	if len(doc.Blocks) == 0 {
+		return doc, stats, false
+	}
+
+	countsAsTeaching := func(t string) bool {
+		t = strings.ToLower(strings.TrimSpace(t))
+		switch t {
+		case "", "quick_check", "heading", "divider", "video", "code", "objectives", "prerequisites", "key_takeaways":
+			return false
+		default:
+			return true
+		}
+	}
+
+	allTaught := func(ids []string, taught map[string]bool) bool {
+		if len(ids) == 0 {
+			return true
+		}
+		for _, id := range ids {
+			if !taught[strings.TrimSpace(id)] {
+				return false
+			}
+		}
+		return true
+	}
+
+	makeContextParagraph := func(missing []string) map[string]any {
+		missing = dedupeStrings(missing)
+		citations := make([]any, 0, len(missing))
+		quotes := make([]string, 0, len(missing))
+
+		for _, id := range missing {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			citations = append(citations, buildMustCiteRef(id, chunkByID))
+
+			if parsed, err := uuid.Parse(id); err == nil && parsed != uuid.Nil {
+				if ch := chunkByID[parsed]; ch != nil {
+					txt := strings.TrimSpace(ch.Text)
+					if txt != "" {
+						quotes = append(quotes, shorten(txt, 240))
+					}
+				}
+			}
+		}
+
+		md := "Relevant excerpt (from your materials):"
+		if len(quotes) > 0 {
+			for _, q := range quotes {
+				md += "\n\n> " + q
+			}
+		} else {
+			md += "\n\n_(Relevant passage is cited below.)_"
+		}
+
+		return map[string]any{
+			"type":      "paragraph",
+			"md":        md,
+			"citations": citations,
+		}
+	}
+
+	taught := map[string]bool{}
+	pending := make([]map[string]any, 0)
+	out := make([]map[string]any, 0, len(doc.Blocks))
+	changed := false
+
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		kept := make([]map[string]any, 0, len(pending))
+		for _, qc := range pending {
+			qcChunkIDs := extractChunkIDsFromCitations(qc["citations"])
+			if allTaught(qcChunkIDs, taught) {
+				out = append(out, qc)
+				stats.PendingQuickChecksResolved++
+			} else {
+				kept = append(kept, qc)
+			}
+		}
+		pending = kept
+	}
+
+	for _, b := range doc.Blocks {
+		if b == nil {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		if t == "quick_check" {
+			stats.QuickChecksSeen++
+			qcChunkIDs := extractChunkIDsFromCitations(b["citations"])
+			if !allTaught(qcChunkIDs, taught) {
+				pending = append(pending, b)
+				stats.QuickChecksReordered++
+				changed = true
+				continue
+			}
+			out = append(out, b)
+			continue
+		}
+
+		out = append(out, b)
+		if countsAsTeaching(t) {
+			for _, id := range extractChunkIDsFromCitations(b["citations"]) {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					taught[id] = true
+				}
+			}
+			flushPending()
+		}
+	}
+
+	// Resolve any remaining quick checks (no later teaching block cited their chunks).
+	for _, qc := range pending {
+		qcChunkIDs := extractChunkIDsFromCitations(qc["citations"])
+		missing := make([]string, 0)
+		for _, id := range qcChunkIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || taught[id] {
+				continue
+			}
+			missing = append(missing, id)
+		}
+		missing = dedupeStrings(missing)
+		if len(missing) > 0 {
+			out = append(out, makeContextParagraph(missing))
+			stats.ContextParagraphsInserted++
+			changed = true
+			for _, id := range missing {
+				taught[id] = true
+			}
+		}
+		out = append(out, qc)
+	}
+
+	if !changed {
+		return doc, stats, false
+	}
+	doc.Blocks = out
+	return doc, stats, true
+}
+
 func missingMustCiteIDs(doc content.NodeDocV1, mustCiteIDs []uuid.UUID) []string {
 	if len(mustCiteIDs) == 0 {
 		return nil
@@ -1280,7 +1448,7 @@ func firstCitationBlockIndex(blocks []map[string]any) int {
 		}
 		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
 		switch t {
-		case "paragraph", "callout", "figure", "diagram", "table", "quick_check":
+		case "paragraph", "callout", "figure", "diagram", "table":
 			return i
 		}
 	}

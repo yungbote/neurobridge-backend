@@ -3,7 +3,9 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -131,9 +133,61 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 	}
 
 	pathID := ""
+	conceptIDs := []string{}
 	if h.pathNodes != nil {
 		if node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID); err == nil && node != nil && node.PathID != uuid.Nil {
 			pathID = node.PathID.String()
+
+			// Best-effort: attach node concept IDs so quick_check attempts update the user knowledge graph.
+			if h.concepts != nil && len(node.Metadata) > 0 && string(node.Metadata) != "null" {
+				var meta map[string]any
+				if json.Unmarshal(node.Metadata, &meta) == nil && meta != nil {
+					rawKeys, ok := meta["concept_keys"]
+					if !ok || rawKeys == nil {
+						rawKeys = meta["conceptKeys"]
+					}
+					keys := make([]string, 0, 16)
+					switch t := rawKeys.(type) {
+					case []string:
+						keys = append(keys, t...)
+					case []any:
+						for _, x := range t {
+							keys = append(keys, strings.TrimSpace(fmt.Sprint(x)))
+						}
+					default:
+						// ignore
+					}
+					seen := map[string]bool{}
+					norm := make([]string, 0, len(keys))
+					for _, k := range keys {
+						k = strings.TrimSpace(strings.ToLower(k))
+						if k == "" || seen[k] {
+							continue
+						}
+						seen[k] = true
+						norm = append(norm, k)
+					}
+					if len(norm) > 0 {
+						if rows, err := h.concepts.GetByScopeAndKeys(dbctx.Context{Ctx: c.Request.Context()}, "path", &node.PathID, norm); err == nil {
+							seenIDs := map[string]bool{}
+							for _, cc := range rows {
+								if cc == nil || cc.ID == uuid.Nil {
+									continue
+								}
+								id := cc.ID
+								if cc.CanonicalConceptID != nil && *cc.CanonicalConceptID != uuid.Nil {
+									id = *cc.CanonicalConceptID
+								}
+								s := id.String()
+								if s != "" && !seenIDs[s] {
+									seenIDs[s] = true
+									conceptIDs = append(conceptIDs, s)
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -143,6 +197,7 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 		OccurredAt:    req.OccurredAt,
 		PathID:        pathID,
 		PathNodeID:    nodeID.String(),
+		ConceptIDs:    conceptIDs,
 		Data:          data,
 	}
 

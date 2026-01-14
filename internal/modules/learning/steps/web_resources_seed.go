@@ -43,6 +43,7 @@ type WebResourcesSeedInput struct {
 	OwnerUserID   uuid.UUID
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
+	PathID        uuid.UUID
 	Prompt        string
 	ThreadID      uuid.UUID
 	JobID         uuid.UUID
@@ -107,7 +108,7 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 		return out, fmt.Errorf("web_resources_seed: missing saga_id")
 	}
 
-	pathID, err := deps.Bootstrap.EnsurePath(dbctx.Context{Ctx: ctx}, in.OwnerUserID, in.MaterialSetID)
+	pathID, err := resolvePathID(ctx, deps.Bootstrap, in.OwnerUserID, in.MaterialSetID, in.PathID)
 	if err != nil {
 		return out, err
 	}

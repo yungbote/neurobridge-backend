@@ -1,6 +1,7 @@
 package learning_build
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,11 +25,15 @@ var stageOrder = []string{
 	"ingest_chunks",
 	// Ask clarifying questions early; downstream graph/planning uses intake context.
 	"path_intake",
+	// For multi-goal uploads, optionally split into a program path + subpaths.
+	"path_structure_dispatch",
 	"embed_chunks",
 	"material_set_summarize",
 	"user_profile_refresh",
 	"teaching_patterns_seed",
 	"concept_graph_build",
+	// Post-concept structure refinement across sibling subpaths (best-effort, non-destructive).
+	"path_structure_refine",
 	"material_kg_build",
 	"concept_cluster_build",
 	"chain_signature_build",
@@ -45,6 +50,13 @@ var stageOrder = []string{
 	"variant_stats_refresh",
 	"priors_refresh",
 	"completed_unit_refresh",
+}
+
+var programStageOrder = []string{
+	"web_resources_seed",
+	"ingest_chunks",
+	"path_intake",
+	"path_structure_dispatch",
 }
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -72,10 +84,27 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		sagaID = id
 	}
 
-	pathID, err := p.bootstrap.EnsurePath(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, setID)
-	if err != nil {
-		jc.Fail("bootstrap", err)
-		return nil
+	// Prefer an explicit path_id when provided (enables subpath builds).
+	pathID, _ := jc.PayloadUUID("path_id")
+	if pathID != uuid.Nil {
+		if p.path != nil {
+			row, err := p.path.GetByID(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, pathID)
+			if err != nil {
+				jc.Fail("bootstrap", err)
+				return nil
+			}
+			if row == nil || row.ID == uuid.Nil || row.UserID == nil || *row.UserID != jc.Job.OwnerUserID {
+				jc.Fail("bootstrap", fmt.Errorf("path not found"))
+				return nil
+			}
+		}
+	} else {
+		id, err := p.bootstrap.EnsurePath(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, setID)
+		if err != nil {
+			jc.Fail("bootstrap", err)
+			return nil
+		}
+		pathID = id
 	}
 
 	threadID, _ := jc.PayloadUUID("thread_id")
@@ -202,7 +231,11 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 	if threadID != uuid.Nil {
 		finalResult["thread_id"] = threadID.String()
 	}
-	stages := buildChildStages(setID, sagaID, pathID, threadID)
+	order := stageOrder
+	if p.shouldStopAfterDispatch(jc.Ctx, pathID) {
+		order = programStageOrder
+	}
+	stages := buildChildStagesForNames(order, setID, sagaID, pathID, threadID)
 	return engine.Run(jc, stages, finalResult, init)
 }
 
@@ -299,6 +332,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				OwnerUserID:   jc.Job.OwnerUserID,
 				MaterialSetID: setID,
 				SagaID:        sagaID,
+				PathID:        pathID,
 				Prompt: func() string {
 					if v, ok := jc.Payload()["prompt"]; ok && v != nil {
 						return fmt.Sprint(v)
@@ -307,23 +341,23 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				}(),
 			})
 		case "ingest_chunks":
-			_, stageErr = uc.IngestChunks(jc.Ctx, learningmod.IngestChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.IngestChunks(jc.Ctx, learningmod.IngestChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "embed_chunks":
-			_, stageErr = uc.EmbedChunks(jc.Ctx, learningmod.EmbedChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.EmbedChunks(jc.Ctx, learningmod.EmbedChunksInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_set_summarize":
-			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "concept_graph_build":
-			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_kg_build":
-			_, stageErr = uc.MaterialKGBuild(jc.Ctx, learningmod.MaterialKGBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.MaterialKGBuild(jc.Ctx, learningmod.MaterialKGBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "concept_cluster_build":
-			_, stageErr = uc.ConceptClusterBuild(jc.Ctx, learningmod.ConceptClusterBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ConceptClusterBuild(jc.Ctx, learningmod.ConceptClusterBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "chain_signature_build":
-			_, stageErr = uc.ChainSignatureBuild(jc.Ctx, learningmod.ChainSignatureBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ChainSignatureBuild(jc.Ctx, learningmod.ChainSignatureBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "user_profile_refresh":
-			_, stageErr = uc.UserProfileRefresh(jc.Ctx, learningmod.UserProfileRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.UserProfileRefresh(jc.Ctx, learningmod.UserProfileRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "teaching_patterns_seed":
-			_, stageErr = uc.TeachingPatternsSeed(jc.Ctx, learningmod.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.TeachingPatternsSeed(jc.Ctx, learningmod.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "path_intake":
 			_, stageErr = uc.PathIntake(jc.Ctx, learningmod.PathIntakeInput{
 				OwnerUserID:   jc.Job.OwnerUserID,
@@ -337,8 +371,12 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				JobID:       jc.Job.ID,
 				WaitForUser: false,
 			})
+		case "path_structure_dispatch":
+			// Inline mode is a dev-only execution path. The production dispatch logic runs in child mode.
+			// Treat as a no-op so inline builds remain functional.
+			stageErr = nil
 		case "path_plan_build":
-			_, stageErr = uc.PathPlanBuild(jc.Ctx, learningmod.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.PathPlanBuild(jc.Ctx, learningmod.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "path_cover_render":
 			_, err := uc.PathCoverRender(jc.Ctx, learningmod.PathCoverRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {
@@ -352,30 +390,30 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			}
 			stageErr = nil
 		case "node_figures_plan_build":
-			_, stageErr = uc.NodeFiguresPlanBuild(jc.Ctx, learningmod.NodeFiguresPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeFiguresPlanBuild(jc.Ctx, learningmod.NodeFiguresPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_figures_render":
-			_, stageErr = uc.NodeFiguresRender(jc.Ctx, learningmod.NodeFiguresRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeFiguresRender(jc.Ctx, learningmod.NodeFiguresRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_videos_plan_build":
-			_, stageErr = uc.NodeVideosPlanBuild(jc.Ctx, learningmod.NodeVideosPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeVideosPlanBuild(jc.Ctx, learningmod.NodeVideosPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_videos_render":
-			_, stageErr = uc.NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_doc_build":
-			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "realize_activities":
-			_, stageErr = uc.NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID})
+			_, stageErr = uc.NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, PathID: pathID})
 			if stageErr == nil {
-				_, stageErr = uc.RealizeActivities(jc.Ctx, learningmod.RealizeActivitiesInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+				_, stageErr = uc.RealizeActivities(jc.Ctx, learningmod.RealizeActivitiesInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 			}
 		case "coverage_coherence_audit":
-			_, stageErr = uc.CoverageCoherenceAudit(jc.Ctx, learningmod.CoverageCoherenceAuditInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.CoverageCoherenceAudit(jc.Ctx, learningmod.CoverageCoherenceAuditInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "progression_compact":
-			_, stageErr = uc.ProgressionCompact(jc.Ctx, learningmod.ProgressionCompactInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.ProgressionCompact(jc.Ctx, learningmod.ProgressionCompactInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "variant_stats_refresh":
-			_, stageErr = uc.VariantStatsRefresh(jc.Ctx, learningmod.VariantStatsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.VariantStatsRefresh(jc.Ctx, learningmod.VariantStatsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "priors_refresh":
-			_, stageErr = uc.PriorsRefresh(jc.Ctx, learningmod.PriorsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.PriorsRefresh(jc.Ctx, learningmod.PriorsRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "completed_unit_refresh":
-			_, stageErr = uc.CompletedUnitRefresh(jc.Ctx, learningmod.CompletedUnitRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID})
+			_, stageErr = uc.CompletedUnitRefresh(jc.Ctx, learningmod.CompletedUnitRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		default:
 			stageErr = fmt.Errorf("unknown stage %q", stageName)
 		}
@@ -587,4 +625,45 @@ func (p *Pipeline) isCanceled(jc *jobrt.Context) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(rows[0].Status), "canceled")
+}
+
+func (p *Pipeline) shouldStopAfterDispatch(ctx context.Context, pathID uuid.UUID) bool {
+	if p == nil || p.path == nil || p.db == nil || ctx == nil || pathID == uuid.Nil {
+		return false
+	}
+	row, err := p.path.GetByID(dbctx.Context{Ctx: ctx, Tx: p.db}, pathID)
+	if err != nil || row == nil || row.ID == uuid.Nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(row.Kind), "program") {
+		return true
+	}
+	if len(row.Metadata) == 0 || strings.TrimSpace(string(row.Metadata)) == "" || strings.TrimSpace(string(row.Metadata)) == "null" {
+		return false
+	}
+	meta := map[string]any{}
+	if err := json.Unmarshal(row.Metadata, &meta); err != nil {
+		return false
+	}
+	intake, _ := meta["intake"].(map[string]any)
+	if intake == nil {
+		return false
+	}
+	ps, _ := intake["path_structure"].(map[string]any)
+	if ps == nil {
+		return false
+	}
+	selected := strings.ToLower(strings.TrimSpace(fmt.Sprint(ps["selected_mode"])))
+	recommended := strings.ToLower(strings.TrimSpace(fmt.Sprint(ps["recommended_mode"])))
+	if selected == "" || selected == "unspecified" {
+		selected = recommended
+	}
+	if selected != "program_with_subpaths" {
+		return false
+	}
+	ma, _ := intake["material_alignment"].(map[string]any)
+	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(ma["mode"])))
+	tracks, _ := intake["tracks"].([]any)
+	multiGoal := mode == "multi_goal" || len(tracks) > 1
+	return multiGoal
 }

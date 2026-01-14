@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/materialsetctx"
 	chatrepo "github.com/yungbote/neurobridge-backend/internal/data/repos/chat"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/graphrag"
@@ -21,6 +22,38 @@ type materialChunkHit struct {
 	File  *types.MaterialFile
 	Chunk *types.MaterialChunk
 	Score float64
+}
+
+func allowFileUUIDs(allow map[uuid.UUID]bool) []uuid.UUID {
+	if len(allow) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(allow))
+	for id := range allow {
+		if id != uuid.Nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	return ids
+}
+
+func pineconeChunkFilterWithAllowlist(allow map[uuid.UUID]bool) map[string]any {
+	filter := map[string]any{"type": "chunk"}
+	if len(allow) == 0 {
+		return filter
+	}
+	ids := make([]string, 0, len(allow))
+	for id := range allow {
+		if id != uuid.Nil {
+			ids = append(ids, id.String())
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > 0 {
+		filter["material_file_id"] = map[string]any{"$in": ids}
+	}
+	return filter
 }
 
 func retrieveMaterialChunkContext(
@@ -53,12 +86,32 @@ func retrieveMaterialChunkContext(
 	}
 	trace["material_set_hash"] = shortHash(idx.MaterialSetID.String())
 
+	// Derived material sets share the underlying chunk namespace and KG products with their source upload batch.
+	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, idx.MaterialSetID)
+	if err != nil {
+		// Defensive: fall back to treating it as non-derived so chat still works.
+		trace["material_set_ctx_err"] = err.Error()
+		setCtx = materialsetctx.SetContext{
+			EffectiveMaterialSetID: idx.MaterialSetID,
+			SourceMaterialSetID:    idx.MaterialSetID,
+			IsDerived:              false,
+			AllowFileIDs:           nil,
+		}
+	}
+	sourceSetID := setCtx.SourceMaterialSetID
+	allowFiles := setCtx.AllowFileIDs
+	trace["source_material_set_hash"] = shortHash(sourceSetID.String())
+	if setCtx.IsDerived {
+		trace["derived_material_set"] = true
+		trace["derived_allow_files"] = len(allowFiles)
+	}
+
 	mode := ""
 	candidates := make([]materialChunkHit, 0, 24)
 
 	// 1) Dense retrieval via Pinecone chunk vectors.
 	if deps.Vec != nil && len(qEmb) > 0 {
-		cands, m := denseChunkCandidates(ctx, deps.DB, deps.Vec, idx.MaterialSetID, qEmb, 28)
+		cands, m := denseChunkCandidates(ctx, deps.DB, deps.Vec, sourceSetID, allowFiles, qEmb, 28)
 		if len(m) > 0 {
 			trace["dense"] = m
 		}
@@ -70,7 +123,7 @@ func retrieveMaterialChunkContext(
 
 	// 2) Dense SQL fallback (cosine over stored embeddings).
 	if len(candidates) == 0 && len(qEmb) > 0 {
-		cands, m := denseChunkCandidatesSQL(ctx, deps.DB, idx.MaterialSetID, qEmb, 28)
+		cands, m := denseChunkCandidatesSQL(ctx, deps.DB, sourceSetID, allowFiles, qEmb, 28)
 		if len(m) > 0 {
 			trace["dense_sql"] = m
 		}
@@ -82,7 +135,7 @@ func retrieveMaterialChunkContext(
 
 	// 3) Lexical fallback (Postgres FTS on chunk text).
 	if len(candidates) == 0 {
-		cands, m := lexicalChunkCandidatesSQL(ctx, deps.DB, idx.MaterialSetID, query, 18)
+		cands, m := lexicalChunkCandidatesSQL(ctx, deps.DB, sourceSetID, allowFiles, query, 18)
 		if len(m) > 0 {
 			trace["lexical_sql"] = m
 		}
@@ -135,7 +188,8 @@ func retrieveMaterialChunkContext(
 			}
 		}
 		if len(seeds) > 0 {
-			scores, gtrace, err := graphrag.ExpandMaterialChunkScores(ctx, deps.DB, idx.MaterialSetID, seeds, graphrag.MaterialChunkExpandOptions{
+			scores, gtrace, err := graphrag.ExpandMaterialChunkScores(ctx, deps.DB, sourceSetID, seeds, graphrag.MaterialChunkExpandOptions{
+				AllowFileIDs:          allowFiles,
 				MaxSeeds:              12,
 				MaxConcepts:           45,
 				MaxEntities:           30,
@@ -170,7 +224,7 @@ func retrieveMaterialChunkContext(
 					scoreByID[s.ID] = s.Score
 				}
 
-				expanded := loadMaterialHitsByChunkIDs(ctx, deps.DB, idx.MaterialSetID, ids, scoreByID, mode+"+graph")
+				expanded := loadMaterialHitsByChunkIDs(ctx, deps.DB, sourceSetID, allowFiles, ids, scoreByID, mode+"+graph")
 				if len(expanded) > 0 {
 					mode = mode + "+graph"
 					candidates = expanded
@@ -231,14 +285,14 @@ func retrieveMaterialChunkContext(
 	return renderMaterialHitContext(selected), trace
 }
 
-func denseChunkCandidates(ctx context.Context, db *gorm.DB, vec pc.VectorStore, materialSetID uuid.UUID, qEmb []float32, limit int) ([]materialChunkHit, map[string]any) {
+func denseChunkCandidates(ctx context.Context, db *gorm.DB, vec pc.VectorStore, sourceMaterialSetID uuid.UUID, allowFiles map[uuid.UUID]bool, qEmb []float32, limit int) ([]materialChunkHit, map[string]any) {
 	trace := map[string]any{}
-	if db == nil || vec == nil || materialSetID == uuid.Nil || len(qEmb) == 0 || limit <= 0 {
+	if db == nil || vec == nil || sourceMaterialSetID == uuid.Nil || len(qEmb) == 0 || limit <= 0 {
 		return nil, nil
 	}
 
-	ns := learningIndex.ChunksNamespace(materialSetID)
-	filter := map[string]any{"type": "chunk"}
+	ns := learningIndex.ChunksNamespace(sourceMaterialSetID)
+	filter := pineconeChunkFilterWithAllowlist(allowFiles)
 
 	start := time.Now()
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -268,23 +322,27 @@ func denseChunkCandidates(ctx context.Context, db *gorm.DB, vec pc.VectorStore, 
 		return nil, trace
 	}
 
-	return loadMaterialHitsByChunkIDs(ctx, db, materialSetID, chunkIDs, scoreByID, "dense_pinecone"), trace
+	return loadMaterialHitsByChunkIDs(ctx, db, sourceMaterialSetID, allowFiles, chunkIDs, scoreByID, "dense_pinecone"), trace
 }
 
-func denseChunkCandidatesSQL(ctx context.Context, db *gorm.DB, materialSetID uuid.UUID, qEmb []float32, limit int) ([]materialChunkHit, map[string]any) {
+func denseChunkCandidatesSQL(ctx context.Context, db *gorm.DB, sourceMaterialSetID uuid.UUID, allowFiles map[uuid.UUID]bool, qEmb []float32, limit int) ([]materialChunkHit, map[string]any) {
 	trace := map[string]any{}
-	if db == nil || materialSetID == uuid.Nil || len(qEmb) == 0 || limit <= 0 {
+	if db == nil || sourceMaterialSetID == uuid.Nil || len(qEmb) == 0 || limit <= 0 {
 		return nil, nil
 	}
 
 	start := time.Now()
 	candidateLimit := 1200
 	var rows []*types.MaterialChunk
-	_ = db.WithContext(ctx).
+	q := db.WithContext(ctx).
 		Model(&types.MaterialChunk{}).
 		Joins("JOIN material_file ON material_chunk.material_file_id = material_file.id").
-		Where("material_file.material_set_id = ?", materialSetID).
-		Where("material_chunk.embedding <> '[]'::jsonb").
+		Where("material_file.material_set_id = ?", sourceMaterialSetID).
+		Where("material_chunk.embedding <> '[]'::jsonb")
+	if len(allowFiles) > 0 {
+		q = q.Where("material_file.id IN ?", allowFileUUIDs(allowFiles))
+	}
+	_ = q.
 		Order("material_chunk.created_at DESC").
 		Limit(candidateLimit).
 		Find(&rows).Error
@@ -330,16 +388,22 @@ func denseChunkCandidatesSQL(ctx context.Context, db *gorm.DB, materialSetID uui
 		return nil, trace
 	}
 
-	return loadMaterialHitsByChunkIDs(ctx, db, materialSetID, chunkIDs, scoreByID, "dense_sql"), trace
+	return loadMaterialHitsByChunkIDs(ctx, db, sourceMaterialSetID, allowFiles, chunkIDs, scoreByID, "dense_sql"), trace
 }
 
-func lexicalChunkCandidatesSQL(ctx context.Context, db *gorm.DB, materialSetID uuid.UUID, query string, limit int) ([]materialChunkHit, map[string]any) {
+func lexicalChunkCandidatesSQL(ctx context.Context, db *gorm.DB, sourceMaterialSetID uuid.UUID, allowFiles map[uuid.UUID]bool, query string, limit int) ([]materialChunkHit, map[string]any) {
 	trace := map[string]any{}
-	if db == nil || materialSetID == uuid.Nil || strings.TrimSpace(query) == "" || limit <= 0 {
+	if db == nil || sourceMaterialSetID == uuid.Nil || strings.TrimSpace(query) == "" || limit <= 0 {
 		return nil, nil
 	}
 
 	start := time.Now()
+	extraWhere := ""
+	args := []any{query, sourceMaterialSetID, query}
+	if len(allowFiles) > 0 {
+		extraWhere = " AND material_file.id IN ?"
+		args = append(args, allowFileUUIDs(allowFiles))
+	}
 	sql := fmt.Sprintf(`
 		SELECT material_chunk.*,
 		       ts_rank(to_tsvector('english', material_chunk.text), plainto_tsquery('english', ?)) AS rank
@@ -347,16 +411,17 @@ func lexicalChunkCandidatesSQL(ctx context.Context, db *gorm.DB, materialSetID u
 		JOIN material_file ON material_chunk.material_file_id = material_file.id
 		WHERE material_file.material_set_id = ?
 			AND to_tsvector('english', material_chunk.text) @@ plainto_tsquery('english', ?)
+			%s
 		ORDER BY rank DESC, material_chunk.created_at DESC
 		LIMIT %d;
-	`, limit)
+	`, extraWhere, limit)
 
 	type row struct {
 		types.MaterialChunk
 		Rank float64 `gorm:"column:rank"`
 	}
 	var rows []row
-	_ = db.WithContext(ctx).Raw(sql, query, materialSetID, query).Scan(&rows).Error
+	_ = db.WithContext(ctx).Raw(sql, args...).Scan(&rows).Error
 	trace["ms"] = time.Since(start).Milliseconds()
 	trace["count"] = len(rows)
 	if len(rows) == 0 {
@@ -376,28 +441,33 @@ func lexicalChunkCandidatesSQL(ctx context.Context, db *gorm.DB, materialSetID u
 		return nil, trace
 	}
 
-	return loadMaterialHitsByChunkIDs(ctx, db, materialSetID, chunkIDs, scoreByID, "lexical_sql"), trace
+	return loadMaterialHitsByChunkIDs(ctx, db, sourceMaterialSetID, allowFiles, chunkIDs, scoreByID, "lexical_sql"), trace
 }
 
 func loadMaterialHitsByChunkIDs(
 	ctx context.Context,
 	db *gorm.DB,
-	materialSetID uuid.UUID,
+	sourceMaterialSetID uuid.UUID,
+	allowFiles map[uuid.UUID]bool,
 	chunkIDs []uuid.UUID,
 	scoreByID map[uuid.UUID]float64,
 	mode string,
 ) []materialChunkHit {
-	if db == nil || materialSetID == uuid.Nil || len(chunkIDs) == 0 {
+	if db == nil || sourceMaterialSetID == uuid.Nil || len(chunkIDs) == 0 {
 		return nil
 	}
 
 	// Load chunks and verify they belong to the set.
 	var chunks []*types.MaterialChunk
-	_ = db.WithContext(ctx).
+	q := db.WithContext(ctx).
 		Model(&types.MaterialChunk{}).
 		Joins("JOIN material_file ON material_chunk.material_file_id = material_file.id").
-		Where("material_file.material_set_id = ?", materialSetID).
-		Where("material_chunk.id IN ?", chunkIDs).
+		Where("material_file.material_set_id = ?", sourceMaterialSetID).
+		Where("material_chunk.id IN ?", chunkIDs)
+	if len(allowFiles) > 0 {
+		q = q.Where("material_file.id IN ?", allowFileUUIDs(allowFiles))
+	}
+	_ = q.
 		Find(&chunks).Error
 
 	chunkByID := map[uuid.UUID]*types.MaterialChunk{}

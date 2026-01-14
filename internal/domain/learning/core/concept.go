@@ -14,6 +14,14 @@ type Concept struct {
 	Scope   string     `gorm:"column:scope;not null;default:'path';index:idx_concept_scope;index:idx_concept_scope_key,unique,priority:1" json:"scope"`
 	ScopeID *uuid.UUID `gorm:"type:uuid;column:scope_id;index:idx_concept_scope;index:idx_concept_scope_key,unique,priority:2" json:"scope_id,omitempty"`
 
+	// CanonicalConceptID links this concept to its canonical/global identity.
+	//
+	// - For path-scoped concepts, this points to a global canonical concept (scope="global", scope_id=NULL),
+	//   enabling cross-path mastery transfer by emitting canonical IDs in learning events.
+	// - For global concepts, this may optionally point to another global concept when this key is an alias/redirect
+	//   (semantic dedupe / merge). In that case, callers should resolve the "root" canonical ID by following the chain.
+	CanonicalConceptID *uuid.UUID `gorm:"type:uuid;column:canonical_concept_id;index" json:"canonical_concept_id,omitempty"`
+
 	ParentID *uuid.UUID `gorm:"type:uuid;column:parent_id;index" json:"parent_id,omitempty"`
 	Parent   *Concept   `gorm:"constraint:OnDelete:SET NULL;foreignKey:ParentID;references:ID" json:"parent,omitempty"`
 
