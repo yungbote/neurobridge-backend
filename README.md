@@ -1,6 +1,6 @@
 # Neurobridge backend
 
-Go API + worker service.
+Go API + worker service, plus an inference gateway binary.
 
 ## Docs
 - Backend docs index: `docs/backend/README.md`
@@ -24,6 +24,9 @@ API server:
 
 Worker:
 - `RUN_SERVER=false RUN_WORKER=true RUN_MIGRATIONS=false go run ./cmd`
+
+Inference gateway:
+- `GOCACHE=$(pwd)/.gocache go run ./cmd/inference`
 
 ## Configuration
 See `neurobridge-infra/local/.env.example` for the full env var list.
