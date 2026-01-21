@@ -371,13 +371,20 @@ func generateIntake(
 		if f == nil {
 			continue
 		}
-		fileItems = append(fileItems, map[string]any{
+		item := map[string]any{
 			"file_id":        f.ID.String(),
 			"original_name":  f.OriginalName,
 			"mime_type":      f.MimeType,
 			"size_bytes":     f.SizeBytes,
 			"extracted_kind": f.ExtractedKind,
-		})
+		}
+		if aiType := strings.TrimSpace(f.AIType); aiType != "" {
+			item["ai_type"] = aiType
+		}
+		if topics := parseAITopics(f.AITopics); len(topics) > 0 {
+			item["ai_topics"] = topics
+		}
+		fileItems = append(fileItems, item)
 	}
 	filesJSON, _ := json.Marshal(map[string]any{"files": fileItems})
 
@@ -403,9 +410,14 @@ func generateIntake(
 		"CRITICAL - Path grouping:",
 		"Group the files into one or more coherent learning paths.",
 		"Each path should represent a single coherent learning objective or domain.",
+		"Prefer a single path whenever the materials can be bridged into a coherent learning sequence.",
+		"Only split when the domains are clearly unrelated or cannot be reasonably bridged.",
 		"Every file MUST appear in exactly one path (core or support).",
 		"No file may appear in more than one path. No path may be empty.",
 		"If a file doesn't fit with others, give it its own path instead of excluding it.",
+		"If you propose multiple paths, each path's notes MUST explain why it is separate (one short sentence).",
+		"If you cannot articulate a clear reason to split, keep them together as one path.",
+		"Set confidence values in the 0.0-1.0 range (overall confidence + per-path confidence). Use lower confidence if the split is debatable.",
 		"",
 		"Use material_alignment.mode:",
 		"- 'single_goal' when there is exactly one path.",
@@ -668,9 +680,25 @@ func generateIntake(
 	}
 
 	normalizeIntakePaths(obj, files)
+	softSplitSanityCheck(obj, isFollowup)
 	intakeMD := formatIntakeSummaryMD(obj)
 	_ = isFollowup // reserved for future logic; keeps signature stable
 	return obj, intakeMD, nil
+}
+
+func parseAITopics(raw datatypes.JSON) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err == nil {
+		return dedupeStrings(out)
+	}
+	var anyArr []any
+	if err := json.Unmarshal(raw, &anyArr); err == nil {
+		return dedupeStrings(stringSliceFromAny(anyArr))
+	}
+	return nil
 }
 
 func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFile) {
@@ -682,8 +710,9 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 	}
 
 	type fileInfo struct {
-		ID   string
-		Name string
+		ID     string
+		Name   string
+		Topics []string
 	}
 
 	fileByID := map[string]fileInfo{}
@@ -697,7 +726,7 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 			continue
 		}
 		name := strings.TrimSpace(f.OriginalName)
-		fileByID[id] = fileInfo{ID: id, Name: name}
+		fileByID[id] = fileInfo{ID: id, Name: name, Topics: parseAITopics(f.AITopics)}
 		order = append(order, id)
 	}
 	if len(fileByID) == 0 {
@@ -728,7 +757,11 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 		if strings.TrimSpace(stringFromAny(m["aim"])) == "" {
 			m["aim"] = "Unknown"
 		}
-		if _, ok := m["topics"]; !ok {
+		if topics := stringSliceFromAny(m["topics"]); len(topics) > 0 {
+			m["topics"] = topics
+		} else if len(fi.Topics) > 0 {
+			m["topics"] = fi.Topics
+		} else {
 			m["topics"] = []string{}
 		}
 		if _, ok := m["confidence"]; !ok {
@@ -754,11 +787,15 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 			continue
 		}
 		fi := fileByID[id]
+		topics := fi.Topics
+		if len(topics) == 0 {
+			topics = []string{}
+		}
 		out = append(out, map[string]any{
 			"file_id":                 fi.ID,
 			"original_name":           fi.Name,
 			"aim":                     "Unknown (missing from intake)",
-			"topics":                  []string{},
+			"topics":                  topics,
 			"confidence":              0.0,
 			"uncertainty_note":        "Added missing file for completeness.",
 			"alignment":               "unclear",
@@ -953,6 +990,186 @@ func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile) {
 	if len(stringSliceFromAny(ma["include_file_ids"])) == 0 && len(allIDs) > 0 {
 		ma["include_file_ids"] = allIDs
 	}
+}
+
+func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
+	if intake == nil || isFollowup {
+		return
+	}
+	paths := sliceAny(intake["paths"])
+	if len(paths) <= 1 {
+		return
+	}
+
+	fileIntents := sliceAny(intake["file_intents"])
+	intentByID := map[string]map[string]any{}
+	for _, it := range fileIntents {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		id := strings.TrimSpace(stringFromAny(m["file_id"]))
+		if id == "" {
+			continue
+		}
+		intentByID[id] = m
+	}
+
+	pathTokens := make([]map[string]bool, 0, len(paths))
+	pathConf := make([]float64, 0, len(paths))
+	missingNotes := false
+
+	for _, it := range paths {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		tokenSet := map[string]bool{}
+		addTokens(tokenSet, stringFromAny(m["title"]))
+		addTokens(tokenSet, stringFromAny(m["goal"]))
+
+		core := stringSliceFromAny(m["core_file_ids"])
+		support := stringSliceFromAny(m["support_file_ids"])
+		for _, fid := range append(core, support...) {
+			intent := intentByID[fid]
+			if intent == nil {
+				continue
+			}
+			addTokens(tokenSet, stringFromAny(intent["aim"]))
+			for _, topic := range stringSliceFromAny(intent["topics"]) {
+				addTokens(tokenSet, topic)
+			}
+			name := strings.TrimSpace(stringFromAny(intent["original_name"]))
+			name = stripFileExtension(name)
+			addTokens(tokenSet, name)
+		}
+		if len(tokenSet) == 0 {
+			addTokens(tokenSet, stringFromAny(intake["combined_goal"]))
+		}
+		pathTokens = append(pathTokens, tokenSet)
+		pathConf = append(pathConf, floatFromAny(m["confidence"], floatFromAny(intake["confidence"], 0.5)))
+		note := strings.TrimSpace(stringFromAny(m["notes"]))
+		if note == "" || len(tokenizeTerms(note)) < 2 {
+			missingNotes = true
+		}
+	}
+
+	if len(pathTokens) <= 1 {
+		return
+	}
+
+	maxSim := 0.0
+	for i := 0; i < len(pathTokens); i++ {
+		for j := i + 1; j < len(pathTokens); j++ {
+			if sim := jaccard(pathTokens[i], pathTokens[j]); sim > maxSim {
+				maxSim = sim
+			}
+		}
+	}
+
+	sepConfidence := floatFromAny(intake["confidence"], 0.5)
+	for _, c := range pathConf {
+		if c < sepConfidence {
+			sepConfidence = c
+		}
+	}
+
+	lowConfidence := sepConfidence < 0.55
+	shouldClarify := (maxSim >= 0.35) || (maxSim >= 0.25 && lowConfidence) || missingNotes
+	if !shouldClarify {
+		return
+	}
+
+	q := map[string]any{
+		"id":       "structure_clarify",
+		"question": "These paths seem closely related. Should they be kept together as one path, or kept separate?",
+		"reason":   "High similarity and/or low separation confidence between proposed paths.",
+	}
+
+	qs := sliceAny(intake["clarifying_questions"])
+	for _, it := range qs {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		if strings.TrimSpace(stringFromAny(m["id"])) == "structure_clarify" {
+			intake["needs_clarification"] = true
+			return
+		}
+	}
+	qs = append(qs, q)
+	intake["clarifying_questions"] = qs
+	intake["needs_clarification"] = true
+}
+
+func addTokens(dst map[string]bool, text string) {
+	for _, tok := range tokenizeTerms(text) {
+		dst[tok] = true
+	}
+}
+
+func tokenizeTerms(text string) []string {
+	text = strings.ToLower(text)
+	var b strings.Builder
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	parts := strings.Fields(b.String())
+	if len(parts) == 0 {
+		return nil
+	}
+
+	stop := map[string]bool{
+		"the": true, "and": true, "for": true, "with": true, "from": true, "into": true,
+		"this": true, "that": true, "these": true, "those": true, "learn": true, "learning": true,
+		"understand": true, "understanding": true, "overview": true, "intro": true, "introduction": true,
+		"basics": true, "course": true, "path": true, "paths": true, "track": true, "tracks": true,
+		"materials": true, "material": true, "file": true, "files": true, "study": true, "review": true,
+	}
+
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if len(p) < 2 || stop[p] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func stripFileExtension(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	idx := strings.LastIndex(name, ".")
+	if idx <= 0 {
+		return name
+	}
+	return name[:idx]
+}
+
+func jaccard(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	inter := 0
+	union := len(a)
+	for k := range b {
+		if a[k] {
+			inter++
+		} else {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
 }
 
 func formatIntakeSummaryMD(intake map[string]any) string {
@@ -1176,16 +1393,10 @@ func formatProposedPathsMD(intake map[string]any) string {
 
 func formatIntakeQuestionsMD(intake map[string]any, intakeMD string) string {
 	if intake == nil {
-		return "I need a bit more context to generate the best learning path. What’s your goal with these materials?"
+		return "I grouped your files into paths. Reply `confirm` to proceed, or tell me how you want the files regrouped."
 	}
 	var b strings.Builder
-	b.WriteString("I reviewed your upload and grouped the materials into paths.\n\n")
-	b.WriteString("Path generation is paused until you confirm or adjust the structure.\n\n")
-	if strings.TrimSpace(intakeMD) != "" {
-		b.WriteString("**My current read**\n")
-		b.WriteString(intakeMD)
-		b.WriteString("\n\n")
-	}
+	b.WriteString("I grouped your files into paths.\n\n")
 
 	if md := formatProposedPathsMD(intake); strings.TrimSpace(md) != "" {
 		b.WriteString(md)
@@ -1193,27 +1404,30 @@ func formatIntakeQuestionsMD(intake map[string]any, intakeMD string) string {
 	}
 
 	qs := sliceAny(intake["clarifying_questions"])
-	if len(qs) == 0 {
-		b.WriteString("**A quick question**\n")
-		b.WriteString("What’s your goal with these materials, and is there a deadline?\n\n")
-	} else {
-		b.WriteString("**A few quick questions**\n")
-		for i, q := range qs {
-			m, ok := q.(map[string]any)
-			if !ok {
-				continue
-			}
-			text := strings.TrimSpace(stringFromAny(m["question"]))
-			if text == "" {
-				continue
-			}
-			b.WriteString(fmt.Sprintf("%d) %s\n", i+1, text))
+	structural := ""
+	for _, q := range qs {
+		m, ok := q.(map[string]any)
+		if !ok || m == nil {
+			continue
 		}
-		b.WriteString("\n")
+		id := strings.ToLower(strings.TrimSpace(stringFromAny(m["id"])))
+		text := strings.TrimSpace(stringFromAny(m["question"]))
+		if text == "" {
+			continue
+		}
+		if id == "structure_clarify" || strings.Contains(strings.ToLower(text), "path") ||
+			strings.Contains(strings.ToLower(text), "group") || strings.Contains(strings.ToLower(text), "together") ||
+			strings.Contains(strings.ToLower(text), "separate") {
+			structural = text
+			break
+		}
+	}
+	if structural != "" {
+		b.WriteString("Question: " + structural + "\n\n")
 	}
 
-	b.WriteString("Reply in one message. If the grouping looks right, reply `confirm`. If you want changes, tell me how you want the files regrouped.\n")
-	b.WriteString("If you want to talk it through first, just ask — I can help you decide.\n")
+	b.WriteString("Reply `confirm` to proceed, or tell me how you want the files regrouped.\n")
+	b.WriteString("Examples: \"merge A + B\"; \"split X into its own path\"; \"move file X to path Y\".\n")
 	return strings.TrimSpace(b.String())
 }
 
@@ -1435,15 +1649,12 @@ func maybeAppendIntakeAckMessage(
 		return nil
 	}
 
-	title := strings.TrimSpace(stringFromAny(intake["combined_goal"]))
-	if title == "" {
-		title = "Got it — generating your path now."
-	}
 	content := "Thanks — I’ll generate your learning path now."
-	if strings.TrimSpace(intakeMD) != "" {
+	if md := formatProposedPathsMD(intake); strings.TrimSpace(md) != "" {
 		content = strings.TrimSpace(strings.Join([]string{
-			"Thanks — I’ll generate your learning path now.",
-			"**Locked in**\n" + intakeMD,
+			"Confirmed paths",
+			md,
+			"Generating your learning path now.",
 		}, "\n\n"))
 	}
 
@@ -1518,7 +1729,7 @@ func maybeAppendIntakeAckMessage(
 	if createdNew && created != nil && deps.Notify != nil {
 		deps.Notify.MessageCreated(owner, threadID, created, nil)
 	}
-	_ = title
+	_ = intakeMD
 	return nil
 }
 

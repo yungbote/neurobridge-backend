@@ -190,3 +190,69 @@ func TestNormalizeIntakePaths_AssignsAllFilesExactlyOnce(t *testing.T) {
 		t.Fatalf("expected file_intents for all files, got %d", len(intents))
 	}
 }
+
+func TestSoftSplitSanityCheck_AddsStructureClarify(t *testing.T) {
+	f1 := &types.MaterialFile{ID: uuid.New(), OriginalName: "http_caching.pdf"}
+	f2 := &types.MaterialFile{ID: uuid.New(), OriginalName: "kubernetes_networking.pptx"}
+
+	intake := map[string]any{
+		"confidence": 0.4,
+		"file_intents": []any{
+			map[string]any{
+				"file_id":       f1.ID.String(),
+				"original_name": f1.OriginalName,
+				"aim":           "HTTP caching and CDN behavior",
+				"topics":        []string{"http", "caching", "cdn", "networking"},
+			},
+			map[string]any{
+				"file_id":       f2.ID.String(),
+				"original_name": f2.OriginalName,
+				"aim":           "Kubernetes networking primitives",
+				"topics":        []string{"kubernetes", "networking", "ingress"},
+			},
+		},
+		"paths": []any{
+			map[string]any{
+				"path_id":          "p1",
+				"title":            "HTTP caching",
+				"goal":             "Caching and CDNs",
+				"core_file_ids":    []string{f1.ID.String()},
+				"support_file_ids": []string{},
+				"confidence":       0.4,
+				"notes":            "",
+			},
+			map[string]any{
+				"path_id":          "p2",
+				"title":            "Kubernetes networking",
+				"goal":             "Services and ingress",
+				"core_file_ids":    []string{f2.ID.String()},
+				"support_file_ids": []string{},
+				"confidence":       0.4,
+				"notes":            "",
+			},
+		},
+		"clarifying_questions": []any{},
+	}
+
+	softSplitSanityCheck(intake, false)
+
+	if !boolFromAny(intake["needs_clarification"]) {
+		t.Fatalf("expected needs_clarification true")
+	}
+
+	qs := sliceAny(intake["clarifying_questions"])
+	found := false
+	for _, it := range qs {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		if stringFromAny(m["id"]) == "structure_clarify" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected structure_clarify question")
+	}
+}
