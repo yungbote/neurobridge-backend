@@ -377,8 +377,8 @@ MATERIAL_SET_SUMMARY_MD (optional):
 CURRICULUM_SPEC_JSON (optional):
 {{.CurriculumSpecJSON}}
 
-MATERIAL_TRACKS_JSON (optional):
-{{.MaterialTracksJSON}}
+MATERIAL_PATHS_JSON (optional):
+{{.MaterialPathsJSON}}
 
 CONCEPTS_JSON:
 {{.ConceptsJSON}}
@@ -395,7 +395,7 @@ Create a dynamic path outline that covers all concepts.
 Guidance:
 - If CURRICULUM_SPEC_JSON is present and coverage_target is "mastery", start with fundamentals and core semantics before specialized tooling.
 - Use CURRICULUM_SPEC_JSON sections to decide high-level module ordering and ensure no major area is omitted.
-- If MATERIAL_TRACKS_JSON contains multiple tracks (divergent goals), create a top-level module per track (and optionally a shared foundations module) so the curriculum feels organized rather than mixed.
+- If MATERIAL_PATHS_JSON contains multiple paths (divergent goals), create a top-level module per path (and optionally a shared foundations module) so the curriculum feels organized rather than mixed.
 - If USER_KNOWLEDGE_JSON marks a concept as "known", compress it into brief review or integrate it into harder nodes (avoid redundant full lessons).
 - If USER_KNOWLEDGE_JSON marks a concept as "weak" or "unseen", include more scaffolding + practice slots before relying on it.
 

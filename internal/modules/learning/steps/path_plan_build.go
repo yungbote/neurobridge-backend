@@ -93,7 +93,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		summaryText = strings.TrimSpace(rows[0].SummaryMD)
 	}
 	curriculumSpecJSON := ""
-	materialTracksJSON := ""
+	materialPathsJSON := ""
 	// Optionally prepend user intent/intake context (written by the path_intake stage).
 	if deps.Path != nil {
 		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
@@ -108,7 +108,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 					}
 				}
 				curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
-				materialTracksJSON = IntakeTracksBriefJSONFromPathMeta(meta, 4)
+				materialPathsJSON = IntakePathsBriefJSONFromPathMeta(meta, 4)
 			}
 		}
 	}
@@ -227,7 +227,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		PathCharterJSON:    string(charterJSON),
 		BundleExcerpt:      summaryText,
 		CurriculumSpecJSON: curriculumSpecJSON,
-		MaterialTracksJSON: materialTracksJSON,
+		MaterialPathsJSON: materialPathsJSON,
 		ConceptsJSON:       string(conceptsJSON),
 		EdgesJSON:          string(edgesJSON),
 		UserKnowledgeJSON:  userKnowledgeJSON,

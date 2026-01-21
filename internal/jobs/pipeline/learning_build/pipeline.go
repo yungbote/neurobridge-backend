@@ -25,7 +25,7 @@ var stageOrder = []string{
 	"ingest_chunks",
 	// Ask clarifying questions early; downstream graph/planning uses intake context.
 	"path_intake",
-	// For multi-goal uploads, optionally split into a program path + subpaths.
+	// Split into separate paths when intake confirms multiple groups.
 	"path_structure_dispatch",
 	"embed_chunks",
 	"material_set_summarize",
@@ -52,7 +52,7 @@ var stageOrder = []string{
 	"completed_unit_refresh",
 }
 
-var programStageOrder = []string{
+var dispatchStageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
 	"path_intake",
@@ -233,7 +233,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 	}
 	order := stageOrder
 	if p.shouldStopAfterDispatch(jc.Ctx, pathID) {
-		order = programStageOrder
+		order = dispatchStageOrder
 	}
 	stages := buildChildStagesForNames(order, setID, sagaID, pathID, threadID)
 	return engine.Run(jc, stages, finalResult, init)
@@ -635,35 +635,5 @@ func (p *Pipeline) shouldStopAfterDispatch(ctx context.Context, pathID uuid.UUID
 	if err != nil || row == nil || row.ID == uuid.Nil {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(row.Kind), "program") {
-		return true
-	}
-	if len(row.Metadata) == 0 || strings.TrimSpace(string(row.Metadata)) == "" || strings.TrimSpace(string(row.Metadata)) == "null" {
-		return false
-	}
-	meta := map[string]any{}
-	if err := json.Unmarshal(row.Metadata, &meta); err != nil {
-		return false
-	}
-	intake, _ := meta["intake"].(map[string]any)
-	if intake == nil {
-		return false
-	}
-	ps, _ := intake["path_structure"].(map[string]any)
-	if ps == nil {
-		return false
-	}
-	selected := strings.ToLower(strings.TrimSpace(fmt.Sprint(ps["selected_mode"])))
-	recommended := strings.ToLower(strings.TrimSpace(fmt.Sprint(ps["recommended_mode"])))
-	if selected == "" || selected == "unspecified" {
-		selected = recommended
-	}
-	if selected != "program_with_subpaths" {
-		return false
-	}
-	ma, _ := intake["material_alignment"].(map[string]any)
-	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(ma["mode"])))
-	tracks, _ := intake["tracks"].([]any)
-	multiGoal := mode == "multi_goal" || len(tracks) > 1
-	return multiGoal
+	return strings.EqualFold(strings.TrimSpace(row.Kind), "program")
 }

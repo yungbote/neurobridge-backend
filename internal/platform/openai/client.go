@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
@@ -101,6 +102,19 @@ type client struct {
 	responsesClient *http.Client
 
 	maxRetries int
+
+	// Temperature control (client-level)
+	temperature        *float64
+	disableTemperature bool
+
+	// Optional static denylist from env (so you can avoid the first-failure retry)
+	noTempModels   map[string]bool // exact model ids (lowercased)
+	noTempPrefixes []string        // prefix matches (lowercased), e.g. "o1-", "o3-"
+
+	// Runtime learning: if a model rejects temperature, remember for TTL and omit thereafter.
+	noTempMu  sync.RWMutex
+	noTempSeen map[string]time.Time
+	noTempTTL time.Duration
 }
 
 func NewClient(log *logger.Logger) (Client, error) {
@@ -164,24 +178,170 @@ func NewClient(log *logger.Logger) (Client, error) {
 		}
 	}
 
+	// Temperature: default 0.2, but can be disabled or overridden.
+	disableTemperature := parseBoolEnv("OPENAI_DISABLE_TEMPERATURE", false)
+
+	tempPtr := (*float64)(nil)
+	if !disableTemperature {
+		temp := 0.2
+		if v := strings.TrimSpace(os.Getenv("OPENAI_TEMPERATURE")); v != "" {
+			low := strings.ToLower(strings.TrimSpace(v))
+			if low == "off" || low == "none" || low == "nil" || low == "false" {
+				disableTemperature = true
+			} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+				temp = f
+			}
+		}
+		if !disableTemperature {
+			tempPtr = f64ptr(temp)
+		}
+	}
+
+	// Optional: static denylist so we can omit temperature without first triggering a 400.
+	noTempModels, noTempPrefixes := parseNoTempModelRules(os.Getenv("OPENAI_NO_TEMPERATURE_MODELS"))
+
+	noTempTTL := 24 * time.Hour
+	if v := strings.TrimSpace(os.Getenv("OPENAI_NO_TEMPERATURE_TTL_SECONDS")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			noTempTTL = time.Duration(parsed) * time.Second
+		}
+	}
+
 	if log == nil {
 		return nil, fmt.Errorf("logger required")
 	}
 
 	return &client{
-		log:             log.With("service", "OpenAIClient"),
-		baseURL:         baseURL,
-		apiKey:          apiKey,
-		model:           model,
-		embedModel:      embed,
-		imageModel:      imageModel,
-		imageSize:       imageSize,
-		videoModel:      videoModel,
-		videoSize:       videoSize,
-		httpClient:      &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-		responsesClient: &http.Client{Timeout: time.Duration(responsesTimeoutSec) * time.Second},
-		maxRetries:      maxRetries,
+		log:               log.With("service", "OpenAIClient"),
+		baseURL:           baseURL,
+		apiKey:            apiKey,
+		model:             model,
+		embedModel:        embed,
+		imageModel:        imageModel,
+		imageSize:         imageSize,
+		videoModel:        videoModel,
+		videoSize:         videoSize,
+		httpClient:        &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		responsesClient:   &http.Client{Timeout: time.Duration(responsesTimeoutSec) * time.Second},
+		maxRetries:        maxRetries,
+		temperature:       tempPtr,
+		disableTemperature: disableTemperature,
+		noTempModels:      noTempModels,
+		noTempPrefixes:    noTempPrefixes,
+		noTempSeen:        map[string]time.Time{},
+		noTempTTL:         noTempTTL,
 	}, nil
+}
+
+func parseBoolEnv(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func f64ptr(v float64) *float64 { return &v }
+
+func normalizeModelKey(m string) string {
+	return strings.ToLower(strings.TrimSpace(m))
+}
+
+// OPENAI_NO_TEMPERATURE_MODELS: comma-separated list, supports "*" suffix for prefix match.
+// Examples:
+// - "o1-* , o3-*"
+// - "gpt-5, gpt-5-chat-latest"
+func parseNoTempModelRules(raw string) (map[string]bool, []string) {
+	m := map[string]bool{}
+	var prefixes []string
+	for _, part := range strings.Split(raw, ",") {
+		s := normalizeModelKey(part)
+		if s == "" {
+			continue
+		}
+		if strings.HasSuffix(s, "*") {
+			p := strings.TrimSuffix(s, "*")
+			p = strings.TrimSpace(strings.TrimRight(p, "-_./:"))
+			if p != "" {
+				prefixes = append(prefixes, p)
+			}
+			continue
+		}
+		m[s] = true
+	}
+	return m, prefixes
+}
+
+func (c *client) modelIsNoTemp(model string) bool {
+	m := normalizeModelKey(model)
+	if m == "" {
+		return false
+	}
+
+	// Static rules (env).
+	if c.noTempModels != nil && c.noTempModels[m] {
+		return true
+	}
+	for _, p := range c.noTempPrefixes {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(m, p) {
+			return true
+		}
+	}
+
+	// Learned rules (runtime).
+	c.noTempMu.RLock()
+	ts, ok := c.noTempSeen[m]
+	ttl := c.noTempTTL
+	c.noTempMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if ttl <= 0 {
+		return true
+	}
+	// If within TTL, treat as no-temp.
+	if time.Since(ts) < ttl {
+		return true
+	}
+	// Expired: allow again.
+	return false
+}
+
+func (c *client) noteNoTempModel(model string) {
+	m := normalizeModelKey(model)
+	if m == "" {
+		return
+	}
+	c.noTempMu.Lock()
+	if c.noTempSeen == nil {
+		c.noTempSeen = map[string]time.Time{}
+	}
+	c.noTempSeen[m] = time.Now().UTC()
+	c.noTempMu.Unlock()
+}
+
+func (c *client) applyTemperature(req *responsesRequest) {
+	if req == nil {
+		return
+	}
+	if c.disableTemperature || c.temperature == nil {
+		return
+	}
+	if c.modelIsNoTemp(req.Model) {
+		return
+	}
+	req.Temperature = c.temperature
 }
 
 type openAIHTTPError struct {
@@ -198,6 +358,46 @@ func (e *openAIHTTPError) HTTPStatusCode() int {
 		return 0
 	}
 	return e.StatusCode
+}
+
+func isUnsupportedTemperatureMessage(s string) bool {
+	msg := strings.ToLower(strings.TrimSpace(s))
+	if msg == "" {
+		return false
+	}
+	if !strings.Contains(msg, "temperature") {
+		return false
+	}
+	// Match common variants seen across OpenAI / OpenAI-compatible endpoints.
+	if strings.Contains(msg, "unsupported parameter") {
+		return true
+	}
+	if strings.Contains(msg, "unknown parameter") {
+		return true
+	}
+	if strings.Contains(msg, "unrecognized parameter") {
+		return true
+	}
+	if strings.Contains(msg, "not supported") {
+		return true
+	}
+	if strings.Contains(msg, "does not support") {
+		return true
+	}
+	if strings.Contains(msg, "only the default") {
+		return true
+	}
+	if strings.Contains(msg, "unsupported_value") || strings.Contains(msg, "invalid_request_error") {
+		return true
+	}
+	return false
+}
+
+func isUnsupportedTemperatureParam(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isUnsupportedTemperatureMessage(err.Error())
 }
 
 func (c *client) doOnce(ctx context.Context, httpClient *http.Client, method, path string, body any) (*http.Response, []byte, error) {
@@ -289,6 +489,28 @@ func (c *client) doResponses(ctx context.Context, method, path string, body any,
 		httpClient = c.httpClient
 	}
 	return c.doWithClient(ctx, httpClient, method, path, body, out)
+}
+
+// doResponsesWithTempFallback retries exactly once without temperature if the model rejects it.
+func (c *client) doResponsesWithTempFallback(ctx context.Context, method, path string, req *responsesRequest, out any) error {
+	if req == nil {
+		return c.doResponses(ctx, method, path, nil, out)
+	}
+	err := c.doResponses(ctx, method, path, req, out)
+	if err == nil {
+		return nil
+	}
+	if req.Temperature == nil {
+		return err
+	}
+	if !isUnsupportedTemperatureParam(err) {
+		return err
+	}
+
+	// Learn + retry once without temperature.
+	c.noteNoTempModel(req.Model)
+	req.Temperature = nil
+	return c.doResponses(ctx, method, path, req, out)
 }
 
 // -------------------- Embeddings --------------------
@@ -783,7 +1005,7 @@ type responsesRequest struct {
 		Format map[string]any `json:"format,omitempty"`
 	} `json:"text,omitempty"`
 
-	Temperature float64 `json:"temperature,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
 
 	Stream bool `json:"stream,omitempty"`
 }
@@ -831,8 +1053,9 @@ func (c *client) GenerateJSON(ctx context.Context, system string, user string, s
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.2,
 	}
+	c.applyTemperature(&req)
+
 	req.Text.Format = map[string]any{
 		"type":   "json_schema",
 		"name":   schemaName,
@@ -841,7 +1064,7 @@ func (c *client) GenerateJSON(ctx context.Context, system string, user string, s
 	}
 
 	var resp responsesResponse
-	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponsesWithTempFallback(ctx, "POST", "/v1/responses", &req, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Refusal != "" {
@@ -870,11 +1093,11 @@ func (c *client) GenerateText(ctx context.Context, system string, user string) (
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.2,
 	}
+	c.applyTemperature(&req)
 
 	var resp responsesResponse
-	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponsesWithTempFallback(ctx, "POST", "/v1/responses", &req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {
@@ -922,11 +1145,11 @@ func (c *client) GenerateTextWithImages(ctx context.Context, system string, user
 			{Role: "system", Content: system},
 			{Role: "user", Content: content},
 		},
-		Temperature: 0.2,
 	}
+	c.applyTemperature(&req)
 
 	var resp responsesResponse
-	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponsesWithTempFallback(ctx, "POST", "/v1/responses", &req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {
@@ -952,33 +1175,48 @@ func (c *client) StreamText(ctx context.Context, system string, user string, onD
 			{Role: "system", Content: strings.TrimSpace(system)},
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.2,
-		Stream:      true,
+		Stream: true,
+	}
+	c.applyTemperature(&reqBody)
+
+	doStream := func(body responsesRequest) (*http.Response, []byte, error) {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return nil, nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return resp, nil, nil
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, raw, &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	resp, raw, err := doStream(reqBody)
 	if err != nil {
-		return "", err
+		if reqBody.Temperature != nil && isUnsupportedTemperatureMessage(string(raw)) {
+			c.noteNoTempModel(reqBody.Model)
+			reqBody.Temperature = nil
+			resp, raw, err = doStream(reqBody)
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(resp.Body)
-		return "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
-	}
 
 	var full strings.Builder
 	err = streamSSE(resp.Body, func(event string, data string) error {
@@ -1057,11 +1295,11 @@ func (c *client) GenerateTextInConversation(ctx context.Context, conversationID 
 		}{
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.2,
 	}
+	c.applyTemperature(&req)
 
 	var resp responsesResponse
-	if err := c.doResponses(ctx, "POST", "/v1/responses", req, &resp); err != nil {
+	if err := c.doResponsesWithTempFallback(ctx, "POST", "/v1/responses", &req, &resp); err != nil {
 		return "", err
 	}
 	if resp.Refusal != "" {
@@ -1093,33 +1331,48 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 		}{
 			{Role: "user", Content: user},
 		},
-		Temperature: 0.2,
-		Stream:      true,
+		Stream: true,
+	}
+	c.applyTemperature(&reqBody)
+
+	doStream := func(body responsesRequest) (*http.Response, []byte, error) {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return nil, nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return resp, nil, nil
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, raw, &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctxutil.Default(ctx), "POST", c.baseURL+"/v1/responses", &buf)
+	resp, raw, err := doStream(reqBody)
 	if err != nil {
-		return "", err
+		if reqBody.Temperature != nil && isUnsupportedTemperatureMessage(string(raw)) {
+			c.noteNoTempModel(reqBody.Model)
+			reqBody.Temperature = nil
+			resp, raw, err = doStream(reqBody)
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(resp.Body)
-		return "", &openAIHTTPError{StatusCode: resp.StatusCode, Body: string(raw)}
-	}
 
 	var full strings.Builder
 	err = streamSSE(resp.Body, func(event string, data string) error {
@@ -1169,3 +1422,13 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 	}
 	return full.String(), nil
 }
+
+
+
+
+
+
+
+
+
+

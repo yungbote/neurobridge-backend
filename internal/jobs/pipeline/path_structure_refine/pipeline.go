@@ -388,7 +388,7 @@ func computePairs(paths []*types.Path, byPath map[uuid.UUID]*dist, mergeMin, cro
 
 			if overlap >= mergeMin || (aInB >= 0.9 && bInA >= 0.9) {
 				action = "merge"
-				details = "Tracks overlap heavily; consider merging into one path (or keeping two tracks with shared modules)."
+				details = "Paths overlap heavily; consider merging into one path (or keeping two paths with shared modules)."
 			} else if aInB >= nestMin && bInA <= nestMaxReverse {
 				action = "nest"
 				details = "A looks mostly contained in B; consider making A a prerequisite/subpath before B."
@@ -397,7 +397,7 @@ func computePairs(paths []*types.Path, byPath map[uuid.UUID]*dist, mergeMin, cro
 				details = "B looks mostly contained in A; consider making B a prerequisite/subpath before A."
 			} else if overlap >= crossMin {
 				action = "cross_link"
-				details = "Tracks share meaningful concepts; consider cross-links and skipping redundant basics."
+				details = "Paths share meaningful concepts; consider cross-links and skipping redundant basics."
 			}
 
 			// Shared concept IDs (names filled later).
@@ -516,7 +516,7 @@ func formatRefinementMessage(program *types.Path, paths []*types.Path, pairs []o
 	}
 
 	var b strings.Builder
-	b.WriteString("I compared the concept graphs across your tracks to see what overlaps and what should stay separate.\n\n")
+	b.WriteString("I compared the concept graphs across your paths to see what overlaps and what should stay separate.\n\n")
 
 	// Show a few strongest non-trivial relationships first.
 	type scored struct {
@@ -545,7 +545,7 @@ func formatRefinementMessage(program *types.Path, paths []*types.Path, pairs []o
 		}
 	}
 
-	b.WriteString("\nDefault behavior is non-destructive: keep tracks separate but add cross-links and skip redundant basics when overlap is high.\n")
+	b.WriteString("\nDefault behavior is non-destructive: keep paths separate but add cross-links and skip redundant basics when overlap is high.\n")
 	b.WriteString("If you want to merge into one combined path, reply `undo split`. If you want to keep the split, reply `keep as-is`.\n")
 	return strings.TrimSpace(b.String())
 }

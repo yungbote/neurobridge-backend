@@ -99,28 +99,9 @@ func matchWorkflowV1Action(wf *workflowV1Meta, userContent string) (workflowV1Ac
 	switch strings.ToLower(strings.TrimSpace(wf.Kind)) {
 	case "path_intake":
 		switch strings.ToLower(strings.TrimSpace(wf.Step)) {
-		case "choose_structure":
-			// Natural language structure commands ("undo split", "split into tracks", etc).
-			if cmd, ok := parsePathStructureCommand(userContent); ok && cmd.Mode != "" {
-				switch cmd.Mode {
-				case "single_path":
-					return firstWorkflowActionByIDPrefix(wf, "structure_single_path"), true
-				case "program_with_subpaths":
-					return firstWorkflowActionByIDPrefix(wf, "structure_program_with_subpaths"), true
-				}
-			}
-			// Common confirmation phrasing without explicit tokens (e.g., "split is fine").
-			if looksLikeAcceptSplit(userContent) {
-				return firstWorkflowActionByIDPrefix(wf, "structure_program_with_subpaths"), true
-			}
-
-		case "confirm_separate_paths":
-			// In the hard-separate prompt, users often respond with short confirmations.
-			if looksLikeKeepTogether(userContent) {
-				return firstWorkflowActionByIDPrefix(wf, "keep_together"), true
-			}
+		case "confirm_paths":
 			if looksLikeHardConfirmation(userContent) {
-				return firstWorkflowActionByIDPrefix(wf, "confirm_separate_paths"), true
+				return firstWorkflowActionByIDPrefix(wf, "confirm_paths"), true
 			}
 		}
 	}
@@ -240,23 +221,4 @@ func looksLikeHardConfirmation(content string) bool {
 	// Numeric option tokens in a hard-sep prompt are treated as "accept recommendation".
 	trim := stripLeadingFiller(s)
 	return trim == "1" || trim == "2"
-}
-
-func looksLikeAcceptSplit(content string) bool {
-	s := strings.ToLower(strings.TrimSpace(content))
-	if s == "" {
-		return false
-	}
-	if strings.Contains(s, "?") {
-		return false
-	}
-	if strings.Contains(s, "split") || strings.Contains(s, "separate") {
-		if strings.Contains(s, " fine") || strings.Contains(s, " ok") || strings.Contains(s, " okay") || strings.Contains(s, " sure") || strings.Contains(s, " sounds good") || strings.Contains(s, " that works") || strings.Contains(s, " go ahead") || strings.Contains(s, " proceed") || strings.Contains(s, " continue") {
-			return true
-		}
-		if strings.HasSuffix(s, "fine") || strings.HasSuffix(s, "ok") || strings.HasSuffix(s, "okay") {
-			return true
-		}
-	}
-	return false
 }

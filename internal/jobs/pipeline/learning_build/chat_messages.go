@@ -91,7 +91,7 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 	countBits := make([]string, 0, 3)
 	if isProgram {
 		if v, ok := stats["subpath_count"].(int64); ok && v > 0 {
-			countBits = append(countBits, fmt.Sprintf("%d tracks", v))
+			countBits = append(countBits, fmt.Sprintf("%d paths", v))
 		}
 		if v, ok := stats["subpath_ready_count"].(int64); ok && v > 0 {
 			countBits = append(countBits, fmt.Sprintf("%d ready", v))
@@ -114,7 +114,7 @@ func (p *Pipeline) maybeAppendPathBuildReadyMessage(jc *jobrt.Context, materialS
 		lines = append(lines, strings.Join(countBits, " • "))
 	}
 	if isProgram {
-		lines = append(lines, "Open it to see the tracks.")
+		lines = append(lines, "Open it to see the paths.")
 	}
 	lines = append(lines, "Click the card below to open it.")
 	content := strings.TrimSpace(strings.Join(lines, "\n\n"))

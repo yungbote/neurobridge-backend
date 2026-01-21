@@ -23,8 +23,8 @@ type Input struct {
 	PathCharterJSON    string
 	PathStructureJSON  string
 	CurriculumSpecJSON string
-	// Optional: multi-track / subpath planning context (from path_intake)
-	MaterialTracksJSON string
+	// Optional: multi-path planning context (from path_intake)
+	MaterialPathsJSON string
 	// Node / Chain planning
 	NodeIndex           int
 	NodeTitle           string

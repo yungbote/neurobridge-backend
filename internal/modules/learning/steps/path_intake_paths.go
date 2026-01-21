@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// IntakeTracksBriefJSONFromPathMeta returns a compact JSON blob suitable for downstream planning prompts.
+// IntakePathsBriefJSONFromPathMeta returns a compact JSON blob suitable for downstream planning prompts.
 // It is intentionally lossy (names over ids) to keep token usage low.
-func IntakeTracksBriefJSONFromPathMeta(meta map[string]any, maxFilesPerTrack int) string {
+func IntakePathsBriefJSONFromPathMeta(meta map[string]any, maxFilesPerPath int) string {
 	if meta == nil {
 		return ""
 	}
@@ -19,16 +19,16 @@ func IntakeTracksBriefJSONFromPathMeta(meta map[string]any, maxFilesPerTrack int
 	ma := mapFromAny(intake["material_alignment"])
 	mode := strings.ToLower(strings.TrimSpace(stringFromAny(ma["mode"])))
 
-	tracks := sliceAny(intake["tracks"])
-	if len(tracks) == 0 {
+	paths := sliceAny(intake["paths"])
+	if len(paths) == 0 {
 		return ""
 	}
-	if maxFilesPerTrack <= 0 {
-		maxFilesPerTrack = 4
+	if maxFilesPerPath <= 0 {
+		maxFilesPerPath = 4
 	}
 
-	// Only include the brief blob when it materially affects planning (multi-track).
-	if mode != "multi_goal" && len(tracks) <= 1 {
+	// Only include the brief blob when it materially affects planning (multi-path).
+	if mode != "multi_goal" && len(paths) <= 1 {
 		return ""
 	}
 
@@ -68,15 +68,15 @@ func IntakeTracksBriefJSONFromPathMeta(meta map[string]any, maxFilesPerTrack int
 		return out
 	}
 
-	outTracks := make([]map[string]any, 0, len(tracks))
-	for _, tr := range tracks {
-		m, ok := tr.(map[string]any)
+	outPaths := make([]map[string]any, 0, len(paths))
+	for _, p := range paths {
+		m, ok := p.(map[string]any)
 		if !ok || m == nil {
 			continue
 		}
-		trackID := strings.TrimSpace(stringFromAny(m["track_id"]))
-		if trackID == "" {
-			trackID = strings.TrimSpace(stringFromAny(m["id"]))
+		pathID := strings.TrimSpace(stringFromAny(m["path_id"]))
+		if pathID == "" {
+			pathID = strings.TrimSpace(stringFromAny(m["id"]))
 		}
 		title := strings.TrimSpace(stringFromAny(m["title"]))
 		goal := strings.TrimSpace(stringFromAny(m["goal"]))
@@ -88,37 +88,37 @@ func IntakeTracksBriefJSONFromPathMeta(meta map[string]any, maxFilesPerTrack int
 		conf := floatFromAny(m["confidence"], 0)
 		notes := strings.TrimSpace(stringFromAny(m["notes"]))
 
-		outTracks = append(outTracks, map[string]any{
-			"track_id":      trackID,
+		outPaths = append(outPaths, map[string]any{
+			"path_id":       pathID,
 			"title":         title,
 			"goal":          goal,
-			"core_files":    namesForIDs(core, maxFilesPerTrack),
-			"support_files": namesForIDs(support, maxFilesPerTrack),
+			"core_files":    namesForIDs(core, maxFilesPerPath),
+			"support_files": namesForIDs(support, maxFilesPerPath),
 			"confidence":    conf,
 			"notes":         notes,
 		})
 	}
-	if len(outTracks) == 0 {
+	if len(outPaths) == 0 {
 		return ""
 	}
 
 	// Stabilize ordering for determinism.
-	sort.Slice(outTracks, func(i, j int) bool {
-		ai := strings.TrimSpace(stringFromAny(outTracks[i]["track_id"]))
-		aj := strings.TrimSpace(stringFromAny(outTracks[j]["track_id"]))
+	sort.Slice(outPaths, func(i, j int) bool {
+		ai := strings.TrimSpace(stringFromAny(outPaths[i]["path_id"]))
+		aj := strings.TrimSpace(stringFromAny(outPaths[j]["path_id"]))
 		if ai != "" && aj != "" && ai != aj {
 			return ai < aj
 		}
-		ti := strings.TrimSpace(stringFromAny(outTracks[i]["title"]))
-		tj := strings.TrimSpace(stringFromAny(outTracks[j]["title"]))
+		ti := strings.TrimSpace(stringFromAny(outPaths[i]["title"]))
+		tj := strings.TrimSpace(stringFromAny(outPaths[j]["title"]))
 		return ti < tj
 	})
 
 	out := map[string]any{
-		"mode":             mode,
-		"combined_goal":    strings.TrimSpace(stringFromAny(intake["combined_goal"])),
-		"primary_track_id": strings.TrimSpace(stringFromAny(intake["primary_track_id"])),
-		"tracks":           outTracks,
+		"mode":            mode,
+		"combined_goal":   strings.TrimSpace(stringFromAny(intake["combined_goal"])),
+		"primary_path_id": strings.TrimSpace(stringFromAny(intake["primary_path_id"])),
+		"paths":           outPaths,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
