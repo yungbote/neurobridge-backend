@@ -18,6 +18,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/file_signature_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_refine"
@@ -32,6 +33,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_cover_render"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_grouping_refine"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_intake"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_dispatch"
@@ -295,6 +297,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
+	fileSignatureBuild := file_signature_build.New(
+		db,
+		log,
+		repos.MaterialFile,
+		repos.MaterialFileSignature,
+		repos.MaterialFileSection,
+		repos.MaterialChunk,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		sagaSvc,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(fileSignatureBuild); err != nil {
+		return Services{}, err
+	}
+
 	embedChunks := embed_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(embedChunks); err != nil {
 		return Services{}, err
@@ -339,6 +357,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		repos.MaterialFile,
+		repos.MaterialFileSignature,
 		repos.MaterialChunk,
 		repos.MaterialSetSummary,
 		repos.Path,
@@ -350,6 +369,17 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(pathIntake); err != nil {
+		return Services{}, err
+	}
+
+	pathGroupingRefine := path_grouping_refine.New(
+		db,
+		log,
+		repos.Path,
+		repos.MaterialFile,
+		repos.MaterialFileSignature,
+	)
+	if err := jobRegistry.Register(pathGroupingRefine); err != nil {
 		return Services{}, err
 	}
 
@@ -660,9 +690,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Bucket:  clients.GcpBucket,
 			Avatar:  avatarService,
 
-			Files:     repos.MaterialFile,
-			Chunks:    repos.MaterialChunk,
-			Summaries: repos.MaterialSetSummary,
+			Files:        repos.MaterialFile,
+			FileSigs:     repos.MaterialFileSignature,
+			FileSections: repos.MaterialFileSection,
+			Chunks:       repos.MaterialChunk,
+			Summaries:    repos.MaterialSetSummary,
 
 			Concepts: repos.Concept,
 			Evidence: repos.ConceptEvidence,

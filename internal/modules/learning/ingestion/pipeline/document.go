@@ -8,6 +8,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/extractor"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/outline"
 )
 
 func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, officePath string, kind string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -35,6 +36,23 @@ func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, offi
 		})
 	}
 
+	if strings.TrimSpace(officePath) != "" {
+		switch strings.ToLower(strings.TrimSpace(kind)) {
+		case "docx":
+			if hint, err := outline.FromDocxFile(officePath, outline.MaxSections()); err == nil {
+				outline.ApplyHint(diag, hint)
+			} else {
+				warnings = append(warnings, "docx outline extraction failed: "+err.Error())
+			}
+		case "pptx":
+			if hint, err := outline.FromPptxFile(officePath, outline.MaxSections()); err == nil {
+				outline.ApplyHint(diag, hint)
+			} else {
+				warnings = append(warnings, "pptx outline extraction failed: "+err.Error())
+			}
+		}
+	}
+
 	if s.ex.Media == nil {
 		return segs, assets, append(warnings, "media tools missing: cannot convert office to pdf"), diag, nil
 	}
@@ -60,6 +78,11 @@ func (s *service) handleOffice(ctx context.Context, mf *types.MaterialFile, offi
 	segs = append(segs, pdfSegs...)
 	assets = append(assets, pdfAssets...)
 	warnings = append(warnings, pdfWarn...)
+	if _, ok := diag["outline_hint"]; ok {
+		delete(pdfDiag, "outline_hint")
+		delete(pdfDiag, "outline_source")
+		delete(pdfDiag, "outline_confidence")
+	}
 	extractor.MergeDiag(diag, pdfDiag)
 
 	return segs, assets, warnings, diag, nil

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -300,18 +299,15 @@ func (e *Extractor) UpdateMaterialFileExtractionStatus(dbc dbctx.Context, mf *ty
 		transaction = e.DB
 	}
 
-	payload := map[string]any{
-		"kind":         kind,
-		"warnings":     warnings,
-		"diagnostics":  diag,
-		"extracted_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	b, _ := json.Marshal(payload)
-
+	now := time.Now().UTC()
 	updates := map[string]any{
-		"ai_type":    kind,
-		"ai_topics":  datatypes.JSON(b),
-		"updated_at": time.Now(),
+		"ai_type":                kind,
+		"ai_topics":              datatypes.JSON(mustJSON(map[string]any{"kind": kind, "warnings": warnings})),
+		"extracted_kind":         kind,
+		"extracted_at":           now,
+		"extraction_warnings":    datatypes.JSON(mustJSON(warnings)),
+		"extraction_diagnostics": datatypes.JSON(mustJSON(diag)),
+		"updated_at":             now,
 	}
 	if err := transaction.WithContext(dbc.Ctx).Model(&types.MaterialFile{}).
 		Where("id = ?", mf.ID).
@@ -319,7 +315,11 @@ func (e *Extractor) UpdateMaterialFileExtractionStatus(dbc dbctx.Context, mf *ty
 		return fmt.Errorf("update material_file extraction status: %w", err)
 	}
 	mf.AIType = kind
-	mf.AITopics = datatypes.JSON(b)
+	mf.AITopics = datatypes.JSON(mustJSON(map[string]any{"kind": kind, "warnings": warnings}))
+	mf.ExtractedKind = kind
+	mf.ExtractedAt = &now
+	mf.ExtractionWarnings = datatypes.JSON(mustJSON(warnings))
+	mf.ExtractionDiagnostics = datatypes.JSON(mustJSON(diag))
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -15,8 +16,8 @@ func TestIntakePathsBriefJSONFromPathMeta_ReturnsForMultiGoal(t *testing.T) {
 
 	meta := map[string]any{
 		"intake": map[string]any{
-			"combined_goal":    "Learn two things",
-			"primary_path_id":  "p1",
+			"combined_goal":   "Learn two things",
+			"primary_path_id": "p1",
 			"material_alignment": map[string]any{
 				"mode": "multi_goal",
 			},
@@ -82,12 +83,12 @@ func TestBuildIntakeMaterialFilter_MultiGoalIncludesAllNonNoise(t *testing.T) {
 
 	intake := map[string]any{
 		"material_alignment": map[string]any{
-			"mode":                          "multi_goal",
-			"primary_goal":                  "Two topics",
-			"include_file_ids":              []string{f1.ID.String()},
-			"exclude_file_ids":              []string{},
-			"noise_file_ids":                []string{}, // derived from file_intents
-			"notes":                         "",
+			"mode":             "multi_goal",
+			"primary_goal":     "Two topics",
+			"include_file_ids": []string{f1.ID.String()},
+			"exclude_file_ids": []string{},
+			"noise_file_ids":   []string{}, // derived from file_intents
+			"notes":            "",
 		},
 		"file_intents": []any{
 			map[string]any{"file_id": f1.ID.String(), "original_name": f1.OriginalName, "alignment": "core", "include_in_primary_path": true},
@@ -113,12 +114,12 @@ func TestBuildIntakeMaterialFilter_SingleGoalRespectsIncludeList(t *testing.T) {
 
 	intake := map[string]any{
 		"material_alignment": map[string]any{
-			"mode":                          "single_goal",
-			"primary_goal":                  "Only A",
-			"include_file_ids":              []string{f1.ID.String()},
-			"exclude_file_ids":              []string{},
-			"noise_file_ids":                []string{f2.ID.String()},
-			"notes":                         "",
+			"mode":             "single_goal",
+			"primary_goal":     "Only A",
+			"include_file_ids": []string{f1.ID.String()},
+			"exclude_file_ids": []string{},
+			"noise_file_ids":   []string{f2.ID.String()},
+			"notes":            "",
 		},
 	}
 
@@ -156,7 +157,7 @@ func TestNormalizeIntakePaths_AssignsAllFilesExactlyOnce(t *testing.T) {
 		},
 	}
 
-	normalizeIntakePaths(intake, []*types.MaterialFile{f1, f2, f3})
+	normalizeIntakePaths(intake, []*types.MaterialFile{f1, f2, f3}, nil)
 
 	paths := sliceAny(intake["paths"])
 	if len(paths) == 0 {
@@ -234,7 +235,7 @@ func TestSoftSplitSanityCheck_AddsStructureClarify(t *testing.T) {
 		"clarifying_questions": []any{},
 	}
 
-	softSplitSanityCheck(intake, false)
+	softSplitSanityCheck(context.Background(), intake, []*types.MaterialFile{f1, f2}, nil, nil, false)
 
 	if !boolFromAny(intake["needs_clarification"]) {
 		t.Fatalf("expected needs_clarification true")

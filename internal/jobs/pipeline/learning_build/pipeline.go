@@ -23,8 +23,10 @@ import (
 var stageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
+	"file_signature_build",
 	// Ask clarifying questions early; downstream graph/planning uses intake context.
 	"path_intake",
+	"path_grouping_refine",
 	// Split into separate paths when intake confirms multiple groups.
 	"path_structure_dispatch",
 	"embed_chunks",
@@ -55,7 +57,9 @@ var stageOrder = []string{
 var dispatchStageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
+	"file_signature_build",
 	"path_intake",
+	"path_grouping_refine",
 	"path_structure_dispatch",
 }
 
@@ -257,9 +261,11 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		Bucket: p.inline.Bucket,
 		Avatar: p.inline.Avatar,
 
-		Files:     p.inline.Files,
-		Chunks:    p.inline.Chunks,
-		Summaries: p.inline.Summaries,
+		Files:        p.inline.Files,
+		FileSigs:     p.inline.FileSigs,
+		FileSections: p.inline.FileSections,
+		Chunks:       p.inline.Chunks,
+		Summaries:    p.inline.Summaries,
 
 		Path:               p.inline.Path,
 		PathNodes:          p.inline.PathNodes,

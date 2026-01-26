@@ -210,6 +210,67 @@ func MaterialSetSummarySchema() map[string]any {
 	}, []string{"subject", "level", "summary_md", "tags", "concept_keys"})
 }
 
+func FileSignatureSchema() map[string]any {
+	section := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"title":      map[string]any{"type": "string"},
+			"path":       map[string]any{"type": "string"},
+			"start_page": IntOrNullSchema(),
+			"end_page":   IntOrNullSchema(),
+			"start_sec":  NumberOrNullSchema(),
+			"end_sec":    NumberOrNullSchema(),
+		},
+		"required":             []string{"title", "path", "start_page", "end_page", "start_sec", "end_sec"},
+		"additionalProperties": false,
+	}
+
+	outline := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"title":    map[string]any{"type": "string"},
+			"sections": map[string]any{"type": "array", "items": section},
+		},
+		"required":             []string{"title", "sections"},
+		"additionalProperties": false,
+	}
+
+	quality := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"text_quality": map[string]any{"type": "string"},
+			"coverage":     NumberSchema(),
+			"notes":        map[string]any{"type": "string"},
+		},
+		"required":             []string{"text_quality", "coverage", "notes"},
+		"additionalProperties": false,
+	}
+
+	return SchemaVersionedObject(1, map[string]any{
+		"summary_md":         map[string]any{"type": "string"},
+		"topics":             StringArraySchema(),
+		"concept_keys":       StringArraySchema(),
+		"difficulty":         EnumSchema("intro", "intermediate", "advanced", "mixed", "unknown"),
+		"domain_tags":        StringArraySchema(),
+		"citations":          StringArraySchema(),
+		"outline_json":       outline,
+		"outline_confidence": NumberSchema(),
+		"language":           map[string]any{"type": "string"},
+		"quality":            quality,
+	}, []string{
+		"summary_md",
+		"topics",
+		"concept_keys",
+		"difficulty",
+		"domain_tags",
+		"citations",
+		"outline_json",
+		"outline_confidence",
+		"language",
+		"quality",
+	})
+}
+
 func ConceptInventorySchema() map[string]any {
 	concept := map[string]any{
 		"type": "object",

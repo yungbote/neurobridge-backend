@@ -30,6 +30,8 @@ type UsecasesDeps struct {
 	Avatar services.AvatarService
 
 	Files        repos.MaterialFileRepo
+	FileSigs     repos.MaterialFileSignatureRepo
+	FileSections repos.MaterialFileSectionRepo
 	Chunks       repos.MaterialChunkRepo
 	MaterialSets repos.MaterialSetRepo
 	Summaries    repos.MaterialSetSummaryRepo
@@ -115,6 +117,12 @@ type (
 
 	PathIntakeInput  = steps.PathIntakeInput
 	PathIntakeOutput = steps.PathIntakeOutput
+
+	PathGroupingRefineInput  = steps.PathGroupingRefineInput
+	PathGroupingRefineOutput = steps.PathGroupingRefineOutput
+
+	FileSignatureBuildInput  = steps.FileSignatureBuildInput
+	FileSignatureBuildOutput = steps.FileSignatureBuildOutput
 
 	UserProfileRefreshInput  = steps.UserProfileRefreshInput
 	UserProfileRefreshOutput = steps.UserProfileRefreshOutput
@@ -247,6 +255,7 @@ func (u Usecases) PathIntake(ctx context.Context, in PathIntakeInput) (PathIntak
 		DB:        u.deps.DB,
 		Log:       u.deps.Log,
 		Files:     u.deps.Files,
+		FileSigs:  u.deps.FileSigs,
 		Chunks:    u.deps.Chunks,
 		Summaries: u.deps.Summaries,
 		Path:      u.deps.Path,
@@ -257,6 +266,31 @@ func (u Usecases) PathIntake(ctx context.Context, in PathIntakeInput) (PathIntak
 		Notify:    u.deps.Notify,
 		Bootstrap: u.deps.Bootstrap,
 	}, steps.PathIntakeInput(in))
+}
+
+func (u Usecases) PathGroupingRefine(ctx context.Context, in PathGroupingRefineInput) (PathGroupingRefineOutput, error) {
+	return steps.PathGroupingRefine(ctx, steps.PathGroupingRefineDeps{
+		DB:       u.deps.DB,
+		Log:      u.deps.Log,
+		Path:     u.deps.Path,
+		Files:    u.deps.Files,
+		FileSigs: u.deps.FileSigs,
+	}, steps.PathGroupingRefineInput(in))
+}
+
+func (u Usecases) FileSignatureBuild(ctx context.Context, in FileSignatureBuildInput) (FileSignatureBuildOutput, error) {
+	return steps.FileSignatureBuild(ctx, steps.FileSignatureBuildDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Files:        u.deps.Files,
+		FileSigs:     u.deps.FileSigs,
+		FileSections: u.deps.FileSections,
+		Chunks:       u.deps.Chunks,
+		AI:           u.deps.AI,
+		Vec:          u.deps.Vec,
+		Saga:         u.deps.Saga,
+		Bootstrap:    u.deps.Bootstrap,
+	}, steps.FileSignatureBuildInput(in))
 }
 
 func (u Usecases) UserProfileRefresh(ctx context.Context, in UserProfileRefreshInput) (UserProfileRefreshOutput, error) {

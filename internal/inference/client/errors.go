@@ -2,10 +2,14 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+var ErrScoreNotConfigured = errors.New("missing NB_INFERENCE_SCORE_MODEL")
+var ErrScoreNotSupported = errors.New("text score endpoint not supported")
 
 type HTTPError struct {
 	StatusCode int

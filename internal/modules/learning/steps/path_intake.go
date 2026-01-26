@@ -24,6 +24,7 @@ type PathIntakeDeps struct {
 	DB        *gorm.DB
 	Log       *logger.Logger
 	Files     repos.MaterialFileRepo
+	FileSigs  repos.MaterialFileSignatureRepo
 	Chunks    repos.MaterialChunkRepo
 	Summaries repos.MaterialSetSummaryRepo
 	Path      repos.PathRepo
@@ -117,6 +118,17 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 			fileIDs = append(fileIDs, f.ID)
 		}
 	}
+	fileSigs := map[uuid.UUID]*types.MaterialFileSignature{}
+	if deps.FileSigs != nil && len(fileIDs) > 0 {
+		if rows, err := deps.FileSigs.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs); err == nil {
+			for _, row := range rows {
+				if row == nil || row.MaterialFileID == uuid.Nil {
+					continue
+				}
+				fileSigs[row.MaterialFileID] = row
+			}
+		}
+	}
 	var chunks []*types.MaterialChunk
 	if deps.Chunks != nil && len(fileIDs) > 0 {
 		if rows, err := deps.Chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs); err == nil {
@@ -181,7 +193,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		}
 
 		assistantCtx := assistantContextSince(messages, qMsg.Seq)
-		intake, intakeMD, err := generateIntake(ctx, deps, files, chunks, summary, prefsAny, userContextBefore(messages, qMsg.Seq), answer, assistantCtx, existingIntake, true)
+		intake, intakeMD, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userContextBefore(messages, qMsg.Seq), answer, assistantCtx, existingIntake, true)
 		if err != nil {
 			deps.Log.Warn("path_intake: generate (with answers) failed; proceeding with fallback", "error", err)
 			intake = buildFallbackIntake(files, summary, userContextBefore(messages, qMsg.Seq), answer)
@@ -189,7 +201,13 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		}
 		intake["paths_confirmed"] = true
 		filter := buildIntakeMaterialFilter(files, intake)
-		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD, "intake_material_filter": filter})
+		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{
+			"intake_md":                 intakeMD,
+			"intake_material_filter":    filter,
+			"intake_confirmed_by_user":  true,
+			"intake_confirmed_at":       time.Now().UTC().Format(time.RFC3339Nano),
+			"intake_confirmed_via_chat": true,
+		})
 		_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, intakeMD)
 		out.Intake = intake
 		return out, nil
@@ -197,7 +215,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 
 	userCtx := userContextBefore(messages, 1<<30)
 
-	intake, intakeMD, err := generateIntake(ctx, deps, files, chunks, summary, prefsAny, userCtx, "", "", nil, false)
+	intake, intakeMD, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userCtx, "", "", nil, false)
 	if err != nil {
 		deps.Log.Warn("path_intake: generate failed; proceeding with fallback", "error", err)
 		intake = buildFallbackIntake(files, summary, userCtx, "")
@@ -357,6 +375,7 @@ func generateIntake(
 	ctx context.Context,
 	deps PathIntakeDeps,
 	files []*types.MaterialFile,
+	fileSigs map[uuid.UUID]*types.MaterialFileSignature,
 	chunks []*types.MaterialChunk,
 	summary *types.MaterialSetSummary,
 	prefsAny any,
@@ -384,6 +403,26 @@ func generateIntake(
 		if topics := parseAITopics(f.AITopics); len(topics) > 0 {
 			item["ai_topics"] = topics
 		}
+		if sig := fileSigs[f.ID]; sig != nil {
+			if topics := parseJSONStrings(sig.Topics); len(topics) > 0 {
+				item["sig_topics"] = topics
+			}
+			if tags := parseJSONStrings(sig.DomainTags); len(tags) > 0 {
+				item["sig_domain_tags"] = tags
+			}
+			if keys := parseJSONStrings(sig.ConceptKeys); len(keys) > 0 {
+				item["sig_concept_keys"] = keys
+			}
+			if s := strings.TrimSpace(sig.Difficulty); s != "" {
+				item["sig_difficulty"] = s
+			}
+			if s := strings.TrimSpace(sig.Language); s != "" {
+				item["sig_language"] = s
+			}
+			if s := strings.TrimSpace(sig.SummaryMD); s != "" {
+				item["sig_summary"] = shorten(s, 260)
+			}
+		}
 		fileItems = append(fileItems, item)
 	}
 	filesJSON, _ := json.Marshal(map[string]any{"files": fileItems})
@@ -406,6 +445,7 @@ func generateIntake(
 	system := strings.TrimSpace(strings.Join([]string{
 		"You are an expert learning designer and curriculum planner.",
 		"Given a set of uploaded study materials and any user-provided context, infer what each file is trying to teach and the combined learning goal.",
+		"If FILES_JSON includes sig_topics/sig_domain_tags/sig_concept_keys, prefer those over ai_topics when available.",
 		"",
 		"CRITICAL - Path grouping:",
 		"Group the files into one or more coherent learning paths.",
@@ -605,7 +645,7 @@ func generateIntake(
 				},
 			},
 			"primary_path_id": map[string]any{"type": "string"},
-			"combined_goal": map[string]any{"type": "string"},
+			"combined_goal":   map[string]any{"type": "string"},
 			"learning_intent": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -679,14 +719,18 @@ func generateIntake(
 		return nil, "", err
 	}
 
-	normalizeIntakePaths(obj, files)
-	softSplitSanityCheck(obj, isFollowup)
+	normalizeIntakePaths(obj, files, fileSigs)
+	softSplitSanityCheck(ctx, obj, files, fileSigs, deps.AI, isFollowup)
 	intakeMD := formatIntakeSummaryMD(obj)
 	_ = isFollowup // reserved for future logic; keeps signature stable
 	return obj, intakeMD, nil
 }
 
 func parseAITopics(raw datatypes.JSON) []string {
+	return parseJSONStrings(raw)
+}
+
+func parseJSONStrings(raw datatypes.JSON) []string {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -701,7 +745,7 @@ func parseAITopics(raw datatypes.JSON) []string {
 	return nil
 }
 
-func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFile) {
+func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature) {
 	if intake == nil {
 		return
 	}
@@ -710,9 +754,10 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 	}
 
 	type fileInfo struct {
-		ID     string
-		Name   string
-		Topics []string
+		ID        string
+		Name      string
+		Topics    []string
+		DomainTag []string
 	}
 
 	fileByID := map[string]fileInfo{}
@@ -726,7 +771,15 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 			continue
 		}
 		name := strings.TrimSpace(f.OriginalName)
-		fileByID[id] = fileInfo{ID: id, Name: name, Topics: parseAITopics(f.AITopics)}
+		topics := parseAITopics(f.AITopics)
+		var dom []string
+		if sig := fileSigs[f.ID]; sig != nil {
+			if sigTopics := parseJSONStrings(sig.Topics); len(sigTopics) > 0 {
+				topics = sigTopics
+			}
+			dom = parseJSONStrings(sig.DomainTags)
+		}
+		fileByID[id] = fileInfo{ID: id, Name: name, Topics: topics, DomainTag: dom}
 		order = append(order, id)
 	}
 	if len(fileByID) == 0 {
@@ -807,7 +860,7 @@ func normalizeIntakeFileIntents(intake map[string]any, files []*types.MaterialFi
 	intake["file_intents"] = out
 }
 
-func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile) {
+func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature) {
 	if intake == nil {
 		return
 	}
@@ -827,7 +880,7 @@ func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile) {
 			allIDs = append(allIDs, id)
 		}
 		allIDs = dedupeStrings(allIDs)
-		normalizeIntakeFileIntents(intake, files)
+		normalizeIntakeFileIntents(intake, files, fileSigs)
 	} else {
 		fileIntents := sliceAny(intake["file_intents"])
 		for _, it := range fileIntents {
@@ -992,7 +1045,7 @@ func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile) {
 	}
 }
 
-func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
+func softSplitSanityCheck(ctx context.Context, intake map[string]any, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature, ai openai.Client, isFollowup bool) {
 	if intake == nil || isFollowup {
 		return
 	}
@@ -1016,6 +1069,7 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 	}
 
 	pathTokens := make([]map[string]bool, 0, len(paths))
+	pathEmbs := make([][]float32, 0, len(paths))
 	pathConf := make([]float64, 0, len(paths))
 	missingNotes := false
 
@@ -1030,6 +1084,8 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 
 		core := stringSliceFromAny(m["core_file_ids"])
 		support := stringSliceFromAny(m["support_file_ids"])
+		pathFileIDs := append([]string{}, core...)
+		pathFileIDs = append(pathFileIDs, support...)
 		for _, fid := range append(core, support...) {
 			intent := intentByID[fid]
 			if intent == nil {
@@ -1047,6 +1103,7 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 			addTokens(tokenSet, stringFromAny(intake["combined_goal"]))
 		}
 		pathTokens = append(pathTokens, tokenSet)
+		pathEmbs = append(pathEmbs, avgSignatureEmbedding(pathFileIDs, fileSigs))
 		pathConf = append(pathConf, floatFromAny(m["confidence"], floatFromAny(intake["confidence"], 0.5)))
 		note := strings.TrimSpace(stringFromAny(m["notes"]))
 		if note == "" || len(tokenizeTerms(note)) < 2 {
@@ -1066,6 +1123,20 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 			}
 		}
 	}
+	maxEmbSim := 0.0
+	for i := 0; i < len(pathEmbs); i++ {
+		for j := i + 1; j < len(pathEmbs); j++ {
+			if sim := cosineSim(pathEmbs[i], pathEmbs[j]); sim > maxEmbSim {
+				maxEmbSim = sim
+			}
+		}
+	}
+	maxPairScore := 0.0
+	if ai != nil && envBool("PATH_INTAKE_PAIR_SCORE", false) {
+		if ps := scorePairSimilarity(ctx, files, fileSigs, intentByID, ai); ps > maxPairScore {
+			maxPairScore = ps
+		}
+	}
 
 	sepConfidence := floatFromAny(intake["confidence"], 0.5)
 	for _, c := range pathConf {
@@ -1075,7 +1146,7 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 	}
 
 	lowConfidence := sepConfidence < 0.55
-	shouldClarify := (maxSim >= 0.35) || (maxSim >= 0.25 && lowConfidence) || missingNotes
+	shouldClarify := (maxSim >= 0.35) || (maxSim >= 0.25 && lowConfidence) || (maxEmbSim >= 0.72) || (maxPairScore >= 0.7) || missingNotes
 	if !shouldClarify {
 		return
 	}
@@ -1100,6 +1171,184 @@ func softSplitSanityCheck(intake map[string]any, isFollowup bool) {
 	qs = append(qs, q)
 	intake["clarifying_questions"] = qs
 	intake["needs_clarification"] = true
+}
+
+func avgSignatureEmbedding(fileIDs []string, fileSigs map[uuid.UUID]*types.MaterialFileSignature) []float32 {
+	if len(fileIDs) == 0 || len(fileSigs) == 0 {
+		return nil
+	}
+	var sum []float32
+	var count int
+	for _, fid := range fileIDs {
+		id, err := uuid.Parse(strings.TrimSpace(fid))
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		sig := fileSigs[id]
+		if sig == nil {
+			continue
+		}
+		emb, ok := decodeEmbedding(sig.SummaryEmbedding)
+		if !ok || len(emb) == 0 {
+			continue
+		}
+		if sum == nil {
+			sum = make([]float32, len(emb))
+		}
+		if len(sum) != len(emb) {
+			continue
+		}
+		for i := range emb {
+			sum[i] += emb[i]
+		}
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	for i := range sum {
+		sum[i] /= float32(count)
+	}
+	return sum
+}
+
+func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature, intentByID map[string]map[string]any, ai openai.Client) float64 {
+	if ai == nil || len(files) < 2 {
+		return 0
+	}
+	maxFiles := envIntAllowZero("PATH_INTAKE_PAIR_SCORE_MAX_FILES", 8)
+	if maxFiles > 0 && len(files) > maxFiles {
+		return 0
+	}
+
+	type fileDesc struct {
+		ID   string
+		Desc string
+	}
+	descs := make([]fileDesc, 0, len(files))
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		id := f.ID.String()
+		intent := intentByID[id]
+		var topics []string
+		if intent != nil {
+			topics = stringSliceFromAny(intent["topics"])
+		}
+		if len(topics) == 0 {
+			if sig := fileSigs[f.ID]; sig != nil {
+				topics = parseJSONStrings(sig.Topics)
+			}
+		}
+		summary := ""
+		if sig := fileSigs[f.ID]; sig != nil {
+			summary = strings.TrimSpace(sig.SummaryMD)
+		}
+		descParts := []string{
+			strings.TrimSpace(f.OriginalName),
+		}
+		if len(topics) > 0 {
+			descParts = append(descParts, "topics: "+strings.Join(topics, ", "))
+		}
+		if summary != "" {
+			descParts = append(descParts, "summary: "+shorten(summary, 180))
+		}
+		desc := strings.TrimSpace(strings.Join(descParts, " | "))
+		if desc != "" {
+			descs = append(descs, fileDesc{ID: id, Desc: desc})
+		}
+	}
+	if len(descs) < 2 {
+		return 0
+	}
+
+	maxPairs := envIntAllowZero("PATH_INTAKE_PAIR_SCORE_MAX_PAIRS", 40)
+	if maxPairs <= 0 {
+		maxPairs = 40
+	}
+
+	type pair struct {
+		A string `json:"a_id"`
+		B string `json:"b_id"`
+	}
+	pairs := make([]pair, 0, maxPairs)
+	for i := 0; i < len(descs); i++ {
+		for j := i + 1; j < len(descs); j++ {
+			if len(pairs) >= maxPairs {
+				break
+			}
+			pairs = append(pairs, pair{A: descs[i].ID, B: descs[j].ID})
+		}
+		if len(pairs) >= maxPairs {
+			break
+		}
+	}
+	if len(pairs) == 0 {
+		return 0
+	}
+
+	descLines := make([]string, 0, len(descs))
+	for _, d := range descs {
+		descLines = append(descLines, fmt.Sprintf("- %s: %s", d.ID, d.Desc))
+	}
+	pairLines := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		pairLines = append(pairLines, fmt.Sprintf("- %s | %s", p.A, p.B))
+	}
+
+	system := strings.TrimSpace(strings.Join([]string{
+		"You score whether two learning materials can be taught together in one coherent path.",
+		"Return JSON only.",
+	}, "\n"))
+	user := strings.TrimSpace(strings.Join([]string{
+		"FILES:",
+		strings.Join(descLines, "\n"),
+		"",
+		"PAIRS (a_id | b_id):",
+		strings.Join(pairLines, "\n"),
+		"",
+		"Return scores 0..1 for each pair.",
+	}, "\n"))
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"scores": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"a_id":  map[string]any{"type": "string"},
+						"b_id":  map[string]any{"type": "string"},
+						"score": map[string]any{"type": "number"},
+					},
+					"required": []string{"a_id", "b_id", "score"},
+				},
+			},
+		},
+		"required": []string{"scores"},
+	}
+
+	obj, err := ai.GenerateJSON(ctx, system, user, "pair_score", schema)
+	if err != nil {
+		return 0
+	}
+	rows := sliceAny(obj["scores"])
+	maxScore := 0.0
+	for _, it := range rows {
+		m, ok := it.(map[string]any)
+		if !ok || m == nil {
+			continue
+		}
+		score := floatFromAny(m["score"], 0)
+		if score > maxScore {
+			maxScore = score
+		}
+	}
+	return maxScore
 }
 
 func addTokens(dst map[string]bool, text string) {
@@ -1787,7 +2036,7 @@ func buildFallbackIntake(files []*types.MaterialFile, summary *types.MaterialSet
 			},
 		},
 		"primary_path_id": "path_1",
-		"combined_goal": goal,
+		"combined_goal":   goal,
 		"learning_intent": map[string]any{
 			"goal_kind":         "unknown",
 			"deadline":          "",

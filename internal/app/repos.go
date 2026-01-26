@@ -18,6 +18,8 @@ type Repos struct {
 	MaterialSet              repos.MaterialSetRepo
 	MaterialSetFile          repos.MaterialSetFileRepo
 	MaterialFile             repos.MaterialFileRepo
+	MaterialFileSignature    repos.MaterialFileSignatureRepo
+	MaterialFileSection      repos.MaterialFileSectionRepo
 	MaterialChunk            repos.MaterialChunkRepo
 	MaterialAsset            repos.MaterialAssetRepo
 	MaterialSetSummary       repos.MaterialSetSummaryRepo
@@ -89,6 +91,8 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		MaterialSet:              repos.NewMaterialSetRepo(db, log),
 		MaterialSetFile:          repos.NewMaterialSetFileRepo(db, log),
 		MaterialFile:             repos.NewMaterialFileRepo(db, log),
+		MaterialFileSignature:    repos.NewMaterialFileSignatureRepo(db, log),
+		MaterialFileSection:      repos.NewMaterialFileSectionRepo(db, log),
 		MaterialChunk:            repos.NewMaterialChunkRepo(db, log),
 		MaterialAsset:            repos.NewMaterialAssetRepo(db, log),
 		MaterialSetSummary:       repos.NewMaterialSetSummaryRepo(db, log),

@@ -35,6 +35,21 @@ type textGenerateResponse struct {
 	OutputText string `json:"output_text"`
 }
 
+type TextScorePair struct {
+	A string `json:"a"`
+	B string `json:"b"`
+}
+
+type textScoreRequest struct {
+	Model string          `json:"model"`
+	Pairs []TextScorePair `json:"pairs"`
+}
+
+type textScoreResponse struct {
+	Model  string    `json:"model"`
+	Scores []float32 `json:"scores"`
+}
+
 type ImageInput struct {
 	ImageURL string
 	Detail   string

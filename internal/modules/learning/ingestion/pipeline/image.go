@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/outline"
 )
 
 func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBytes []byte, imgPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -60,6 +61,10 @@ func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBy
 		warnings = append(warnings, "caption provider unavailable; image_notes skipped")
 	} else if len(imgBytes) == 0 {
 		warnings = append(warnings, "caption skipped: no image bytes available")
+	}
+
+	if hint := outline.FromSegments(mf.OriginalName, segs, outline.MaxSections()); hint != nil {
+		outline.ApplyHint(diag, hint)
 	}
 
 	return segs, assets, warnings, diag, nil

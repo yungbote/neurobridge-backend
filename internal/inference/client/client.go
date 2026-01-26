@@ -20,6 +20,7 @@ type Options struct {
 
 	Model      string
 	EmbedModel string
+	ScoreModel string
 	ImageModel string
 	VideoModel string
 
@@ -39,6 +40,7 @@ type Client struct {
 
 	model      string
 	embedModel string
+	scoreModel string
 	imageModel string
 	videoModel string
 
@@ -77,6 +79,7 @@ func New(opts Options) (*Client, error) {
 		apiKey:        strings.TrimSpace(opts.APIKey),
 		model:         strings.TrimSpace(opts.Model),
 		embedModel:    strings.TrimSpace(opts.EmbedModel),
+		scoreModel:    strings.TrimSpace(opts.ScoreModel),
 		imageModel:    strings.TrimSpace(opts.ImageModel),
 		videoModel:    strings.TrimSpace(opts.VideoModel),
 		imageSize:     strings.TrimSpace(opts.ImageSize),
@@ -98,6 +101,7 @@ func NewFromEnv() (*Client, error) {
 		APIKey:        strings.TrimSpace(os.Getenv("NB_INFERENCE_API_KEY")),
 		Model:         strings.TrimSpace(os.Getenv("NB_INFERENCE_MODEL")),
 		EmbedModel:    strings.TrimSpace(os.Getenv("NB_INFERENCE_EMBED_MODEL")),
+		ScoreModel:    strings.TrimSpace(os.Getenv("NB_INFERENCE_SCORE_MODEL")),
 		ImageModel:    strings.TrimSpace(os.Getenv("NB_INFERENCE_IMAGE_MODEL")),
 		ImageSize:     strings.TrimSpace(os.Getenv("NB_INFERENCE_IMAGE_SIZE")),
 		VideoModel:    strings.TrimSpace(os.Getenv("NB_INFERENCE_VIDEO_MODEL")),
@@ -137,6 +141,34 @@ func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) ScorePairs(ctx context.Context, pairs []TextScorePair) ([]float32, error) {
+	if strings.TrimSpace(c.scoreModel) == "" {
+		return nil, ErrScoreNotConfigured
+	}
+	if len(pairs) == 0 {
+		return []float32{}, nil
+	}
+
+	req := textScoreRequest{
+		Model: c.scoreModel,
+		Pairs: pairs,
+	}
+
+	var resp textScoreResponse
+	if err := c.doJSON(ctx, c.timeout, http.MethodPost, "/v1/text/score", req, &resp); err != nil {
+		if herr, ok := err.(*HTTPError); ok {
+			if herr.StatusCode == http.StatusNotFound || herr.StatusCode == http.StatusNotImplemented {
+				return nil, ErrScoreNotSupported
+			}
+		}
+		return nil, err
+	}
+	if len(resp.Scores) != len(pairs) {
+		return nil, fmt.Errorf("score response length mismatch: got %d want %d", len(resp.Scores), len(pairs))
+	}
+	return resp.Scores, nil
 }
 
 func (c *Client) GenerateText(ctx context.Context, system string, user string) (string, error) {

@@ -13,6 +13,42 @@ func RegisterAll() {
 	// ---------- Library + Concepts ----------
 
 	RegisterSpec(Spec{
+		Name:       PromptFileSignatureBuild,
+		Version:    1,
+		SchemaName: "file_signature",
+		Schema:     FileSignatureSchema,
+		System: `
+You are building a durable per-file signature for uploaded learning materials.
+Use the excerpts as ground truth. Use outline hints when present.
+Do not invent topics not supported by the excerpts.
+Return JSON only.`,
+		User: `
+FILE_INFO_JSON:
+{{.FileInfoJSON}}
+
+OUTLINE_HINT_JSON (may be empty):
+{{.OutlineHintJSON}}
+
+EXCERPTS (each line may include chunk_id):
+{{.Excerpts}}
+
+Output rules:
+- summary_md: 6-12 sentence markdown summary.
+- topics: 6-20 short topic phrases.
+- concept_keys: 10-40 stable snake_case keys.
+- difficulty: intro|intermediate|advanced|mixed|unknown.
+- domain_tags: 2-8 short tags.
+- citations: only if explicit (URLs, standards, RFCs).
+- outline_json: include 4-12 top-level sections; keep titles concise.
+- outline_confidence: 0..1.
+- language: ISO 639-1 if possible (e.g. "en").
+- quality: text_quality (high|medium|low), coverage (0..1), notes.`,
+		Validators: []Validator{
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptMaterialSetSummary,
 		Version:    1,
 		SchemaName: "material_set_summary",

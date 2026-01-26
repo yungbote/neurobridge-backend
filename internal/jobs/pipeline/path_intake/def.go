@@ -13,6 +13,7 @@ type Pipeline struct {
 	db        *gorm.DB
 	log       *logger.Logger
 	files     repos.MaterialFileRepo
+	fileSigs  repos.MaterialFileSignatureRepo
 	chunks    repos.MaterialChunkRepo
 	summaries repos.MaterialSetSummaryRepo
 	path      repos.PathRepo
@@ -28,6 +29,7 @@ func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
 	files repos.MaterialFileRepo,
+	fileSigs repos.MaterialFileSignatureRepo,
 	chunks repos.MaterialChunkRepo,
 	summaries repos.MaterialSetSummaryRepo,
 	path repos.PathRepo,
@@ -42,6 +44,7 @@ func New(
 		db:        db,
 		log:       baseLog.With("job", "path_intake"),
 		files:     files,
+		fileSigs:  fileSigs,
 		chunks:    chunks,
 		summaries: summaries,
 		path:      path,

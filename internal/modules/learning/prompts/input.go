@@ -5,6 +5,9 @@ package prompts
 type Input struct {
 	// Common grounding excerpts (chunk_id lines)
 	Excerpts string
+	// Per-file context (for signature build)
+	FileInfoJSON    string
+	OutlineHintJSON string
 	// Material set summary
 	BundleExcerpt string
 	// Optional global goal context (from path_intake)

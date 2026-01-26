@@ -23,6 +23,8 @@ type AssetRepo = materials.AssetRepo
 type MaterialSetRepo = materials.MaterialSetRepo
 type MaterialSetFileRepo = materials.MaterialSetFileRepo
 type MaterialFileRepo = materials.MaterialFileRepo
+type MaterialFileSignatureRepo = materials.MaterialFileSignatureRepo
+type MaterialFileSectionRepo = materials.MaterialFileSectionRepo
 type MaterialChunkRepo = materials.MaterialChunkRepo
 type MaterialAssetRepo = materials.MaterialAssetRepo
 type MaterialSetSummaryRepo = materials.MaterialSetSummaryRepo
@@ -119,6 +121,12 @@ func NewMaterialSetFileRepo(db *gorm.DB, baseLog *logger.Logger) MaterialSetFile
 }
 func NewMaterialFileRepo(db *gorm.DB, baseLog *logger.Logger) MaterialFileRepo {
 	return materials.NewMaterialFileRepo(db, baseLog)
+}
+func NewMaterialFileSignatureRepo(db *gorm.DB, baseLog *logger.Logger) MaterialFileSignatureRepo {
+	return materials.NewMaterialFileSignatureRepo(db, baseLog)
+}
+func NewMaterialFileSectionRepo(db *gorm.DB, baseLog *logger.Logger) MaterialFileSectionRepo {
+	return materials.NewMaterialFileSectionRepo(db, baseLog)
 }
 func NewMaterialChunkRepo(db *gorm.DB, baseLog *logger.Logger) MaterialChunkRepo {
 	return materials.NewMaterialChunkRepo(db, baseLog)

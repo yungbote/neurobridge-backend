@@ -26,9 +26,11 @@ type InlineDeps struct {
 	Bucket  gcp.BucketService
 	Avatar  services.AvatarService
 
-	Files     repos.MaterialFileRepo
-	Chunks    repos.MaterialChunkRepo
-	Summaries repos.MaterialSetSummaryRepo
+	Files        repos.MaterialFileRepo
+	FileSigs     repos.MaterialFileSignatureRepo
+	FileSections repos.MaterialFileSectionRepo
+	Chunks       repos.MaterialChunkRepo
+	Summaries    repos.MaterialSetSummaryRepo
 
 	Concepts repos.ConceptRepo
 	Evidence repos.ConceptEvidenceRepo

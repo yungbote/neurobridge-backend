@@ -6,6 +6,7 @@ import (
 	"os"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/outline"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 )
@@ -76,6 +77,10 @@ func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audio
 			sg.Metadata["provider"] = "gcp_speech"
 			segs = append(segs, sg)
 		}
+	}
+
+	if hint := outline.FromSegments(mf.OriginalName, segs, outline.MaxSections()); hint != nil {
+		outline.ApplyHint(diag, hint)
 	}
 
 	return segs, assets, warnings, diag, nil

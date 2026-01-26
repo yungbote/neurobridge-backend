@@ -9,6 +9,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/extractor"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/outline"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/localmedia"
@@ -168,6 +169,10 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 		}
 	} else {
 		warnings = append(warnings, "vision provider unavailable; frame OCR skipped")
+	}
+
+	if hint := outline.FromSegments(mf.OriginalName, segs, outline.MaxSections()); hint != nil {
+		outline.ApplyHint(diag, hint)
 	}
 
 	return segs, assets, warnings, diag, nil

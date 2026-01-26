@@ -338,6 +338,72 @@ func (e *Engine) StreamText(ctx context.Context, model string, messages []engine
 	return full.String(), nil
 }
 
+// ---------------- Text pair scoring ----------------
+
+func (e *Engine) ScoreTextPairs(ctx context.Context, model string, pairs []engine.TextPair) ([]float32, error) {
+	if len(pairs) == 0 {
+		return []float32{}, nil
+	}
+	system := strings.TrimSpace(strings.Join([]string{
+		"You score semantic coherence between two texts.",
+		"Return a score from 0 to 1 where 1 means they can be taught together in a single coherent path.",
+		"Output JSON only, matching the provided schema.",
+	}, "\n"))
+
+	userPairs := make([]map[string]string, 0, len(pairs))
+	for _, p := range pairs {
+		userPairs = append(userPairs, map[string]string{
+			"a": strings.TrimSpace(p.A),
+			"b": strings.TrimSpace(p.B),
+		})
+	}
+	payload, _ := json.Marshal(map[string]any{"pairs": userPairs})
+	user := "PAIRS_JSON:\n" + string(payload) + "\n"
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"scores": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "number"},
+			},
+		},
+		"required": []string{"scores"},
+	}
+
+	text, err := e.GenerateText(ctx, model, []engine.Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	}, engine.GenerateOptions{
+		Temperature: 0.0,
+		JSONSchema: &engine.JSONSchema{
+			Name:   "pair_score",
+			Schema: schema,
+			Strict: true,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var out struct {
+		Scores []float64 `json:"scores"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		return nil, err
+	}
+	if len(out.Scores) == 0 {
+		return nil, fmt.Errorf("score_text_pairs: empty scores")
+	}
+
+	scores := make([]float32, len(out.Scores))
+	for i, v := range out.Scores {
+		scores[i] = float32(v)
+	}
+	return scores, nil
+}
+
 func (e *Engine) buildChatRequest(model string, messages []chatMessage, opts engine.GenerateOptions, stream bool, attempt int) chatCompletionRequest {
 	req := chatCompletionRequest{
 		Model:       model,

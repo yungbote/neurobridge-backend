@@ -4,6 +4,7 @@ type PromptName string
 
 const (
 	// Library + Concepts
+	PromptFileSignatureBuild    PromptName = "file_signature_build"
 	PromptMaterialSetSummary    PromptName = "material_set_summary"
 	PromptConceptInventory      PromptName = "concept_inventory"
 	PromptConceptInventoryDelta PromptName = "concept_inventory_delta"

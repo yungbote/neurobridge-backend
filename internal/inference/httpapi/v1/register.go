@@ -12,6 +12,7 @@ func Register(mux *http.ServeMux, cfg *config.Config, log *logger.Logger, r *rou
 	mux.HandleFunc("GET /v1/models", handleModels(log, r))
 	mux.HandleFunc("POST /v1/embeddings", handleEmbeddings(cfg, log, r))
 	mux.HandleFunc("POST /v1/text/generate", handleTextGenerate(cfg, log, r))
+	mux.HandleFunc("POST /v1/text/score", handleTextScore(cfg, log, r))
 
 	// Planned surfaces (kept stable early; may return 501 until engines are configured).
 	mux.HandleFunc("POST /v1/images/generate", handleImagesGenerate(cfg, log, r))

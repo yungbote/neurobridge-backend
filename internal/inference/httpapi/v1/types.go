@@ -46,3 +46,18 @@ type TextGenerateResponse struct {
 	Model      string `json:"model"`
 	OutputText string `json:"output_text"`
 }
+
+type TextScorePair struct {
+	A string `json:"a"`
+	B string `json:"b"`
+}
+
+type TextScoreRequest struct {
+	Model string         `json:"model"`
+	Pairs []TextScorePair `json:"pairs"`
+}
+
+type TextScoreResponse struct {
+	Model  string    `json:"model"`
+	Scores []float32 `json:"scores"`
+}

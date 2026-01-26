@@ -84,3 +84,14 @@ func (e *Engine) StreamText(ctx context.Context, model string, messages []engine
 	}
 	return full, nil
 }
+
+func (e *Engine) ScoreTextPairs(ctx context.Context, model string, pairs []engine.TextPair) ([]float32, error) {
+	_ = ctx
+	out := make([]float32, len(pairs))
+	for i, p := range pairs {
+		h := sha256.Sum256([]byte(model + "\n" + p.A + "\n" + p.B))
+		u := binary.LittleEndian.Uint32(h[:4])
+		out[i] = float32(u%1000) / 1000.0
+	}
+	return out, nil
+}

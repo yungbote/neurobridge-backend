@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	runtime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
-	runtime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -37,6 +37,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
+		FileSigs:  p.fileSigs,
 		Chunks:    p.chunks,
 		Summaries: p.summaries,
 		Path:      p.path,
@@ -148,13 +149,3 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	return nil
 }
-
-
-
-
-
-
-
-
-
-

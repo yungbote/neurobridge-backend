@@ -10,16 +10,18 @@ import (
 )
 
 var stageDeps = map[string][]string{
-	"ingest_chunks": {"web_resources_seed"},
+	"ingest_chunks":        {"web_resources_seed"},
+	"file_signature_build": {"ingest_chunks"},
 
 	// Gate expensive downstream work on intake so we don't burn compute while waiting for user answers.
 	"embed_chunks":           {"path_structure_dispatch"},
 	"material_set_summarize": {"ingest_chunks"},
 	// Intake should happen before concept graph so we can incorporate user intent and reduce noise.
 	// Depend only on ingestion so intake can still proceed even if summarization fails.
-	"path_intake": {"ingest_chunks"},
+	"path_intake": {"file_signature_build"},
 
-	"path_structure_dispatch": {"path_intake"},
+	"path_grouping_refine":    {"path_intake"},
+	"path_structure_dispatch": {"path_grouping_refine"},
 
 	"concept_graph_build":   {"path_structure_dispatch"},
 	"path_structure_refine": {"concept_graph_build"},
