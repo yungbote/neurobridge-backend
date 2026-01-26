@@ -427,6 +427,64 @@ func FormulaExtractionSchema() map[string]any {
 	}, []string{"items"})
 }
 
+func StyleManifestSchema() map[string]any {
+	return SchemaVersionedObject(1, map[string]any{
+		"tone":               map[string]any{"type": "string"},
+		"register":           map[string]any{"type": "string"},
+		"verbosity":          map[string]any{"type": "string"},
+		"metaphors_allowed":  map[string]any{"type": "boolean"},
+		"preferred_phrases":  StringArraySchema(),
+		"banned_phrases":     StringArraySchema(),
+		"do_list":            StringArraySchema(),
+		"dont_list":          StringArraySchema(),
+		"sentence_length":    map[string]any{"type": "string"},
+		"voice_notes":        map[string]any{"type": "string"},
+	}, []string{"tone", "register", "verbosity", "metaphors_allowed", "preferred_phrases", "banned_phrases", "do_list", "dont_list", "sentence_length", "voice_notes"})
+}
+
+func PathNarrativePlanSchema() map[string]any {
+	return SchemaVersionedObject(1, map[string]any{
+		"arc_summary":        map[string]any{"type": "string"},
+		"continuity_rules":   StringArraySchema(),
+		"recurring_terms":    StringArraySchema(),
+		"preferred_transitions": StringArraySchema(),
+		"forbidden_phrases":  StringArraySchema(),
+		"back_reference_rules": StringArraySchema(),
+		"forward_reference_rules": StringArraySchema(),
+		"tone_notes":         map[string]any{"type": "string"},
+	}, []string{"arc_summary", "continuity_rules", "recurring_terms", "preferred_transitions", "forbidden_phrases", "back_reference_rules", "forward_reference_rules", "tone_notes"})
+}
+
+func NodeNarrativePlanSchema() map[string]any {
+	return SchemaVersionedObject(1, map[string]any{
+		"opening_intent":  map[string]any{"type": "string"},
+		"closing_intent":  map[string]any{"type": "string"},
+		"back_references": StringArraySchema(),
+		"forward_link":    map[string]any{"type": "string"},
+		"anchor_terms":    StringArraySchema(),
+		"avoid_phrases":   StringArraySchema(),
+	}, []string{"opening_intent", "closing_intent", "back_references", "forward_link", "anchor_terms", "avoid_phrases"})
+}
+
+func MediaRankSchema() map[string]any {
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"section_heading": map[string]any{"type": "string"},
+			"purpose":         map[string]any{"type": "string"},
+			"asset_url":       map[string]any{"type": "string"},
+			"asset_kind":      map[string]any{"type": "string"},
+			"rationale":       map[string]any{"type": "string"},
+			"chunk_ids":       StringArraySchema(),
+		},
+		"required":             []string{"section_heading", "purpose", "asset_url", "asset_kind", "rationale", "chunk_ids"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"selections": map[string]any{"type": "array", "items": item},
+	}, []string{"selections"})
+}
+
 func ConceptEdgesSchema() map[string]any {
 	edge := map[string]any{
 		"type": "object",

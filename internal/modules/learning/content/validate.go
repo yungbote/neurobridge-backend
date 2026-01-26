@@ -75,6 +75,9 @@ func NodeDocMetrics(doc NodeDocV1) map[string]any {
 		case "table":
 			concat = append(concat, stringFromAny(b["caption"]))
 			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
+		case "equation":
+			concat = append(concat, stringFromAny(b["latex"]), stringFromAny(b["caption"]))
+			wordCount += WordCount(stripMD(stringFromAny(b["caption"])))
 		case "quick_check":
 			p := stringFromAny(b["prompt_md"])
 			a := stringFromAny(b["answer_md"])
@@ -330,6 +333,17 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 			}
 			if len(rows) == 0 {
 				errs = append(errs, fmt.Sprintf("block[%d] table.rows missing", i))
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "equation":
+			if strings.TrimSpace(stringFromAny(b["latex"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] equation.latex missing", i))
+			}
+			// display is required by schema; best-effort validate type
+			if _, ok := b["display"].(bool); !ok {
+				if _, okFloat := b["display"].(float64); !okFloat {
+					errs = append(errs, fmt.Sprintf("block[%d] equation.display missing", i))
+				}
 			}
 			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
 		case "quick_check":
@@ -598,6 +612,27 @@ func findBannedPhrases(text string) []string {
 		"here's the plan",
 		"here is the plan",
 		"plan:",
+		"up next",
+		"next up",
+		"next lesson",
+		"next module",
+		"in the next lesson",
+		"you've seen the plan",
+		"youve seen the plan",
+		"let's anchor",
+		"lets anchor",
+		"no magic",
+		"no sorcery",
+		"your next hop",
+		// "next hop" is a legitimate networking term; allow it unless phrased as "your next hop".
+		"bridge-in",
+		"bridge in",
+		"bridge-out",
+		"bridge out",
+		"recommended drills",
+		"reveal answer",
+		"wrap-up",
+		"wrap up",
 		"i can tailor this",
 		"pick one",
 		"what are you using this for",
@@ -618,6 +653,20 @@ func findBannedPhrases(text string) []string {
 	}
 	sort.Strings(hit)
 	return hit
+}
+
+// DetectMetaPhrases returns a list of meta phrases found in raw text.
+func DetectMetaPhrases(text string) []string {
+	return findBannedPhrases(text)
+}
+
+// DetectNodeDocMetaPhrases scans a NodeDocV1 for meta phrasing.
+func DetectNodeDocMetaPhrases(doc NodeDocV1) []string {
+	metrics := NodeDocMetrics(doc)
+	if raw, ok := metrics["doc_text"].(string); ok {
+		return findBannedPhrases(raw)
+	}
+	return nil
 }
 
 func hasWorkedExample(doc NodeDocV1) bool {

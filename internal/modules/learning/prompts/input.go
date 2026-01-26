@@ -12,10 +12,19 @@ type Input struct {
 	BundleExcerpt string
 	// Optional global goal context (from path_intake)
 	PathIntentMD string
+	// Optional style manifest from path charter
+	PathStyleJSON string
 	// Concepts
-	ConceptsJSON string
-	EdgesJSON    string
+	ConceptsJSON         string
+	EdgesJSON            string
 	CrossDocSectionsJSON string
+	PathNarrativeJSON    string
+	StyleManifestJSON    string
+	NodeNarrativeJSON    string
+	MediaRankJSON        string
+	NodeDocJSON          string
+	PathStructureJSON    string
+	PatternHierarchyJSON string
 	// User profile
 	UserFactsJSON        string
 	RecentEventsSummary  string
@@ -25,7 +34,6 @@ type Input struct {
 	UserKnowledgeJSON string
 	// Planning context
 	PathCharterJSON    string
-	PathStructureJSON  string
 	CurriculumSpecJSON string
 	PatternSignalsJSON string
 	PatternContextJSON string
@@ -53,10 +61,10 @@ type Input struct {
 	ActivityContentMD string
 	CitationsCSV      string
 	// Decision Explanation
-	DecisionType   string
-	InputsJSON     string
-	CandidatesJSON string
-	ChosenJSON     string
+	DecisionType          string
+	InputsJSON            string
+	CandidatesJSON        string
+	ChosenJSON            string
 	FormulaCandidatesJSON string
 	// Audit Inputs
 	PathNodesJSON  string

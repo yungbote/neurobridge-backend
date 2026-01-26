@@ -132,6 +132,22 @@ func DedupNodeDocV1(doc NodeDocV1) (NodeDocV1, []string) {
 			seen[key] = true
 			lastWasDivider = false
 
+		case "equation":
+			latex := strings.TrimSpace(stringFromAny(b["latex"]))
+			caption := strings.TrimSpace(stringFromAny(b["caption"]))
+			norm := normalize(latex + "\n" + caption)
+			if norm == "" {
+				removed = append(removed, "empty_equation")
+				continue
+			}
+			key := "equation:" + norm
+			if seen[key] {
+				removed = append(removed, "duplicate_equation")
+				continue
+			}
+			seen[key] = true
+			lastWasDivider = false
+
 		case "quick_check":
 			prompt := strings.TrimSpace(stringFromAny(b["prompt_md"]))
 			answer := strings.TrimSpace(stringFromAny(b["answer_md"]))

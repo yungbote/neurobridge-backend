@@ -185,6 +185,129 @@ Task:
 	})
 
 	RegisterSpec(Spec{
+		Name:       PromptStyleManifest,
+		Version:    1,
+		SchemaName: "style_manifest",
+		Schema:     StyleManifestSchema,
+		System: `
+You define a precise, professional writing style for learner-facing lessons.
+Return JSON only.`,
+		User: `
+PATH_INTENT_MD (optional):
+{{.PathIntentMD}}
+
+PATH_STYLE_JSON (optional):
+{{.PathStyleJSON}}
+
+PATTERN_HIERARCHY_JSON (optional):
+{{.PatternHierarchyJSON}}
+
+PATH_STRUCTURE_JSON (optional):
+{{.PathStructureJSON}}
+
+Task:
+- Define a consistent tone and register suitable for a high-quality technical course.
+- Provide do/don't lists and preferred/banned phrases.
+- Avoid meta or backend language.`,
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptPathNarrativePlan,
+		Version:    1,
+		SchemaName: "path_narrative_plan",
+		Schema:     PathNarrativePlanSchema,
+		System: `
+You design a coherent narrative arc across a learning path.
+Return JSON only.`,
+		User: `
+PATH_INTENT_MD (optional):
+{{.PathIntentMD}}
+
+PATH_STRUCTURE_JSON:
+{{.PathStructureJSON}}
+
+PATTERN_HIERARCHY_JSON (optional):
+{{.PatternHierarchyJSON}}
+
+STYLE_MANIFEST_JSON (optional):
+{{.StyleManifestJSON}}
+
+Task:
+- Provide continuity rules and preferred transitions between lessons.
+- Specify forbidden phrases and tone notes.
+- Ensure learner-facing, content-focused continuity (no meta structure).`,
+		Validators: []Validator{
+			RequireNonEmpty("PathStructureJSON", func(in Input) string { return in.PathStructureJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptNodeNarrativePlan,
+		Version:    1,
+		SchemaName: "node_narrative_plan",
+		Schema:     NodeNarrativePlanSchema,
+		System: `
+You design a narrative plan for a single lesson.
+Return JSON only.`,
+		User: `
+NODE_TITLE:
+{{.NodeTitle}}
+
+NODE_GOAL:
+{{.NodeGoal}}
+
+CONCEPT_KEYS:
+{{.ConceptKeysCSV}}
+
+OUTLINE_JSON (optional):
+{{.OutlineHintJSON}}
+
+PATH_NARRATIVE_PLAN_JSON (optional):
+{{.PathNarrativeJSON}}
+
+STYLE_MANIFEST_JSON (optional):
+{{.StyleManifestJSON}}
+
+Task:
+- Define opening and closing intent.
+- Provide 1-3 learner-facing back-references and a subtle forward link.
+- Avoid meta-language (no "next lesson", "up next", "plan", "outline").`,
+		Validators: []Validator{
+			RequireNonEmpty("NodeTitle", func(in Input) string { return in.NodeTitle }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptMediaRank,
+		Version:    1,
+		SchemaName: "media_rank",
+		Schema:     MediaRankSchema,
+		System: `
+You select the best media assets to support specific lesson sections.
+Return JSON only.`,
+		User: `
+OUTLINE_JSON:
+{{.OutlineHintJSON}}
+
+AVAILABLE_MEDIA_ASSETS_JSON:
+{{.AssetsJSON}}
+
+NODE_NARRATIVE_PLAN_JSON (optional):
+{{.NodeNarrativeJSON}}
+
+STYLE_MANIFEST_JSON (optional):
+{{.StyleManifestJSON}}
+
+Task:
+- For each section that would benefit from media, pick the single best asset.
+- Provide purpose and rationale; only use URLs from the assets list.`,
+		Validators: []Validator{
+			RequireNonEmpty("OutlineHintJSON", func(in Input) string { return in.OutlineHintJSON }),
+			RequireNonEmpty("AssetsJSON", func(in Input) string { return in.AssetsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptConceptInventoryDelta,
 		Version:    2,
 		SchemaName: "concept_inventory_delta",

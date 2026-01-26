@@ -49,6 +49,51 @@ func chunkMetadataKind(ch *types.MaterialChunk) string {
 	return strings.TrimSpace(stringFromAny(meta["kind"]))
 }
 
+func chunkEquationLatex(ch *types.MaterialChunk) []string {
+	if ch == nil || len(ch.Metadata) == 0 || strings.TrimSpace(string(ch.Metadata)) == "" || strings.TrimSpace(string(ch.Metadata)) == "null" {
+		return nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(ch.Metadata, &meta); err != nil {
+		return nil
+	}
+	if raw := meta["equation_latex"]; raw != nil {
+		return dedupeStrings(stringSliceFromAny(raw))
+	}
+	if raw := meta["equations"]; raw != nil {
+		if arr, ok := raw.([]any); ok {
+			out := make([]string, 0, len(arr))
+			for _, it := range arr {
+				m, ok := it.(map[string]any)
+				if !ok || m == nil {
+					continue
+				}
+				latex := strings.TrimSpace(stringFromAny(m["latex"]))
+				if latex != "" {
+					out = append(out, latex)
+				}
+			}
+			return dedupeStrings(out)
+		}
+	}
+	return nil
+}
+
+func chunkTextForEmbedding(ch *types.MaterialChunk) string {
+	if ch == nil {
+		return ""
+	}
+	txt := strings.TrimSpace(ch.Text)
+	if txt == "" {
+		return ""
+	}
+	eqs := chunkEquationLatex(ch)
+	if len(eqs) == 0 {
+		return txt
+	}
+	return strings.TrimSpace(txt + "\nEquations: " + strings.Join(eqs, " ; "))
+}
+
 func isUnextractableChunk(ch *types.MaterialChunk) bool {
 	if strings.EqualFold(chunkMetadataKind(ch), "unextractable") {
 		return true

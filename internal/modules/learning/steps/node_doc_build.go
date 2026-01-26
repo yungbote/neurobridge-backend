@@ -156,27 +156,30 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	pathIntentMD := ""
 	var allowFiles map[uuid.UUID]bool
 	var patternHierarchy teachingPatternHierarchy
+	pathMeta := map[string]any{}
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
-		var meta map[string]any
-		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
-			if v, ok := meta["intake_md"]; ok && v != nil {
-				pathIntentMD = strings.TrimSpace(stringFromAny(v))
-			}
-			allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
-			if v, ok := meta["charter"]; ok && v != nil {
-				// Extract just the stable style fields (avoid charter warnings like "ask 2-4 questions").
-				if charter, ok := v.(map[string]any); ok {
-					if ps, ok := charter["path_style"]; ok && ps != nil {
-						if pb, err := json.Marshal(ps); err == nil {
-							pathStyleJSON = string(pb)
-						}
+		if err := json.Unmarshal(pathRow.Metadata, &pathMeta); err != nil || pathMeta == nil {
+			pathMeta = map[string]any{}
+		}
+	}
+	if len(pathMeta) > 0 {
+		if v, ok := pathMeta["intake_md"]; ok && v != nil {
+			pathIntentMD = strings.TrimSpace(stringFromAny(v))
+		}
+		allowFiles = intakeMaterialAllowlistFromPathMeta(pathMeta)
+		if v, ok := pathMeta["charter"]; ok && v != nil {
+			// Extract just the stable style fields (avoid charter warnings like "ask 2-4 questions").
+			if charter, ok := v.(map[string]any); ok {
+				if ps, ok := charter["path_style"]; ok && ps != nil {
+					if pb, err := json.Marshal(ps); err == nil {
+						pathStyleJSON = string(pb)
 					}
 				}
 			}
-			if v, ok := meta["pattern_hierarchy"]; ok && v != nil {
-				if pb, err := json.Marshal(v); err == nil {
-					_ = json.Unmarshal(pb, &patternHierarchy)
-				}
+		}
+		if v, ok := pathMeta["pattern_hierarchy"]; ok && v != nil {
+			if pb, err := json.Marshal(v); err == nil {
+				_ = json.Unmarshal(pb, &patternHierarchy)
 			}
 		}
 	}
@@ -514,6 +517,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		ConceptKeys []string
 		PrereqKeys  []string
 		ConceptCSV  string
+		Meta        map[string]any
 	}
 
 	infoByID := map[uuid.UUID]nodeInfo{}
@@ -540,7 +544,58 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			ConceptKeys: nodeConceptKeys,
 			PrereqKeys:  prereqKeys,
 			ConceptCSV:  conceptCSV,
+			Meta:        nodeMeta,
 		}
+	}
+
+	patternHierarchyJSON := ""
+	if v, ok := pathMeta["pattern_hierarchy"]; ok && v != nil {
+		if pb, err := json.Marshal(v); err == nil {
+			patternHierarchyJSON = string(pb)
+		}
+	}
+	if patternHierarchyJSON == "" {
+		if pb, err := json.Marshal(patternHierarchy); err == nil {
+			patternHierarchyJSON = string(pb)
+		}
+	}
+
+	pathStructureJSON := ""
+	if len(nodes) > 0 {
+		if pb, err := json.Marshal(pathStructureSummary(nodes)); err == nil {
+			pathStructureJSON = string(pb)
+		}
+	}
+
+	styleManifestJSON := ""
+	if js, updates := ensureStyleManifest(ctx, deps, pathID, pathMeta, pathIntentMD, pathStyleJSON, patternHierarchyJSON, pathStructureJSON); js != "" {
+		styleManifestJSON = js
+		if len(updates) > 0 {
+			updatePathMeta(ctx, deps, pathID, pathMeta, updates)
+			for k, v := range updates {
+				pathMeta[k] = v
+			}
+		}
+	}
+
+	pathNarrativeJSON := ""
+	if js, updates := ensurePathNarrativePlan(ctx, deps, pathID, pathMeta, pathIntentMD, patternHierarchyJSON, pathStructureJSON, styleManifestJSON); js != "" {
+		pathNarrativeJSON = js
+		if len(updates) > 0 {
+			updatePathMeta(ctx, deps, pathID, pathMeta, updates)
+			for k, v := range updates {
+				pathMeta[k] = v
+			}
+		}
+	}
+
+	styleManifestPromptJSON := strings.TrimSpace(styleManifestJSON)
+	if styleManifestPromptJSON == "" {
+		styleManifestPromptJSON = "(none)"
+	}
+	pathNarrativePromptJSON := strings.TrimSpace(pathNarrativeJSON)
+	if pathNarrativePromptJSON == "" {
+		pathNarrativePromptJSON = "(none)"
 	}
 
 	type nodeWork struct {
@@ -1050,12 +1105,16 @@ Rules:
 - First section MUST be "Roadmap".
 - 4–8 sections total, ordered from intuition -> core idea -> worked example -> practice/pitfalls -> wrap-up.
 - Provide bridge_in and bridge_out sentences that connect sections naturally.
+- bridge_in/bridge_out must be learner-facing and content-focused; do NOT mention outlines, plans, modules, paths, or lesson structure.
+- Avoid meta phrasing like "up next", "next lesson", "wrap-up", "bridge-in/out", "your next hop", or "you've seen the plan".
 - concept_keys per section should be a subset of the node's concepts (include prereqs when needed).
 - If PATTERN_CONTEXT_JSON is provided, align section flow to the selected opening/core/practice/closing patterns.
+- If STYLE_MANIFEST_JSON is provided, align tone and phrasing to its guidance.
+- If PATH_NARRATIVE_PLAN_JSON is provided, follow its continuity rules for bridge_in/out and thread_summary.
 - thread_summary is a 1–2 sentence throughline that connects this lesson to previous and next nodes.
 - key_terms are 3–7 short nouns/phrases.
 - prereq_recap is 1–2 sentences that explicitly references any prereq concepts.
-- next_preview is 1 sentence that previews the next lesson (use its title verbatim if provided).
+- next_preview is 1 sentence that previews the next lesson; if a title is provided, reference the title directly without phrases like "next lesson".
 `)
 
 			user := fmt.Sprintf(`
@@ -1075,6 +1134,12 @@ PATH_INTENT_MD:
 PATH_STYLE_JSON (optional):
 %s
 
+STYLE_MANIFEST_JSON (optional):
+%s
+
+PATH_NARRATIVE_PLAN_JSON (optional):
+%s
+
 PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 %s
 `,
@@ -1087,6 +1152,8 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				string(nctxJSON),
 				strings.TrimSpace(pathIntentMD),
 				strings.TrimSpace(pathStyleJSON),
+				styleManifestPromptJSON,
+				pathNarrativePromptJSON,
 				patternContextByNodeID[w.Node.ID],
 			)
 
@@ -1123,6 +1190,66 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				KeyTerms:    dedupeStrings(ol.KeyTerms),
 				ConceptKeys: w.ConceptKeys,
 			}
+		}
+	}
+
+	nodeNarrativeByNodeID := map[uuid.UUID]string{}
+	if envBool("NODE_NARRATIVE_ENABLED", true) && deps.AI != nil {
+		narrConc := envInt("NODE_NARRATIVE_CONCURRENCY", maxConc)
+		if narrConc < 1 {
+			narrConc = 1
+		}
+		ng, nctx := errgroup.WithContext(ctx)
+		ng.SetLimit(narrConc)
+		var nmu sync.Mutex
+		for i := range work {
+			w := work[i]
+			ng.Go(func() error {
+				if w.Node == nil || w.Node.ID == uuid.Nil {
+					return nil
+				}
+
+				outline := outlineByNodeID[w.Node.ID]
+				outline = normalizeOutline(outline, w.Node.Title, w.ConceptKeys)
+				outlineJSON, _ := json.Marshal(outline)
+
+				prevID := prevLesson[w.Node.ID]
+				nextID := nextLesson[w.Node.ID]
+				if isModule[w.Node.ID] {
+					prevID = prevModule[w.Node.ID]
+					nextID = nextModule[w.Node.ID]
+				}
+				prevTitle := strings.TrimSpace(threadByNodeID[prevID].Title)
+				nextTitle := strings.TrimSpace(threadByNodeID[nextID].Title)
+				moduleTitle := strings.TrimSpace(moduleTitleByNodeID[w.Node.ID])
+
+				nodeMeta := infoByID[w.Node.ID].Meta
+				js, updates := ensureNodeNarrativePlan(
+					nctx,
+					deps,
+					w.Node,
+					nodeMeta,
+					pathNarrativeJSON,
+					styleManifestJSON,
+					string(outlineJSON),
+					w.ConceptCSV,
+					prevTitle,
+					nextTitle,
+					moduleTitle,
+				)
+				if strings.TrimSpace(js) != "" {
+					nmu.Lock()
+					nodeNarrativeByNodeID[w.Node.ID] = js
+					nmu.Unlock()
+				}
+				if len(updates) > 0 {
+					updateNodeMeta(ctx, deps, w.Node.ID, nodeMeta, updates)
+				}
+				return nil
+			})
+		}
+		if err := ng.Wait(); err != nil && nctx.Err() != nil {
+			return out, err
 		}
 	}
 
@@ -1377,6 +1504,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 			if strings.TrimSpace(excerpts) == "" {
 				return fmt.Errorf("node_doc_build: empty grounding excerpts")
 			}
+			equationsJSON := buildEquationsJSON(chunkByID, chunkIDs)
 
 			sectionEvidenceJSON, _ := json.Marshal(sectionEvidenceList)
 			outlineJSON, _ := json.Marshal(outline)
@@ -1397,6 +1525,20 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				}
 				if allowedChunkIDs[id.String()] {
 					mustCiteIDsAllowed = append(mustCiteIDsAllowed, id)
+				}
+			}
+
+			nodeNarrativeRaw := strings.TrimSpace(nodeNarrativeByNodeID[w.Node.ID])
+			nodeNarrativeJSON := nodeNarrativeRaw
+			if nodeNarrativeJSON == "" {
+				nodeNarrativeJSON = "(none)"
+			}
+			mediaRankJSON := "(none)"
+			nodeMeta := infoByID[w.Node.ID].Meta
+			if js, updates := ensureMediaRank(gctx, deps, w.Node, nodeMeta, string(outlineJSON), assetsJSON, nodeNarrativeRaw, styleManifestJSON); strings.TrimSpace(js) != "" {
+				mediaRankJSON = js
+				if len(updates) > 0 {
+					updateNodeMeta(ctx, deps, w.Node.ID, nodeMeta, updates)
 				}
 			}
 
@@ -1460,6 +1602,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		- Use intentional repetition only as brief recap; do not copy/paste or restate the same line multiple times.
 		- Be concrete: prefer a small toy example before abstraction when possible.
 		- Do not include filler/boilerplate (e.g., repeating "The key idea is..." in every section).
+		- If STYLE_MANIFEST_JSON is provided, follow its tone/register and phrase guidance.
 		- Do not output raw concept keys (snake_case). Write concept names in natural language.
 	- Summary is already provided via the summary field; do NOT include a "Summary" heading/section that repeats it.
 	  If you include an ending recap, title it "Key takeaways" and make it additive (not a rephrase).
@@ -1477,6 +1620,8 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	- If NEXT_NODE_TITLE is provided, mention it verbatim near the end to preview what’s next.
 	- Objectives and prerequisites must appear before the Roadmap section. Key takeaways must appear near the end.
 	- If PATTERN_CONTEXT_JSON is provided, follow its opening/core/example/visual/practice/closing/depth/engagement patterns.
+	- If PATH_NARRATIVE_PLAN_JSON is provided, follow its continuity rules and preferred transitions.
+	- If NODE_NARRATIVE_PLAN_JSON is provided, honor its opening/closing intent and anchor terms.
 	- Do not mention pattern names or keys explicitly; use them as internal guidance.
 	- Use CONCEPT_KEYS as the doc's concept_keys; do not leave concept_keys empty.
 
@@ -1490,12 +1635,13 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		- If diagram.kind="mermaid": diagram.source MUST be ONLY the Mermaid spec (no prose, no "Diagram" label, no backticks/code fences). Put explanation in diagram.caption.
 		- If diagram.kind="svg": diagram.source MUST be ONLY a standalone <svg>…</svg> string (no prose). Put explanation in diagram.caption.
 		- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
+		- If MEDIA_RANK_JSON is provided, prefer its recommended asset URLs for the matching sections.
 	- Do NOT put labels/text inside figures; keep labels in captions and use diagrams for labeled visuals.
 
 	Schema contract:
 	- Use "order" as the only render order. Each order item is {kind,id}.
 	- Each order item must reference exactly one object with the same id in the corresponding array:
-	  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | objectives | prerequisites | key_takeaways | glossary | common_mistakes | misconceptions | edge_cases | heuristics | steps | checklist | faq | intuition | mental_model | why_it_matters | connections | quick_checks | dividers.
+	  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | equations | objectives | prerequisites | key_takeaways | glossary | common_mistakes | misconceptions | edge_cases | heuristics | steps | checklist | faq | intuition | mental_model | why_it_matters | connections | quick_checks | dividers.
 	- IDs must be non-empty and unique within each array (e.g., "h1","p2","qc3").
 	- Do not create orphan blocks: every object you create must appear in "order".
 
@@ -1508,6 +1654,9 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	  - Use items_md: each entry is one checklist item (no leading "- [ ]").
 	- glossary:
 	  - Use terms: {term, definition_md}. Definitions are short and operational (not textbooky).
+	- equations:
+	  - Use latex for the formula, display=true for block equations and display=false for inline equations.
+	  - If a placeholder like [[EQ1]] appears in excerpts, replace it with an equation block (do not leave the placeholder in text).
 		- faq:
 		  - Use qas: {question_md, answer_md}. Keep answers tight; no rambling.
 		- intuition/mental_model/why_it_matters:
@@ -1516,7 +1665,12 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 
 			Hard rules:
 			- Output ONLY valid JSON that matches the schema. No surrounding text.
-			- Do not include planning/meta/check-in language. Do not offer customization options.
+			- Do not include planning/meta/check-in language or backend scaffolding.
+			- Do not mention STYLE_MANIFEST_JSON, PATH_NARRATIVE_PLAN_JSON, NODE_NARRATIVE_PLAN_JSON, or MEDIA_RANK_JSON.
+			- Never reference the outline, sections, templates, nodes, modules, paths, bridges, or "next hop".
+			- Do not use headings like "Recommended drills", "Summary", "Wrap-up", or "Reveal answer".
+			- You MAY reference previous/next lesson titles (if provided) only as content continuity, not navigation.
+			- Keep tone precise and professional; avoid hype, cutesy metaphors, or condescending phrasing.
 		- Quick checks may be short-answer, true/false, or multiple choice.
 		  - For quick_checks items, ALWAYS include: kind, options, answer_id (schema requires them).
 		  - short_answer: kind="short_answer", options=[], answer_id=""; answer_md is the reference answer/explanation.
@@ -1610,6 +1764,18 @@ MODULE_TITLE (optional; use verbatim if provided):
 PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 %s
 
+STYLE_MANIFEST_JSON (optional):
+%s
+
+PATH_NARRATIVE_PLAN_JSON (optional):
+%s
+
+NODE_NARRATIVE_PLAN_JSON (optional):
+%s
+
+MEDIA_RANK_JSON (optional; recommended assets per section):
+%s
+
 OUTLINE_JSON (section headings + goals + bridges; follow exactly):
 %s
 
@@ -1617,6 +1783,9 @@ SECTION_EXCERPTS_JSON (per section chunk_ids + excerpts; use for grounding):
 %s
 
 NARRATIVE_CONTEXT_JSON (prev/next summaries + module + graph hints):
+%s
+
+EQUATIONS_JSON (optional; per chunk placeholders + LaTeX):
 %s
 
 USER_KNOWLEDGE_JSON (optional; mastery/exposure for CONCEPT_KEYS; do not mention explicitly):
@@ -1683,9 +1852,14 @@ Return ONLY JSON matching schema.`,
 					nextTitle,
 					moduleTitle,
 					patternContextByNodeID[w.Node.ID],
+					styleManifestPromptJSON,
+					pathNarrativePromptJSON,
+					strings.TrimSpace(nodeNarrativeJSON),
+					strings.TrimSpace(mediaRankJSON),
 					string(outlineJSON),
 					string(sectionEvidenceJSON),
 					string(nctxJSON),
+					equationsJSON,
 					w.UserKnowledgeJSON,
 					userProfileDoc,
 					teachingJSON,
@@ -1845,6 +2019,21 @@ Return ONLY JSON matching schema.`,
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
 					doc = withIDs
 				}
+				var polishStats map[string]any
+				if envBool("NODE_DOC_POLISH_ENABLED", true) {
+					if hits := content.DetectNodeDocMetaPhrases(doc); len(hits) > 0 {
+						if polished, stats, ok := polishNodeDocMeta(gctx, deps, doc, styleManifestPromptJSON, pathNarrativePromptJSON, nodeNarrativeJSON); ok {
+							doc = polished
+							polishStats = stats
+							if scrubbed, phrases := content.ScrubNodeDocV1(doc); len(phrases) > 0 {
+								doc = scrubbed
+							}
+							if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
+								doc = withIDs
+							}
+						}
+					}
+				}
 
 				if len(availableAssets) > 0 {
 					mediaUsedMu.Lock()
@@ -1885,8 +2074,21 @@ Return ONLY JSON matching schema.`,
 						doc = withIDs
 					}
 				}
+				threadingInjected := false
+				if strictNarrative {
+					if patched, changed := ensureNodeDocThreadingReferences(doc, prevTitle, nextTitle, moduleTitle); changed {
+						doc = patched
+						threadingInjected = true
+						if withIDs, changedIDs := content.EnsureNodeDocBlockIDs(doc); changedIDs {
+							doc = withIDs
+						}
+					}
+				}
 
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
+				if len(polishStats) > 0 {
+					metrics["meta_polish"] = polishStats
+				}
 				if len(orderRepairMetrics) > 0 {
 					metrics["order_repair"] = orderRepairMetrics
 				}
@@ -1896,6 +2098,9 @@ Return ONLY JSON matching schema.`,
 				}
 				if teachOrderChanged {
 					metrics["quick_check_teach_order"] = teachOrderStats.Map()
+				}
+				if threadingInjected {
+					metrics["threading_injected"] = true
 				}
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
 				if len(mustCiteIDsAllowed) > 0 {

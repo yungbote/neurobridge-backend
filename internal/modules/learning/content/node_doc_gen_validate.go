@@ -52,6 +52,9 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 	for _, b := range gen.Tables {
 		addID("table", b.ID)
 	}
+	for _, b := range gen.Equations {
+		addID("equation", b.ID)
+	}
 	for _, b := range gen.QuickChecks {
 		addID("quick_check", b.ID)
 	}
@@ -182,6 +185,8 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 			prefix = "diag"
 		case "table":
 			prefix = "tbl"
+		case "equation":
+			prefix = "eq"
 		case "quick_check":
 			prefix = "qc"
 		case "divider":
@@ -314,6 +319,15 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 				idsFilled++
 			}
 			record("table", gen.Tables[i].ID)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for i := range gen.Equations {
+			if ensureID("equation", &gen.Equations[i].ID, i, seen) {
+				idsFilled++
+			}
+			record("equation", gen.Equations[i].ID)
 		}
 	}
 	{
@@ -509,7 +523,7 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 
 	kindOrder := []string{
 		"prerequisites", "objectives",
-		"heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table",
+		"heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "equation",
 		"steps", "checklist", "quick_check", "intuition", "mental_model", "why_it_matters",
 		"common_mistakes", "misconceptions", "edge_cases", "heuristics",
 		"faq", "glossary", "key_takeaways", "connections", "divider",

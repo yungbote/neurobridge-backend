@@ -16,6 +16,9 @@ type MaterialEntity struct {
 	MaterialSetID uuid.UUID    `gorm:"type:uuid;not null;index;index:idx_material_entity_set_key,unique,priority:1" json:"material_set_id"`
 	MaterialSet   *MaterialSet `gorm:"constraint:OnDelete:CASCADE;foreignKey:MaterialSetID;references:ID" json:"material_set,omitempty"`
 
+	GlobalEntityID *uuid.UUID   `gorm:"type:uuid;index" json:"global_entity_id,omitempty"`
+	GlobalEntity   *GlobalEntity `gorm:"constraint:OnDelete:SET NULL;foreignKey:GlobalEntityID;references:ID" json:"global_entity,omitempty"`
+
 	// Key is a stable normalized identifier (e.g., lowercased name) used for idempotent upserts.
 	Key string `gorm:"type:text;not null;index:idx_material_entity_set_key,unique,priority:2" json:"key"`
 

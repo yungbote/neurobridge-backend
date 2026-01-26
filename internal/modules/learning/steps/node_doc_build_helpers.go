@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
@@ -786,6 +788,158 @@ func sanitizeNodeDocDiagrams(doc content.NodeDocV1) (content.NodeDocV1, bool) {
 	return doc, changed
 }
 
+func buildEquationsJSON(chunkByID map[uuid.UUID]*types.MaterialChunk, chunkIDs []uuid.UUID) string {
+	if len(chunkByID) == 0 || len(chunkIDs) == 0 {
+		return ""
+	}
+	type eqItem struct {
+		Placeholder string `json:"placeholder,omitempty"`
+		Latex       string `json:"latex"`
+		Display     bool   `json:"display"`
+	}
+	type eqChunk struct {
+		ChunkID   string   `json:"chunk_id"`
+		Equations []eqItem `json:"equations"`
+	}
+	out := make([]eqChunk, 0)
+	for _, id := range chunkIDs {
+		if id == uuid.Nil {
+			continue
+		}
+		ch := chunkByID[id]
+		if ch == nil || len(ch.Metadata) == 0 || strings.TrimSpace(string(ch.Metadata)) == "" || strings.TrimSpace(string(ch.Metadata)) == "null" {
+			continue
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(ch.Metadata, &meta); err != nil {
+			continue
+		}
+		items := make([]eqItem, 0)
+		if raw := meta["equations"]; raw != nil {
+			if arr, ok := raw.([]any); ok {
+				for _, it := range arr {
+					m, ok := it.(map[string]any)
+					if !ok || m == nil {
+						continue
+					}
+					latex := strings.TrimSpace(stringFromAny(m["latex"]))
+					if latex == "" {
+						continue
+					}
+					display := false
+					if v, ok := m["display"]; ok {
+						if b, ok := v.(bool); ok {
+							display = b
+						}
+					}
+					items = append(items, eqItem{
+						Placeholder: strings.TrimSpace(stringFromAny(m["placeholder"])),
+						Latex:       latex,
+						Display:     display,
+					})
+				}
+			}
+		}
+		if len(items) == 0 {
+			if raw := meta["equation_latex"]; raw != nil {
+				for _, s := range stringSliceFromAny(raw) {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						continue
+					}
+					items = append(items, eqItem{Latex: s})
+				}
+			}
+		}
+		if len(items) == 0 {
+			continue
+		}
+		out = append(out, eqChunk{ChunkID: id.String(), Equations: items})
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(map[string]any{"equations": out})
+	return string(b)
+}
+
+func polishNodeDocMeta(ctx context.Context, deps NodeDocBuildDeps, doc content.NodeDocV1, styleManifestJSON, pathNarrativeJSON, nodeNarrativeJSON string) (content.NodeDocV1, map[string]any, bool) {
+	if deps.AI == nil || !envBool("NODE_DOC_POLISH_ENABLED", true) {
+		return doc, nil, false
+	}
+	schemaDoc, err := schema.NodeDocV1()
+	if err != nil {
+		return doc, nil, false
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil || len(raw) == 0 {
+		return doc, nil, false
+	}
+
+	style := strings.TrimSpace(styleManifestJSON)
+	if style == "" {
+		style = "(none)"
+	}
+	pathNarrative := strings.TrimSpace(pathNarrativeJSON)
+	if pathNarrative == "" {
+		pathNarrative = "(none)"
+	}
+	nodeNarrative := strings.TrimSpace(nodeNarrativeJSON)
+	if nodeNarrative == "" {
+		nodeNarrative = "(none)"
+	}
+
+	system := strings.TrimSpace(`
+MODE: NODE_DOC_POLISH
+
+You polish a learner-facing lesson doc to remove meta/templating language.
+Rules:
+- Output ONLY valid JSON that matches the schema.
+- Do NOT change ids, order, block types, citations, URLs, code, diagram.source, or table rows/columns.
+- Only rewrite learner-facing text fields to be polished and content-focused.
+- Preserve meaning and citations; do not add or remove blocks.`)
+
+	user := fmt.Sprintf(`
+NODE_DOC_JSON:
+%s
+
+STYLE_MANIFEST_JSON (optional):
+%s
+
+PATH_NARRATIVE_PLAN_JSON (optional):
+%s
+
+NODE_NARRATIVE_PLAN_JSON (optional):
+%s
+
+Task:
+- Rewrite any meta/scaffolding phrasing into clean learner-facing language.
+- If no changes are needed, return the input unchanged.
+- Keep order and ids identical to the input.
+
+Output:
+Return ONLY JSON matching schema.`,
+		string(raw),
+		style,
+		pathNarrative,
+		nodeNarrative,
+	)
+
+	obj, err := deps.AI.GenerateJSON(ctx, system, user, "node_doc_v1", schemaDoc)
+	if err != nil {
+		return doc, map[string]any{"polish_error": err.Error()}, false
+	}
+	rawOut, _ := json.Marshal(obj)
+	var polished content.NodeDocV1
+	if err := json.Unmarshal(rawOut, &polished); err != nil {
+		return doc, map[string]any{"polish_error": "unmarshal_failed"}, false
+	}
+	if polished.SchemaVersion == 0 {
+		polished.SchemaVersion = doc.SchemaVersion
+	}
+	return polished, map[string]any{"polish_meta": true}, true
+}
+
 func stripCodeFences(src string) string {
 	s := strings.TrimSpace(src)
 	if !strings.HasPrefix(s, "```") {
@@ -1442,6 +1596,78 @@ func insertAfterFirstBodyBlock(blocks []map[string]any, block map[string]any) []
 	out = append(out, block)
 	out = append(out, blocks[insertAt:]...)
 	return out
+}
+
+func insertBeforeTailBlocks(blocks []map[string]any, block map[string]any) []map[string]any {
+	if block == nil {
+		return blocks
+	}
+	if len(blocks) == 0 {
+		return []map[string]any{block}
+	}
+	tailKinds := map[string]bool{
+		"key_takeaways":   true,
+		"glossary":        true,
+		"faq":             true,
+		"checklist":       true,
+		"common_mistakes": true,
+		"misconceptions":  true,
+		"edge_cases":      true,
+		"heuristics":      true,
+		"connections":     true,
+		"divider":         true,
+	}
+	insertAt := len(blocks)
+	for i, b := range blocks {
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		if tailKinds[t] {
+			insertAt = i
+			break
+		}
+	}
+	out := make([]map[string]any, 0, len(blocks)+1)
+	out = append(out, blocks[:insertAt]...)
+	out = append(out, block)
+	out = append(out, blocks[insertAt:]...)
+	return out
+}
+
+func ensureNodeDocThreadingReferences(doc content.NodeDocV1, prevTitle string, nextTitle string, moduleTitle string) (content.NodeDocV1, bool) {
+	if strings.TrimSpace(prevTitle) == "" && strings.TrimSpace(nextTitle) == "" && strings.TrimSpace(moduleTitle) == "" {
+		return doc, false
+	}
+	docText := ""
+	if raw, err := json.Marshal(doc); err == nil {
+		docText = string(raw)
+	}
+	missingPrev := strings.TrimSpace(prevTitle) != "" && !containsInsensitive(docText, prevTitle)
+	missingNext := strings.TrimSpace(nextTitle) != "" && !containsInsensitive(docText, nextTitle)
+	missingModule := strings.TrimSpace(moduleTitle) != "" && !containsInsensitive(docText, moduleTitle)
+	if !missingPrev && !missingNext && !missingModule {
+		return doc, false
+	}
+	sentences := make([]string, 0, 3)
+	if missingPrev {
+		sentences = append(sentences, fmt.Sprintf("Earlier in \"%s\", we set the foundation this lesson builds on.", strings.TrimSpace(prevTitle)))
+	}
+	if missingModule {
+		sentences = append(sentences, fmt.Sprintf("This fits within the \"%s\" module, connecting today's ideas to the broader path.", strings.TrimSpace(moduleTitle)))
+	}
+	if missingNext {
+		sentences = append(sentences, fmt.Sprintf("Up next, \"%s\" carries these ideas forward with the next set of applications.", strings.TrimSpace(nextTitle)))
+	}
+	md := strings.TrimSpace(strings.Join(sentences, " "))
+	if md == "" {
+		return doc, false
+	}
+	block := map[string]any{
+		"id":        "thread_" + uuid.New().String(),
+		"type":      "paragraph",
+		"md":        md,
+		"citations": []any{},
+	}
+	doc.Blocks = insertBeforeTailBlocks(doc.Blocks, block)
+	return doc, true
 }
 
 func uuidStrings(ids []uuid.UUID) []string {

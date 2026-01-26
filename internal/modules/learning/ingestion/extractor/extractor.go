@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -224,6 +225,49 @@ func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.Materia
 
 	now := time.Now()
 	chunks := make([]*types.MaterialChunk, 0, len(segs)*2)
+	chunkRefRows := make([]*types.MaterialChunkReference, 0, 32)
+
+	var refRows []*types.MaterialReference
+	refByLabel := map[string]*types.MaterialReference{}
+	refByAuthorYear := map[string]*types.MaterialReference{}
+	labelSet := map[string]bool{}
+	authorYearSet := map[string]bool{}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BIBLIOGRAPHY_PARSE_ENABLED")), "") || strings.EqualFold(strings.TrimSpace(os.Getenv("BIBLIOGRAPHY_PARSE_ENABLED")), "true") {
+		bibEntries := ParseBibliography(JoinSegmentsText(segs))
+		if len(bibEntries) > 0 {
+			for i, e := range bibEntries {
+				label := strings.TrimSpace(e.Label)
+				if label == "" {
+					label = fmt.Sprintf("ref_%d", i+1)
+				}
+				if refByLabel[label] != nil {
+					continue
+				}
+				authorsJSON, _ := json.Marshal(dedupeStrings(e.Authors))
+				metaJSON, _ := json.Marshal(map[string]any{"source": "bibliography_parse"})
+				row := &types.MaterialReference{
+					ID:             uuid.New(),
+					MaterialFileID: mf.ID,
+					Label:          label,
+					Raw:            strings.TrimSpace(e.Raw),
+					Authors:        datatypes.JSON(authorsJSON),
+					Title:          strings.TrimSpace(e.Title),
+					Year:           e.Year,
+					DOI:            strings.TrimSpace(e.DOI),
+					Metadata:       datatypes.JSON(metaJSON),
+					CreatedAt:      now,
+					UpdatedAt:      now,
+				}
+				refRows = append(refRows, row)
+				refByLabel[label] = row
+				labelSet[label] = true
+				if key := authorYearKey(e); key != "" {
+					refByAuthorYear[key] = row
+					authorYearSet[key] = true
+				}
+			}
+		}
+	}
 
 	idx := 0
 	for _, seg := range segs {
@@ -252,7 +296,8 @@ func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.Materia
 			meta["speaker_tag"] = *seg.SpeakerTag
 		}
 
-		parts := SplitIntoChunks(text, e.ChunkSize, e.ChunkOverlap)
+		cleanText, eqs := ExtractLatexEquations(text)
+		parts := SplitIntoChunks(cleanText, e.ChunkSize, e.ChunkOverlap)
 
 		for _, ptxt := range parts {
 			ptxt = strings.TrimSpace(ptxt)
@@ -260,16 +305,94 @@ func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.Materia
 				continue
 			}
 			ptxt = sanitizeUTF8(ptxt)
-			chunks = append(chunks, &types.MaterialChunk{
+			localMeta := meta
+			if len(eqs) > 0 {
+				chEqs := equationsForChunk(ptxt, eqs)
+				if len(chEqs) > 0 {
+					// Copy meta to avoid mutating the shared map between chunks.
+					tmp := map[string]any{}
+					for k, v := range meta {
+						tmp[k] = v
+					}
+					eqList := make([]map[string]any, 0, len(chEqs))
+					latexList := make([]string, 0, len(chEqs))
+					placeholders := make([]string, 0, len(chEqs))
+					for _, eq := range chEqs {
+						if strings.TrimSpace(eq.Latex) == "" {
+							continue
+						}
+						eqList = append(eqList, map[string]any{
+							"placeholder": eq.Placeholder,
+							"latex":       eq.Latex,
+							"display":     eq.Display,
+						})
+						latexList = append(latexList, eq.Latex)
+						placeholders = append(placeholders, eq.Placeholder)
+					}
+					if len(eqList) > 0 {
+						tmp["equations"] = eqList
+						tmp["equation_latex"] = dedupeStrings(latexList)
+						tmp["equation_placeholders"] = dedupeStrings(placeholders)
+						tmp["equation_source"] = "latex_delimiters"
+						localMeta = tmp
+					}
+				}
+			}
+			chunk := &types.MaterialChunk{
 				ID:             uuid.New(),
 				MaterialFileID: mf.ID,
 				Index:          idx,
 				Text:           ptxt,
 				Embedding:      datatypes.JSON(nil),
-				Metadata:       datatypes.JSON(mustJSON(meta)),
+				Metadata:       datatypes.JSON(mustJSON(localMeta)),
 				CreatedAt:      now,
 				UpdatedAt:      now,
-			})
+			}
+			if len(refRows) > 0 {
+				links := ExtractCitationLinks(ptxt, labelSet, authorYearSet)
+				if len(links) > 0 {
+					// Attach lightweight citation links to chunk metadata.
+					tmp := map[string]any{}
+					for k, v := range localMeta {
+						tmp[k] = v
+					}
+					linkMeta := make([]map[string]any, 0, len(links))
+					for _, link := range links {
+						ref := refByLabel[link.Label]
+						if link.Kind == "author_year" {
+							ref = refByAuthorYear[link.Key]
+						}
+						if ref == nil {
+							continue
+						}
+						linkMeta = append(linkMeta, map[string]any{
+							"ref_id":           ref.ID.String(),
+							"label":            ref.Label,
+							"kind":             link.Kind,
+							"match":            link.Match,
+							"doi":              ref.DOI,
+							"year":             ref.Year,
+							"title":            ref.Title,
+							"material_file_id": mf.ID.String(),
+						})
+						chunkRefRows = append(chunkRefRows, &types.MaterialChunkReference{
+							ID:                  uuid.New(),
+							MaterialChunkID:     chunk.ID,
+							MaterialReferenceID: ref.ID,
+							CitationText:        strings.TrimSpace(link.Match),
+							CitationKind:        strings.TrimSpace(link.Kind),
+							Metadata:            datatypes.JSON(mustJSON(map[string]any{"label": ref.Label})),
+							CreatedAt:           now,
+							UpdatedAt:           now,
+						})
+					}
+					if len(linkMeta) > 0 {
+						tmp["citation_refs"] = linkMeta
+						chunk.Metadata = datatypes.JSON(mustJSON(tmp))
+					}
+				}
+			}
+			chunks = append(chunks, chunk)
 			idx++
 		}
 	}
@@ -287,8 +410,18 @@ func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.Materia
 		})
 	}
 
+	if len(refRows) > 0 {
+		if err := transaction.WithContext(dbc.Ctx).Create(refRows).Error; err != nil {
+			return fmt.Errorf("create material references: %w", err)
+		}
+	}
 	if _, err := e.MaterialChunkRepo.Create(dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}, chunks); err != nil {
 		return fmt.Errorf("create material chunks: %w", err)
+	}
+	if len(chunkRefRows) > 0 {
+		if err := transaction.WithContext(dbc.Ctx).Create(chunkRefRows).Error; err != nil {
+			return fmt.Errorf("create chunk reference joins: %w", err)
+		}
 	}
 	return nil
 }

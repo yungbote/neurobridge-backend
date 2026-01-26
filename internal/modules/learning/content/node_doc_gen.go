@@ -121,6 +121,7 @@ type NodeDocGenV1 struct {
 	Videos      []NodeDocGenVideoV1      `json:"videos"`
 	Diagrams    []NodeDocGenDiagramV1    `json:"diagrams"`
 	Tables      []NodeDocGenTableV1      `json:"tables"`
+	Equations   []NodeDocGenEquationV1   `json:"equations"`
 	QuickChecks []NodeDocGenQuickCheckV1 `json:"quick_checks"`
 	Dividers    []NodeDocGenDividerV1    `json:"dividers"`
 
@@ -200,6 +201,14 @@ type NodeDocGenTableV1 struct {
 	Caption   string          `json:"caption"`
 	Columns   []string        `json:"columns"`
 	Rows      [][]string      `json:"rows"`
+	Citations []CitationRefV1 `json:"citations"`
+}
+
+type NodeDocGenEquationV1 struct {
+	ID        string          `json:"id"`
+	Latex     string          `json:"latex"`
+	Display   bool            `json:"display"`
+	Caption   string          `json:"caption"`
 	Citations []CitationRefV1 `json:"citations"`
 }
 
@@ -302,6 +311,8 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	diagramSeq := make([]NodeDocGenDiagramV1, 0, len(gen.Diagrams))
 	tables := map[string]NodeDocGenTableV1{}
 	tableSeq := make([]NodeDocGenTableV1, 0, len(gen.Tables))
+	equations := map[string]NodeDocGenEquationV1{}
+	equationSeq := make([]NodeDocGenEquationV1, 0, len(gen.Equations))
 	qcs := map[string]NodeDocGenQuickCheckV1{}
 	qcSeq := make([]NodeDocGenQuickCheckV1, 0, len(gen.QuickChecks))
 	divs := map[string]NodeDocGenDividerV1{}
@@ -446,6 +457,18 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			t.ID = id
 			tables[id] = t
 			tableSeq = append(tableSeq, t)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, e := range gen.Equations {
+			id, ok := addUnique("equation", e.ID, seen)
+			if !ok {
+				continue
+			}
+			e.ID = id
+			equations[id] = e
+			equationSeq = append(equationSeq, e)
 		}
 	}
 	{
@@ -662,6 +685,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	refVideo := map[string]bool{}
 	refDiagram := map[string]bool{}
 	refTable := map[string]bool{}
+	refEquations := map[string]bool{}
 	refQC := map[string]bool{}
 	refDivider := map[string]bool{}
 
@@ -808,6 +832,20 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 				"columns":   toAny(t.Columns),
 				"rows":      toAny(t.Rows),
 				"citations": toAny(t.Citations),
+			})
+		case "equation":
+			eq, ok := equations[id]
+			if !ok {
+				continue
+			}
+			refEquations[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":        id,
+				"type":      "equation",
+				"latex":     eq.Latex,
+				"display":   eq.Display,
+				"caption":   eq.Caption,
+				"citations": toAny(eq.Citations),
 			})
 		case "quick_check":
 			q, ok := qcs[id]
@@ -1082,6 +1120,12 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			continue
 		}
 		doc.Blocks = append(doc.Blocks, map[string]any{"id": t.ID, "type": "table", "caption": t.Caption, "columns": toAny(t.Columns), "rows": toAny(t.Rows), "citations": toAny(t.Citations)})
+	}
+	for _, e := range equationSeq {
+		if refEquations[e.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{"id": e.ID, "type": "equation", "latex": e.Latex, "display": e.Display, "caption": e.Caption, "citations": toAny(e.Citations)})
 	}
 	for _, q := range qcSeq {
 		if refQC[q.ID] {

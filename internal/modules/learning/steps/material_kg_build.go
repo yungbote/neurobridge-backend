@@ -9,7 +9,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -402,15 +404,46 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 		}
 	}
 
+	// Cross-set entity resolution (user-level global entities).
+	var globalEntityRows []*types.GlobalEntity
+	if len(entityRows) > 0 {
+		if globals, stats, gerr := resolveGlobalEntities(ctx, deps, in.OwnerUserID, entityRows); gerr == nil {
+			globalEntityRows = globals
+			if len(stats) > 0 {
+				out.Trace["global_entities"] = stats
+			}
+		} else if deps.Log != nil {
+			deps.Log.Warn("material_kg_build: global entity resolution failed (continuing)", "error", gerr, "user_id", in.OwnerUserID.String())
+		}
+	}
+
 	// Persist (idempotent upserts).
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		_ = advisoryXactLock(tx, "material_kg_build", kgSetID)
+
+		if len(globalEntityRows) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "user_id"}, {Name: "key"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"name",
+					"type",
+					"description",
+					"aliases",
+					"embedding",
+					"metadata",
+					"updated_at",
+				}),
+			}).Create(&globalEntityRows).Error; err != nil {
+				return err
+			}
+		}
 
 		if len(entityRows) > 0 {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
 					"material_set_id",
+					"global_entity_id",
 					"key",
 					"name",
 					"type",
@@ -572,6 +605,518 @@ func syncMaterialKGToNeo4j(ctx context.Context, deps MaterialKGBuildDeps, materi
 	}
 
 	return graphstore.UpsertMaterialEntitiesClaimsGraph(ctx, deps.Graph, deps.Log, materialSetID, entities, claims, filteredChEnt, filteredChCl, filteredClEnt, filteredClCon)
+}
+
+func resolveGlobalEntities(ctx context.Context, deps MaterialKGBuildDeps, userID uuid.UUID, entities []*types.MaterialEntity) ([]*types.GlobalEntity, map[string]any, error) {
+	stats := map[string]any{}
+	if deps.DB == nil || deps.AI == nil || userID == uuid.Nil || len(entities) == 0 {
+		return nil, stats, nil
+	}
+
+	var globals []*types.GlobalEntity
+	if err := deps.DB.WithContext(ctx).Model(&types.GlobalEntity{}).Where("user_id = ?", userID).Find(&globals).Error; err != nil {
+		return nil, stats, err
+	}
+	stats["existing_globals"] = len(globals)
+
+	globalByKey := map[string]*types.GlobalEntity{}
+	globalByAlias := map[string]*types.GlobalEntity{}
+	updatedGlobals := map[uuid.UUID]*types.GlobalEntity{}
+	missingGlobals := make([]*types.GlobalEntity, 0)
+
+	for _, g := range globals {
+		if g == nil || g.ID == uuid.Nil {
+			continue
+		}
+		key := normalizeGlobalEntityKey(g.Key)
+		if key == "" {
+			key = normalizeGlobalEntityKey(g.Name)
+		}
+		if key != "" && globalByKey[key] == nil {
+			globalByKey[key] = g
+		}
+		aliases := mergeAliases(aliasesFromJSON(g.Aliases), g.Name, g.Key)
+		addAliasesToMap(globalByAlias, g, aliases)
+		if embeddingMissing(g.Embedding) {
+			missingGlobals = append(missingGlobals, g)
+		}
+	}
+
+	if len(missingGlobals) > 0 {
+		docs := make([]string, len(missingGlobals))
+		for i, g := range missingGlobals {
+			docs[i] = globalEntityEmbeddingDoc(g)
+		}
+		batchSize := envIntAllowZero("GLOBAL_ENTITY_EMBED_BATCH_SIZE", 64)
+		conc := envIntAllowZero("GLOBAL_ENTITY_EMBED_CONCURRENCY", 4)
+		embs, err := embedTextBatches(ctx, deps.AI, docs, batchSize, conc)
+		if err != nil {
+			return nil, stats, err
+		}
+		if len(embs) != len(missingGlobals) {
+			return nil, stats, fmt.Errorf("material_kg_build: global embedding count mismatch")
+		}
+		for i, g := range missingGlobals {
+			if g == nil || g.ID == uuid.Nil {
+				continue
+			}
+			if len(embs[i]) == 0 {
+				continue
+			}
+			g.Embedding = datatypes.JSON(mustJSON(embs[i]))
+			updatedGlobals[g.ID] = g
+		}
+		stats["embedded_globals"] = len(missingGlobals)
+	}
+
+	type globalEmb struct {
+		Entity *types.GlobalEntity
+		Emb    []float32
+	}
+	globalEmbeds := make([]globalEmb, 0, len(globals))
+	for _, g := range globals {
+		if g == nil || g.ID == uuid.Nil {
+			continue
+		}
+		if emb, ok := decodeEmbedding(g.Embedding); ok && len(emb) > 0 {
+			globalEmbeds = append(globalEmbeds, globalEmb{Entity: g, Emb: emb})
+		}
+	}
+	stats["globals_with_embeddings"] = len(globalEmbeds)
+
+	matchedKey := 0
+	matchedAlias := 0
+	candidateEnts := make([]*types.MaterialEntity, 0)
+	candidateDocs := make([]string, 0)
+	entityKey := map[uuid.UUID]string{}
+
+	for _, e := range entities {
+		if e == nil || e.ID == uuid.Nil {
+			continue
+		}
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			name = strings.TrimSpace(e.Key)
+		}
+		key := normalizeGlobalEntityKey(name)
+		if key == "" {
+			key = normalizeGlobalEntityKey(e.Key)
+		}
+		if key == "" {
+			continue
+		}
+		entityKey[e.ID] = key
+		if g := globalByKey[key]; g != nil {
+			linkEntityToGlobal(e, g, updatedGlobals, globalByAlias)
+			matchedKey++
+			continue
+		}
+		if g := globalByAlias[key]; g != nil {
+			linkEntityToGlobal(e, g, updatedGlobals, globalByAlias)
+			matchedAlias++
+			continue
+		}
+		candidateEnts = append(candidateEnts, e)
+		candidateDocs = append(candidateDocs, materialEntityEmbeddingDoc(e))
+	}
+	stats["matched_key"] = matchedKey
+	stats["matched_alias"] = matchedAlias
+
+	candidateEmb := map[uuid.UUID][]float32{}
+	if len(candidateEnts) > 0 {
+		batchSize := envIntAllowZero("GLOBAL_ENTITY_EMBED_BATCH_SIZE", 64)
+		conc := envIntAllowZero("GLOBAL_ENTITY_EMBED_CONCURRENCY", 4)
+		embs, err := embedTextBatches(ctx, deps.AI, candidateDocs, batchSize, conc)
+		if err != nil {
+			return nil, stats, err
+		}
+		if len(embs) != len(candidateEnts) {
+			return nil, stats, fmt.Errorf("material_kg_build: entity embedding count mismatch")
+		}
+		for i, e := range candidateEnts {
+			if e == nil || e.ID == uuid.Nil {
+				continue
+			}
+			candidateEmb[e.ID] = embs[i]
+		}
+		stats["embedded_entities"] = len(candidateEnts)
+	}
+
+	baseThreshold := envFloatAllowZero("GLOBAL_ENTITY_SIM_THRESHOLD", 0.88)
+	if baseThreshold <= 0 {
+		baseThreshold = 0.88
+	}
+	stats["global_entity_threshold"] = baseThreshold
+
+	matchedEmb := 0
+	created := 0
+
+	for _, e := range candidateEnts {
+		if e == nil || e.ID == uuid.Nil {
+			continue
+		}
+		key := entityKey[e.ID]
+		emb := candidateEmb[e.ID]
+		if len(emb) == 0 {
+			continue
+		}
+
+		bestScore := 0.0
+		var best *types.GlobalEntity
+		for _, g := range globalEmbeds {
+			score := cosineSim(emb, g.Emb)
+			if score > bestScore {
+				bestScore = score
+				best = g.Entity
+			}
+		}
+		threshold := baseThreshold
+		if len(key) <= 4 {
+			threshold = baseThreshold + 0.04
+		}
+		if best != nil && bestScore >= threshold {
+			linkEntityToGlobal(e, best, updatedGlobals, globalByAlias)
+			matchedEmb++
+			continue
+		}
+
+		if key != "" {
+			if existing := globalByKey[key]; existing != nil {
+				linkEntityToGlobal(e, existing, updatedGlobals, globalByAlias)
+				matchedEmb++
+				continue
+			}
+		}
+
+		newGlobal := buildGlobalEntityFromMaterial(userID, e, key, emb)
+		if newGlobal == nil {
+			continue
+		}
+		globalByKey[key] = newGlobal
+		addAliasesToMap(globalByAlias, newGlobal, mergeAliases(aliasesFromJSON(newGlobal.Aliases), newGlobal.Name, newGlobal.Key))
+		globalEmbeds = append(globalEmbeds, globalEmb{Entity: newGlobal, Emb: emb})
+		updatedGlobals[newGlobal.ID] = newGlobal
+		e.GlobalEntityID = &newGlobal.ID
+		created++
+	}
+
+	stats["matched_embedding"] = matchedEmb
+	stats["created_globals"] = created
+
+	out := make([]*types.GlobalEntity, 0, len(updatedGlobals))
+	for _, g := range updatedGlobals {
+		if g != nil && g.ID != uuid.Nil {
+			out = append(out, g)
+		}
+	}
+	return out, stats, nil
+}
+
+func buildGlobalEntityFromMaterial(userID uuid.UUID, ent *types.MaterialEntity, key string, emb []float32) *types.GlobalEntity {
+	if ent == nil || userID == uuid.Nil {
+		return nil
+	}
+	if key == "" {
+		key = normalizeGlobalEntityKey(ent.Key)
+	}
+	if key == "" {
+		return nil
+	}
+	name := strings.TrimSpace(ent.Name)
+	if name == "" {
+		name = strings.TrimSpace(ent.Key)
+	}
+	aliases := mergeAliases(aliasesFromJSON(ent.Aliases), name, ent.Key)
+	meta := map[string]any{
+		"source":          "material_kg_build",
+		"material_set_id": ent.MaterialSetID.String(),
+	}
+	typ := strings.TrimSpace(ent.Type)
+	if typ == "" {
+		typ = "unknown"
+	}
+	desc := strings.TrimSpace(ent.Description)
+	row := &types.GlobalEntity{
+		ID:          uuid.New(),
+		UserID:      userID,
+		Key:         key,
+		Name:        name,
+		Type:        typ,
+		Description: desc,
+		Aliases:     datatypes.JSON(mustJSON(aliases)),
+		Metadata:    datatypes.JSON(mustJSON(meta)),
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if len(emb) > 0 {
+		row.Embedding = datatypes.JSON(mustJSON(emb))
+	}
+	return row
+}
+
+func linkEntityToGlobal(ent *types.MaterialEntity, g *types.GlobalEntity, updated map[uuid.UUID]*types.GlobalEntity, aliasMap map[string]*types.GlobalEntity) {
+	if ent == nil || g == nil || g.ID == uuid.Nil {
+		return
+	}
+	ent.GlobalEntityID = &g.ID
+
+	changed := false
+	if strings.TrimSpace(g.Name) == "" {
+		g.Name = strings.TrimSpace(ent.Name)
+		changed = true
+	}
+	if strings.TrimSpace(g.Type) == "" || strings.EqualFold(strings.TrimSpace(g.Type), "unknown") {
+		if strings.TrimSpace(ent.Type) != "" {
+			g.Type = strings.TrimSpace(ent.Type)
+			changed = true
+		}
+	}
+	if strings.TrimSpace(g.Description) == "" && strings.TrimSpace(ent.Description) != "" {
+		g.Description = strings.TrimSpace(ent.Description)
+		changed = true
+	}
+
+	existingAliases := aliasesFromJSON(g.Aliases)
+	newAliases := mergeAliases(existingAliases, ent.Name, ent.Key)
+	newAliases = mergeAliases(newAliases, aliasesFromJSON(ent.Aliases)...)
+	if len(newAliases) != len(existingAliases) {
+		g.Aliases = datatypes.JSON(mustJSON(newAliases))
+		addAliasesToMap(aliasMap, g, newAliases)
+		changed = true
+	}
+
+	if changed {
+		g.UpdatedAt = time.Now()
+		updated[g.ID] = g
+	}
+}
+
+func globalEntityEmbeddingDoc(g *types.GlobalEntity) string {
+	if g == nil {
+		return ""
+	}
+	return buildEntityEmbeddingDoc(g.Name, g.Type, g.Description, mergeAliases(aliasesFromJSON(g.Aliases), g.Name, g.Key))
+}
+
+func materialEntityEmbeddingDoc(ent *types.MaterialEntity) string {
+	if ent == nil {
+		return ""
+	}
+	name := strings.TrimSpace(ent.Name)
+	if name == "" {
+		name = strings.TrimSpace(ent.Key)
+	}
+	aliases := mergeAliases(aliasesFromJSON(ent.Aliases), name, ent.Key)
+	return buildEntityEmbeddingDoc(name, ent.Type, ent.Description, aliases)
+}
+
+func buildEntityEmbeddingDoc(name string, typ string, desc string, aliases []string) string {
+	parts := make([]string, 0, 4)
+	name = strings.TrimSpace(name)
+	typ = strings.TrimSpace(typ)
+	desc = strings.TrimSpace(desc)
+	if name != "" {
+		parts = append(parts, "Name: "+name)
+	}
+	if typ != "" && !strings.EqualFold(typ, "unknown") {
+		parts = append(parts, "Type: "+typ)
+	}
+	if desc != "" {
+		parts = append(parts, "Description: "+desc)
+	}
+	if len(aliases) > 0 {
+		parts = append(parts, "Aliases: "+strings.Join(aliases, ", "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func mergeAliases(existing []string, additions ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(existing)+len(additions))
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		key := normalizeGlobalEntityKey(s)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	for _, s := range existing {
+		add(s)
+	}
+	for _, s := range additions {
+		add(s)
+	}
+	return out
+}
+
+func addAliasesToMap(m map[string]*types.GlobalEntity, g *types.GlobalEntity, aliases []string) {
+	if g == nil || len(aliases) == 0 {
+		return
+	}
+	for _, alias := range aliases {
+		key := normalizeGlobalEntityKey(alias)
+		if key == "" {
+			continue
+		}
+		if _, ok := m[key]; !ok {
+			m[key] = g
+		}
+	}
+}
+
+func aliasesFromJSON(raw datatypes.JSON) []string {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err == nil && len(out) > 0 {
+		return dedupeStrings(out)
+	}
+	var tmp []any
+	if err := json.Unmarshal(raw, &tmp); err != nil || len(tmp) == 0 {
+		return nil
+	}
+	out = make([]string, 0, len(tmp))
+	for _, v := range tmp {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func normalizeGlobalEntityKey(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = strings.ToLower(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	space := false
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			space = false
+		case r == '&':
+			if !space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString("and")
+			space = false
+		case unicode.IsSpace(r) || r == '-' || r == '_' || r == '/' || r == '.' || r == ',' || r == ':' || r == ';':
+			if !space && b.Len() > 0 {
+				b.WriteByte(' ')
+				space = true
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func embedTextBatches(ctx context.Context, ai openai.Client, texts []string, batchSize int, concurrency int) ([][]float32, error) {
+	if len(texts) == 0 {
+		return [][]float32{}, nil
+	}
+	if batchSize <= 0 {
+		batchSize = 32
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	out := make([][]float32, len(texts))
+	type batch struct {
+		start int
+		end   int
+	}
+	batches := make([]batch, 0, (len(texts)+batchSize-1)/batchSize)
+	for i := 0; i < len(texts); i += batchSize {
+		end := i + batchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batches = append(batches, batch{start: i, end: end})
+	}
+
+	if concurrency == 1 || len(batches) == 1 {
+		for _, b := range batches {
+			embs, err := ai.Embed(ctx, texts[b.start:b.end])
+			if err != nil {
+				return nil, err
+			}
+			if len(embs) != (b.end - b.start) {
+				return nil, fmt.Errorf("embedding batch mismatch (got %d want %d)", len(embs), b.end-b.start)
+			}
+			for i := range embs {
+				out[b.start+i] = embs[i]
+			}
+		}
+		return out, nil
+	}
+
+	jobs := make(chan batch)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	worker := func() {
+		defer wg.Done()
+		for b := range jobs {
+			mu.Lock()
+			if firstErr != nil {
+				mu.Unlock()
+				continue
+			}
+			mu.Unlock()
+			embs, err := ai.Embed(ctx, texts[b.start:b.end])
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				continue
+			}
+			if len(embs) != (b.end - b.start) {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("embedding batch mismatch (got %d want %d)", len(embs), b.end-b.start)
+				}
+				mu.Unlock()
+				continue
+			}
+			for i := range embs {
+				out[b.start+i] = embs[i]
+			}
+		}
+	}
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go worker()
+	}
+	for _, b := range batches {
+		jobs <- b
+	}
+	close(jobs)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	for i := range out {
+		if out[i] == nil || len(out[i]) == 0 {
+			return nil, fmt.Errorf("embedding batch missing vectors")
+		}
+	}
+	return out, nil
 }
 
 func normalizeMaterialEntityKey(name string) string {

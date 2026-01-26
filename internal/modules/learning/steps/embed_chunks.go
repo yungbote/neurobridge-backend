@@ -141,7 +141,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 		g.Go(func() error {
 			texts := make([]string, 0, len(batch))
 			for _, ch := range batch {
-				texts = append(texts, ch.Text)
+				texts = append(texts, chunkTextForEmbedding(ch))
 			}
 
 			vecs, err := deps.AI.Embed(gctx, texts)

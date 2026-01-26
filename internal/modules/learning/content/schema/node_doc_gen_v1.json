@@ -23,6 +23,7 @@
               "video",
               "diagram",
               "table",
+              "equation",
               "quick_check",
               "divider",
               "objectives",
@@ -283,6 +284,43 @@
           }
         },
         "required": ["id", "caption", "columns", "rows", "citations"],
+        "additionalProperties": false
+      }
+    },
+
+    "equations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "latex": { "type": "string" },
+          "display": { "type": "boolean" },
+          "caption": { "type": "string" },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chunk_id": { "type": "string" },
+                "quote": { "type": "string" },
+                "loc": {
+                  "type": "object",
+                  "properties": {
+                    "page": { "type": "integer" },
+                    "start": { "type": "integer" },
+                    "end": { "type": "integer" }
+                  },
+                  "required": ["page", "start", "end"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["chunk_id", "quote", "loc"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "latex", "display", "caption", "citations"],
         "additionalProperties": false
       }
     },
@@ -924,6 +962,7 @@
     "videos",
     "diagrams",
     "tables",
+    "equations",
     "objectives",
     "prerequisites",
     "key_takeaways",
