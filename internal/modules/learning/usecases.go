@@ -115,6 +115,9 @@ type (
 	MaterialSetSummarizeInput  = steps.MaterialSetSummarizeInput
 	MaterialSetSummarizeOutput = steps.MaterialSetSummarizeOutput
 
+	MaterialSignalBuildInput  = steps.MaterialSignalBuildInput
+	MaterialSignalBuildOutput = steps.MaterialSignalBuildOutput
+
 	PathIntakeInput  = steps.PathIntakeInput
 	PathIntakeOutput = steps.PathIntakeOutput
 
@@ -248,6 +251,21 @@ func (u Usecases) MaterialSetSummarize(ctx context.Context, in MaterialSetSummar
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
 	}, steps.MaterialSetSummarizeInput(in))
+}
+
+func (u Usecases) MaterialSignalBuild(ctx context.Context, in MaterialSignalBuildInput) (MaterialSignalBuildOutput, error) {
+	return steps.MaterialSignalBuild(ctx, steps.MaterialSignalBuildDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Files:        u.deps.Files,
+		FileSigs:     u.deps.FileSigs,
+		FileSections: u.deps.FileSections,
+		Chunks:       u.deps.Chunks,
+		Concepts:     u.deps.Concepts,
+		MaterialSets: u.deps.MaterialSets,
+		AI:           u.deps.AI,
+		Bootstrap:    u.deps.Bootstrap,
+	}, steps.MaterialSignalBuildInput(in))
 }
 
 func (u Usecases) PathIntake(ctx context.Context, in PathIntakeInput) (PathIntakeOutput, error) {

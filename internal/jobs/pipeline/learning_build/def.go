@@ -30,6 +30,7 @@ type InlineDeps struct {
 	FileSigs     repos.MaterialFileSignatureRepo
 	FileSections repos.MaterialFileSectionRepo
 	Chunks       repos.MaterialChunkRepo
+	MaterialSets repos.MaterialSetRepo
 	Summaries    repos.MaterialSetSummaryRepo
 
 	Concepts repos.ConceptRepo

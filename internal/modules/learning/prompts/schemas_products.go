@@ -405,10 +405,10 @@ func FormulaExtractionSchema() map[string]any {
 	formula := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"raw":       map[string]any{"type": "string"},
-			"latex":     map[string]any{"type": "string"},
-			"symbolic":  map[string]any{"type": "string"},
-			"notes":     map[string]any{"type": "string"},
+			"raw":      map[string]any{"type": "string"},
+			"latex":    map[string]any{"type": "string"},
+			"symbolic": map[string]any{"type": "string"},
+			"notes":    map[string]any{"type": "string"},
 		},
 		"required":             []string{"raw", "latex", "symbolic", "notes"},
 		"additionalProperties": false,
@@ -429,29 +429,29 @@ func FormulaExtractionSchema() map[string]any {
 
 func StyleManifestSchema() map[string]any {
 	return SchemaVersionedObject(1, map[string]any{
-		"tone":               map[string]any{"type": "string"},
-		"register":           map[string]any{"type": "string"},
-		"verbosity":          map[string]any{"type": "string"},
-		"metaphors_allowed":  map[string]any{"type": "boolean"},
-		"preferred_phrases":  StringArraySchema(),
-		"banned_phrases":     StringArraySchema(),
-		"do_list":            StringArraySchema(),
-		"dont_list":          StringArraySchema(),
-		"sentence_length":    map[string]any{"type": "string"},
-		"voice_notes":        map[string]any{"type": "string"},
+		"tone":              map[string]any{"type": "string"},
+		"register":          map[string]any{"type": "string"},
+		"verbosity":         map[string]any{"type": "string"},
+		"metaphors_allowed": map[string]any{"type": "boolean"},
+		"preferred_phrases": StringArraySchema(),
+		"banned_phrases":    StringArraySchema(),
+		"do_list":           StringArraySchema(),
+		"dont_list":         StringArraySchema(),
+		"sentence_length":   map[string]any{"type": "string"},
+		"voice_notes":       map[string]any{"type": "string"},
 	}, []string{"tone", "register", "verbosity", "metaphors_allowed", "preferred_phrases", "banned_phrases", "do_list", "dont_list", "sentence_length", "voice_notes"})
 }
 
 func PathNarrativePlanSchema() map[string]any {
 	return SchemaVersionedObject(1, map[string]any{
-		"arc_summary":        map[string]any{"type": "string"},
-		"continuity_rules":   StringArraySchema(),
-		"recurring_terms":    StringArraySchema(),
-		"preferred_transitions": StringArraySchema(),
-		"forbidden_phrases":  StringArraySchema(),
-		"back_reference_rules": StringArraySchema(),
+		"arc_summary":             map[string]any{"type": "string"},
+		"continuity_rules":        StringArraySchema(),
+		"recurring_terms":         StringArraySchema(),
+		"preferred_transitions":   StringArraySchema(),
+		"forbidden_phrases":       StringArraySchema(),
+		"back_reference_rules":    StringArraySchema(),
 		"forward_reference_rules": StringArraySchema(),
-		"tone_notes":         map[string]any{"type": "string"},
+		"tone_notes":              map[string]any{"type": "string"},
 	}, []string{"arc_summary", "continuity_rules", "recurring_terms", "preferred_transitions", "forbidden_phrases", "back_reference_rules", "forward_reference_rules", "tone_notes"})
 }
 
@@ -1068,4 +1068,110 @@ func DiagnosticGateSchema() map[string]any {
 		"purpose":   map[string]any{"type": "string", "const": "diagnostic"},
 		"questions": map[string]any{"type": "array", "items": q},
 	}, []string{"purpose", "questions"})
+}
+
+// ----- Material signal schemas -----
+
+func MaterialIntentSchema() map[string]any {
+	return SchemaVersionedObject(1, map[string]any{
+		"from_state":            map[string]any{"type": "string"},
+		"to_state":              map[string]any{"type": "string"},
+		"core_thread":           map[string]any{"type": "string"},
+		"destination_concepts":  StringArraySchema(),
+		"prerequisite_concepts": StringArraySchema(),
+		"assumed_knowledge":     StringArraySchema(),
+		"notes":                 StringArraySchema(),
+	}, []string{"from_state", "to_state", "core_thread", "destination_concepts", "prerequisite_concepts", "assumed_knowledge", "notes"})
+}
+
+func MaterialChunkSignalSchema() map[string]any {
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"chunk_id":               map[string]any{"type": "string"},
+			"role":                   map[string]any{"type": "string"},
+			"signal_strength":        NumberSchema(),
+			"floor_signal":           NumberSchema(),
+			"intent_alignment_score": NumberSchema(),
+			"novelty_score":          NumberSchema(),
+			"density_score":          NumberSchema(),
+			"complexity_score":       NumberSchema(),
+			"load_bearing_score":     NumberSchema(),
+			"trajectory": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"establishes":   StringArraySchema(),
+					"reinforces":    StringArraySchema(),
+					"builds_on":     StringArraySchema(),
+					"points_toward": StringArraySchema(),
+				},
+				"required":             []string{"establishes", "reinforces", "builds_on", "points_toward"},
+				"additionalProperties": false,
+			},
+			"notes": StringArraySchema(),
+		},
+		"required":             []string{"chunk_id", "role", "signal_strength", "floor_signal", "intent_alignment_score", "novelty_score", "density_score", "complexity_score", "load_bearing_score", "trajectory", "notes"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(2, map[string]any{
+		"items": map[string]any{"type": "array", "items": item},
+	}, []string{"items"})
+}
+
+func MaterialSetSignalSchema() map[string]any {
+	edgeHint := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"from_file_id":      map[string]any{"type": "string"},
+			"to_file_id":        map[string]any{"type": "string"},
+			"relation":          map[string]any{"type": "string"},
+			"strength":          NumberSchema(),
+			"bridging_concepts": StringArraySchema(),
+		},
+		"required":             []string{"from_file_id", "to_file_id", "relation", "strength", "bridging_concepts"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"from_state":         map[string]any{"type": "string"},
+		"to_state":           map[string]any{"type": "string"},
+		"core_thread":        map[string]any{"type": "string"},
+		"spine_file_ids":     StringArraySchema(),
+		"satellite_file_ids": StringArraySchema(),
+		"gaps_concept_keys":  StringArraySchema(),
+		"redundancy_notes":   StringArraySchema(),
+		"conflict_notes":     StringArraySchema(),
+		"edge_hints":         map[string]any{"type": "array", "items": edgeHint},
+	}, []string{"from_state", "to_state", "core_thread", "spine_file_ids", "satellite_file_ids", "gaps_concept_keys", "redundancy_notes", "conflict_notes", "edge_hints"})
+}
+
+func CrossSetSignalSchema() map[string]any {
+	setEdge := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"from_set_id":       map[string]any{"type": "string"},
+			"to_set_id":         map[string]any{"type": "string"},
+			"relation":          map[string]any{"type": "string"},
+			"strength":          NumberSchema(),
+			"bridging_concepts": StringArraySchema(),
+		},
+		"required":             []string{"from_set_id", "to_set_id", "relation", "strength", "bridging_concepts"},
+		"additionalProperties": false,
+	}
+	emergent := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"key":                 map[string]any{"type": "string"},
+			"name":                map[string]any{"type": "string"},
+			"summary":             map[string]any{"type": "string"},
+			"source_set_ids":      StringArraySchema(),
+			"prereq_concept_keys": StringArraySchema(),
+		},
+		"required":             []string{"key", "name", "summary", "source_set_ids", "prereq_concept_keys"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"set_edges":         map[string]any{"type": "array", "items": setEdge},
+		"emergent_concepts": map[string]any{"type": "array", "items": emergent},
+		"domain_bridges":    StringArraySchema(),
+	}, []string{"set_edges", "emergent_concepts", "domain_bridges"})
 }

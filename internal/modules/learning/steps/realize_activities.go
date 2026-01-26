@@ -333,6 +333,21 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, nil
 	}
 
+	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, 0)
+	if len(signalCtx.WeightsByKey) > 0 {
+		for i := range work {
+			if len(work[i].PrimaryKeys) == 0 {
+				continue
+			}
+			work[i].PrimaryKeys = sortConceptKeysByWeight(work[i].PrimaryKeys, signalCtx.WeightsByKey)
+			if len(work[i].PrimaryKeys) > 0 {
+				work[i].ConceptCSV = strings.TrimSpace(strings.Join(work[i].PrimaryKeys, ", "))
+			}
+			parts := []string{work[i].NodeTitle, work[i].NodeGoal, work[i].Kind, work[i].ConceptCSV}
+			work[i].QueryText = strings.TrimSpace(strings.Join(parts, " "))
+		}
+	}
+
 	// ---- User knowledge context (cross-path mastery transfer) ----
 	stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
 	if deps.ConceptState != nil && len(canonicalIDByKey) > 0 {

@@ -8,6 +8,15 @@ type Input struct {
 	// Per-file context (for signature build)
 	FileInfoJSON    string
 	OutlineHintJSON string
+	// Material signal extraction
+	MaterialContextJSON     string
+	MaterialIntentJSON      string
+	ChunkBatchJSON          string
+	MaterialIntentsJSON     string
+	MaterialSetIntentJSON   string
+	MaterialSetCoverageJSON string
+	MaterialSetEdgesJSON    string
+	UserSetsJSON            string
 	// Material set summary
 	BundleExcerpt string
 	// Optional global goal context (from path_intake)

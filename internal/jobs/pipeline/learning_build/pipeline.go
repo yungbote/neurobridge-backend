@@ -34,6 +34,7 @@ var stageOrder = []string{
 	"user_profile_refresh",
 	"teaching_patterns_seed",
 	"concept_graph_build",
+	"material_signal_build",
 	// Post-concept structure refinement across sibling subpaths (best-effort, non-destructive).
 	"path_structure_refine",
 	"material_kg_build",
@@ -265,6 +266,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		FileSigs:     p.inline.FileSigs,
 		FileSections: p.inline.FileSections,
 		Chunks:       p.inline.Chunks,
+		MaterialSets: p.inline.MaterialSets,
 		Summaries:    p.inline.Summaries,
 
 		Path:               p.inline.Path,
@@ -354,6 +356,8 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "concept_graph_build":
 			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "material_signal_build":
+			_, stageErr = uc.MaterialSignalBuild(jc.Ctx, learningmod.MaterialSignalBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_kg_build":
 			_, stageErr = uc.MaterialKGBuild(jc.Ctx, learningmod.MaterialKGBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "concept_cluster_build":

@@ -75,6 +75,123 @@ Output rules:
 	})
 
 	RegisterSpec(Spec{
+		Name:       PromptMaterialIntentExtract,
+		Version:    1,
+		SchemaName: "material_intent",
+		Schema:     MaterialIntentSchema,
+		System: `
+You analyze a single learning material to extract its intent and assumed knowledge.
+Use the excerpts as ground truth. Do not invent concepts not supported by the excerpts.
+Return JSON only.`,
+		User: `
+MATERIAL_CONTEXT_JSON (file id, name, summary, topics, concept keys):
+{{.MaterialContextJSON}}
+
+EXCERPTS (each line may include chunk_id):
+{{.Excerpts}}
+
+Output rules:
+- from_state: what the learner is assumed to know before this material.
+- to_state: what the learner should know after completing this material.
+- core_thread: the essential through-line; if only 20% kept, what must remain.
+- destination_concepts: concepts the material is pointing toward (even if not fully covered).
+- prerequisite_concepts: concepts needed before the material makes sense.
+- assumed_knowledge: implicit knowledge the author assumes.
+- notes: 0-6 concise observations.`,
+		Validators: []Validator{
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptMaterialChunkSignal,
+		Version:    2,
+		SchemaName: "material_chunk_signal",
+		Schema:     MaterialChunkSignalSchema,
+		System: `
+You score chunk-level signals relative to a material's intent.
+Use the material intent and chunk excerpts as ground truth.
+Return JSON only.`,
+		User: `
+MATERIAL_INTENT_JSON:
+{{.MaterialIntentJSON}}
+
+CHUNK_BATCH_JSON (chunk_id, section_path, page, excerpt):
+{{.ChunkBatchJSON}}
+
+Output rules:
+- role: one of thesis|definition|explanation|derivation|example|proof|application|context|aside|transition|summary|preview.
+- signal_strength: 0..1 relative to the material intent (core = high).
+- floor_signal: minimum relevance in any context (0..1).
+- intent_alignment_score: 0..1 how directly this chunk advances the material's core_thread and destination concepts.
+- novelty_score: 0..1 (new info vs repetition).
+- density_score: 0..1 (information per unit length).
+- complexity_score: 0..1 (cognitive load).
+- load_bearing_score: 0..1 (if removed, how much understanding breaks).
+- trajectory.establishes/reinforces/builds_on/points_toward: concept keys when possible; empty if unsure.
+- notes: short, optional.`,
+		Validators: []Validator{
+			RequireNonEmpty("ChunkBatchJSON", func(in Input) string { return in.ChunkBatchJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptMaterialSetSignal,
+		Version:    1,
+		SchemaName: "material_set_signal",
+		Schema:     MaterialSetSignalSchema,
+		System: `
+You analyze a material set as a whole to derive collective intent and structure.
+Use provided intents and coverage summaries; do not invent ungrounded concepts.
+Return JSON only.`,
+		User: `
+MATERIAL_SET_CONTEXT_JSON:
+{{.MaterialContextJSON}}
+
+MATERIAL_INTENTS_JSON:
+{{.MaterialIntentsJSON}}
+
+SET_COVERAGE_JSON:
+{{.MaterialSetCoverageJSON}}
+
+EDGE_HINTS_JSON (algorithmic suggestions; may be empty):
+{{.MaterialSetEdgesJSON}}
+
+Output rules:
+- from_state / to_state / core_thread: collective intent for the full set.
+- spine_file_ids: critical path materials.
+- satellite_file_ids: enrichment materials.
+- gaps_concept_keys: important concepts not covered by any material.
+- redundancy_notes / conflict_notes: concise notes.
+- edge_hints: only if strongly supported by the evidence.`,
+		Validators: []Validator{
+			RequireNonEmpty("MaterialIntentsJSON", func(in Input) string { return in.MaterialIntentsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptCrossSetSignal,
+		Version:    1,
+		SchemaName: "cross_set_signal",
+		Schema:     CrossSetSignalSchema,
+		System: `
+You analyze a user's multiple material sets to identify cross-set links and emergent concepts.
+Use provided set signals; do not invent ungrounded links.
+Return JSON only.`,
+		User: `
+USER_SETS_JSON:
+{{.UserSetsJSON}}
+
+Output rules:
+- set_edges: prerequisite/extends/parallel/cross_domain relations with strength 0..1.
+- emergent_concepts: concepts that only arise via combinations of sets.
+- domain_bridges: short plain-language bridges across domains.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserSetsJSON", func(in Input) string { return in.UserSetsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptConceptInventory,
 		Version:    2, // schema version is inside ConceptInventorySchema() (currently const 3)
 		SchemaName: "concept_inventory",
@@ -568,7 +685,7 @@ For each proposed node:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathCharter,
-		Version:    2,
+		Version:    3,
 		SchemaName: "path_charter",
 		Schema:     PathCharterSchema,
 		System: `
@@ -581,6 +698,15 @@ USER_PROFILE_DOC:
 
 MATERIAL_SET_SUMMARY (optional):
 {{.BundleExcerpt}}
+
+MATERIAL_SIGNAL_JSON (optional; set intent/spine/gaps):
+{{.MaterialSetIntentJSON}}
+
+MATERIAL_COVERAGE_JSON (optional; top concept signal):
+{{.MaterialSetCoverageJSON}}
+
+MATERIAL_SET_EDGES_JSON (optional):
+{{.MaterialSetEdgesJSON}}
 
 USER_KNOWLEDGE_JSON (optional; mastery/exposure from prior learning; do not mention explicitly):
 {{.UserKnowledgeJSON}}
@@ -597,7 +723,7 @@ Output path_style with:
 
 	RegisterSpec(Spec{
 		Name:       PromptPathStructure,
-		Version:    5,
+		Version:    6,
 		SchemaName: "path_structure",
 		Schema:     PathStructureSchema,
 		System: `
@@ -611,6 +737,15 @@ PATH_CHARTER_JSON:
 
 MATERIAL_SET_SUMMARY_MD (optional):
 {{.BundleExcerpt}}
+
+MATERIAL_SIGNAL_JSON (optional; set intent/spine/gaps):
+{{.MaterialSetIntentJSON}}
+
+MATERIAL_COVERAGE_JSON (optional):
+{{.MaterialSetCoverageJSON}}
+
+MATERIAL_SET_EDGES_JSON (optional):
+{{.MaterialSetEdgesJSON}}
 
 CURRICULUM_SPEC_JSON (optional):
 {{.CurriculumSpecJSON}}
@@ -631,6 +766,8 @@ Task:
 Create a dynamic path outline that covers all concepts.
 
 Guidance:
+- Follow MATERIAL_SIGNAL_JSON core_thread and spine when ordering modules; use satellite concepts as enrichment.
+- If MATERIAL_COVERAGE_JSON shows core concepts, ensure they appear early and receive more depth/activities.
 - If CURRICULUM_SPEC_JSON is present and coverage_target is "mastery", start with fundamentals and core semantics before specialized tooling.
 - Use CURRICULUM_SPEC_JSON sections to decide high-level module ordering and ensure no major area is omitted.
 - If MATERIAL_PATHS_JSON contains multiple paths (divergent goals), create a top-level module per path (and optionally a shared foundations module) so the curriculum feels organized rather than mixed.
@@ -664,7 +801,7 @@ Include coverage_check.uncovered_concept_keys.`,
 
 	RegisterSpec(Spec{
 		Name:       PromptTeachingPatternHierarchy,
-		Version:    1,
+		Version:    2,
 		SchemaName: "teaching_pattern_hierarchy",
 		Schema:     TeachingPatternHierarchySchema,
 		System: `
@@ -677,6 +814,15 @@ USER_PROFILE_DOC:
 
 MATERIAL_SET_SUMMARY_MD (optional):
 {{.BundleExcerpt}}
+
+MATERIAL_SIGNAL_JSON (optional; set intent/spine/gaps):
+{{.MaterialSetIntentJSON}}
+
+MATERIAL_COVERAGE_JSON (optional):
+{{.MaterialSetCoverageJSON}}
+
+MATERIAL_SET_EDGES_JSON (optional):
+{{.MaterialSetEdgesJSON}}
 
 PATH_CHARTER_JSON:
 {{.PathCharterJSON}}

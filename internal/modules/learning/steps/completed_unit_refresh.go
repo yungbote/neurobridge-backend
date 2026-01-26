@@ -147,6 +147,7 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 		}
 		conceptIDByKey := map[string]uuid.UUID{}
 		conceptKeyByID := map[uuid.UUID]string{}
+		weightByCanonicalID := map[uuid.UUID]float64{}
 		for _, c := range concepts {
 			if c == nil || c.ID == uuid.Nil {
 				continue
@@ -161,6 +162,12 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 				conceptIDByKey[k] = id
 			}
 			conceptKeyByID[c.ID] = k
+			if id != uuid.Nil {
+				w := conceptSignalWeightFactor(c.Metadata)
+				if w > weightByCanonicalID[id] {
+					weightByCanonicalID[id] = w
+				}
+			}
 		}
 
 		// Activities for this path, and their concept keys (for mapping to chain_key).
@@ -263,6 +270,8 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 			avgMastery := 0.0
 			avgConf := 0.0
 			masteryN := 0
+			coveredWeight := 0.0
+			totalWeight := 0.0
 			conceptIDs := make([]uuid.UUID, 0, len(chainConceptKeys[chainKey]))
 			for _, k := range chainConceptKeys[chainKey] {
 				id := conceptIDByKey[strings.TrimSpace(strings.ToLower(k))]
@@ -271,6 +280,16 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 				}
 			}
 			conceptIDs = dedupeUUIDs(conceptIDs)
+			for _, id := range conceptIDs {
+				if id == uuid.Nil {
+					continue
+				}
+				w := weightByCanonicalID[id]
+				if w <= 0 {
+					w = 1
+				}
+				totalWeight += w
+			}
 
 			if deps.Mastery != nil && len(conceptIDs) > 0 {
 				states, err := deps.Mastery.ListByUserAndConceptIDs(dbc, in.OwnerUserID, conceptIDs)
@@ -281,13 +300,18 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 					if s == nil || s.UserID == uuid.Nil || s.ConceptID == uuid.Nil {
 						continue
 					}
-					avgMastery += s.Mastery
-					avgConf += s.Confidence
+					w := weightByCanonicalID[s.ConceptID]
+					if w <= 0 {
+						w = 1
+					}
+					avgMastery += s.Mastery * w
+					avgConf += s.Confidence * w
+					coveredWeight += w
 					masteryN++
 				}
-				if masteryN > 0 {
-					avgMastery /= float64(masteryN)
-					avgConf /= float64(masteryN)
+				if coveredWeight > 0 {
+					avgMastery /= coveredWeight
+					avgConf /= coveredWeight
 				}
 			}
 
@@ -296,7 +320,9 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 			progressionConfidence := clamp01(avgScore) * completionsFactor
 
 			coverage := 0.0
-			if len(conceptIDs) > 0 {
+			if totalWeight > 0 {
+				coverage = coveredWeight / totalWeight
+			} else if len(conceptIDs) > 0 {
 				coverage = float64(masteryN) / float64(len(conceptIDs))
 			}
 			coverageFactor := 0.0
@@ -361,6 +387,8 @@ func CompletedUnitRefresh(ctx context.Context, deps CompletedUnitRefreshDeps, in
 					"progression_confidence": progressionConfidence,
 					"mastery_confidence":     masteryConfidence,
 					"mastery_coverage":       coverage,
+					"mastery_weighted":       coveredWeight,
+					"mastery_weight_total":   totalWeight,
 					"mastery_n":              masteryN,
 					"concept_count":          len(conceptIDs),
 					"threshold":              threshold,

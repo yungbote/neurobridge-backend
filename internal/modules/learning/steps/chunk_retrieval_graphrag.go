@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/graphrag"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	pc "github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
@@ -211,6 +212,8 @@ func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore,
 		return out, trace, nil
 	}
 
+	applyChunkSignalWeights(ctx, db, scores, trace)
+
 	type scoredID struct {
 		ID    uuid.UUID
 		Score float64
@@ -232,4 +235,93 @@ func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore,
 		}
 	}
 	return out, trace, nil
+}
+
+func applyChunkSignalWeights(ctx context.Context, db *gorm.DB, scores map[uuid.UUID]float64, trace map[string]any) {
+	if db == nil || len(scores) == 0 || !envBool("MATERIAL_SIGNAL_RETRIEVAL_ENABLED", true) {
+		return
+	}
+	weight := envFloatAllowZero("MATERIAL_SIGNAL_RETRIEVAL_WEIGHT", 0.35)
+	if weight <= 0 {
+		return
+	}
+	maxIDs := envIntAllowZero("MATERIAL_SIGNAL_RETRIEVAL_MAX_IDS", 600)
+	if maxIDs <= 0 {
+		maxIDs = 600
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	type scoredID struct {
+		ID    uuid.UUID
+		Score float64
+	}
+	arr := make([]scoredID, 0, len(scores))
+	for id, sc := range scores {
+		if id == uuid.Nil || sc <= 0 {
+			continue
+		}
+		arr = append(arr, scoredID{ID: id, Score: sc})
+	}
+	if len(arr) == 0 {
+		return
+	}
+	sort.Slice(arr, func(i, j int) bool { return arr[i].Score > arr[j].Score })
+	if len(arr) > maxIDs {
+		arr = arr[:maxIDs]
+	}
+	ids := make([]uuid.UUID, 0, len(arr))
+	for _, it := range arr {
+		ids = append(ids, it.ID)
+	}
+
+	var rows []struct {
+		MaterialChunkID uuid.UUID `gorm:"column:material_chunk_id"`
+		SignalStrength  float64   `gorm:"column:signal_strength"`
+		FloorSignal     float64   `gorm:"column:floor_signal"`
+		CompoundWeight  float64   `gorm:"column:compound_weight"`
+	}
+	if err := db.WithContext(ctx).
+		Model(&types.MaterialChunkSignal{}).
+		Select("material_chunk_id", "signal_strength", "floor_signal", "compound_weight").
+		Where("material_chunk_id IN ?", ids).
+		Find(&rows).Error; err != nil {
+		if trace != nil {
+			trace["signal_weight_err"] = err.Error()
+		}
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	signalByID := map[uuid.UUID]float64{}
+	for _, r := range rows {
+		if r.MaterialChunkID == uuid.Nil {
+			continue
+		}
+		sig := clamp01(r.CompoundWeight)
+		if sig <= 0 {
+			sig = clamp01(r.SignalStrength)
+			floor := clamp01(r.FloorSignal)
+			if floor > sig {
+				sig = floor
+			}
+		}
+		signalByID[r.MaterialChunkID] = sig
+	}
+	if len(signalByID) == 0 {
+		return
+	}
+	for id, sc := range scores {
+		if sig, ok := signalByID[id]; ok {
+			mult := 1 + weight*(sig-0.5)
+			scores[id] = sc * mult
+		}
+	}
+	if trace != nil {
+		trace["signal_weighted"] = len(signalByID)
+		trace["signal_weight"] = weight
+	}
 }

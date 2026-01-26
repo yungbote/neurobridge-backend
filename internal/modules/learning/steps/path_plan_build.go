@@ -239,11 +239,16 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	}
 	edgesJSON, _ := json.Marshal(map[string]any{"edges": earr})
 
+	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, 30)
+
 	// ---- Prompt: Path charter ----
 	charterPrompt, err := prompts.Build(prompts.PromptPathCharter, prompts.Input{
-		UserProfileDoc:    up.ProfileDoc,
-		BundleExcerpt:     summaryText,
-		UserKnowledgeJSON: userKnowledgeJSON,
+		UserProfileDoc:          up.ProfileDoc,
+		BundleExcerpt:           summaryText,
+		UserKnowledgeJSON:       userKnowledgeJSON,
+		MaterialSetIntentJSON:   signalCtx.IntentJSON,
+		MaterialSetCoverageJSON: signalCtx.CoverageJSON,
+		MaterialSetEdgesJSON:    signalCtx.EdgesJSON,
 	})
 	if err != nil {
 		return out, err
@@ -256,13 +261,16 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 
 	// ---- Prompt: Path structure ----
 	structPrompt, err := prompts.Build(prompts.PromptPathStructure, prompts.Input{
-		PathCharterJSON:    string(charterJSON),
-		BundleExcerpt:      summaryText,
-		CurriculumSpecJSON: curriculumSpecJSON,
-		MaterialPathsJSON:  materialPathsJSON,
-		ConceptsJSON:       string(conceptsJSON),
-		EdgesJSON:          string(edgesJSON),
-		UserKnowledgeJSON:  userKnowledgeJSON,
+		PathCharterJSON:         string(charterJSON),
+		BundleExcerpt:           summaryText,
+		CurriculumSpecJSON:      curriculumSpecJSON,
+		MaterialPathsJSON:       materialPathsJSON,
+		ConceptsJSON:            string(conceptsJSON),
+		EdgesJSON:               string(edgesJSON),
+		UserKnowledgeJSON:       userKnowledgeJSON,
+		MaterialSetIntentJSON:   signalCtx.IntentJSON,
+		MaterialSetCoverageJSON: signalCtx.CoverageJSON,
+		MaterialSetEdgesJSON:    signalCtx.EdgesJSON,
 	})
 	if err != nil {
 		return out, err
@@ -288,6 +296,12 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	if len(nodesOut) == 0 {
 		return out, fmt.Errorf("path_plan_build: 0 nodes returned")
 	}
+	if len(signalCtx.WeightsByKey) > 0 {
+		for i := range nodesOut {
+			nodesOut[i].ConceptKeys = sortConceptKeysByWeight(nodesOut[i].ConceptKeys, signalCtx.WeightsByKey)
+			nodesOut[i].PrereqConceptKeys = sortConceptKeysByWeight(nodesOut[i].PrereqConceptKeys, signalCtx.WeightsByKey)
+		}
+	}
 
 	// ---- Teaching pattern hierarchy (path/module/lesson) ----
 	var (
@@ -302,14 +316,17 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			patternSignalsJSON = string(b)
 		}
 		patternPrompt, perr := prompts.Build(prompts.PromptTeachingPatternHierarchy, prompts.Input{
-			UserProfileDoc:     up.ProfileDoc,
-			BundleExcerpt:      summaryText,
-			PathCharterJSON:    string(charterJSON),
-			PathStructureJSON:  string(structJSON),
-			ConceptsJSON:       string(conceptsJSON),
-			EdgesJSON:          string(edgesJSON),
-			UserKnowledgeJSON:  userKnowledgeJSON,
-			PatternSignalsJSON: patternSignalsJSON,
+			UserProfileDoc:          up.ProfileDoc,
+			BundleExcerpt:           summaryText,
+			PathCharterJSON:         string(charterJSON),
+			PathStructureJSON:       string(structJSON),
+			ConceptsJSON:            string(conceptsJSON),
+			EdgesJSON:               string(edgesJSON),
+			UserKnowledgeJSON:       userKnowledgeJSON,
+			PatternSignalsJSON:      patternSignalsJSON,
+			MaterialSetIntentJSON:   signalCtx.IntentJSON,
+			MaterialSetCoverageJSON: signalCtx.CoverageJSON,
+			MaterialSetEdgesJSON:    signalCtx.EdgesJSON,
 		})
 		if perr == nil {
 			obj, gerr := deps.AI.GenerateJSON(ctx, patternPrompt.System, patternPrompt.User, patternPrompt.SchemaName, patternPrompt.Schema)
@@ -412,15 +429,26 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			if n.Index <= 0 {
 				continue
 			}
+			orderedKeys := n.ConceptKeys
+			orderedPrereq := n.PrereqConceptKeys
+			if len(signalCtx.WeightsByKey) > 0 {
+				orderedKeys = sortConceptKeysByWeight(orderedKeys, signalCtx.WeightsByKey)
+				orderedPrereq = sortConceptKeysByWeight(orderedPrereq, signalCtx.WeightsByKey)
+			}
 			nodeMeta := map[string]any{
 				"goal":                n.Goal,
-				"concept_keys":        n.ConceptKeys,
-				"prereq_concept_keys": n.PrereqConceptKeys,
+				"concept_keys":        orderedKeys,
+				"prereq_concept_keys": orderedPrereq,
 				"difficulty":          n.Difficulty,
 				"activity_slots":      n.ActivitySlots,
 				"node_kind":           n.NodeKind,
 				"doc_template":        n.DocTemplate,
 				"parent_index":        n.ParentIndex,
+			}
+			if len(signalCtx.WeightsByKey) > 0 {
+				if weights := conceptWeightsForKeys(orderedKeys, signalCtx.WeightsByKey); len(weights) > 0 {
+					nodeMeta["concept_weights"] = weights
+				}
 			}
 			if patternHierarchy.SchemaVersion > 0 {
 				patternMeta := map[string]any{

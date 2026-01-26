@@ -6,6 +6,10 @@ const (
 	// Library + Concepts
 	PromptFileSignatureBuild    PromptName = "file_signature_build"
 	PromptMaterialSetSummary    PromptName = "material_set_summary"
+	PromptMaterialIntentExtract PromptName = "material_intent_extract"
+	PromptMaterialChunkSignal   PromptName = "material_chunk_signal"
+	PromptMaterialSetSignal     PromptName = "material_set_signal"
+	PromptCrossSetSignal        PromptName = "cross_set_signal"
 	PromptConceptInventory      PromptName = "concept_inventory"
 	PromptConceptInventoryDelta PromptName = "concept_inventory_delta"
 	PromptConceptEdges          PromptName = "concept_edges"

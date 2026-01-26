@@ -24,6 +24,7 @@ var stageDeps = map[string][]string{
 	"path_structure_dispatch": {"path_grouping_refine"},
 
 	"concept_graph_build":   {"path_structure_dispatch"},
+	"material_signal_build": {"concept_graph_build"},
 	"path_structure_refine": {"concept_graph_build"},
 	"material_kg_build":     {"concept_graph_build", "embed_chunks"},
 	"concept_cluster_build": {"concept_graph_build"},
@@ -32,7 +33,7 @@ var stageDeps = map[string][]string{
 	"user_profile_refresh":   {"path_intake"},
 	"teaching_patterns_seed": {"user_profile_refresh"},
 
-	"path_plan_build":   {"concept_graph_build", "material_set_summarize", "user_profile_refresh", "path_intake"},
+	"path_plan_build":   {"concept_graph_build", "material_signal_build", "material_set_summarize", "user_profile_refresh", "path_intake"},
 	"path_cover_render": {"path_plan_build"},
 
 	"node_figures_plan_build": {"path_plan_build", "embed_chunks", "material_kg_build"},

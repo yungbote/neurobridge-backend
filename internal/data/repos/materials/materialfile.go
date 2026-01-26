@@ -87,43 +87,76 @@ func (r *materialFileRepo) GetByMaterialSetIDs(dbc dbctx.Context, setIDs []uuid.
 	}
 
 	// Derived material sets declare membership via material_set_file rows.
-	// For backwards compatibility, "upload batch" sets still use material_file.material_set_id.
+	// Legacy upload batches use material_file.material_set_id.
 	type linkRow struct {
 		MaterialSetID  uuid.UUID `gorm:"column:material_set_id"`
 		MaterialFileID uuid.UUID `gorm:"column:material_file_id"`
 	}
 
-	var links []linkRow
-	if err := transaction.WithContext(dbc.Ctx).
-		Model(&types.MaterialSetFile{}).
-		Select("material_set_id, material_file_id").
-		Where("material_set_id IN ?", setIDs).
-		Find(&links).Error; err != nil {
-		return nil, err
+	type setRow struct {
+		ID                  uuid.UUID  `gorm:"column:id"`
+		SourceMaterialSetID *uuid.UUID `gorm:"column:source_material_set_id"`
 	}
 
-	setsWithLinks := map[uuid.UUID]bool{}
+	var setRows []setRow
+	if err := transaction.WithContext(dbc.Ctx).
+		Model(&types.MaterialSet{}).
+		Select("id, source_material_set_id").
+		Where("id IN ?", setIDs).
+		Find(&setRows).Error; err != nil {
+		if r.log != nil {
+			r.log.Warn("GetByMaterialSetIDs: failed to load material_set rows; falling back to legacy membership", "error", err)
+		}
+		var results []*types.MaterialFile
+		if err := transaction.WithContext(dbc.Ctx).
+			Where("material_set_id IN ?", setIDs).
+			Find(&results).Error; err != nil {
+			return nil, err
+		}
+		return results, nil
+	}
+
+	derivedSetIDs := make([]uuid.UUID, 0, len(setRows))
+	legacySetIDs := make([]uuid.UUID, 0, len(setRows))
+	seenSet := map[uuid.UUID]bool{}
+	for _, row := range setRows {
+		if row.ID == uuid.Nil {
+			continue
+		}
+		seenSet[row.ID] = true
+		if row.SourceMaterialSetID != nil && *row.SourceMaterialSetID != uuid.Nil {
+			derivedSetIDs = append(derivedSetIDs, row.ID)
+		} else {
+			legacySetIDs = append(legacySetIDs, row.ID)
+		}
+	}
+	for _, sid := range setIDs {
+		if sid == uuid.Nil || seenSet[sid] {
+			continue
+		}
+		legacySetIDs = append(legacySetIDs, sid)
+	}
+
+	var links []linkRow
+	if len(derivedSetIDs) > 0 {
+		if err := transaction.WithContext(dbc.Ctx).
+			Model(&types.MaterialSetFile{}).
+			Select("material_set_id, material_file_id").
+			Where("material_set_id IN ?", derivedSetIDs).
+			Find(&links).Error; err != nil {
+			return nil, err
+		}
+	}
+
 	fileIDs := make([]uuid.UUID, 0, len(links))
 	seenFile := map[uuid.UUID]bool{}
 	for _, l := range links {
 		if l.MaterialSetID == uuid.Nil || l.MaterialFileID == uuid.Nil {
 			continue
 		}
-		setsWithLinks[l.MaterialSetID] = true
 		if !seenFile[l.MaterialFileID] {
 			seenFile[l.MaterialFileID] = true
 			fileIDs = append(fileIDs, l.MaterialFileID)
-		}
-	}
-
-	// Split sets into derived vs legacy.
-	legacySetIDs := make([]uuid.UUID, 0, len(setIDs))
-	for _, sid := range setIDs {
-		if sid == uuid.Nil {
-			continue
-		}
-		if !setsWithLinks[sid] {
-			legacySetIDs = append(legacySetIDs, sid)
 		}
 	}
 

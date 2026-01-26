@@ -1,0 +1,71 @@
+pipeline: learning_build
+version: 1
+stages:
+  - name: web_resources_seed
+    job_type: web_resources_seed
+    depends_on: []
+  - name: ingest_chunks
+    depends_on: [web_resources_seed]
+  - name: file_signature_build
+    depends_on: [ingest_chunks]
+  - name: path_intake
+    depends_on: [file_signature_build]
+  - name: path_grouping_refine
+    depends_on: [path_intake]
+  - name: path_structure_dispatch
+    depends_on: [path_grouping_refine]
+  - name: embed_chunks
+    depends_on: [path_structure_dispatch]
+  - name: material_set_summarize
+    depends_on: [ingest_chunks]
+  - name: user_profile_refresh
+    depends_on: [path_intake]
+  - name: teaching_patterns_seed
+    depends_on: [user_profile_refresh]
+  - name: concept_graph_build
+    depends_on: [path_structure_dispatch]
+  - name: material_signal_build
+    depends_on: [concept_graph_build]
+  - name: path_structure_refine
+    depends_on: [concept_graph_build]
+  - name: material_kg_build
+    depends_on: [concept_graph_build, embed_chunks]
+  - name: concept_cluster_build
+    depends_on: [concept_graph_build]
+  - name: chain_signature_build
+    depends_on: [concept_cluster_build]
+  - name: path_plan_build
+    depends_on: [concept_graph_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake]
+  - name: path_cover_render
+    depends_on: [path_plan_build]
+  - name: node_figures_plan_build
+    depends_on: [path_plan_build, embed_chunks, material_kg_build]
+  - name: node_figures_render
+    depends_on: [node_figures_plan_build]
+  - name: node_videos_plan_build
+    depends_on: [path_plan_build, embed_chunks, material_kg_build]
+  - name: node_videos_render
+    depends_on: [node_videos_plan_build]
+  - name: node_doc_build
+    depends_on: [path_plan_build, embed_chunks, node_figures_render, node_videos_render, material_kg_build]
+  - name: realize_activities
+    depends_on: [path_plan_build, embed_chunks, user_profile_refresh, concept_graph_build, material_kg_build]
+  - name: coverage_coherence_audit
+    depends_on: [realize_activities]
+  - name: progression_compact
+    depends_on: [user_profile_refresh]
+  - name: variant_stats_refresh
+    depends_on: [user_profile_refresh]
+  - name: priors_refresh
+    depends_on: [realize_activities, variant_stats_refresh, chain_signature_build]
+  - name: completed_unit_refresh
+    depends_on: [realize_activities, progression_compact, chain_signature_build]
+variants:
+  dispatch_only:
+    stages:
+      - web_resources_seed
+      - ingest_chunks
+      - file_signature_build
+      - path_intake
+      - path_grouping_refine
+      - path_structure_dispatch

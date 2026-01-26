@@ -25,6 +25,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_route"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_kg_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_set_summarize"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_signal_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_avatar_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_patch"
@@ -326,6 +327,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
+		return Services{}, err
+	}
+
+	materialSignal := material_signal_build.New(
+		db,
+		log,
+		repos.MaterialFile,
+		repos.MaterialFileSignature,
+		repos.MaterialFileSection,
+		repos.MaterialChunk,
+		repos.Concept,
+		repos.MaterialSet,
+		clients.OpenaiClient,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(materialSignal); err != nil {
 		return Services{}, err
 	}
 
@@ -699,6 +716,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			FileSigs:     repos.MaterialFileSignature,
 			FileSections: repos.MaterialFileSection,
 			Chunks:       repos.MaterialChunk,
+			MaterialSets: repos.MaterialSet,
 			Summaries:    repos.MaterialSetSummary,
 
 			Concepts: repos.Concept,
