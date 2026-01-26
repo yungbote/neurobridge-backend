@@ -341,6 +341,92 @@ func ConceptInventoryDeltaSchema() map[string]any {
 	}, []string{"new_concepts", "coverage"})
 }
 
+func AssumedKnowledgeSchema() map[string]any {
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"key":         map[string]any{"type": "string"},
+			"name":        map[string]any{"type": "string"},
+			"summary":     map[string]any{"type": "string"},
+			"aliases":     StringArraySchema(),
+			"importance":  IntSchema(),
+			"citations":   StringArraySchema(),
+			"required_by": StringArraySchema(),
+		},
+		"required":             []string{"key", "name", "summary", "aliases", "importance", "citations", "required_by"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"assumed_concepts": map[string]any{"type": "array", "items": item},
+		"notes":            map[string]any{"type": "string"},
+	}, []string{"assumed_concepts", "notes"})
+}
+
+func ConceptAlignmentSchema() map[string]any {
+	alias := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"canonical_key": map[string]any{"type": "string"},
+			"alias_keys":    StringArraySchema(),
+			"rationale":     map[string]any{"type": "string"},
+		},
+		"required":             []string{"canonical_key", "alias_keys", "rationale"},
+		"additionalProperties": false,
+	}
+	meaning := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"key":       map[string]any{"type": "string"},
+			"name":      map[string]any{"type": "string"},
+			"summary":   map[string]any{"type": "string"},
+			"aliases":   StringArraySchema(),
+			"citations": StringArraySchema(),
+			"rationale": map[string]any{"type": "string"},
+		},
+		"required":             []string{"key", "name", "summary", "aliases", "citations", "rationale"},
+		"additionalProperties": false,
+	}
+	split := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ambiguous_key": map[string]any{"type": "string"},
+			"meanings":      map[string]any{"type": "array", "items": meaning},
+		},
+		"required":             []string{"ambiguous_key", "meanings"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"aliases": map[string]any{"type": "array", "items": alias},
+		"splits":  map[string]any{"type": "array", "items": split},
+	}, []string{"aliases", "splits"})
+}
+
+func FormulaExtractionSchema() map[string]any {
+	formula := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"raw":       map[string]any{"type": "string"},
+			"latex":     map[string]any{"type": "string"},
+			"symbolic":  map[string]any{"type": "string"},
+			"notes":     map[string]any{"type": "string"},
+		},
+		"required":             []string{"raw", "latex", "symbolic", "notes"},
+		"additionalProperties": false,
+	}
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"chunk_id": map[string]any{"type": "string"},
+			"formulas": map[string]any{"type": "array", "items": formula},
+		},
+		"required":             []string{"chunk_id", "formulas"},
+		"additionalProperties": false,
+	}
+	return SchemaVersionedObject(1, map[string]any{
+		"items": map[string]any{"type": "array", "items": item},
+	}, []string{"items"})
+}
+
 func ConceptEdgesSchema() map[string]any {
 	edge := map[string]any{
 		"type": "object",
@@ -506,6 +592,117 @@ func PathStructureSchema() map[string]any {
 			"additionalProperties": false,
 		},
 	}, []string{"title", "description", "nodes", "coverage_check"})
+}
+
+func TeachingPatternHierarchySchema() map[string]any {
+	path := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"sequencing": EnumSchema(
+				"linear", "spiral", "modular", "branching", "layered", "thematic",
+				"chronological", "whole_to_part", "part_to_whole", "concentric", "comparative", "problem_arc",
+			),
+			"pedagogy": EnumSchema(
+				"direct_instruction", "project_based", "problem_based", "case_based", "inquiry_based",
+				"discovery", "narrative", "apprenticeship", "simulation", "socratic",
+				"challenge_ladder", "competency",
+			),
+			"mastery": EnumSchema(
+				"mastery_gated", "soft_gated", "ungated", "diagnostic_adaptive", "xp_progression",
+			),
+			"reinforcement": EnumSchema(
+				"spaced_review", "interleaved", "cumulative", "end_review", "just_in_time", "none",
+			),
+			"rationale": map[string]any{"type": "string"},
+		},
+		"required":             []string{"sequencing", "pedagogy", "mastery", "reinforcement"},
+		"additionalProperties": false,
+	}
+
+	module := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"module_index": IntSchema(),
+			"sequencing": EnumSchema(
+				"linear_lessons", "sandwich", "hub_spoke", "funnel", "expansion", "spiral_mini",
+				"parallel", "comparative_pairs", "chronological", "simple_to_complex", "dependency_driven",
+			),
+			"pedagogy": EnumSchema(
+				"theory_then_practice", "practice_then_theory", "interleaved", "immersion", "survey",
+				"case_driven", "project_milestone", "problem_solution", "skill_build", "concept_build",
+				"question_driven", "workshop",
+			),
+			"assessment": EnumSchema(
+				"quiz_per_lesson", "module_end_only", "pre_post", "continuous_embedded",
+				"diagnostic_entry", "none", "portfolio", "peer_review",
+			),
+			"content_mix": EnumSchema(
+				"explanation_heavy", "activity_heavy", "balanced", "example_rich",
+				"visual_rich", "discussion_rich", "reading_heavy", "multimedia_mix",
+			),
+			"rationale": map[string]any{"type": "string"},
+		},
+		"required":             []string{"module_index", "sequencing", "pedagogy", "assessment", "content_mix"},
+		"additionalProperties": false,
+	}
+
+	lesson := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"lesson_index": IntSchema(),
+			"opening": EnumSchema(
+				"hook_question", "hook_problem", "hook_story", "hook_surprise", "hook_relevance",
+				"hook_challenge", "objectives_first", "recap_prior", "diagnostic_check",
+				"advance_organizer", "direct_start", "tldr_first", "context_setting", "misconception_address",
+			),
+			"core": EnumSchema(
+				"direct_instruction", "worked_example", "faded_example", "multiple_examples", "non_example",
+				"example_non_example_pairs", "analogy_based", "metaphor_extended", "compare_contrast", "cause_effect",
+				"process_steps", "classification", "definition_elaboration", "rule_then_apply", "cases_then_rule",
+				"principle_illustration", "concept_attainment", "narrative_embed", "dialogue_format",
+				"socratic_questioning", "discovery_guided", "simulation_walkthrough", "demonstration",
+				"explanation_then_demo", "demo_then_explanation", "chunked_progressive", "layered_depth",
+				"problem_solution_reveal", "debate_format", "q_and_a_format", "interview_format",
+			),
+			"example": EnumSchema(
+				"single_canonical", "multiple_varied", "progression", "edge_cases", "real_world",
+				"abstract_formal", "relatable_everyday", "domain_specific", "counterexample",
+				"minimal_pairs", "annotated",
+			),
+			"visual": EnumSchema(
+				"text_only", "diagram_supported", "diagram_primary", "dual_coded", "sequential_visual",
+				"before_after", "comparison_visual", "infographic", "flowchart", "concept_map", "timeline",
+				"table_matrix", "annotated_image", "animation_described",
+			),
+			"practice": EnumSchema(
+				"immediate", "delayed_end", "interleaved_throughout", "scaffolded", "faded_support",
+				"massed", "varied", "retrieval", "application", "generation", "error_analysis",
+				"self_explanation", "teach_back", "prediction", "comparison", "reflection", "none",
+			),
+			"closing": EnumSchema(
+				"summary", "single_takeaway", "connection_forward", "connection_backward", "connection_lateral",
+				"reflection_prompt", "application_prompt", "check_understanding", "open_question",
+				"call_to_action", "cliff_hanger", "consolidation", "none",
+			),
+			"depth": EnumSchema(
+				"eli5", "concise", "standard", "thorough", "exhaustive", "layered", "adaptive",
+			),
+			"engagement": EnumSchema(
+				"passive", "active_embedded", "active_end", "gamified", "challenge_framed",
+				"curiosity_driven", "choice_driven", "personalized_reference", "social_framed",
+				"timed", "untimed",
+			),
+			"rationale": map[string]any{"type": "string"},
+		},
+		"required":             []string{"lesson_index", "opening", "core", "example", "visual", "practice", "closing", "depth", "engagement"},
+		"additionalProperties": false,
+	}
+
+	return SchemaVersionedObject(1, map[string]any{
+		"path":    path,
+		"modules": map[string]any{"type": "array", "items": module},
+		"lessons": map[string]any{"type": "array", "items": lesson},
+	}, []string{"path", "modules", "lessons"})
 }
 
 func NodeRepresentationPlanSchema() map[string]any {

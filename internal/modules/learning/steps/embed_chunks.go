@@ -110,14 +110,14 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 		return out, nil
 	}
 
-	batchSize := envInt("EMBED_CHUNKS_BATCH_SIZE", 64)
+	batchSize := envInt("EMBED_CHUNKS_BATCH_SIZE", 128)
 	if batchSize < 8 {
 		batchSize = 8
 	}
 	if batchSize > 256 {
 		batchSize = 256
 	}
-	maxConc := envInt("EMBED_CHUNKS_CONCURRENCY", 2)
+	maxConc := envInt("EMBED_CHUNKS_CONCURRENCY", 6)
 	if maxConc < 1 {
 		maxConc = 1
 	}

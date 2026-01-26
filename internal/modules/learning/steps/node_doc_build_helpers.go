@@ -79,6 +79,219 @@ func firstVideoAssetFromAssetsJSON(assetsJSON string) *mediaAssetCandidate {
 	return nil
 }
 
+func nodeDocMediaURLs(doc content.NodeDocV1) []string {
+	if len(doc.Blocks) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0)
+	for _, b := range doc.Blocks {
+		kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch kind {
+		case "figure":
+			asset, _ := b["asset"].(map[string]any)
+			url := strings.TrimSpace(stringFromAny(asset["url"]))
+			if url == "" || seen[url] {
+				continue
+			}
+			seen[url] = true
+			out = append(out, url)
+		case "video":
+			url := strings.TrimSpace(stringFromAny(b["url"]))
+			if url == "" || seen[url] {
+				continue
+			}
+			seen[url] = true
+			out = append(out, url)
+		}
+	}
+	return out
+}
+
+func mediaURLsFromNodeDocJSON(docJSON []byte) []string {
+	if len(docJSON) == 0 {
+		return nil
+	}
+	var doc content.NodeDocV1
+	if err := json.Unmarshal(docJSON, &doc); err != nil {
+		return nil
+	}
+	return nodeDocMediaURLs(doc)
+}
+
+func dedupeNodeDocMedia(doc content.NodeDocV1, assets []*mediaAssetCandidate, usedGlobal map[string]bool) (content.NodeDocV1, map[string]any) {
+	metrics := map[string]any{}
+	if len(doc.Blocks) == 0 {
+		return doc, metrics
+	}
+	availImages := make([]*mediaAssetCandidate, 0)
+	availVideos := make([]*mediaAssetCandidate, 0)
+	for _, a := range assets {
+		if a == nil {
+			continue
+		}
+		url := strings.TrimSpace(a.URL)
+		if url == "" {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(a.Kind))
+		switch kind {
+		case "image":
+			availImages = append(availImages, a)
+		case "video":
+			availVideos = append(availVideos, a)
+		}
+	}
+
+	usedLocal := map[string]bool{}
+	pickUnused := func(cands []*mediaAssetCandidate) *mediaAssetCandidate {
+		for _, c := range cands {
+			if c == nil {
+				continue
+			}
+			url := strings.TrimSpace(c.URL)
+			if url == "" {
+				continue
+			}
+			if usedLocal[url] {
+				continue
+			}
+			if usedGlobal != nil && usedGlobal[url] {
+				continue
+			}
+			return c
+		}
+		return nil
+	}
+	matchCandidate := func(cands []*mediaAssetCandidate, key string, fileName string) *mediaAssetCandidate {
+		key = strings.TrimSpace(key)
+		fileName = strings.TrimSpace(fileName)
+		for _, c := range cands {
+			if c == nil {
+				continue
+			}
+			url := strings.TrimSpace(c.URL)
+			if url == "" {
+				continue
+			}
+			if usedLocal[url] || (usedGlobal != nil && usedGlobal[url]) {
+				continue
+			}
+			if key != "" && strings.EqualFold(strings.TrimSpace(c.Key), key) {
+				return c
+			}
+			if fileName != "" && strings.EqualFold(strings.TrimSpace(c.FileName), fileName) {
+				return c
+			}
+		}
+		return nil
+	}
+	fillAsset := func(asset map[string]any, repl *mediaAssetCandidate) map[string]any {
+		if asset == nil {
+			asset = map[string]any{}
+		}
+		if repl == nil {
+			return asset
+		}
+		asset["url"] = strings.TrimSpace(repl.URL)
+		if strings.TrimSpace(repl.Key) != "" {
+			asset["storage_key"] = strings.TrimSpace(repl.Key)
+		}
+		if strings.TrimSpace(repl.MimeType) != "" {
+			asset["mime_type"] = strings.TrimSpace(repl.MimeType)
+		}
+		if strings.TrimSpace(repl.FileName) != "" {
+			asset["file_name"] = strings.TrimSpace(repl.FileName)
+		}
+		if strings.TrimSpace(repl.Source) != "" {
+			asset["source"] = strings.TrimSpace(repl.Source)
+		}
+		return asset
+	}
+
+	out := make([]map[string]any, 0, len(doc.Blocks))
+	for _, b := range doc.Blocks {
+		kind := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch kind {
+		case "figure":
+			asset, _ := b["asset"].(map[string]any)
+			url := strings.TrimSpace(stringFromAny(asset["url"]))
+			if url == "" {
+				key := strings.TrimSpace(stringFromAny(asset["storage_key"]))
+				fileName := strings.TrimSpace(stringFromAny(asset["file_name"]))
+				repl := matchCandidate(availImages, key, fileName)
+				if repl == nil {
+					repl = pickUnused(availImages)
+				}
+				if repl == nil {
+					metrics["figure_dropped_missing_url"] = intFromAny(metrics["figure_dropped_missing_url"], 0) + 1
+					continue
+				}
+				asset = fillAsset(asset, repl)
+				url = strings.TrimSpace(stringFromAny(asset["url"]))
+				usedLocal[url] = true
+				metrics["figure_filled_missing_url"] = intFromAny(metrics["figure_filled_missing_url"], 0) + 1
+				b["asset"] = asset
+				out = append(out, b)
+				continue
+			}
+			if usedLocal[url] || (usedGlobal != nil && usedGlobal[url]) {
+				repl := pickUnused(availImages)
+				if repl == nil {
+					metrics["figure_dropped"] = intFromAny(metrics["figure_dropped"], 0) + 1
+					continue
+				}
+				asset = fillAsset(asset, repl)
+				b["asset"] = asset
+				usedLocal[strings.TrimSpace(repl.URL)] = true
+				metrics["figure_replaced"] = intFromAny(metrics["figure_replaced"], 0) + 1
+				out = append(out, b)
+				continue
+			}
+			usedLocal[url] = true
+			out = append(out, b)
+		case "video":
+			url := strings.TrimSpace(stringFromAny(b["url"]))
+			if url == "" {
+				key := strings.TrimSpace(stringFromAny(b["storage_key"]))
+				fileName := strings.TrimSpace(stringFromAny(b["file_name"]))
+				repl := matchCandidate(availVideos, key, fileName)
+				if repl == nil {
+					repl = pickUnused(availVideos)
+				}
+				if repl == nil {
+					metrics["video_dropped_missing_url"] = intFromAny(metrics["video_dropped_missing_url"], 0) + 1
+					continue
+				}
+				b["url"] = strings.TrimSpace(repl.URL)
+				usedLocal[strings.TrimSpace(repl.URL)] = true
+				metrics["video_filled_missing_url"] = intFromAny(metrics["video_filled_missing_url"], 0) + 1
+				out = append(out, b)
+				continue
+			}
+			if usedLocal[url] || (usedGlobal != nil && usedGlobal[url]) {
+				repl := pickUnused(availVideos)
+				if repl == nil {
+					metrics["video_dropped"] = intFromAny(metrics["video_dropped"], 0) + 1
+					continue
+				}
+				b["url"] = strings.TrimSpace(repl.URL)
+				usedLocal[strings.TrimSpace(repl.URL)] = true
+				metrics["video_replaced"] = intFromAny(metrics["video_replaced"], 0) + 1
+				out = append(out, b)
+				continue
+			}
+			usedLocal[url] = true
+			out = append(out, b)
+		default:
+			out = append(out, b)
+		}
+	}
+
+	doc.Blocks = out
+	return doc, metrics
+}
+
 func suggestedVideoLine(videoAsset *mediaAssetCandidate) string {
 	if videoAsset == nil {
 		return ""
@@ -1229,6 +1442,176 @@ func insertAfterFirstBodyBlock(blocks []map[string]any, block map[string]any) []
 	out = append(out, block)
 	out = append(out, blocks[insertAt:]...)
 	return out
+}
+
+func uuidStrings(ids []uuid.UUID) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		s := id.String()
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func containsInsensitive(haystack, needle string) bool {
+	h := strings.ToLower(strings.TrimSpace(haystack))
+	n := strings.ToLower(strings.TrimSpace(needle))
+	if h == "" || n == "" {
+		return false
+	}
+	return strings.Contains(h, n)
+}
+
+func normalizeOutline(outline content.NodeDocOutlineV1, nodeTitle string, conceptKeys []string) content.NodeDocOutlineV1 {
+	out := outline
+	if out.SchemaVersion == 0 {
+		out.SchemaVersion = 1
+	}
+	if strings.TrimSpace(out.Title) == "" {
+		out.Title = strings.TrimSpace(nodeTitle)
+	}
+	out.ThreadSummary = strings.TrimSpace(out.ThreadSummary)
+	out.PrereqRecap = strings.TrimSpace(out.PrereqRecap)
+	out.NextPreview = strings.TrimSpace(out.NextPreview)
+	out.KeyTerms = dedupeStrings(out.KeyTerms)
+
+	sections := make([]content.NodeDocOutlineSectionV1, 0, len(out.Sections))
+	for _, s := range out.Sections {
+		sec := s
+		sec.Heading = strings.TrimSpace(sec.Heading)
+		sec.Goal = strings.TrimSpace(sec.Goal)
+		sec.BridgeIn = strings.TrimSpace(sec.BridgeIn)
+		sec.BridgeOut = strings.TrimSpace(sec.BridgeOut)
+		sec.ConceptKeys = dedupeStrings(sec.ConceptKeys)
+		if len(sec.ConceptKeys) == 0 && len(conceptKeys) > 0 {
+			sec.ConceptKeys = dedupeStrings(conceptKeys)
+		}
+		if sec.QuickChecks < 0 {
+			sec.QuickChecks = 0
+		}
+		if sec.QuickChecks > 4 {
+			sec.QuickChecks = 4
+		}
+		if sec.Heading == "" {
+			sec.Heading = "Section"
+		}
+		if sec.Goal == "" {
+			sec.Goal = "Teach the core idea in this section."
+		}
+		sections = append(sections, sec)
+	}
+	if len(sections) == 0 {
+		sections = append(sections, content.NodeDocOutlineSectionV1{
+			Heading:              "Roadmap",
+			Goal:                 "Preview the structure of the lesson.",
+			ConceptKeys:          dedupeStrings(conceptKeys),
+			IncludeWorkedExample: false,
+			IncludeMediaBlock:    false,
+			QuickChecks:          0,
+			BridgeIn:             "",
+			BridgeOut:            "",
+		})
+		sections = append(sections, content.NodeDocOutlineSectionV1{
+			Heading:              "Core idea",
+			Goal:                 "Explain the main concept clearly.",
+			ConceptKeys:          dedupeStrings(conceptKeys),
+			IncludeWorkedExample: true,
+			IncludeMediaBlock:    true,
+			QuickChecks:          1,
+			BridgeIn:             "",
+			BridgeOut:            "",
+		})
+	}
+	out.Sections = sections
+	return out
+}
+
+func outlineHeadingOrderErrors(gen content.NodeDocGenV1, outline content.NodeDocOutlineV1) []string {
+	expected := make([]string, 0, len(outline.Sections))
+	for _, s := range outline.Sections {
+		if strings.TrimSpace(s.Heading) != "" {
+			expected = append(expected, strings.TrimSpace(s.Heading))
+		}
+	}
+	if len(expected) == 0 {
+		return nil
+	}
+
+	headingsByID := map[string]string{}
+	for _, h := range gen.Headings {
+		if strings.TrimSpace(h.ID) == "" {
+			continue
+		}
+		headingsByID[strings.TrimSpace(h.ID)] = strings.TrimSpace(h.Text)
+	}
+	actual := make([]string, 0, len(gen.Order))
+	for _, item := range gen.Order {
+		if strings.ToLower(strings.TrimSpace(item.Kind)) != "heading" {
+			continue
+		}
+		txt := strings.TrimSpace(headingsByID[strings.TrimSpace(item.ID)])
+		if txt != "" {
+			actual = append(actual, txt)
+		}
+	}
+	if len(actual) == 0 {
+		return []string{"order missing headings required by outline"}
+	}
+
+	idx := 0
+	for _, h := range actual {
+		if idx >= len(expected) {
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(h), strings.TrimSpace(expected[idx])) {
+			idx++
+		}
+	}
+	if idx < len(expected) {
+		return []string{"headings do not follow outline order"}
+	}
+	return nil
+}
+
+func validateNodeDocThreading(docText string, prevTitle string, nextTitle string, moduleTitle string) ([]string, map[string]any) {
+	errs := make([]string, 0)
+	metrics := map[string]any{}
+	if strings.TrimSpace(docText) == "" {
+		return errs, metrics
+	}
+	if strings.TrimSpace(prevTitle) != "" {
+		ok := containsInsensitive(docText, prevTitle)
+		metrics["prev_title_present"] = ok
+		if !ok {
+			errs = append(errs, "missing explicit reference to previous lesson title")
+		}
+	}
+	if strings.TrimSpace(nextTitle) != "" {
+		ok := containsInsensitive(docText, nextTitle)
+		metrics["next_title_present"] = ok
+		if !ok {
+			errs = append(errs, "missing explicit reference to next lesson title")
+		}
+	}
+	if strings.TrimSpace(moduleTitle) != "" {
+		ok := containsInsensitive(docText, moduleTitle)
+		metrics["module_title_present"] = ok
+		if !ok {
+			errs = append(errs, "missing explicit reference to module title")
+		}
+	}
+	return errs, metrics
 }
 
 type quickCheckTeachOrderStats struct {

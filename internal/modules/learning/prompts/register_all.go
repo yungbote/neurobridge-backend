@@ -88,6 +88,9 @@ Return JSON only.`,
 PATH_INTENT_MD (optional; user goal context for relevance/noise filtering):
 {{.PathIntentMD}}
 
+CROSS_DOC_SECTION_GRAPH_JSON (optional; related sections across files):
+{{.CrossDocSectionsJSON}}
+
 EXCERPTS (each line includes chunk_id):
 {{.Excerpts}}
 
@@ -102,6 +105,82 @@ Task:
 - coverage: estimate completeness and list suspected missing topics.`,
 		Validators: []Validator{
 			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptAssumedKnowledge,
+		Version:    1,
+		SchemaName: "assumed_knowledge",
+		Schema:     AssumedKnowledgeSchema,
+		System: `
+You identify prerequisite knowledge that the material assumes but does not explicitly explain.
+Every assumed concept must be grounded by citations where the assumption is implied.
+Return JSON only.`,
+		User: `
+PATH_INTENT_MD (optional; user goal context for relevance/noise filtering):
+{{.PathIntentMD}}
+
+EXISTING_CONCEPTS_JSON (already extracted; do not repeat unless needed for prerequisites):
+{{.ConceptsJSON}}
+
+EXCERPTS (each line includes chunk_id):
+{{.Excerpts}}
+
+Task:
+- List prerequisite concepts assumed by the material but not explicitly taught.
+- For each assumed concept, include required_by (keys from EXISTING_CONCEPTS_JSON) where relevant.
+- Provide summary, aliases, importance, and citations (chunk_id strings) showing the assumption.
+- Keep the list compact and high-signal; avoid micro-topics.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptConceptAlignment,
+		Version:    1,
+		SchemaName: "concept_alignment",
+		Schema:     ConceptAlignmentSchema,
+		System: `
+You align concepts across documents and resolve ambiguous term collisions.
+Return JSON only.`,
+		User: `
+CONCEPTS_JSON (existing concept list with citations):
+{{.ConceptsJSON}}
+
+CROSS_DOC_SECTION_GRAPH_JSON (optional; related sections across files):
+{{.CrossDocSectionsJSON}}
+
+Task:
+- Identify synonyms/aliases across concepts; choose a canonical_key and list alias_keys to merge.
+- Identify ambiguous concepts that represent multiple meanings; split into distinct meanings with new keys.
+- Only use keys that exist or are created in this response; do not invent duplicates.
+- Provide citations for splits when possible.`,
+		Validators: []Validator{
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
+		Name:       PromptFormulaExtraction,
+		Version:    1,
+		SchemaName: "formula_extraction",
+		Schema:     FormulaExtractionSchema,
+		System: `
+You extract mathematical formulas from raw text snippets.
+Return JSON only.`,
+		User: `
+FORMULA_CANDIDATES_JSON:
+{{.FormulaCandidatesJSON}}
+
+Task:
+- For each candidate, return clean LaTeX and a symbolic representation (plain text).
+- Preserve variable names; avoid introducing new symbols.
+- If a candidate is not actually a formula, return an empty formulas list for that chunk.`,
+		Validators: []Validator{
+			RequireNonEmpty("FormulaCandidatesJSON", func(in Input) string { return in.FormulaCandidatesJSON }),
 		},
 	})
 
@@ -461,6 +540,101 @@ Include coverage_check.uncovered_concept_keys.`,
 	})
 
 	RegisterSpec(Spec{
+		Name:       PromptTeachingPatternHierarchy,
+		Version:    1,
+		SchemaName: "teaching_pattern_hierarchy",
+		Schema:     TeachingPatternHierarchySchema,
+		System: `
+You select a teaching-pattern hierarchy for a learning path.
+Choose only from the allowed pattern keys and obey the constraint cascade.
+Return JSON only.`,
+		User: `
+USER_PROFILE_DOC:
+{{.UserProfileDoc}}
+
+MATERIAL_SET_SUMMARY_MD (optional):
+{{.BundleExcerpt}}
+
+PATH_CHARTER_JSON:
+{{.PathCharterJSON}}
+
+PATH_STRUCTURE_JSON:
+{{.PathStructureJSON}}
+
+CONCEPTS_JSON:
+{{.ConceptsJSON}}
+
+EDGES_JSON:
+{{.EdgesJSON}}
+
+USER_KNOWLEDGE_JSON (optional; mastery/exposure from prior learning):
+{{.UserKnowledgeJSON}}
+
+PATTERN_SIGNALS_JSON (optional; computed statistics):
+{{.PatternSignalsJSON}}
+
+Task:
+Select patterns at three levels:
+1) Path pattern (exactly one per category):
+   - sequencing: linear | spiral | modular | branching | layered | thematic | chronological | whole_to_part | part_to_whole | concentric | comparative | problem_arc
+   - pedagogy: direct_instruction | project_based | problem_based | case_based | inquiry_based | discovery | narrative | apprenticeship | simulation | socratic | challenge_ladder | competency
+   - mastery: mastery_gated | soft_gated | ungated | diagnostic_adaptive | xp_progression
+   - reinforcement: spaced_review | interleaved | cumulative | end_review | just_in_time | none
+
+2) Module patterns (one per module_index in PATH_STRUCTURE_JSON):
+   - sequencing: linear_lessons | sandwich | hub_spoke | funnel | expansion | spiral_mini | parallel | comparative_pairs | chronological | simple_to_complex | dependency_driven
+   - pedagogy: theory_then_practice | practice_then_theory | interleaved | immersion | survey | case_driven | project_milestone | problem_solution | skill_build | concept_build | question_driven | workshop
+   - assessment: quiz_per_lesson | module_end_only | pre_post | continuous_embedded | diagnostic_entry | none | portfolio | peer_review
+   - content_mix: explanation_heavy | activity_heavy | balanced | example_rich | visual_rich | discussion_rich | reading_heavy | multimedia_mix
+
+3) Lesson patterns (one per lesson_index for every non-module node):
+   - opening: hook_question | hook_problem | hook_story | hook_surprise | hook_relevance | hook_challenge | objectives_first | recap_prior | diagnostic_check | advance_organizer | direct_start | tldr_first | context_setting | misconception_address
+   - core: direct_instruction | worked_example | faded_example | multiple_examples | non_example | example_non_example_pairs | analogy_based | metaphor_extended | compare_contrast | cause_effect | process_steps | classification | definition_elaboration | rule_then_apply | cases_then_rule | principle_illustration | concept_attainment | narrative_embed | dialogue_format | socratic_questioning | discovery_guided | simulation_walkthrough | demonstration | explanation_then_demo | demo_then_explanation | chunked_progressive | layered_depth | problem_solution_reveal | debate_format | q_and_a_format | interview_format
+   - example: single_canonical | multiple_varied | progression | edge_cases | real_world | abstract_formal | relatable_everyday | domain_specific | counterexample | minimal_pairs | annotated
+   - visual: text_only | diagram_supported | diagram_primary | dual_coded | sequential_visual | before_after | comparison_visual | infographic | flowchart | concept_map | timeline | table_matrix | annotated_image | animation_described
+   - practice: immediate | delayed_end | interleaved_throughout | scaffolded | faded_support | massed | varied | retrieval | application | generation | error_analysis | self_explanation | teach_back | prediction | comparison | reflection | none
+   - closing: summary | single_takeaway | connection_forward | connection_backward | connection_lateral | reflection_prompt | application_prompt | check_understanding | open_question | call_to_action | cliff_hanger | consolidation | none
+   - depth: eli5 | concise | standard | thorough | exhaustive | layered | adaptive
+   - engagement: passive | active_embedded | active_end | gamified | challenge_framed | curiosity_driven | choice_driven | personalized_reference | social_framed | timed | untimed
+
+Constraint cascade:
+- If path sequencing is linear: module sequencing must be one of linear_lessons | sandwich | funnel | simple_to_complex.
+- If path sequencing is spiral: module sequencing must be spiral_mini | expansion | linear_lessons.
+- If path sequencing is modular: prefer sandwich | hub_spoke for module sequencing.
+- If path sequencing is chronological: module sequencing should be chronological or linear_lessons.
+- If path pedagogy is project_based: module pedagogy must be project_milestone | workshop | skill_build.
+- If path pedagogy is problem_based: module pedagogy must be problem_solution | case_driven | question_driven.
+- If path pedagogy is case_based: module pedagogy must be case_driven; module sequencing should be comparative_pairs.
+- If path pedagogy is discovery: module pedagogy must be practice_then_theory | question_driven.
+- If path pedagogy is direct_instruction: module pedagogy must be theory_then_practice; module sequencing should be linear_lessons.
+- If path pedagogy is narrative: module sequencing should be chronological or linear_lessons.
+
+Module → lesson constraints (apply to openings/core/practice):
+- theory_then_practice → openings: objectives_first | recap_prior; core: direct_instruction | worked_example; practice: delayed_end | massed
+- practice_then_theory → openings: hook_challenge | hook_problem; core: discovery_guided | problem_solution_reveal; practice: immediate | interleaved_throughout
+- project_milestone → openings: objectives_first | hook_problem; core: demonstration | worked_example; practice: application | generation
+- case_driven → openings: hook_story | context_setting; core: narrative_embed | socratic_questioning; practice: application | reflection
+- skill_build → openings: objectives_first | direct_start; core: process_steps | worked_example | faded_example; practice: scaffolded | massed
+- concept_build → openings: hook_question | recap_prior; core: direct_instruction | compare_contrast; practice: retrieval | self_explanation
+- workshop → openings: direct_start | hook_challenge; core: demonstration | worked_example; practice: immediate | scaffolded
+- survey → openings: advance_organizer | tldr_first; core: direct_instruction | chunked_progressive; practice: none | check_understanding
+
+Variety rules:
+- Within a module: use at most 3 different core patterns; keep opening and closing styles consistent.
+- Across lessons: avoid repeating the exact same opening+core+practice combo 3+ times in a row.
+- Use position hints: first lessons should orient (hook_relevance/context_setting/advance_organizer); last lessons should consolidate (summary/connection_forward).
+
+Return JSON only that matches the schema.`,
+		Validators: []Validator{
+			RequireNonEmpty("UserProfileDoc", func(in Input) string { return in.UserProfileDoc }),
+			RequireNonEmpty("PathCharterJSON", func(in Input) string { return in.PathCharterJSON }),
+			RequireNonEmpty("PathStructureJSON", func(in Input) string { return in.PathStructureJSON }),
+			RequireNonEmpty("ConceptsJSON", func(in Input) string { return in.ConceptsJSON }),
+			RequireNonEmpty("EdgesJSON", func(in Input) string { return in.EdgesJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptNodeRepresentationPlan,
 		Version:    1, // schema version is inside NodeRepresentationPlanSchema() (currently const 2)
 		SchemaName: "node_representation_plan",
@@ -675,6 +849,9 @@ USER_PROFILE_DOC:
 PATH_CHARTER_JSON (optional):
 {{.PathCharterJSON}}
 
+PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
+{{.PatternContextJSON}}
+
 TEACHING_PATTERNS_JSON (optional; pick 1-2 and apply them; do not mention pattern_key values):
 {{.TeachingPatternsJSON}}
 
@@ -696,6 +873,7 @@ Rules:
 - Target word counts (approx; err on the side of longer): lesson-like ~1000–1600 words; drill ~450–800 words; quiz ~250–450 words.
 - If USER_KNOWLEDGE_JSON marks a concept as "known", skip basics and focus on nuance, integration, and faster recall prompts.
 - If USER_KNOWLEDGE_JSON marks a concept as "weak" or "unseen", add extra scaffolding, more step-by-step explanation, and more guided practice.
+- If PATTERN_CONTEXT_JSON is provided, align opening/core/examples/practice/closing and depth with those patterns (don’t mention pattern names).
 - For lesson-like activities, aim for a narrative arc: why it matters → intuition/mental model → explanation → worked example → guided practice → recap.
 - For drills, include: a clear prompt, guided steps, and at least one "hint ladder" style callout to support retries.
 - For quizzes, include brief explanations for answers (why correct / why others are wrong) grounded in excerpts.

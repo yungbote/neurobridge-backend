@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -16,6 +19,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/localmedia"
+	"golang.org/x/sync/errgroup"
 )
 
 func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
@@ -155,25 +159,114 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 		warnings = append(warnings, "no page images rendered; figure_notes skipped")
 	} else {
 		capN := extractor.MinInt(len(pageImages), s.ex.MaxPDFPagesCaption)
+		conceptN := 0
+		if diagramConceptsEnabled() {
+			maxConceptPages := envIntAllowZero("DIAGRAM_CONCEPTS_MAX_PAGES", 0)
+			if maxConceptPages <= 0 {
+				maxConceptPages = s.ex.MaxPDFPagesCaption
+			}
+			conceptN = extractor.MinInt(len(pageImages), maxConceptPages)
+		}
+		var (
+			capMu       sync.Mutex
+			segsByPage  = make([][]Segment, capN)
+			conceptsByPage = make([][]Segment, conceptN)
+			capWarnings []string
+		)
+
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(10)
+		maxPages := capN
+		if conceptN > maxPages {
+			maxPages = conceptN
+		}
+		for i := 0; i < maxPages; i++ {
+			i := i
+			g.Go(func() error {
+				if err := gctx.Err(); err != nil {
+					return err
+				}
+				if i >= len(pageImages) {
+					return nil
+				}
+				imgAsset := pageImages[i]
+				page := i + 1
+				if imgAsset.Metadata != nil {
+					if v, ok := imgAsset.Metadata["page"]; ok {
+						switch t := v.(type) {
+						case int:
+							if t > 0 {
+								page = t
+							}
+						case int64:
+							if t > 0 {
+								page = int(t)
+							}
+						case float64:
+							if t > 0 {
+								page = int(t)
+							}
+						case float32:
+							if t > 0 {
+								page = int(t)
+							}
+						case string:
+							if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil && n > 0 {
+								page = n
+							}
+						}
+					}
+				}
+				if i < capN {
+					noteSegs, warn, err := s.captionAssetToSegments(gctx, "figure_notes", imgAsset, page, nil, nil)
+					if err != nil {
+						capMu.Lock()
+						capWarnings = append(capWarnings, fmt.Sprintf("caption page %d failed: %v", page, err))
+						capMu.Unlock()
+						return nil
+					}
+					if warn != "" {
+						capMu.Lock()
+						capWarnings = append(capWarnings, warn)
+						capMu.Unlock()
+					}
+					segsByPage[i] = noteSegs
+				}
+				if i < conceptN {
+					conceptSegs, warn, err := s.captionAssetToConceptSegments(gctx, imgAsset, page, nil, nil)
+					if err != nil {
+						capMu.Lock()
+						capWarnings = append(capWarnings, fmt.Sprintf("diagram concepts page %d failed: %v", page, err))
+						capMu.Unlock()
+						return nil
+					}
+					if warn != "" {
+						capMu.Lock()
+						capWarnings = append(capWarnings, warn)
+						capMu.Unlock()
+					}
+					conceptsByPage[i] = conceptSegs
+				}
+				return nil
+			})
+		}
+
+		if err := g.Wait(); err != nil && gctx.Err() != nil {
+			return segs, assets, warnings, diag, err
+		}
 		for i := 0; i < capN; i++ {
-			if err := ctx.Err(); err != nil {
-				return segs, assets, warnings, diag, err
-			}
-			page := i + 1
-			imgAsset := pageImages[i]
-			noteSegs, warn, err := s.captionAssetToSegments(ctx, "figure_notes", imgAsset, page, nil, nil)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("caption page %d failed: %v", page, err))
-				continue
-			}
-			if warn != "" {
-				warnings = append(warnings, warn)
-			}
-			segs = append(segs, noteSegs...)
+			segs = append(segs, segsByPage[i]...)
+		}
+		for i := 0; i < conceptN; i++ {
+			segs = append(segs, conceptsByPage[i]...)
+		}
+		if len(capWarnings) > 0 {
+			warnings = append(warnings, capWarnings...)
 		}
 	}
 
 	if hint := outline.FromSegments(mf.OriginalName, segs, outline.MaxSections()); hint != nil {
+		segs = outline.AnnotateSegmentsWithOutline(segs, hint)
 		outline.ApplyHint(diag, hint)
 	}
 
@@ -246,42 +339,129 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 	}
 	defer os.RemoveAll(tmpDir)
 
-	paths, err := s.ex.Media.RenderPDFToImages(ctx, pdfPath, tmpDir, localmedia.PDFRenderOptions{
-		DPI:       200,
-		Format:    "png",
-		FirstPage: 0,
-		LastPage:  0,
-	})
-	if err != nil {
-		return nil, nil, []string{"pdf render failed: " + err.Error()}, diag
-	}
-
-	if len(paths) > s.ex.MaxPDFPagesRender {
-		warnings = append(warnings, fmt.Sprintf("pdf pages truncated: rendered %d capped to %d", len(paths), s.ex.MaxPDFPagesRender))
-		paths = paths[:s.ex.MaxPDFPagesRender]
-	}
-
-	pageAssets := make([]AssetRef, 0, len(paths))
-	for i, pth := range paths {
-		if err := ctx.Err(); err != nil {
-			warnings = append(warnings, "upload pages canceled: "+err.Error())
-			break
-		}
-		pageNum := i + 1
-		key := fmt.Sprintf("%s/derived/pages/page_%04d.png", mf.StorageKey, pageNum)
-		if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, key, pth); err != nil {
-			warnings = append(warnings, fmt.Sprintf("upload page %d failed: %v", pageNum, err))
-			continue
-		}
-		pageAssets = append(pageAssets, AssetRef{
-			Kind: "pdf_page",
-			Key:  key,
-			URL:  s.ex.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, key),
-			Metadata: map[string]any{
-				"page":   pageNum,
-				"format": "png",
-			},
+	renderSequential := func() ([]AssetRef, []AssetRef, []string, map[string]any) {
+		paths, err := s.ex.Media.RenderPDFToImages(ctx, pdfPath, tmpDir, localmedia.PDFRenderOptions{
+			DPI:       200,
+			Format:    "png",
+			FirstPage: 0,
+			LastPage:  0,
 		})
+		if err != nil {
+			return nil, nil, []string{"pdf render failed: " + err.Error()}, diag
+		}
+
+		if len(paths) > s.ex.MaxPDFPagesRender {
+			warnings = append(warnings, fmt.Sprintf("pdf pages truncated: rendered %d capped to %d", len(paths), s.ex.MaxPDFPagesRender))
+			paths = paths[:s.ex.MaxPDFPagesRender]
+		}
+
+		pageAssets := make([]AssetRef, 0, len(paths))
+		for i, pth := range paths {
+			if err := ctx.Err(); err != nil {
+				warnings = append(warnings, "upload pages canceled: "+err.Error())
+				break
+			}
+			pageNum := i + 1
+			key := fmt.Sprintf("%s/derived/pages/page_%04d.png", mf.StorageKey, pageNum)
+			if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, key, pth); err != nil {
+				warnings = append(warnings, fmt.Sprintf("upload page %d failed: %v", pageNum, err))
+				continue
+			}
+			pageAssets = append(pageAssets, AssetRef{
+				Kind: "pdf_page",
+				Key:  key,
+				URL:  s.ex.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, key),
+				Metadata: map[string]any{
+					"page":   pageNum,
+					"format": "png",
+				},
+			})
+		}
+
+		diag["pages_rendered"] = len(pageAssets)
+		return pageAssets, pageAssets, warnings, diag
+	}
+
+	pageCount, err := s.ex.Media.CountPDFPages(ctx, pdfPath)
+	if err != nil || pageCount <= 0 {
+		if err != nil {
+			warnings = append(warnings, "pdf page count failed (fallback to sequential): "+err.Error())
+			diag["page_count_error"] = err.Error()
+		}
+		return renderSequential()
+	}
+	diag["pages_total"] = pageCount
+
+	if s.ex.MaxPDFPagesRender > 0 && pageCount > s.ex.MaxPDFPagesRender {
+		warnings = append(warnings, fmt.Sprintf("pdf pages truncated: rendered %d capped to %d", pageCount, s.ex.MaxPDFPagesRender))
+		pageCount = s.ex.MaxPDFPagesRender
+	}
+	if pageCount <= 0 {
+		diag["pages_rendered"] = 0
+		return nil, nil, warnings, diag
+	}
+
+	maxConc := runtime.NumCPU()
+	if maxConc < 1 {
+		maxConc = 1
+	}
+
+	assets := make([]AssetRef, pageCount)
+	present := make([]bool, pageCount)
+	var mu sync.Mutex
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxConc)
+
+	for page := 1; page <= pageCount; page++ {
+		page := page
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			pth, err := s.ex.Media.RenderPDFPage(gctx, pdfPath, tmpDir, page, localmedia.PDFRenderOptions{
+				DPI:    200,
+				Format: "png",
+			})
+			if err != nil {
+				mu.Lock()
+				warnings = append(warnings, fmt.Sprintf("render page %d failed: %v", page, err))
+				mu.Unlock()
+				return nil
+			}
+
+			key := fmt.Sprintf("%s/derived/pages/page_%04d.png", mf.StorageKey, page)
+			if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: gctx}, key, pth); err != nil {
+				mu.Lock()
+				warnings = append(warnings, fmt.Sprintf("upload page %d failed: %v", page, err))
+				mu.Unlock()
+				return nil
+			}
+
+			asset := AssetRef{
+				Kind: "pdf_page",
+				Key:  key,
+				URL:  s.ex.Bucket.GetPublicURL(gcp.BucketCategoryMaterial, key),
+				Metadata: map[string]any{
+					"page":   page,
+					"format": "png",
+				},
+			}
+			assets[page-1] = asset
+			present[page-1] = true
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil && gctx.Err() != nil {
+		warnings = append(warnings, "render canceled: "+err.Error())
+	}
+
+	pageAssets := make([]AssetRef, 0, pageCount)
+	for i := 0; i < pageCount; i++ {
+		if present[i] {
+			pageAssets = append(pageAssets, assets[i])
+		}
 	}
 
 	diag["pages_rendered"] = len(pageAssets)

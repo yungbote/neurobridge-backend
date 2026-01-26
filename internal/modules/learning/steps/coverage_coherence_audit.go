@@ -18,6 +18,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"golang.org/x/sync/errgroup"
 )
 
 type CoverageCoherenceAuditDeps struct {
@@ -60,16 +61,29 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 		return out, err
 	}
 
-	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
-	if err != nil {
-		return out, err
-	}
-	nodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
-	if err != nil {
-		return out, err
-	}
-	acts, err := deps.Activities.ListByOwner(dbctx.Context{Ctx: ctx}, "path", &pathID)
-	if err != nil {
+	var (
+		concepts []*types.Concept
+		nodes    []*types.PathNode
+		acts     []*types.Activity
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		concepts, err = deps.Concepts.GetByScope(dbctx.Context{Ctx: gctx}, "path", &pathID)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		nodes, err = deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: gctx}, []uuid.UUID{pathID})
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		acts, err = deps.Activities.ListByOwner(dbctx.Context{Ctx: gctx}, "path", &pathID)
+		return err
+	})
+	if err := g.Wait(); err != nil {
 		return out, err
 	}
 	activityIDs := make([]uuid.UUID, 0, len(acts))

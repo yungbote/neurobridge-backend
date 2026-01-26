@@ -176,12 +176,22 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		}
 	}
 	sort.Slice(chunkEmbs, func(i, j int) bool { return chunkEmbs[i].ID.String() < chunkEmbs[j].ID.String() })
+	embByChunk := map[uuid.UUID][]float32{}
+	for _, ce := range chunkEmbs {
+		if ce.ID != uuid.Nil && len(ce.Emb) > 0 {
+			embByChunk[ce.ID] = ce.Emb
+		}
+	}
+
+	// Optional enrichment: formula extraction before concept graph prompts.
+	extractFormulasAndPersist(ctx, deps, chunks, allowedChunkIDs)
+	crossDocSectionsJSON, _ := buildCrossDocSectionGraph(ctx, deps, files, chunks, embByChunk)
 
 	perFile := envIntAllowZero("CONCEPT_GRAPH_EXCERPTS_PER_FILE", 14)
 	excerptMaxChars := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_CHARS", 700)
 	excerptMaxLines := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_LINES", 0)
 	excerptMaxTotal := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_TOTAL_CHARS", 0)
-	excerpts, excerptChunkIDs := stratifiedChunkExcerptsWithLimitsAndIDs(
+	excerpts, excerptChunkIDs := buildConceptGraphExcerpts(
 		chunks,
 		perFile,
 		excerptMaxChars,
@@ -191,7 +201,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if strings.TrimSpace(excerpts) == "" {
 		return out, fmt.Errorf("concept_graph_build: empty excerpts")
 	}
-	edgeExcerpts := stratifiedChunkExcerptsWithLimits(
+	edgeExcerpts, _ := buildConceptGraphExcerpts(
 		chunks,
 		perFile,
 		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS", 700),
@@ -203,7 +213,11 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Prompt: Concept inventory ----
-	invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{Excerpts: excerpts, PathIntentMD: intentMD})
+	invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
+		Excerpts:             excerpts,
+		PathIntentMD:         intentMD,
+		CrossDocSectionsJSON: crossDocSectionsJSON,
+	})
 	if err != nil {
 		return out, err
 	}
@@ -255,6 +269,136 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		Concepts:           conceptsOut,
 		MaterialFileFilter: allowFiles,
 	})
+
+	// ---- Assumed knowledge (implicit prerequisites) ----
+	conceptMetaByKey := map[string]map[string]any{}
+	if deps.AI != nil && strings.TrimSpace(excerpts) != "" && len(conceptsOut) > 0 {
+		conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptsOut})
+		assumedPrompt, err := prompts.Build(prompts.PromptAssumedKnowledge, prompts.Input{
+			ConceptsJSON: string(conceptsJSONBytes),
+			Excerpts:     excerpts,
+			PathIntentMD: intentMD,
+		})
+		if err == nil {
+			assumedObj, err := deps.AI.GenerateJSON(ctx, assumedPrompt.System, assumedPrompt.User, assumedPrompt.SchemaName, assumedPrompt.Schema)
+			if err == nil {
+				assumed := parseAssumedKnowledge(assumedObj)
+				if len(assumed.Assumed) > 0 {
+					byKey := map[string]conceptInvItem{}
+					for _, c := range conceptsOut {
+						if strings.TrimSpace(c.Key) != "" {
+							byKey[c.Key] = c
+						}
+					}
+					added := 0
+					for _, a := range assumed.Assumed {
+						key := normalizeConceptKey(a.Key)
+						if key == "" {
+							continue
+						}
+						name := strings.TrimSpace(a.Name)
+						if name == "" {
+							name = key
+						}
+						reqs := make([]string, 0, len(a.RequiredBy))
+						for _, rk := range a.RequiredBy {
+							nk := normalizeConceptKey(rk)
+							if nk != "" {
+								reqs = append(reqs, nk)
+							}
+						}
+						meta := conceptMetaByKey[key]
+						if meta == nil {
+							meta = map[string]any{}
+						}
+						meta["assumed"] = true
+						if len(reqs) > 0 {
+							meta["required_by"] = dedupeStrings(append(stringSliceFromAny(meta["required_by"]), reqs...))
+						}
+						if strings.TrimSpace(assumed.Notes) != "" && strings.TrimSpace(stringFromAny(meta["assumed_notes"])) == "" {
+							meta["assumed_notes"] = strings.TrimSpace(assumed.Notes)
+						}
+						conceptMetaByKey[key] = meta
+
+						item, exists := byKey[key]
+						if exists {
+							if strings.TrimSpace(item.Name) == "" {
+								item.Name = name
+							}
+							if len(strings.TrimSpace(item.Summary)) < len(strings.TrimSpace(a.Summary)) {
+								item.Summary = strings.TrimSpace(a.Summary)
+							}
+							item.Aliases = dedupeStrings(append(item.Aliases, a.Aliases...))
+							item.Aliases = dedupeStrings(append(item.Aliases, a.Name, a.Key))
+							item.Citations = dedupeStrings(append(item.Citations, a.Citations...))
+							if a.Importance > item.Importance {
+								item.Importance = a.Importance
+							}
+							byKey[key] = item
+							continue
+						}
+						newItem := conceptInvItem{
+							Key:        key,
+							Name:       name,
+							ParentKey:  "",
+							Depth:      0,
+							Summary:    strings.TrimSpace(a.Summary),
+							KeyPoints:  nil,
+							Aliases:    dedupeStrings(append(a.Aliases, a.Name, a.Key)),
+							Importance: a.Importance,
+							Citations:  dedupeStrings(filterChunkIDStrings(a.Citations, allowedChunkIDs)),
+						}
+						byKey[key] = newItem
+						added++
+					}
+					if len(byKey) > 0 {
+						conceptsOut = make([]conceptInvItem, 0, len(byKey))
+						for _, v := range byKey {
+							conceptsOut = append(conceptsOut, v)
+						}
+					}
+					if deps.Log != nil && added > 0 {
+						deps.Log.Info("concept_graph_build: assumed knowledge added", "path_id", pathID.String(), "added", added)
+					}
+				}
+			} else if deps.Log != nil {
+				deps.Log.Warn("concept_graph_build: assumed knowledge failed (continuing)", "error", err.Error(), "path_id", pathID.String())
+			}
+		}
+	}
+
+	// ---- Concept alignment (aliases/splits across documents) ----
+	if deps.AI != nil && len(conceptsOut) > 0 {
+		conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptsOut})
+		alignPrompt, err := prompts.Build(prompts.PromptConceptAlignment, prompts.Input{
+			ConceptsJSON:         string(conceptsJSONBytes),
+			CrossDocSectionsJSON: crossDocSectionsJSON,
+		})
+		if err == nil {
+			alignObj, err := deps.AI.GenerateJSON(ctx, alignPrompt.System, alignPrompt.User, alignPrompt.SchemaName, alignPrompt.Schema)
+			if err == nil {
+				alignment := parseConceptAlignment(alignObj)
+				if len(alignment.Aliases) > 0 || len(alignment.Splits) > 0 {
+					conceptsOut = applyConceptAlignment(conceptsOut, alignment, allowedChunkIDs, conceptMetaByKey)
+				}
+			} else if deps.Log != nil {
+				deps.Log.Warn("concept_graph_build: concept alignment failed (continuing)", "error", err.Error(), "path_id", pathID.String())
+			}
+		}
+	}
+
+	// Re-normalize after enrichments.
+	conceptsOut, _ = normalizeConceptInventory(conceptsOut, allowedChunkIDs)
+	conceptsOut, _ = dedupeConceptInventoryByKey(conceptsOut)
+	if len(conceptMetaByKey) > 0 {
+		trimmed := map[string]map[string]any{}
+		for _, c := range conceptsOut {
+			if meta := conceptMetaByKey[c.Key]; len(meta) > 0 {
+				trimmed[c.Key] = meta
+			}
+		}
+		conceptMetaByKey = trimmed
+	}
 
 	// Stable ordering for deterministic IDs/embeddings batching.
 	sort.Slice(conceptsOut, func(i, j int) bool { return conceptsOut[i].Key < conceptsOut[j].Key })
@@ -353,6 +497,47 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	edgesOut := parseConceptEdges(edgesObj)
+	if len(conceptMetaByKey) > 0 && len(conceptsOut) > 0 {
+		known := map[string]bool{}
+		for _, c := range conceptsOut {
+			if strings.TrimSpace(c.Key) != "" {
+				known[c.Key] = true
+			}
+		}
+		seenEdge := map[string]bool{}
+		for _, e := range edgesOut {
+			seenEdge[strings.TrimSpace(e.FromKey)+"->"+strings.TrimSpace(e.ToKey)] = true
+		}
+		for _, c := range conceptsOut {
+			meta := conceptMetaByKey[c.Key]
+			if meta == nil {
+				continue
+			}
+			reqs := stringSliceFromAny(meta["required_by"])
+			if len(reqs) == 0 {
+				continue
+			}
+			for _, rk := range reqs {
+				key := normalizeConceptKey(rk)
+				if key == "" || key == c.Key || !known[key] {
+					continue
+				}
+				ek := c.Key + "->" + key
+				if seenEdge[ek] {
+					continue
+				}
+				seenEdge[ek] = true
+				edgesOut = append(edgesOut, conceptEdgeItem{
+					FromKey:   c.Key,
+					ToKey:     key,
+					EdgeType:  "prereq",
+					Strength:  0.85,
+					Rationale: "assumed prerequisite",
+					Citations: dedupeStrings(filterChunkIDStrings(c.Citations, allowedChunkIDs)),
+				})
+			}
+		}
+	}
 	edgesOut, edgeStats := normalizeConceptEdges(edgesOut, conceptsOut, allowedChunkIDs)
 	if edgeStats.Modified > 0 {
 		deps.Log.Info(
@@ -571,6 +756,15 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	for i := range conceptsOut {
 		id := uuid.New()
 		keyToID[conceptsOut[i].Key] = id
+		meta := map[string]any{
+			"aliases":    conceptsOut[i].Aliases,
+			"importance": conceptsOut[i].Importance,
+		}
+		if extra := conceptMetaByKey[conceptsOut[i].Key]; len(extra) > 0 {
+			for k, v := range extra {
+				meta[k] = v
+			}
+		}
 		rows = append(rows, conceptRow{
 			Row: &types.Concept{
 				ID:        id,
@@ -584,7 +778,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				Summary:   conceptsOut[i].Summary,
 				KeyPoints: datatypes.JSON(mustJSON(conceptsOut[i].KeyPoints)),
 				VectorID:  "concept:" + id.String(),
-				Metadata:  datatypes.JSON(mustJSON(map[string]any{"aliases": conceptsOut[i].Aliases, "importance": conceptsOut[i].Importance})),
+				Metadata:  datatypes.JSON(mustJSON(meta)),
 			},
 			Emb: embs[i],
 		})

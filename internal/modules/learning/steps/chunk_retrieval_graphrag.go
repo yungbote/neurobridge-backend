@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/graphrag"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	pc "github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
+	"golang.org/x/sync/errgroup"
 )
 
 type chunkRetrievePlan struct {
@@ -53,46 +55,97 @@ func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore,
 	seedIDs := make([]uuid.UUID, 0, plan.SeedK+plan.LexicalK)
 	seenSeed := map[uuid.UUID]bool{}
 
-	// Dense seeds (Pinecone best-effort).
-	if vec != nil {
-		start := time.Now()
-		matches, err := vec.QueryMatches(ctx, plan.ChunksNS, plan.QueryEmb, plan.SeedK, pineconeChunkFilterWithAllowlist(plan.AllowFiles))
-		trace["dense_ms"] = time.Since(start).Milliseconds()
-		if err != nil {
-			trace["dense_err"] = err.Error()
-		} else {
-			trace["dense_count"] = len(matches)
-			for _, m := range matches {
-				id, err := uuid.Parse(strings.TrimSpace(m.ID))
-				if err != nil || id == uuid.Nil || seenSeed[id] {
-					continue
-				}
-				seenSeed[id] = true
-				seedIDs = append(seedIDs, id)
-				seeds = append(seeds, graphrag.SeedChunk{ChunkID: id, Score: m.Score})
-			}
-		}
+	var (
+		denseSeeds []graphrag.SeedChunk
+		denseIDs   []uuid.UUID
+		lexSeeds   []graphrag.SeedChunk
+		lexIDs     []uuid.UUID
+		traceMu    sync.Mutex
+	)
+	setTrace := func(k string, v any) {
+		traceMu.Lock()
+		trace[k] = v
+		traceMu.Unlock()
 	}
 
-	// Lexical seeds (Postgres FTS best-effort).
-	if db != nil && plan.LexicalK > 0 && len(plan.FileIDs) > 0 && strings.TrimSpace(plan.QueryText) != "" {
-		start := time.Now()
-		lex, err := lexicalChunkIDs(dbctx.Context{Ctx: ctx, Tx: db}, plan.FileIDs, plan.QueryText, plan.LexicalK)
-		trace["lex_ms"] = time.Since(start).Milliseconds()
-		if err != nil {
-			trace["lex_err"] = err.Error()
-		} else {
-			trace["lex_count"] = len(lex)
-			for _, id := range lex {
-				if id == uuid.Nil || seenSeed[id] {
+	g, gctx := errgroup.WithContext(ctx)
+	if vec != nil {
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			start := time.Now()
+			matches, err := vec.QueryMatches(gctx, plan.ChunksNS, plan.QueryEmb, plan.SeedK, pineconeChunkFilterWithAllowlist(plan.AllowFiles))
+			setTrace("dense_ms", time.Since(start).Milliseconds())
+			if err != nil {
+				setTrace("dense_err", err.Error())
+				return nil
+			}
+			setTrace("dense_count", len(matches))
+			outSeeds := make([]graphrag.SeedChunk, 0, len(matches))
+			outIDs := make([]uuid.UUID, 0, len(matches))
+			for _, m := range matches {
+				id, err := uuid.Parse(strings.TrimSpace(m.ID))
+				if err != nil || id == uuid.Nil {
 					continue
 				}
-				seenSeed[id] = true
-				seedIDs = append(seedIDs, id)
-				// Assign a mild score; graphrag normalizes across seeds anyway.
-				seeds = append(seeds, graphrag.SeedChunk{ChunkID: id, Score: 0.35})
+				outIDs = append(outIDs, id)
+				outSeeds = append(outSeeds, graphrag.SeedChunk{ChunkID: id, Score: m.Score})
 			}
+			denseSeeds = outSeeds
+			denseIDs = outIDs
+			return nil
+		})
+	}
+
+	if db != nil && plan.LexicalK > 0 && len(plan.FileIDs) > 0 && strings.TrimSpace(plan.QueryText) != "" {
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			start := time.Now()
+			lex, err := lexicalChunkIDs(dbctx.Context{Ctx: gctx, Tx: db}, plan.FileIDs, plan.QueryText, plan.LexicalK)
+			setTrace("lex_ms", time.Since(start).Milliseconds())
+			if err != nil {
+				setTrace("lex_err", err.Error())
+				return nil
+			}
+			setTrace("lex_count", len(lex))
+			outSeeds := make([]graphrag.SeedChunk, 0, len(lex))
+			outIDs := make([]uuid.UUID, 0, len(lex))
+			for _, id := range lex {
+				if id == uuid.Nil {
+					continue
+				}
+				outIDs = append(outIDs, id)
+				outSeeds = append(outSeeds, graphrag.SeedChunk{ChunkID: id, Score: 0.35})
+			}
+			lexSeeds = outSeeds
+			lexIDs = outIDs
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil && gctx.Err() != nil {
+		return nil, trace, err
+	}
+
+	appendSeeds := func(ids []uuid.UUID, in []graphrag.SeedChunk) {
+		for i := range ids {
+			id := ids[i]
+			if id == uuid.Nil || seenSeed[id] {
+				continue
+			}
+			seenSeed[id] = true
+			seedIDs = append(seedIDs, id)
+			seeds = append(seeds, in[i])
 		}
+	}
+	if len(denseIDs) > 0 && len(denseSeeds) == len(denseIDs) {
+		appendSeeds(denseIDs, denseSeeds)
+	}
+	if len(lexIDs) > 0 && len(lexSeeds) == len(lexIDs) {
+		appendSeeds(lexIDs, lexSeeds)
 	}
 
 	// Local dense fallback (cosine over stored embeddings).

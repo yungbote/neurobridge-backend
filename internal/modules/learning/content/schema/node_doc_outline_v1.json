@@ -3,6 +3,10 @@
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
     "title": { "type": "string" },
+    "thread_summary": { "type": "string" },
+    "key_terms": { "type": "array", "items": { "type": "string" } },
+    "prereq_recap": { "type": "string" },
+    "next_preview": { "type": "string" },
     "sections": {
       "type": "array",
       "items": {
@@ -10,22 +14,27 @@
         "properties": {
           "heading": { "type": "string" },
           "goal": { "type": "string" },
+          "concept_keys": { "type": "array", "items": { "type": "string" } },
           "include_worked_example": { "type": "boolean" },
           "include_media_block": { "type": "boolean" },
-          "quick_checks": { "type": "integer" }
+          "quick_checks": { "type": "integer" },
+          "bridge_in": { "type": "string" },
+          "bridge_out": { "type": "string" }
         },
         "required": [
           "heading",
           "goal",
+          "concept_keys",
           "include_worked_example",
           "include_media_block",
-          "quick_checks"
+          "quick_checks",
+          "bridge_in",
+          "bridge_out"
         ],
         "additionalProperties": false
       }
     }
   },
-  "required": ["schema_version", "title", "sections"],
+  "required": ["schema_version", "title", "thread_summary", "key_terms", "prereq_recap", "next_preview", "sections"],
   "additionalProperties": false
 }
-

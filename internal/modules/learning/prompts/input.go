@@ -15,6 +15,7 @@ type Input struct {
 	// Concepts
 	ConceptsJSON string
 	EdgesJSON    string
+	CrossDocSectionsJSON string
 	// User profile
 	UserFactsJSON        string
 	RecentEventsSummary  string
@@ -26,6 +27,8 @@ type Input struct {
 	PathCharterJSON    string
 	PathStructureJSON  string
 	CurriculumSpecJSON string
+	PatternSignalsJSON string
+	PatternContextJSON string
 	// Optional: multi-path planning context (from path_intake)
 	MaterialPathsJSON string
 	// Node / Chain planning
@@ -54,6 +57,7 @@ type Input struct {
 	InputsJSON     string
 	CandidatesJSON string
 	ChosenJSON     string
+	FormulaCandidatesJSON string
 	// Audit Inputs
 	PathNodesJSON  string
 	NodePlansJSON  string

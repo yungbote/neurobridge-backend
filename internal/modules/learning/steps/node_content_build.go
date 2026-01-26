@@ -96,6 +96,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 	}
 	charterJSON := ""
 	var allowFiles map[uuid.UUID]bool
+	var patternHierarchy teachingPatternHierarchy
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
@@ -103,6 +104,11 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 			if v, ok := meta["charter"]; ok && v != nil {
 				if b, err := json.Marshal(v); err == nil {
 					charterJSON = string(b)
+				}
+			}
+			if v, ok := meta["pattern_hierarchy"]; ok && v != nil {
+				if b, err := json.Marshal(v); err == nil {
+					_ = json.Unmarshal(b, &patternHierarchy)
 				}
 			}
 		}
@@ -116,9 +122,11 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		return out, fmt.Errorf("node_content_build: no path nodes (run path_plan_build first)")
 	}
 	filteredNodes := make([]*types.PathNode, 0, len(nodes))
+	nodesByID := map[uuid.UUID]*types.PathNode{}
 	for _, n := range nodes {
 		if n != nil && n.ID != uuid.Nil {
 			filteredNodes = append(filteredNodes, n)
+			nodesByID[n.ID] = n
 		}
 	}
 	sort.Slice(filteredNodes, func(i, j int) bool { return filteredNodes[i].Index < filteredNodes[j].Index })
@@ -257,6 +265,18 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 		return out, nil
 	}
 
+	patternContextByNodeID := map[uuid.UUID]string{}
+	for _, w := range work {
+		if w.Node == nil || w.Node.ID == uuid.Nil {
+			continue
+		}
+		ctxJSON := patternContextJSONForNode(w.Node, nodesByID, patternHierarchy)
+		if strings.TrimSpace(ctxJSON) == "" {
+			ctxJSON = "(none)"
+		}
+		patternContextByNodeID[w.Node.ID] = ctxJSON
+	}
+
 	// Batch query embeddings to minimize API calls.
 	queryTexts := make([]string, 0, len(work))
 	for _, w := range work {
@@ -326,7 +346,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				return fmt.Errorf("node_content_build: empty grounding excerpts")
 			}
 
-			assetsJSON := buildAvailableAssetsJSON(deps.Bucket, files, chunkByID, chunkIDs, nil)
+			assetsJSON, _ := buildAvailableAssetsJSON(deps.Bucket, files, chunkByID, chunkIDs, nil)
 
 			teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.Patterns, w.QueryEmb, 4)
 
@@ -334,6 +354,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				UserProfileDoc:       up.ProfileDoc,
 				TeachingPatternsJSON: teachingJSON,
 				PathCharterJSON:      charterJSON,
+				PatternContextJSON:   patternContextByNodeID[w.Node.ID],
 				ActivityKind:         "lesson",
 				ActivityTitle:        w.Node.Title,
 				ConceptKeysCSV:       w.ConceptCSV,
@@ -389,7 +410,7 @@ type mediaAssetCandidate struct {
 	AssetKind string   `json:"asset_kind,omitempty"`
 }
 
-func buildAvailableAssetsJSON(bucket gcp.BucketService, files []*types.MaterialFile, chunkByID map[uuid.UUID]*types.MaterialChunk, chunkIDs []uuid.UUID, extras []*mediaAssetCandidate) string {
+func buildAvailableAssetsJSON(bucket gcp.BucketService, files []*types.MaterialFile, chunkByID map[uuid.UUID]*types.MaterialChunk, chunkIDs []uuid.UUID, extras []*mediaAssetCandidate) (string, []*mediaAssetCandidate) {
 	seen := map[string]*mediaAssetCandidate{}
 	allowedChunkIDs := map[string]bool{}
 	for _, id := range chunkIDs {
@@ -557,7 +578,7 @@ func buildAvailableAssetsJSON(bucket gcp.BucketService, files []*types.MaterialF
 	}
 
 	if len(seen) == 0 {
-		return ""
+		return "", nil
 	}
 
 	out := make([]*mediaAssetCandidate, 0, len(seen))
@@ -595,7 +616,7 @@ func buildAvailableAssetsJSON(bucket gcp.BucketService, files []*types.MaterialF
 	}
 
 	b, _ := json.Marshal(map[string]any{"assets": out})
-	return string(b)
+	return string(b), out
 }
 
 func chunkAssetKeyAndMeta(ch *types.MaterialChunk) (assetKey string, page *int, startSec *float64, endSec *float64, kind string) {

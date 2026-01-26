@@ -374,6 +374,243 @@ func (s *service) captionAssetToSegments(
 	return []Segment{seg}, "", nil
 }
 
+func (s *service) captionAssetToConceptSegments(
+	ctx context.Context,
+	asset AssetRef,
+	page int,
+	startSec *float64,
+	endSec *float64,
+) ([]Segment, string, error) {
+	if s.ex.Caption == nil {
+		return nil, "caption provider unavailable", nil
+	}
+	ctx = extractor.DefaultCtx(ctx)
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	timeout := openAIVisionTimeout()
+
+	prompt := "Extract the underlying concepts this diagram teaches. List 3–12 concepts and key relationships. Focus on the instructional concepts, not visual description. If formulas or symbols appear, include them."
+
+	var (
+		res *openai.CaptionResult
+		err error
+	)
+
+	if strings.TrimSpace(asset.URL) != "" {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		res, err = s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{
+			Task:      "figure_notes",
+			Prompt:    prompt,
+			ImageURL:  asset.URL,
+			Detail:    "high",
+			MaxTokens: 1200,
+		})
+		cancel()
+	}
+	if err != nil || res == nil {
+		if s.ex.Bucket != nil && strings.TrimSpace(asset.Key) != "" {
+			dlCtx, cancel := context.WithTimeout(ctx, timeout)
+			rc, derr := s.ex.Bucket.DownloadFile(dlCtx, gcp.BucketCategoryMaterial, asset.Key)
+			cancel()
+			if derr != nil {
+				if err == nil {
+					err = fmt.Errorf("download asset from bucket: %w", derr)
+				}
+			} else if rc != nil {
+				b, rerr := io.ReadAll(rc)
+				_ = rc.Close()
+				if rerr != nil {
+					if err == nil {
+						err = fmt.Errorf("read downloaded asset bytes: %w", rerr)
+					}
+				} else if len(b) > 0 {
+					callCtx, cancel := context.WithTimeout(ctx, timeout)
+					res, err = s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{
+						Task:       "figure_notes",
+						Prompt:     prompt,
+						ImageBytes: b,
+						ImageMime:  mimeFromKey(asset.Key),
+						Detail:     "high",
+						MaxTokens:  1200,
+					})
+					cancel()
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		return nil, "", err
+	}
+	if res == nil {
+		return nil, "caption produced no result", nil
+	}
+
+	var b strings.Builder
+	if len(res.KeyTakeaways) > 0 {
+		b.WriteString("Concepts:\n- ")
+		b.WriteString(strings.Join(res.KeyTakeaways, "\n- "))
+	}
+	if len(res.Entities) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Entities:\n- ")
+		b.WriteString(strings.Join(res.Entities, "\n- "))
+	}
+	if len(res.Relationships) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Relationships:\n- ")
+		b.WriteString(strings.Join(res.Relationships, "\n- "))
+	}
+	if len(res.TextInImage) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Text in diagram:\n- ")
+		b.WriteString(strings.Join(res.TextInImage, "\n- "))
+	}
+
+	txt := strings.TrimSpace(b.String())
+	if txt == "" {
+		return nil, "diagram concepts produced empty text", nil
+	}
+
+	md := map[string]any{
+		"kind":      "diagram_concepts",
+		"asset_key": asset.Key,
+		"provider":  "openai_caption",
+	}
+	if page > 0 {
+		md["page"] = page
+	}
+	if startSec != nil {
+		md["start_sec"] = *startSec
+	}
+	if endSec != nil {
+		md["end_sec"] = *endSec
+	}
+
+	seg := Segment{Text: txt, Metadata: md}
+	if page > 0 {
+		p := page
+		seg.Page = &p
+	}
+	if startSec != nil {
+		seg.StartSec = startSec
+	}
+	if endSec != nil {
+		seg.EndSec = endSec
+	}
+
+	return []Segment{seg}, "", nil
+}
+
+func (s *service) captionBytesToConceptSegments(ctx context.Context, assetKey string, imageMime string, imageBytes []byte, page int) ([]Segment, string, error) {
+	if s.ex.Caption == nil {
+		return nil, "caption provider unavailable", nil
+	}
+	ctx = extractor.DefaultCtx(ctx)
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	if len(imageBytes) == 0 {
+		return nil, "caption skipped: empty image bytes", nil
+	}
+	if strings.TrimSpace(imageMime) == "" {
+		imageMime = "image/jpeg"
+	}
+
+	prompt := "Extract the underlying concepts this diagram teaches. List 3–12 concepts and key relationships. Focus on the instructional concepts, not visual description. If formulas or symbols appear, include them."
+
+	callCtx, cancel := context.WithTimeout(ctx, openAIVisionTimeout())
+	res, err := s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{
+		Task:       "figure_notes",
+		Prompt:     prompt,
+		ImageBytes: imageBytes,
+		ImageMime:  imageMime,
+		Detail:     "high",
+		MaxTokens:  1200,
+	})
+	cancel()
+	if err != nil {
+		return nil, "", err
+	}
+
+	var b strings.Builder
+	if len(res.KeyTakeaways) > 0 {
+		b.WriteString("Concepts:\n- ")
+		b.WriteString(strings.Join(res.KeyTakeaways, "\n- "))
+	}
+	if len(res.Entities) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Entities:\n- ")
+		b.WriteString(strings.Join(res.Entities, "\n- "))
+	}
+	if len(res.Relationships) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Relationships:\n- ")
+		b.WriteString(strings.Join(res.Relationships, "\n- "))
+	}
+	if len(res.TextInImage) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Text in diagram:\n- ")
+		b.WriteString(strings.Join(res.TextInImage, "\n- "))
+	}
+
+	txt := strings.TrimSpace(b.String())
+	if txt == "" {
+		return nil, "diagram concepts produced empty text", nil
+	}
+
+	md := map[string]any{
+		"kind":      "diagram_concepts",
+		"asset_key": assetKey,
+		"provider":  "openai_caption",
+		"source":    "bytes",
+	}
+	if page > 0 {
+		md["page"] = page
+	}
+
+	seg := Segment{Text: txt, Metadata: md}
+	if page > 0 {
+		p := page
+		seg.Page = &p
+	}
+
+	return []Segment{seg}, "", nil
+}
+
+func diagramConceptsEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("DIAGRAM_CONCEPTS_ENABLED"))
+	if raw == "" {
+		return true
+	}
+	return strings.EqualFold(raw, "true") || raw == "1" || strings.EqualFold(raw, "yes")
+}
+
+func envIntAllowZero(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
 func mimeFromKey(key string) string {
 	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(key)))
 	switch ext {

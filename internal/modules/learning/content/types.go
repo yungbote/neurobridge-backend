@@ -103,14 +103,21 @@ type NodeDocV1 struct {
 type NodeDocOutlineSectionV1 struct {
 	Heading              string `json:"heading"`
 	Goal                 string `json:"goal"`
+	ConceptKeys          []string `json:"concept_keys"`
 	IncludeWorkedExample bool   `json:"include_worked_example"`
 	IncludeMediaBlock    bool   `json:"include_media_block"`
 	QuickChecks          int    `json:"quick_checks"`
+	BridgeIn             string `json:"bridge_in"`
+	BridgeOut            string `json:"bridge_out"`
 }
 
 type NodeDocOutlineV1 struct {
 	SchemaVersion int                       `json:"schema_version"`
 	Title         string                    `json:"title"`
+	ThreadSummary string                    `json:"thread_summary"`
+	KeyTerms      []string                  `json:"key_terms"`
+	PrereqRecap   string                    `json:"prereq_recap"`
+	NextPreview   string                    `json:"next_preview"`
 	Sections      []NodeDocOutlineSectionV1 `json:"sections"`
 }
 

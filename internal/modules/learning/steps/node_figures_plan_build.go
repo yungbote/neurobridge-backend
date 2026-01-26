@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -179,32 +178,24 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 		chunkByID[ch.ID] = ch
 	}
 
-	// Lazy deterministic scan order for cosine fallback.
-	var (
-		chunkEmbsOnce sync.Once
-		chunkEmbs     []chunkEmbedding
-		chunkEmbsErr  error
-	)
+	// Pre-compute deterministic scan order for cosine fallback (avoid sync.Once contention).
 	buildChunkEmbs := func() ([]chunkEmbedding, error) {
-		chunkEmbsOnce.Do(func() {
-			tmp := make([]chunkEmbedding, 0, len(chunkByID))
-			for id, ch := range chunkByID {
-				if id == uuid.Nil || ch == nil {
-					continue
-				}
-				if v, ok := decodeEmbedding(ch.Embedding); ok && len(v) > 0 {
-					tmp = append(tmp, chunkEmbedding{ID: id, Emb: v})
-				}
+		tmp := make([]chunkEmbedding, 0, len(chunkByID))
+		for id, ch := range chunkByID {
+			if id == uuid.Nil || ch == nil {
+				continue
 			}
-			if len(tmp) == 0 {
-				chunkEmbsErr = fmt.Errorf("node_figures_plan_build: no local embeddings available (run embed_chunks first)")
-				return
+			if v, ok := decodeEmbedding(ch.Embedding); ok && len(v) > 0 {
+				tmp = append(tmp, chunkEmbedding{ID: id, Emb: v})
 			}
-			sort.Slice(tmp, func(i, j int) bool { return tmp[i].ID.String() < tmp[j].ID.String() })
-			chunkEmbs = tmp
-		})
-		return chunkEmbs, chunkEmbsErr
+		}
+		if len(tmp) == 0 {
+			return nil, fmt.Errorf("node_figures_plan_build: no local embeddings available (run embed_chunks first)")
+		}
+		sort.Slice(tmp, func(i, j int) bool { return tmp[i].ID.String() < tmp[j].ID.String() })
+		return tmp, nil
 	}
+	chunkEmbs, chunkEmbsErr := buildChunkEmbs()
 
 	type nodeWork struct {
 		Node       *types.PathNode
@@ -319,11 +310,10 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 			chunkIDs = dedupeUUIDsPreserveOrder(chunkIDs)
 
 			if len(chunkIDs) < finalK {
-				ce, err := buildChunkEmbs()
-				if err != nil {
-					return err
+				if chunkEmbsErr != nil {
+					return chunkEmbsErr
 				}
-				fallback := topKChunkIDsByCosine(w.QueryEmb, ce, finalK)
+				fallback := topKChunkIDsByCosine(w.QueryEmb, chunkEmbs, finalK)
 				chunkIDs = dedupeUUIDsPreserveOrder(append(chunkIDs, fallback...))
 			}
 			if len(chunkIDs) > finalK {

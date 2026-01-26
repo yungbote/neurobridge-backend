@@ -345,6 +345,7 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 				continue
 			}
 			pn := pageNum
+			tjson := tableToJSON(doc.Text, table)
 			tableSegs = append(tableSegs, types.Segment{
 				Text: md,
 				Page: &pn,
@@ -352,6 +353,7 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 					"kind":        "table_text",
 					"provider":    "gcp_documentai",
 					"table_index": ti,
+					"table_json":  tjson,
 				},
 			})
 		}
@@ -495,6 +497,35 @@ func tableToMarkdown(full string, t *documentaipb.Document_Page_Table) string {
 		out.WriteString(" |\n")
 	}
 	return out.String()
+}
+
+func tableToJSON(full string, t *documentaipb.Document_Page_Table) map[string]any {
+	if t == nil {
+		return nil
+	}
+	header := []string{}
+	bodyRows := append([]*documentaipb.Document_Page_Table_TableRow{}, t.BodyRows...)
+	if len(t.HeaderRows) > 0 && t.HeaderRows[0] != nil {
+		header = tableRowToCells(full, t.HeaderRows[0])
+	}
+	if len(header) == 0 && len(bodyRows) > 0 && bodyRows[0] != nil {
+		header = tableRowToCells(full, bodyRows[0])
+		bodyRows = bodyRows[1:]
+	}
+	if len(header) == 0 {
+		return nil
+	}
+	rows := make([][]string, 0, len(bodyRows))
+	for _, r := range bodyRows {
+		if r == nil {
+			continue
+		}
+		rows = append(rows, tableRowToCells(full, r))
+	}
+	return map[string]any{
+		"headers": header,
+		"rows":    rows,
+	}
 }
 
 func tableRowToCells(full string, r *documentaipb.Document_Page_Table_TableRow) []string {

@@ -517,6 +517,7 @@ func (u Usecases) NodeDocBuild(ctx context.Context, in NodeDocBuildInput) (NodeD
 		TeachingPatterns: u.deps.TeachingPatterns,
 		Concepts:         u.deps.Concepts,
 		ConceptState:     u.deps.ConceptState,
+		Edges:            u.deps.Edges,
 		AI:               u.deps.AI,
 		Vec:              u.deps.Vec,
 		Bucket:           u.deps.Bucket,

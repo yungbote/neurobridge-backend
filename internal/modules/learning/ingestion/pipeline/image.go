@@ -63,6 +63,18 @@ func (s *service) handleImage(ctx context.Context, mf *types.MaterialFile, imgBy
 		warnings = append(warnings, "caption skipped: no image bytes available")
 	}
 
+	if diagramConceptsEnabled() && s.ex.Caption != nil && len(imgBytes) > 0 {
+		conceptSegs, warn, err := s.captionBytesToConceptSegments(ctx, mf.StorageKey, mf.MimeType, imgBytes, 0)
+		if err != nil {
+			warnings = append(warnings, "diagram concept extraction failed: "+err.Error())
+		} else if warn != "" {
+			warnings = append(warnings, warn)
+		}
+		if len(conceptSegs) > 0 {
+			segs = append(segs, conceptSegs...)
+		}
+	}
+
 	if hint := outline.FromSegments(mf.OriginalName, segs, outline.MaxSections()); hint != nil {
 		outline.ApplyHint(diag, hint)
 	}

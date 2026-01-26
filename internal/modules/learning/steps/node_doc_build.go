@@ -29,6 +29,46 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type nodeThreadSummary struct {
+	Title       string
+	Summary     string
+	KeyTerms    []string
+	ConceptKeys []string
+}
+
+type conceptBrief struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+type nodeNarrativeContext struct {
+	PrevTitle    string   `json:"prev_title,omitempty"`
+	PrevSummary  string   `json:"prev_summary,omitempty"`
+	PrevKeyTerms []string `json:"prev_key_terms,omitempty"`
+
+	NextTitle    string   `json:"next_title,omitempty"`
+	NextSummary  string   `json:"next_summary,omitempty"`
+	NextKeyTerms []string `json:"next_key_terms,omitempty"`
+
+	ModuleTitle    string   `json:"module_title,omitempty"`
+	ModuleGoal     string   `json:"module_goal,omitempty"`
+	ModuleSiblings []string `json:"module_siblings,omitempty"`
+
+	PrereqConcepts  []conceptBrief `json:"prereq_concepts,omitempty"`
+	RelatedConcepts []conceptBrief `json:"related_concepts,omitempty"`
+	AnalogyConcepts []conceptBrief `json:"analogy_concepts,omitempty"`
+}
+
+type sectionEvidence struct {
+	Heading     string   `json:"heading"`
+	Goal        string   `json:"goal"`
+	ConceptKeys []string `json:"concept_keys,omitempty"`
+	BridgeIn    string   `json:"bridge_in,omitempty"`
+	BridgeOut   string   `json:"bridge_out,omitempty"`
+	ChunkIDs    []string `json:"chunk_ids"`
+	Excerpts    string   `json:"excerpts"`
+}
+
 type NodeDocBuildDeps struct {
 	DB  *gorm.DB
 	Log *logger.Logger
@@ -47,6 +87,7 @@ type NodeDocBuildDeps struct {
 	TeachingPatterns repos.TeachingPatternRepo
 	Concepts         repos.ConceptRepo
 	ConceptState     repos.UserConceptStateRepo
+	Edges            repos.ConceptEdgeRepo
 
 	AI  openai.Client
 	Vec pc.VectorStore
@@ -75,7 +116,7 @@ type NodeDocBuildOutput struct {
 	TablesWritten   int `json:"tables_written"`
 }
 
-const nodeDocPromptVersion = "node_doc_v1@5"
+const nodeDocPromptVersion = "node_doc_v2@1"
 
 func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	out := NodeDocBuildOutput{}
@@ -114,6 +155,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	pathStyleJSON := ""
 	pathIntentMD := ""
 	var allowFiles map[uuid.UUID]bool
+	var patternHierarchy teachingPatternHierarchy
 	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
 		var meta map[string]any
 		if json.Unmarshal(pathRow.Metadata, &meta) == nil {
@@ -131,6 +173,11 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 					}
 				}
 			}
+			if v, ok := meta["pattern_hierarchy"]; ok && v != nil {
+				if pb, err := json.Marshal(v); err == nil {
+					_ = json.Unmarshal(pb, &patternHierarchy)
+				}
+			}
 		}
 	}
 
@@ -144,9 +191,11 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Index < nodes[j].Index })
 
 	nodeIDs := make([]uuid.UUID, 0, len(nodes))
+	nodesByID := map[uuid.UUID]*types.PathNode{}
 	for _, n := range nodes {
 		if n != nil && n.ID != uuid.Nil {
 			nodeIDs = append(nodeIDs, n.ID)
+			nodesByID[n.ID] = n
 		}
 	}
 
@@ -314,6 +363,19 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		}
 	}
 
+	mediaUsedMu := sync.Mutex{}
+	mediaUsed := map[string]bool{}
+	for _, d := range existingDocs {
+		if d == nil || len(d.DocJSON) == 0 || string(d.DocJSON) == "null" {
+			continue
+		}
+		for _, url := range mediaURLsFromNodeDocJSON(d.DocJSON) {
+			if url != "" {
+				mediaUsed[url] = true
+			}
+		}
+	}
+
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
@@ -444,28 +506,21 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return chunkEmbs, chunkEmbsErr
 	}
 
-	type nodeWork struct {
+	type nodeInfo struct {
 		Node        *types.PathNode
 		NodeKind    string
 		DocTemplate string
 		Goal        string
 		ConceptKeys []string
+		PrereqKeys  []string
 		ConceptCSV  string
-		// Prompt-friendly knowledge graph context for ConceptKeys (cross-path mastery transfer).
-		UserKnowledgeJSON string
-		QueryText         string
-		QueryEmb          []float32
 	}
-	work := make([]nodeWork, 0, len(nodes))
+
+	infoByID := map[uuid.UUID]nodeInfo{}
 	for _, node := range nodes {
 		if node == nil || node.ID == uuid.Nil {
 			continue
 		}
-		if hasDoc[node.ID] {
-			out.DocsExisting++
-			continue
-		}
-
 		nodeMeta := map[string]any{}
 		if len(node.Metadata) > 0 && string(node.Metadata) != "null" {
 			_ = json.Unmarshal(node.Metadata, &nodeMeta)
@@ -474,17 +529,52 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		docTemplate := normalizePathNodeDocTemplate(stringFromAny(nodeMeta["doc_template"]), nodeKind)
 		nodeGoal := strings.TrimSpace(stringFromAny(nodeMeta["goal"]))
 		nodeConceptKeys := dedupeStrings(stringSliceFromAny(nodeMeta["concept_keys"]))
+		prereqKeys := dedupeStrings(stringSliceFromAny(nodeMeta["prereq_concept_keys"]))
 		conceptCSV := strings.Join(nodeConceptKeys, ", ")
 
-		queryText := strings.TrimSpace(node.Title + " " + nodeGoal + " " + conceptCSV)
-
-		work = append(work, nodeWork{
+		infoByID[node.ID] = nodeInfo{
 			Node:        node,
 			NodeKind:    nodeKind,
 			DocTemplate: docTemplate,
 			Goal:        nodeGoal,
 			ConceptKeys: nodeConceptKeys,
+			PrereqKeys:  prereqKeys,
 			ConceptCSV:  conceptCSV,
+		}
+	}
+
+	type nodeWork struct {
+		Node        *types.PathNode
+		NodeKind    string
+		DocTemplate string
+		Goal        string
+		ConceptKeys []string
+		PrereqKeys  []string
+		ConceptCSV  string
+		// Prompt-friendly knowledge graph context for ConceptKeys (cross-path mastery transfer).
+		UserKnowledgeJSON    string
+		TeachingPatternsJSON string
+		QueryText            string
+		QueryEmb             []float32
+	}
+	work := make([]nodeWork, 0, len(nodes))
+	for _, info := range infoByID {
+		if info.Node == nil || info.Node.ID == uuid.Nil {
+			continue
+		}
+		if hasDoc[info.Node.ID] {
+			out.DocsExisting++
+			continue
+		}
+		queryText := strings.TrimSpace(info.Node.Title + " " + info.Goal + " " + info.ConceptCSV)
+		work = append(work, nodeWork{
+			Node:        info.Node,
+			NodeKind:    info.NodeKind,
+			DocTemplate: info.DocTemplate,
+			Goal:        info.Goal,
+			ConceptKeys: info.ConceptKeys,
+			PrereqKeys:  info.PrereqKeys,
+			ConceptCSV:  info.ConceptCSV,
 			QueryText:   queryText,
 		})
 	}
@@ -492,13 +582,28 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, nil
 	}
 
-	// ---- User knowledge context (cross-path mastery transfer) ----
-	//
-	// Best-effort: map node concept keys -> canonical concept IDs -> user concept state rows.
-	// We compute this once per run and attach a compact JSON context per node to keep prompts consistent and scalable.
-	if deps.Concepts != nil && deps.ConceptState != nil {
-		canonicalIDByKey := map[string]uuid.UUID{}
-		if concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID); err == nil {
+	patternContextByNodeID := map[uuid.UUID]string{}
+	for id, info := range infoByID {
+		if info.Node == nil || info.Node.ID == uuid.Nil {
+			continue
+		}
+		ctxJSON := patternContextJSONForNode(info.Node, nodesByID, patternHierarchy)
+		if strings.TrimSpace(ctxJSON) == "" {
+			ctxJSON = "(none)"
+		}
+		patternContextByNodeID[id] = ctxJSON
+	}
+
+	// Load concepts once for both user-knowledge context and narrative graph hints.
+	var (
+		concepts         []*types.Concept
+		conceptByKey     = map[string]*types.Concept{}
+		canonicalIDByKey = map[string]uuid.UUID{}
+		conceptIDs       []uuid.UUID
+	)
+	if deps.Concepts != nil {
+		if rows, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID); err == nil {
+			concepts = rows
 			for _, c := range concepts {
 				if c == nil || c.ID == uuid.Nil {
 					continue
@@ -507,6 +612,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				if k == "" {
 					continue
 				}
+				conceptByKey[k] = c
 				id := c.ID
 				if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
 					id = *c.CanonicalConceptID
@@ -514,11 +620,18 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				if id != uuid.Nil {
 					canonicalIDByKey[k] = id
 				}
+				conceptIDs = append(conceptIDs, c.ID)
 			}
 		} else if deps.Log != nil {
-			deps.Log.Warn("node_doc_build: failed to load concepts for knowledge context (continuing)", "error", err, "path_id", pathID.String())
+			deps.Log.Warn("node_doc_build: failed to load concepts (continuing)", "error", err, "path_id", pathID.String())
 		}
+	}
 
+	// ---- User knowledge context (cross-path mastery transfer) ----
+	//
+	// Best-effort: map node concept keys -> canonical concept IDs -> user concept state rows.
+	// We compute this once per run and attach a compact JSON context per node to keep prompts consistent and scalable.
+	if deps.ConceptState != nil && len(canonicalIDByKey) > 0 {
 		needed := map[uuid.UUID]bool{}
 		for _, w := range work {
 			for _, k := range w.ConceptKeys {
@@ -584,6 +697,432 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		work[i].QueryEmb = queryEmbs[i]
 		if len(work[i].QueryEmb) == 0 {
 			return out, fmt.Errorf("node_doc_build: empty query embedding")
+		}
+	}
+
+	// Pre-fetch teaching patterns once per node (avoid repeating per retry).
+	if deps.TeachingPatterns != nil {
+		prefetchConc := 8
+		if prefetchConc > len(work) {
+			prefetchConc = len(work)
+		}
+		if prefetchConc < 1 {
+			prefetchConc = 1
+		}
+		tg, tctx := errgroup.WithContext(ctx)
+		tg.SetLimit(prefetchConc)
+		for i := range work {
+			i := i
+			tg.Go(func() error {
+				if err := tctx.Err(); err != nil {
+					return err
+				}
+				teachingJSON, _ := teachingPatternsJSON(tctx, deps.Vec, deps.TeachingPatterns, work[i].QueryEmb, 4)
+				if strings.TrimSpace(teachingJSON) == "" {
+					teachingJSON = "(none)"
+				}
+				work[i].TeachingPatternsJSON = teachingJSON
+				return nil
+			})
+		}
+		if err := tg.Wait(); err != nil && tctx.Err() != nil {
+			return out, err
+		}
+	} else {
+		for i := range work {
+			work[i].TeachingPatternsJSON = "(none)"
+		}
+	}
+
+	// ---- Narrative scaffolding (prev/next/module + concept graph hints) ----
+	orderedIDs := make([]uuid.UUID, 0, len(nodes))
+	for _, n := range nodes {
+		if n != nil && n.ID != uuid.Nil {
+			orderedIDs = append(orderedIDs, n.ID)
+		}
+	}
+	isModule := map[uuid.UUID]bool{}
+	for id, info := range infoByID {
+		if info.NodeKind == "module" {
+			isModule[id] = true
+		}
+	}
+	buildPrevNext := func(ids []uuid.UUID) (map[uuid.UUID]uuid.UUID, map[uuid.UUID]uuid.UUID) {
+		prev := map[uuid.UUID]uuid.UUID{}
+		next := map[uuid.UUID]uuid.UUID{}
+		var last uuid.UUID
+		for _, id := range ids {
+			if id == uuid.Nil {
+				continue
+			}
+			if last != uuid.Nil {
+				prev[id] = last
+				next[last] = id
+			}
+			last = id
+		}
+		return prev, next
+	}
+	lessonIDs := make([]uuid.UUID, 0, len(orderedIDs))
+	moduleIDs := make([]uuid.UUID, 0, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if isModule[id] {
+			moduleIDs = append(moduleIDs, id)
+		} else {
+			lessonIDs = append(lessonIDs, id)
+		}
+	}
+	prevLesson, nextLesson := buildPrevNext(lessonIDs)
+	prevModule, nextModule := buildPrevNext(moduleIDs)
+
+	parentByID := map[uuid.UUID]*uuid.UUID{}
+	childrenByParent := map[uuid.UUID][]uuid.UUID{}
+	for id, info := range infoByID {
+		if info.Node == nil || info.Node.ID == uuid.Nil {
+			continue
+		}
+		if info.Node.ParentNodeID != nil && *info.Node.ParentNodeID != uuid.Nil {
+			pid := *info.Node.ParentNodeID
+			parentByID[id] = &pid
+			childrenByParent[pid] = append(childrenByParent[pid], id)
+		}
+	}
+	for pid, kids := range childrenByParent {
+		sort.Slice(kids, func(i, j int) bool {
+			ai := infoByID[kids[i]].Node.Index
+			aj := infoByID[kids[j]].Node.Index
+			return ai < aj
+		})
+		childrenByParent[pid] = kids
+	}
+
+	moduleIDByNodeID := map[uuid.UUID]uuid.UUID{}
+	moduleTitleByNodeID := map[uuid.UUID]string{}
+	moduleGoalByNodeID := map[uuid.UUID]string{}
+	moduleSiblingsByNodeID := map[uuid.UUID][]string{}
+	for id, info := range infoByID {
+		if info.Node == nil || info.Node.ID == uuid.Nil {
+			continue
+		}
+		curr := id
+		var moduleID uuid.UUID
+		for {
+			curInfo, ok := infoByID[curr]
+			if ok && curInfo.NodeKind == "module" {
+				moduleID = curr
+				break
+			}
+			parent := parentByID[curr]
+			if parent == nil || *parent == uuid.Nil {
+				break
+			}
+			curr = *parent
+		}
+		if moduleID == uuid.Nil {
+			continue
+		}
+		moduleIDByNodeID[id] = moduleID
+		moduleInfo := infoByID[moduleID]
+		moduleTitleByNodeID[id] = strings.TrimSpace(moduleInfo.Node.Title)
+		moduleGoalByNodeID[id] = strings.TrimSpace(moduleInfo.Goal)
+		sibs := make([]string, 0)
+		for _, sid := range childrenByParent[moduleID] {
+			if sib := infoByID[sid].Node; sib != nil {
+				title := strings.TrimSpace(sib.Title)
+				if title != "" {
+					sibs = append(sibs, title)
+				}
+			}
+		}
+		moduleSiblingsByNodeID[id] = dedupeStrings(sibs)
+	}
+
+	// Concept graph hints (prereq / related / analogy).
+	edgeByTo := map[uuid.UUID][]*types.ConceptEdge{}
+	edgeByFrom := map[uuid.UUID][]*types.ConceptEdge{}
+	if deps.Edges != nil && len(conceptIDs) > 0 {
+		if rows, err := deps.Edges.GetByConceptIDs(dbctx.Context{Ctx: ctx}, conceptIDs); err == nil {
+			for _, e := range rows {
+				if e == nil || e.FromConceptID == uuid.Nil || e.ToConceptID == uuid.Nil {
+					continue
+				}
+				edgeByTo[e.ToConceptID] = append(edgeByTo[e.ToConceptID], e)
+				edgeByFrom[e.FromConceptID] = append(edgeByFrom[e.FromConceptID], e)
+			}
+		} else if deps.Log != nil {
+			deps.Log.Warn("node_doc_build: failed to load concept edges (continuing)", "error", err, "path_id", pathID.String())
+		}
+	}
+
+	conceptBriefForID := func(id uuid.UUID) (conceptBrief, bool) {
+		if id == uuid.Nil {
+			return conceptBrief{}, false
+		}
+		for _, c := range concepts {
+			if c == nil || c.ID != id {
+				continue
+			}
+			k := strings.TrimSpace(c.Key)
+			name := strings.TrimSpace(c.Name)
+			if k == "" {
+				return conceptBrief{}, false
+			}
+			return conceptBrief{Key: k, Name: name}, true
+		}
+		return conceptBrief{}, false
+	}
+
+	graphHintsByNodeID := map[uuid.UUID]nodeNarrativeContext{}
+	for id, info := range infoByID {
+		if info.Node == nil || info.Node.ID == uuid.Nil {
+			continue
+		}
+		prereq := map[string]conceptBrief{}
+		related := map[string]conceptBrief{}
+		analogy := map[string]conceptBrief{}
+
+		for _, k := range info.PrereqKeys {
+			ck := strings.TrimSpace(strings.ToLower(k))
+			if ck == "" {
+				continue
+			}
+			if c := conceptByKey[ck]; c != nil {
+				prereq[ck] = conceptBrief{Key: strings.TrimSpace(c.Key), Name: strings.TrimSpace(c.Name)}
+			}
+		}
+
+		conceptIDsForNode := make([]uuid.UUID, 0, len(info.ConceptKeys))
+		for _, k := range info.ConceptKeys {
+			ck := strings.TrimSpace(strings.ToLower(k))
+			if ck == "" {
+				continue
+			}
+			if c := conceptByKey[ck]; c != nil && c.ID != uuid.Nil {
+				conceptIDsForNode = append(conceptIDsForNode, c.ID)
+			}
+		}
+
+		for _, cid := range conceptIDsForNode {
+			for _, e := range edgeByTo[cid] {
+				if e == nil {
+					continue
+				}
+				et := strings.TrimSpace(strings.ToLower(e.EdgeType))
+				if et == "prereq" {
+					if cb, ok := conceptBriefForID(e.FromConceptID); ok {
+						prereq[strings.ToLower(cb.Key)] = cb
+					}
+				} else if et == "related" {
+					if cb, ok := conceptBriefForID(e.FromConceptID); ok {
+						related[strings.ToLower(cb.Key)] = cb
+					}
+				} else if et == "analogy" {
+					if cb, ok := conceptBriefForID(e.FromConceptID); ok {
+						analogy[strings.ToLower(cb.Key)] = cb
+					}
+				}
+			}
+			for _, e := range edgeByFrom[cid] {
+				if e == nil {
+					continue
+				}
+				et := strings.TrimSpace(strings.ToLower(e.EdgeType))
+				if et == "related" {
+					if cb, ok := conceptBriefForID(e.ToConceptID); ok {
+						related[strings.ToLower(cb.Key)] = cb
+					}
+				} else if et == "analogy" {
+					if cb, ok := conceptBriefForID(e.ToConceptID); ok {
+						analogy[strings.ToLower(cb.Key)] = cb
+					}
+				}
+			}
+		}
+
+		toSlice := func(m map[string]conceptBrief, max int) []conceptBrief {
+			out := make([]conceptBrief, 0, len(m))
+			for _, v := range m {
+				out = append(out, v)
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+			if max > 0 && len(out) > max {
+				out = out[:max]
+			}
+			return out
+		}
+
+		graphHintsByNodeID[id] = nodeNarrativeContext{
+			PrereqConcepts:  toSlice(prereq, 6),
+			RelatedConcepts: toSlice(related, 6),
+			AnalogyConcepts: toSlice(analogy, 4),
+		}
+	}
+
+	// Thread summaries (existing docs + metadata fallback).
+	threadByNodeID := map[uuid.UUID]nodeThreadSummary{}
+	for _, d := range existingDocs {
+		if d == nil || d.PathNodeID == uuid.Nil || len(d.DocJSON) == 0 || string(d.DocJSON) == "null" {
+			continue
+		}
+		var doc content.NodeDocV1
+		if err := json.Unmarshal(d.DocJSON, &doc); err != nil {
+			continue
+		}
+		info := infoByID[d.PathNodeID]
+		threadByNodeID[d.PathNodeID] = nodeThreadSummary{
+			Title:       strings.TrimSpace(info.Node.Title),
+			Summary:     strings.TrimSpace(doc.Summary),
+			KeyTerms:    dedupeStrings(doc.ConceptKeys),
+			ConceptKeys: info.ConceptKeys,
+		}
+	}
+	for id, info := range infoByID {
+		if _, ok := threadByNodeID[id]; ok {
+			continue
+		}
+		summary := strings.TrimSpace(info.Goal)
+		if summary == "" {
+			summary = strings.TrimSpace(info.Node.Title)
+		}
+		threadByNodeID[id] = nodeThreadSummary{
+			Title:       strings.TrimSpace(info.Node.Title),
+			Summary:     summary,
+			KeyTerms:    dedupeStrings(info.ConceptKeys),
+			ConceptKeys: info.ConceptKeys,
+		}
+	}
+
+	maxConc := envInt("NODE_DOC_BUILD_CONCURRENCY", 4)
+	if maxConc < 1 {
+		maxConc = 1
+	}
+
+	// Outline generation (parallel, best-effort).
+	outlineSchema, oerr := schema.NodeDocOutlineV1()
+	if oerr != nil {
+		return out, oerr
+	}
+	outlineByNodeID := map[uuid.UUID]content.NodeDocOutlineV1{}
+	outlineConc := envInt("NODE_DOC_OUTLINE_CONCURRENCY", maxConc)
+	if outlineConc < 1 {
+		outlineConc = 1
+	}
+	og, octx := errgroup.WithContext(ctx)
+	og.SetLimit(outlineConc)
+	for i := range work {
+		w := work[i]
+		og.Go(func() error {
+			if w.Node == nil || w.Node.ID == uuid.Nil {
+				return nil
+			}
+
+			prevID := prevLesson[w.Node.ID]
+			nextID := nextLesson[w.Node.ID]
+			if isModule[w.Node.ID] {
+				prevID = prevModule[w.Node.ID]
+				nextID = nextModule[w.Node.ID]
+			}
+			prevSum := threadByNodeID[prevID]
+			nextSum := threadByNodeID[nextID]
+
+			nctx := nodeNarrativeContext{
+				PrevTitle:       prevSum.Title,
+				PrevSummary:     prevSum.Summary,
+				PrevKeyTerms:    prevSum.KeyTerms,
+				NextTitle:       nextSum.Title,
+				NextSummary:     nextSum.Summary,
+				NextKeyTerms:    nextSum.KeyTerms,
+				ModuleTitle:     moduleTitleByNodeID[w.Node.ID],
+				ModuleGoal:      moduleGoalByNodeID[w.Node.ID],
+				ModuleSiblings:  moduleSiblingsByNodeID[w.Node.ID],
+				PrereqConcepts:  graphHintsByNodeID[w.Node.ID].PrereqConcepts,
+				RelatedConcepts: graphHintsByNodeID[w.Node.ID].RelatedConcepts,
+				AnalogyConcepts: graphHintsByNodeID[w.Node.ID].AnalogyConcepts,
+			}
+			nctxJSON, _ := json.Marshal(nctx)
+
+			system := strings.TrimSpace(`
+MODE: NODE_DOC_OUTLINE
+
+You create a research-grade lesson outline with a clear narrative arc.
+Rules:
+- Output ONLY valid JSON that matches the schema.
+- First section MUST be "Roadmap".
+- 4–8 sections total, ordered from intuition -> core idea -> worked example -> practice/pitfalls -> wrap-up.
+- Provide bridge_in and bridge_out sentences that connect sections naturally.
+- concept_keys per section should be a subset of the node's concepts (include prereqs when needed).
+- If PATTERN_CONTEXT_JSON is provided, align section flow to the selected opening/core/practice/closing patterns.
+- thread_summary is a 1–2 sentence throughline that connects this lesson to previous and next nodes.
+- key_terms are 3–7 short nouns/phrases.
+- prereq_recap is 1–2 sentences that explicitly references any prereq concepts.
+- next_preview is 1 sentence that previews the next lesson (use its title verbatim if provided).
+`)
+
+			user := fmt.Sprintf(`
+NODE_TITLE: %s
+NODE_GOAL: %s
+NODE_KIND: %s
+DOC_TEMPLATE: %s
+CONCEPT_KEYS: %s
+PREREQ_CONCEPT_KEYS: %s
+
+NARRATIVE_CONTEXT_JSON:
+%s
+
+PATH_INTENT_MD:
+%s
+
+PATH_STYLE_JSON (optional):
+%s
+
+PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
+%s
+`,
+				w.Node.Title,
+				w.Goal,
+				w.NodeKind,
+				w.DocTemplate,
+				w.ConceptCSV,
+				strings.Join(w.PrereqKeys, ", "),
+				string(nctxJSON),
+				strings.TrimSpace(pathIntentMD),
+				strings.TrimSpace(pathStyleJSON),
+				patternContextByNodeID[w.Node.ID],
+			)
+
+			obj, err := deps.AI.GenerateJSON(octx, system, user, "node_doc_outline_v1", outlineSchema)
+			if err != nil {
+				// Fallback to a minimal outline.
+				outlineByNodeID[w.Node.ID] = normalizeOutline(content.NodeDocOutlineV1{}, w.Node.Title, w.ConceptKeys)
+				return nil
+			}
+			raw, _ := json.Marshal(obj)
+			var outline content.NodeDocOutlineV1
+			if err := json.Unmarshal(raw, &outline); err != nil {
+				outlineByNodeID[w.Node.ID] = normalizeOutline(content.NodeDocOutlineV1{}, w.Node.Title, w.ConceptKeys)
+				return nil
+			}
+			outlineByNodeID[w.Node.ID] = normalizeOutline(outline, w.Node.Title, w.ConceptKeys)
+			return nil
+		})
+	}
+	if err := og.Wait(); err != nil && octx.Err() != nil {
+		return out, err
+	}
+
+	// Update thread summaries using outlines (for nodes we are building now).
+	for _, w := range work {
+		if w.Node == nil || w.Node.ID == uuid.Nil {
+			continue
+		}
+		ol := outlineByNodeID[w.Node.ID]
+		if strings.TrimSpace(ol.ThreadSummary) != "" {
+			threadByNodeID[w.Node.ID] = nodeThreadSummary{
+				Title:       strings.TrimSpace(w.Node.Title),
+				Summary:     strings.TrimSpace(ol.ThreadSummary),
+				KeyTerms:    dedupeStrings(ol.KeyTerms),
+				ConceptKeys: w.ConceptKeys,
+			}
 		}
 	}
 
@@ -667,6 +1206,11 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	if err != nil {
 		return out, err
 	}
+	strictNarrative := false
+	switch qualityMode() {
+	case "premium", "openai", "high":
+		strictNarrative = true
+	}
 
 	// Derived material sets share the chunk namespace (and KG products) with their source upload batch.
 	sourceSetID := in.MaterialSetID
@@ -676,11 +1220,6 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		}
 	}
 	chunksNS := index.ChunksNamespace(sourceSetID)
-
-	maxConc := envInt("NODE_DOC_BUILD_CONCURRENCY", 4)
-	if maxConc < 1 {
-		maxConc = 1
-	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)
@@ -698,51 +1237,154 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				return nil
 			}
 
-			// ---- Evidence retrieval (semantic + lexical + fallback) ----
-			const semanticK = 22
-			const lexicalK = 10
-			const finalK = 22
+			outline := outlineByNodeID[w.Node.ID]
+			outline = normalizeOutline(outline, w.Node.Title, w.ConceptKeys)
 
-			retrieved, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
-				MaterialSetID: sourceSetID,
-				ChunksNS:      chunksNS,
-				QueryText:     w.QueryText,
-				QueryEmb:      w.QueryEmb,
-				FileIDs:       fileIDs,
-				AllowFiles:    allowFiles,
-				SeedK:         semanticK,
-				LexicalK:      lexicalK,
-				FinalK:        finalK,
-			})
-			retrieved = dedupeUUIDsPreserveOrder(retrieved)
+			prevID := prevLesson[w.Node.ID]
+			nextID := nextLesson[w.Node.ID]
+			if isModule[w.Node.ID] {
+				prevID = prevModule[w.Node.ID]
+				nextID = nextModule[w.Node.ID]
+			}
+			prevSum := threadByNodeID[prevID]
+			nextSum := threadByNodeID[nextID]
 
-			if len(retrieved) < finalK {
-				ce, err := buildChunkEmbs()
-				if err != nil {
-					return err
+			prevTitle := strings.TrimSpace(prevSum.Title)
+			nextTitle := strings.TrimSpace(nextSum.Title)
+			moduleTitle := strings.TrimSpace(moduleTitleByNodeID[w.Node.ID])
+
+			nctx := nodeNarrativeContext{
+				PrevTitle:       prevSum.Title,
+				PrevSummary:     prevSum.Summary,
+				PrevKeyTerms:    prevSum.KeyTerms,
+				NextTitle:       nextSum.Title,
+				NextSummary:     nextSum.Summary,
+				NextKeyTerms:    nextSum.KeyTerms,
+				ModuleTitle:     moduleTitle,
+				ModuleGoal:      moduleGoalByNodeID[w.Node.ID],
+				ModuleSiblings:  moduleSiblingsByNodeID[w.Node.ID],
+				PrereqConcepts:  graphHintsByNodeID[w.Node.ID].PrereqConcepts,
+				RelatedConcepts: graphHintsByNodeID[w.Node.ID].RelatedConcepts,
+				AnalogyConcepts: graphHintsByNodeID[w.Node.ID].AnalogyConcepts,
+			}
+			nctxJSON, _ := json.Marshal(nctx)
+
+			sections := outline.Sections
+			if len(sections) == 0 {
+				sections = normalizeOutline(content.NodeDocOutlineV1{}, w.Node.Title, w.ConceptKeys).Sections
+			}
+			sectionQueries := make([]string, 0, len(sections))
+			for _, sec := range sections {
+				parts := []string{
+					w.Node.Title,
+					w.Goal,
+					sec.Heading,
+					sec.Goal,
+					strings.Join(sec.ConceptKeys, ", "),
 				}
-				fallback := topKChunkIDsByCosine(w.QueryEmb, ce, finalK)
-				retrieved = dedupeUUIDsPreserveOrder(append(retrieved, fallback...))
+				sectionQueries = append(sectionQueries, strings.TrimSpace(strings.Join(parts, " ")))
 			}
 
-			// Ensure full coverage: include any must-cite chunks assigned to this node (placed first so they appear in excerpts).
+			sectionEmbs, err := deps.AI.Embed(gctx, sectionQueries)
+			if err != nil || len(sectionEmbs) != len(sections) {
+				sectionEmbs = nil
+			}
+
+			sectionEvidenceList := make([]sectionEvidence, len(sections))
+			sectionChunkIDs := make([][]uuid.UUID, len(sections))
+
+			sectionConc := envInt("NODE_DOC_SECTION_RETRIEVAL_CONCURRENCY", 6)
+			if sectionConc < 1 {
+				sectionConc = 1
+			}
+			sg, sctx := errgroup.WithContext(gctx)
+			sg.SetLimit(sectionConc)
+
+			for i := range sections {
+				i := i
+				sg.Go(func() error {
+					sec := sections[i]
+					qEmb := w.QueryEmb
+					if sectionEmbs != nil && i < len(sectionEmbs) && len(sectionEmbs[i]) > 0 {
+						qEmb = sectionEmbs[i]
+					}
+
+					const semanticK = 14
+					const lexicalK = 8
+					const finalK = 14
+
+					ids, _, _ := graphAssistedChunkIDs(sctx, deps.DB, deps.Vec, chunkRetrievePlan{
+						MaterialSetID: sourceSetID,
+						ChunksNS:      chunksNS,
+						QueryText:     sectionQueries[i],
+						QueryEmb:      qEmb,
+						FileIDs:       fileIDs,
+						AllowFiles:    allowFiles,
+						SeedK:         semanticK,
+						LexicalK:      lexicalK,
+						FinalK:        finalK,
+					})
+					ids = dedupeUUIDsPreserveOrder(ids)
+
+					if len(ids) < finalK {
+						ce, err := buildChunkEmbs()
+						if err == nil {
+							fallback := topKChunkIDsByCosine(qEmb, ce, finalK)
+							ids = dedupeUUIDsPreserveOrder(append(ids, fallback...))
+						}
+					}
+					if len(ids) > finalK {
+						ids = ids[:finalK]
+					}
+
+					ex := buildExcerpts(ids, 10, 750)
+					if strings.TrimSpace(ex) == "" && len(ids) == 0 {
+						ex = buildExcerpts(ids, 10, 750)
+					}
+					sectionChunkIDs[i] = ids
+					sectionEvidenceList[i] = sectionEvidence{
+						Heading:     sec.Heading,
+						Goal:        sec.Goal,
+						ConceptKeys: sec.ConceptKeys,
+						BridgeIn:    sec.BridgeIn,
+						BridgeOut:   sec.BridgeOut,
+						ChunkIDs:    uuidStrings(ids),
+						Excerpts:    ex,
+					}
+					return nil
+				})
+			}
+			if err := sg.Wait(); err != nil && sctx.Err() != nil {
+				return err
+			}
+
+			union := make([]uuid.UUID, 0)
+			for _, ids := range sectionChunkIDs {
+				union = append(union, ids...)
+			}
+			union = dedupeUUIDsPreserveOrder(union)
+
+			// Ensure full coverage: include any must-cite chunks assigned to this node.
 			mustCiteIDs := mustCiteByNodeID[w.Node.ID]
 			figCiteIDs := figChunkIDsByNode[w.Node.ID]
 			vidCiteIDs := vidChunkIDsByNode[w.Node.ID]
-			chunkIDs := mergeUUIDListsPreserveOrder(mustCiteIDs, figCiteIDs, vidCiteIDs, retrieved)
-			if len(chunkIDs) > finalK {
-				chunkIDs = chunkIDs[:finalK]
+			chunkIDs := mergeUUIDListsPreserveOrder(mustCiteIDs, figCiteIDs, vidCiteIDs, union)
+			if len(chunkIDs) > 40 {
+				chunkIDs = chunkIDs[:40]
 			}
 
-			excerpts := buildExcerpts(chunkIDs, 20, 900)
+			excerpts := buildExcerpts(chunkIDs, 24, 900)
 			if strings.TrimSpace(excerpts) == "" {
 				return fmt.Errorf("node_doc_build: empty grounding excerpts")
 			}
 
+			sectionEvidenceJSON, _ := json.Marshal(sectionEvidenceList)
+			outlineJSON, _ := json.Marshal(outline)
+
 			extras := make([]*mediaAssetCandidate, 0, len(figAssetsByNode[w.Node.ID])+len(vidAssetsByNode[w.Node.ID]))
 			extras = append(extras, figAssetsByNode[w.Node.ID]...)
 			extras = append(extras, vidAssetsByNode[w.Node.ID]...)
-			assetsJSON := buildAvailableAssetsJSON(deps.Bucket, files, chunkByID, chunkIDs, extras)
+			assetsJSON, availableAssets := buildAvailableAssetsJSON(deps.Bucket, files, chunkByID, chunkIDs, extras)
 
 			allowedChunkIDs := map[string]bool{}
 			for _, id := range chunkIDs {
@@ -822,14 +1464,29 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	- Summary is already provided via the summary field; do NOT include a "Summary" heading/section that repeats it.
 	  If you include an ending recap, title it "Key takeaways" and make it additive (not a rephrase).
 
-		Pedagogy:
-		- If TEACHING_PATTERNS_JSON is provided, pick 1-2 patterns and apply them (without naming keys) so the lesson teaches, not a page of facts.
-		- Spread quick checks throughout the doc (not all at the end).
-		- Teach before test: place each quick_check only after you've already taught the idea it checks (never before introducing the referenced definition/step).
+	Pedagogy:
+	- If TEACHING_PATTERNS_JSON is provided, pick 1-2 patterns and apply them (without naming keys) so the lesson teaches, not a page of facts.
+	- Spread quick checks throughout the doc (not all at the end).
+	- Teach before test: place each quick_check only after you've already taught the idea it checks (never before introducing the referenced definition/step).
 
-			Media rules (diagrams vs figures):
-			- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
-			- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
+	Narrative flow (non-negotiable):
+	- Follow OUTLINE_JSON exactly; use each section heading verbatim.
+	- Use bridge_in and bridge_out to connect sections naturally (don’t skip).
+	- If PREV_NODE_TITLE is provided, mention it verbatim in the first 1–2 blocks to connect continuity.
+	- If MODULE_TITLE is provided, mention it verbatim early to anchor the module thread.
+	- If NEXT_NODE_TITLE is provided, mention it verbatim near the end to preview what’s next.
+	- Objectives and prerequisites must appear before the Roadmap section. Key takeaways must appear near the end.
+	- If PATTERN_CONTEXT_JSON is provided, follow its opening/core/example/visual/practice/closing/depth/engagement patterns.
+	- Do not mention pattern names or keys explicitly; use them as internal guidance.
+	- Use CONCEPT_KEYS as the doc's concept_keys; do not leave concept_keys empty.
+
+	Evidence usage:
+	- Use SECTION_EXCERPTS_JSON to ground each section; cite only chunk_ids relevant to that section.
+	- Use short quotes sparingly when they clarify; a quote callout (variant="quote") is allowed.
+
+		Media rules (diagrams vs figures):
+		- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
+		- SVG diagrams may include simple <animate>/<animateTransform> to illustrate motion or step transitions (no scripts; keep it subtle).
 		- If diagram.kind="mermaid": diagram.source MUST be ONLY the Mermaid spec (no prose, no "Diagram" label, no backticks/code fences). Put explanation in diagram.caption.
 		- If diagram.kind="svg": diagram.source MUST be ONLY a standalone <svg>…</svg> string (no prose). Put explanation in diagram.caption.
 		- "figure" blocks are raster images and are best for higher-fidelity intuition, setups, and real-world context (“vibes”) where diagrams fall short.
@@ -932,8 +1589,8 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				}
 				suggestedOutline := docTemplateSuggestedOutline(w.NodeKind, w.DocTemplate)
 
-				teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.TeachingPatterns, w.QueryEmb, 4)
-				if strings.TrimSpace(teachingJSON) == "" {
+				teachingJSON := strings.TrimSpace(w.TeachingPatternsJSON)
+				if teachingJSON == "" {
 					teachingJSON = "(none)"
 				}
 
@@ -943,6 +1600,24 @@ NODE_GOAL: %s
 CONCEPT_KEYS: %s
 NODE_KIND: %s
 DOC_TEMPLATE: %s
+PREV_NODE_TITLE (optional; use verbatim if provided):
+%s
+NEXT_NODE_TITLE (optional; use verbatim if provided):
+%s
+MODULE_TITLE (optional; use verbatim if provided):
+%s
+
+PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
+%s
+
+OUTLINE_JSON (section headings + goals + bridges; follow exactly):
+%s
+
+SECTION_EXCERPTS_JSON (per section chunk_ids + excerpts; use for grounding):
+%s
+
+NARRATIVE_CONTEXT_JSON (prev/next summaries + module + graph hints):
+%s
 
 USER_KNOWLEDGE_JSON (optional; mastery/exposure for CONCEPT_KEYS; do not mention explicitly):
 %s
@@ -998,7 +1673,50 @@ AVAILABLE_MEDIA_ASSETS_JSON (optional; ONLY use listed URLs):
 %s
 
 Output:
-Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKind, w.DocTemplate, w.UserKnowledgeJSON, userProfileDoc, teachingJSON, intentForPrompt, formatChunkIDBullets(mustCiteIDs), reqs.MinWordCount, reqs.MinParagraphs, reqs.MinCallouts, reqs.MinQuickChecks, reqs.MinHeadings, reqs.MinDiagrams, reqs.MinTables, reqs.MinWhyItMatters, reqs.MinIntuition, reqs.MinMentalModels, reqs.MinPitfalls, reqs.MinSteps, reqs.MinChecklist, mediaRequirementLine, generatedFigureRequirementLine, citationsRequirementLine, templateRequirementLine, pathStyleJSON, suggestedOutline, outlineDiagramLine, suggestedVideoLine(videoAsset), excerpts, formatChunkIDBullets(chunkIDs), assetsJSON, generatedFigures) + feedback
+Return ONLY JSON matching schema.`,
+					w.Node.Title,
+					w.Goal,
+					w.ConceptCSV,
+					w.NodeKind,
+					w.DocTemplate,
+					prevTitle,
+					nextTitle,
+					moduleTitle,
+					patternContextByNodeID[w.Node.ID],
+					string(outlineJSON),
+					string(sectionEvidenceJSON),
+					string(nctxJSON),
+					w.UserKnowledgeJSON,
+					userProfileDoc,
+					teachingJSON,
+					intentForPrompt,
+					formatChunkIDBullets(mustCiteIDs),
+					reqs.MinWordCount,
+					reqs.MinParagraphs,
+					reqs.MinCallouts,
+					reqs.MinQuickChecks,
+					reqs.MinHeadings,
+					reqs.MinDiagrams,
+					reqs.MinTables,
+					reqs.MinWhyItMatters,
+					reqs.MinIntuition,
+					reqs.MinMentalModels,
+					reqs.MinPitfalls,
+					reqs.MinSteps,
+					reqs.MinChecklist,
+					mediaRequirementLine,
+					generatedFigureRequirementLine,
+					citationsRequirementLine,
+					templateRequirementLine,
+					pathStyleJSON,
+					suggestedOutline,
+					outlineDiagramLine,
+					suggestedVideoLine(videoAsset),
+					excerpts,
+					formatChunkIDBullets(chunkIDs),
+					assetsJSON,
+					generatedFigures,
+				) + feedback
 
 				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
 				latency := int(time.Since(start).Milliseconds())
@@ -1028,6 +1746,50 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 						})
 					}
 					continue
+				}
+
+				var orderRepairMetrics map[string]any
+				gen, orderRepairMetrics = content.RepairNodeDocGenOrder(gen)
+				if orderErrs, orderMetrics := content.NodeDocGenOrderIssues(gen); len(orderErrs) > 0 {
+					if orderRepairMetrics == nil {
+						orderRepairMetrics = map[string]any{}
+					}
+					orderRepairMetrics["order_issues"] = orderMetrics
+					orderRepairMetrics["order_errors"] = orderErrs
+				}
+
+				if outlineErrs := outlineHeadingOrderErrors(gen, outline); len(outlineErrs) > 0 {
+					lastErrors = append([]string{"outline_mismatch"}, outlineErrs...)
+					if deps.GenRuns != nil {
+						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
+						})
+					}
+					continue
+				}
+
+				if len(gen.ConceptKeys) == 0 {
+					fallback := dedupeStrings(w.ConceptKeys)
+					if len(fallback) == 0 {
+						for _, sec := range outline.Sections {
+							fallback = append(fallback, sec.ConceptKeys...)
+						}
+						fallback = dedupeStrings(fallback)
+					}
+					if len(fallback) == 0 {
+						fallback = dedupeStrings(w.PrereqKeys)
+					}
+					if len(fallback) == 0 && strings.TrimSpace(w.ConceptCSV) != "" {
+						fallback = dedupeStrings(strings.Split(w.ConceptCSV, ","))
+					}
+					if len(fallback) == 0 {
+						title := strings.TrimSpace(w.Node.Title)
+						if title == "" {
+							title = "general"
+						}
+						fallback = []string{title}
+					}
+					gen.ConceptKeys = fallback
 				}
 
 				doc, convErrs := content.ConvertNodeDocGenV1ToV1(gen)
@@ -1075,11 +1837,30 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 				}
 				// Best-effort padding for near-miss minima (e.g., missing one paragraph).
 				// This prevents hard failures on small structural omissions without weakening validation.
-				if patched, changed := ensureNodeDocMeetsMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
-					doc = patched
+				if !strictNarrative {
+					if patched, changed := ensureNodeDocMeetsMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
+						doc = patched
+					}
 				}
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
 					doc = withIDs
+				}
+
+				if len(availableAssets) > 0 {
+					mediaUsedMu.Lock()
+					doc, mediaStats := dedupeNodeDocMedia(doc, availableAssets, mediaUsed)
+					for _, url := range nodeDocMediaURLs(doc) {
+						if url != "" {
+							mediaUsed[url] = true
+						}
+					}
+					mediaUsedMu.Unlock()
+					if len(mediaStats) > 0 {
+						if orderRepairMetrics == nil {
+							orderRepairMetrics = map[string]any{}
+						}
+						orderRepairMetrics["media_dedupe"] = mediaStats
+					}
 				}
 
 				if patched, changed := sanitizeNodeDocDiagrams(doc); changed {
@@ -1106,6 +1887,9 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 				}
 
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
+				if len(orderRepairMetrics) > 0 {
+					metrics["order_repair"] = orderRepairMetrics
+				}
 				if citationsSanitized {
 					metrics["citations_sanitized"] = true
 					metrics["citations_sanitize"] = citationStats.Map()
@@ -1129,6 +1913,16 @@ Return ONLY JSON matching schema.`, w.Node.Title, w.Goal, w.ConceptCSV, w.NodeKi
 					if len(missing) > 0 {
 						metrics["must_cite_missing"] = missing
 						errs = append(errs, "missing required citations for chunk_ids: "+strings.Join(missing, ", "))
+					}
+				}
+				if strictNarrative {
+					docText, _ := metrics["doc_text"].(string)
+					threadErrs, threadMetrics := validateNodeDocThreading(docText, prevTitle, nextTitle, moduleTitle)
+					if len(threadMetrics) > 0 {
+						metrics["threading"] = threadMetrics
+					}
+					if len(threadErrs) > 0 {
+						errs = append(errs, threadErrs...)
 					}
 				}
 				if len(errs) > 0 {

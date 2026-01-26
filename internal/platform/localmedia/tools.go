@@ -31,7 +31,9 @@ type Tools interface {
 	AssertReady(ctx context.Context) error
 
 	ConvertOfficeToPDF(ctx context.Context, inputPath string, outDir string) (pdfPath string, err error)
+	CountPDFPages(ctx context.Context, pdfPath string) (int, error)
 	RenderPDFToImages(ctx context.Context, pdfPath string, outDir string, opts PDFRenderOptions) ([]string, error)
+	RenderPDFPage(ctx context.Context, pdfPath string, outDir string, page int, opts PDFRenderOptions) (string, error)
 
 	ExtractAudioFromVideo(ctx context.Context, videoPath string, outPath string, opts AudioExtractOptions) (string, error)
 	ExtractKeyframes(ctx context.Context, videoPath string, outDir string, opts KeyframeOptions) ([]string, error)
@@ -75,6 +77,7 @@ type tools struct {
 
 	sofficePath  string
 	pdftoppmPath string
+	pdfinfoPath  string
 	ffmpegPath   string
 
 	workRoot string
@@ -88,6 +91,7 @@ func New(log *logger.Logger) Tools {
 		log:            slog,
 		sofficePath:    "soffice",
 		pdftoppmPath:   "pdftoppm",
+		pdfinfoPath:    "pdfinfo",
 		ffmpegPath:     "ffmpeg",
 		workRoot:       "/tmp/neurobridge-media",
 		defaultTimeout: 10 * time.Minute,
@@ -183,6 +187,44 @@ func (m *tools) ConvertOfficeToPDF(ctx context.Context, inputPath string, outDir
 	return pdfPath, nil
 }
 
+func (m *tools) CountPDFPages(ctx context.Context, pdfPath string) (int, error) {
+	ctx = ctxutil.Default(ctx)
+	if pdfPath == "" {
+		return 0, fmt.Errorf("pdfPath required")
+	}
+	if _, err := exec.LookPath(m.pdfinfoPath); err != nil {
+		return 0, fmt.Errorf("pdfinfo not found in PATH: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, m.pdfinfoPath, pdfPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("pdfinfo failed: %w; out=%s", err, string(out))
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Pages:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil || n <= 0 {
+			continue
+		}
+		return n, nil
+	}
+
+	return 0, fmt.Errorf("pdfinfo output missing Pages field")
+}
+
 func (m *tools) RenderPDFToImages(ctx context.Context, pdfPath string, outDir string, opts PDFRenderOptions) ([]string, error) {
 	ctx = ctxutil.Default(ctx)
 	if err := m.AssertReady(ctx); err != nil {
@@ -243,6 +285,66 @@ func (m *tools) RenderPDFToImages(ctx context.Context, pdfPath string, outDir st
 		return paths2, nil
 	}
 	return paths, nil
+}
+
+func (m *tools) RenderPDFPage(ctx context.Context, pdfPath string, outDir string, page int, opts PDFRenderOptions) (string, error) {
+	ctx = ctxutil.Default(ctx)
+	if err := m.AssertReady(ctx); err != nil {
+		return "", err
+	}
+	if pdfPath == "" {
+		return "", fmt.Errorf("pdfPath required")
+	}
+	if outDir == "" {
+		return "", fmt.Errorf("outDir required")
+	}
+	if page <= 0 {
+		return "", fmt.Errorf("page must be >= 1")
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir outDir: %w", err)
+	}
+
+	dpi := opts.DPI
+	if dpi <= 0 {
+		dpi = 200
+	}
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = "png"
+	}
+	if format != "png" && format != "jpeg" && format != "jpg" {
+		return "", fmt.Errorf("unsupported render format: %s", format)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, m.defaultTimeout)
+	defer cancel()
+
+	prefix := filepath.Join(outDir, fmt.Sprintf("page_%04d", page))
+	args := []string{"-r", strconv.Itoa(dpi)}
+	if format == "png" {
+		args = append(args, "-png")
+	} else {
+		args = append(args, "-jpeg")
+	}
+	args = append(args, "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), pdfPath, prefix)
+
+	cmd := exec.CommandContext(ctx, m.pdftoppmPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("pdftoppm failed: %w; out=%s", err, string(out))
+	}
+
+	pattern := fmt.Sprintf("^page_%04d-\\d+\\.(png|jpe?g)$", page)
+	paths, err := globSorted(outDir, pattern)
+	if err != nil || len(paths) == 0 {
+		paths2, _ := globSorted(outDir, ".*\\.(png|jpe?g)$")
+		if len(paths2) == 0 {
+			return "", fmt.Errorf("no images produced by pdftoppm; out=%s", string(out))
+		}
+		return paths2[0], nil
+	}
+	return paths[0], nil
 }
 
 func (m *tools) ExtractAudioFromVideo(ctx context.Context, videoPath string, outPath string, opts AudioExtractOptions) (string, error) {

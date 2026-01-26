@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -21,6 +22,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/services"
+	"golang.org/x/sync/errgroup"
 )
 
 type PathPlanBuildDeps struct {
@@ -83,40 +85,70 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, nil
 	}
 
-	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
-	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
+	var (
+		up          *types.UserProfileVector
+		summaryText string
+		concepts    []*types.Concept
+		pathRow     *types.Path
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		up, err = deps.UserProfile.GetByUserID(dbctx.Context{Ctx: gctx}, in.OwnerUserID)
+		return err
+	})
+	g.Go(func() error {
+		if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: gctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
+			summaryText = strings.TrimSpace(rows[0].SummaryMD)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		concepts, err = deps.Concepts.GetByScope(dbctx.Context{Ctx: gctx}, "path", &pathID)
+		return err
+	})
+	g.Go(func() error {
+		if deps.Path == nil {
+			return nil
+		}
+		row, err := deps.Path.GetByID(dbctx.Context{Ctx: gctx}, pathID)
+		if err != nil {
+			if deps.Log != nil {
+				deps.Log.Warn("path_plan_build: failed to load path metadata (continuing)", "error", err, "path_id", pathID.String())
+			}
+			return nil
+		}
+		pathRow = row
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return out, err
+	}
+	if up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
 		return out, fmt.Errorf("path_plan_build: missing user_profile_doc (run user_profile_refresh first)")
 	}
 
-	var summaryText string
-	if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
-		summaryText = strings.TrimSpace(rows[0].SummaryMD)
-	}
 	curriculumSpecJSON := ""
 	materialPathsJSON := ""
 	// Optionally prepend user intent/intake context (written by the path_intake stage).
-	if deps.Path != nil {
-		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
-			var meta map[string]any
-			if uerr := json.Unmarshal(row.Metadata, &meta); uerr == nil && meta != nil {
-				intakeMD := strings.TrimSpace(stringFromAny(meta["intake_md"]))
-				if intakeMD != "" {
-					if summaryText != "" {
-						summaryText = strings.TrimSpace(intakeMD + "\n\n" + summaryText)
-					} else {
-						summaryText = intakeMD
-					}
+	if pathRow != nil && len(pathRow.Metadata) > 0 && string(pathRow.Metadata) != "null" {
+		var meta map[string]any
+		if uerr := json.Unmarshal(pathRow.Metadata, &meta); uerr == nil && meta != nil {
+			intakeMD := strings.TrimSpace(stringFromAny(meta["intake_md"]))
+			if intakeMD != "" {
+				if summaryText != "" {
+					summaryText = strings.TrimSpace(intakeMD + "\n\n" + summaryText)
+				} else {
+					summaryText = intakeMD
 				}
-				curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
-				materialPathsJSON = IntakePathsBriefJSONFromPathMeta(meta, 4)
 			}
+			curriculumSpecJSON = CurriculumSpecBriefJSONFromPathMeta(meta, 6)
+			materialPathsJSON = IntakePathsBriefJSONFromPathMeta(meta, 4)
 		}
 	}
 
-	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
-	if err != nil {
-		return out, err
-	}
 	if len(concepts) == 0 {
 		return out, fmt.Errorf("path_plan_build: no concepts for path (run concept_graph_build first)")
 	}
@@ -227,7 +259,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		PathCharterJSON:    string(charterJSON),
 		BundleExcerpt:      summaryText,
 		CurriculumSpecJSON: curriculumSpecJSON,
-		MaterialPathsJSON: materialPathsJSON,
+		MaterialPathsJSON:  materialPathsJSON,
 		ConceptsJSON:       string(conceptsJSON),
 		EdgesJSON:          string(edgesJSON),
 		UserKnowledgeJSON:  userKnowledgeJSON,
@@ -257,8 +289,69 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, fmt.Errorf("path_plan_build: 0 nodes returned")
 	}
 
+	// ---- Teaching pattern hierarchy (path/module/lesson) ----
+	var (
+		patternHierarchy    teachingPatternHierarchy
+		patternHierarchyRaw map[string]any
+		patternSignalsJSON  string
+	)
+	if deps.AI != nil {
+		structJSON, _ := json.Marshal(structObj)
+		signals := patternSignalsForPath(nodesOut, edges)
+		if b, err := json.Marshal(signals); err == nil && len(b) > 0 {
+			patternSignalsJSON = string(b)
+		}
+		patternPrompt, perr := prompts.Build(prompts.PromptTeachingPatternHierarchy, prompts.Input{
+			UserProfileDoc:     up.ProfileDoc,
+			BundleExcerpt:      summaryText,
+			PathCharterJSON:    string(charterJSON),
+			PathStructureJSON:  string(structJSON),
+			ConceptsJSON:       string(conceptsJSON),
+			EdgesJSON:          string(edgesJSON),
+			UserKnowledgeJSON:  userKnowledgeJSON,
+			PatternSignalsJSON: patternSignalsJSON,
+		})
+		if perr == nil {
+			obj, gerr := deps.AI.GenerateJSON(ctx, patternPrompt.System, patternPrompt.User, patternPrompt.SchemaName, patternPrompt.Schema)
+			if gerr == nil {
+				patternHierarchyRaw = obj
+				patternHierarchy = parseTeachingPatternHierarchy(obj)
+			} else if deps.Log != nil {
+				deps.Log.Warn("path_plan_build: pattern hierarchy generation failed (continuing)", "error", gerr)
+			}
+		} else if deps.Log != nil {
+			deps.Log.Warn("path_plan_build: pattern hierarchy prompt build failed (continuing)", "error", perr)
+		}
+	}
+	patternHierarchy = normalizeTeachingPatternHierarchy(patternHierarchy, nodesOut, edges, up.ProfileDoc)
+	modulePatternsByIndex := map[int]teachingModulePattern{}
+	lessonPatternsByIndex := map[int]teachingLessonPattern{}
+	for _, m := range patternHierarchy.Modules {
+		modulePatternsByIndex[m.ModuleIndex] = m
+	}
+	for _, l := range patternHierarchy.Lessons {
+		lessonPatternsByIndex[l.LessonIndex] = l
+	}
+	moduleIndices := map[int]bool{}
+	parentByIndex := map[int]*int{}
+	for _, n := range nodesOut {
+		if strings.EqualFold(strings.TrimSpace(n.NodeKind), "module") {
+			moduleIndices[n.Index] = true
+		}
+		parentByIndex[n.Index] = n.ParentIndex
+	}
+	lessonOrder := lessonOrderIndices(nodesOut)
+	firstLesson := 0
+	lastLesson := 0
+	if len(lessonOrder) > 0 {
+		firstLesson = lessonOrder[0]
+		lastLesson = lessonOrder[len(lessonOrder)-1]
+	}
+	moduleLessonOrder := lessonsByModule(nodesOut, moduleIndices)
+
 	now := time.Now().UTC()
 
+	nodesInserted := 0
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		if in.PathID == uuid.Nil {
@@ -282,6 +375,18 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			meta["structure_draft"] = structDraft
 		}
 		meta["structure"] = structObj
+		if patternHierarchy.SchemaVersion > 0 {
+			meta["pattern_hierarchy"] = patternHierarchy
+			if len(patternSignalsJSON) > 0 {
+				var sig any
+				if json.Unmarshal([]byte(patternSignalsJSON), &sig) == nil {
+					meta["pattern_signals"] = sig
+				}
+			}
+			if patternHierarchyRaw != nil {
+				meta["pattern_hierarchy_raw"] = patternHierarchyRaw
+			}
+		}
 		meta["updated_at"] = now.Format(time.RFC3339Nano)
 		if err := deps.Path.UpdateFields(dbc, pathID, map[string]interface{}{
 			"title":       stringsOr(title, "Learning Path"),
@@ -302,6 +407,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			idByIndex[n.Index] = uuid.New()
 		}
 
+		nodeRows := make([]*types.PathNode, 0, len(nodesOut))
 		for _, n := range nodesOut {
 			if n.Index <= 0 {
 				continue
@@ -315,6 +421,39 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 				"node_kind":           n.NodeKind,
 				"doc_template":        n.DocTemplate,
 				"parent_index":        n.ParentIndex,
+			}
+			if patternHierarchy.SchemaVersion > 0 {
+				patternMeta := map[string]any{
+					"path": patternHierarchy.Path,
+				}
+				if strings.EqualFold(strings.TrimSpace(n.NodeKind), "module") {
+					if mod, ok := modulePatternsByIndex[n.Index]; ok {
+						patternMeta["module"] = mod
+						patternMeta["module_index"] = n.Index
+					}
+				} else {
+					moduleIdx := parentModuleIndexForNode(n.Index, parentByIndex, moduleIndices)
+					if mod, ok := modulePatternsByIndex[moduleIdx]; ok {
+						patternMeta["module"] = mod
+						patternMeta["module_index"] = moduleIdx
+					}
+					if lesson, ok := lessonPatternsByIndex[n.Index]; ok {
+						patternMeta["lesson"] = lesson
+						patternMeta["lesson_index"] = n.Index
+					}
+					pos := map[string]bool{
+						"is_first_in_path":   n.Index == firstLesson,
+						"is_last_in_path":    n.Index == lastLesson,
+						"is_first_in_module": false,
+						"is_last_in_module":  false,
+					}
+					if kids := moduleLessonOrder[moduleIdx]; len(kids) > 0 {
+						pos["is_first_in_module"] = kids[0] == n.Index
+						pos["is_last_in_module"] = kids[len(kids)-1] == n.Index
+					}
+					patternMeta["position"] = pos
+				}
+				nodeMeta["patterns"] = patternMeta
 			}
 
 			var parentNodeID *uuid.UUID
@@ -336,10 +475,26 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 				CreatedAt:    now,
 				UpdatedAt:    now,
 			}
-			if err := deps.PathNodes.Upsert(dbc, row); err != nil {
+			nodeRows = append(nodeRows, row)
+		}
+
+		if len(nodeRows) > 0 {
+			if err := dbc.Tx.WithContext(dbc.Ctx).
+				Clauses(clause.OnConflict{
+					Columns: []clause.Column{{Name: "path_id"}, {Name: "index"}},
+					DoUpdates: clause.AssignmentColumns([]string{
+						"title",
+						"parent_node_id",
+						"gating",
+						"metadata",
+						"content_json",
+						"updated_at",
+					}),
+				}).
+				Create(&nodeRows).Error; err != nil {
 				return err
 			}
-			out.Nodes++
+			nodesInserted = len(nodeRows)
 		}
 
 		return nil
@@ -347,6 +502,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, err
 	}
 
+	out.Nodes = nodesInserted
 	if deps.Graph != nil {
 		if err := syncPathStructureToNeo4j(ctx, deps, pathID); err != nil {
 			deps.Log.Warn("neo4j path structure sync failed (continuing)", "error", err, "path_id", pathID.String())

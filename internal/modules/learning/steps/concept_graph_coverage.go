@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
+	"golang.org/x/sync/errgroup"
 )
 
 type conceptCoverage struct {
@@ -96,6 +98,9 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 
 	maxTopics := envIntAllowZero("CONCEPT_GRAPH_COVERAGE_MAX_MISSING_TOPICS", 8)
 	topicTopK := envIntAllowZero("CONCEPT_GRAPH_COVERAGE_TOPIC_TOPK", 6)
+	if topicTopK <= 0 {
+		topicTopK = 6
+	}
 
 	seenChunkIDs := map[uuid.UUID]bool{}
 	for _, id := range in.InitialChunkIDs {
@@ -114,7 +119,24 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 	missingTopics := in.InitialCoverage.MissingTopics
 	concepts := in.Concepts
 
-	for pass := 1; pass <= passes; pass++ {
+	batchSize := maxTopics
+	if batchSize <= 0 {
+		batchSize = 8
+	}
+	maxTotalTopics := batchSize * passes
+	if maxTotalTopics <= 0 {
+		maxTotalTopics = batchSize
+	}
+
+	maxRounds := passes
+	if maxRounds > 2 {
+		maxRounds = 2
+	}
+	if maxRounds < 1 {
+		maxRounds = 1
+	}
+
+	for round := 1; round <= maxRounds; round++ {
 		if len(knownKeys) >= maxConcepts {
 			return concepts
 		}
@@ -139,74 +161,134 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 			break
 		}
 
-		targetIDs := coverageTargetChunkIDs(ctx, deps, in.MaterialSetID, in.MaterialFileFilter, missingTopics, seenChunkIDs, in.ChunkEmbs, maxTopics, topicTopK)
-		deltaExcerpts, stratIDs := stratifiedChunkExcerptsWithLimitsAndIDs(remaining, extraPerFile, extraMaxChars, extraMaxLines, extraMaxTotal)
-		usedIDs := stratIDs
-		if len(targetIDs) > 0 {
-			candidates := append(targetIDs, stratIDs...)
-			deltaExcerpts, usedIDs = renderChunkExcerptsByIDsOrdered(in.ChunkByID, candidates, extraMaxChars, extraMaxTotal)
+		topics := dedupeStrings(missingTopics)
+		if len(topics) > maxTotalTopics {
+			topics = topics[:maxTotalTopics]
 		}
-		if strings.TrimSpace(deltaExcerpts) == "" {
-			break
+		topicBatches := splitStringBatches(topics, batchSize)
+		if len(topicBatches) == 0 {
+			topicBatches = [][]string{{}}
 		}
 
-		// Mark chunks as seen so each pass samples new evidence.
-		for _, id := range usedIDs {
-			if id != uuid.Nil {
-				seenChunkIDs[id] = true
+		_, stratIDs := stratifiedChunkExcerptsWithLimitsAndIDs(remaining, extraPerFile, extraMaxChars, extraMaxLines, extraMaxTotal)
+		stratChunks := make([][]uuid.UUID, len(topicBatches))
+		for i, id := range stratIDs {
+			stratChunks[i%len(topicBatches)] = append(stratChunks[i%len(topicBatches)], id)
+		}
+
+		type coverageTask struct {
+			MissingTopics []string
+			CandidateIDs  []uuid.UUID
+			Excerpts      string
+		}
+		tasks := make([]coverageTask, 0, len(topicBatches))
+
+		for i, batch := range topicBatches {
+			targetIDs := coverageTargetChunkIDs(ctx, deps, in.MaterialSetID, in.MaterialFileFilter, batch, seenChunkIDs, in.ChunkEmbs, maxTopics, topicTopK)
+			candidates := append(targetIDs, stratChunks[i]...)
+			deltaExcerpts, usedIDs := renderChunkExcerptsByIDsOrdered(in.ChunkByID, candidates, extraMaxChars, extraMaxTotal)
+			if strings.TrimSpace(deltaExcerpts) == "" {
+				continue
 			}
+			for _, id := range usedIDs {
+				if id != uuid.Nil {
+					seenChunkIDs[id] = true
+				}
+			}
+			tasks = append(tasks, coverageTask{
+				MissingTopics: batch,
+				CandidateIDs:  candidates,
+				Excerpts:      deltaExcerpts,
+			})
+		}
+		if len(tasks) == 0 {
+			break
 		}
 
 		conceptsJSON := conceptsJSONForDelta(concepts)
-		p, err := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
-			PathIntentMD: in.IntentMD,
-			ConceptsJSON: conceptsJSON,
-			Excerpts:     deltaExcerpts,
-		})
-		if err != nil {
-			if deps.Log != nil {
-				deps.Log.Warn("concept_graph_build: coverage delta prompt build failed (continuing)", "error", err, "path_id", in.PathID.String())
-			}
-			break
-		}
+		var (
+			mu             sync.Mutex
+			newConceptsAll []conceptInvItem
+			nextTopics     []string
+		)
 
-		obj, err := deps.AI.GenerateJSON(ctx, p.System, p.User, p.SchemaName, p.Schema)
-		if err != nil && isContextLengthExceeded(err) && extraMaxTotal > 12000 {
-			extraMaxTotal = maxInt(12000, extraMaxTotal/2)
-			deltaExcerpts, _ = renderChunkExcerptsByIDsOrdered(in.ChunkByID, append(targetIDs, stratIDs...), extraMaxChars, extraMaxTotal)
-			if strings.TrimSpace(deltaExcerpts) != "" {
-				p2, berr := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
+		tg, tctx := errgroup.WithContext(ctx)
+		conc := len(tasks)
+		if conc > 4 {
+			conc = 4
+		}
+		if conc < 1 {
+			conc = 1
+		}
+		tg.SetLimit(conc)
+
+		for _, task := range tasks {
+			task := task
+			tg.Go(func() error {
+				if err := tctx.Err(); err != nil {
+					return err
+				}
+				p, err := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
 					PathIntentMD: in.IntentMD,
 					ConceptsJSON: conceptsJSON,
-					Excerpts:     deltaExcerpts,
+					Excerpts:     task.Excerpts,
 				})
-				if berr == nil {
-					obj, err = deps.AI.GenerateJSON(ctx, p2.System, p2.User, p2.SchemaName, p2.Schema)
+				if err != nil {
+					if deps.Log != nil {
+						deps.Log.Warn("concept_graph_build: coverage delta prompt build failed (continuing)", "error", err, "path_id", in.PathID.String())
+					}
+					return nil
 				}
-			}
+
+				obj, err := deps.AI.GenerateJSON(tctx, p.System, p.User, p.SchemaName, p.Schema)
+				if err != nil && isContextLengthExceeded(err) && extraMaxTotal > 12000 {
+					maxTotal := maxInt(12000, extraMaxTotal/2)
+					shorter, _ := renderChunkExcerptsByIDsOrdered(in.ChunkByID, task.CandidateIDs, extraMaxChars, maxTotal)
+					if strings.TrimSpace(shorter) != "" {
+						p2, berr := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
+							PathIntentMD: in.IntentMD,
+							ConceptsJSON: conceptsJSON,
+							Excerpts:     shorter,
+						})
+						if berr == nil {
+							obj, err = deps.AI.GenerateJSON(tctx, p2.System, p2.User, p2.SchemaName, p2.Schema)
+						}
+					}
+				}
+				if err != nil {
+					if deps.Log != nil {
+						deps.Log.Warn("concept_graph_build: coverage delta generation failed (continuing)", "error", err, "path_id", in.PathID.String())
+					}
+					return nil
+				}
+
+				newConcepts, cov, perr := parseConceptInventoryDelta(obj)
+				if perr != nil {
+					if deps.Log != nil {
+						deps.Log.Warn("concept_graph_build: coverage delta parse failed (continuing)", "error", perr, "path_id", in.PathID.String())
+					}
+					return nil
+				}
+				mu.Lock()
+				if len(newConcepts) > 0 {
+					newConceptsAll = append(newConceptsAll, newConcepts...)
+				}
+				if len(cov.MissingTopics) > 0 {
+					nextTopics = append(nextTopics, cov.MissingTopics...)
+				}
+				mu.Unlock()
+				return nil
+			})
 		}
-		if err != nil {
-			if deps.Log != nil {
-				deps.Log.Warn("concept_graph_build: coverage delta generation failed (continuing)", "error", err, "path_id", in.PathID.String())
-			}
+
+		if err := tg.Wait(); err != nil && tctx.Err() != nil {
+			return concepts
+		}
+		if len(newConceptsAll) == 0 {
 			break
 		}
 
-		newConcepts, cov, perr := parseConceptInventoryDelta(obj)
-		if perr != nil {
-			if deps.Log != nil {
-				deps.Log.Warn("concept_graph_build: coverage delta parse failed (continuing)", "error", perr, "path_id", in.PathID.String())
-			}
-			break
-		}
-		if len(cov.MissingTopics) > 0 {
-			missingTopics = cov.MissingTopics
-		}
-		if len(newConcepts) == 0 {
-			break
-		}
-
-		merged, _ := normalizeConceptInventory(append(concepts, newConcepts...), in.AllowedChunkIDs)
+		merged, _ := normalizeConceptInventory(append(concepts, newConceptsAll...), in.AllowedChunkIDs)
 		merged, _ = dedupeConceptInventoryByKey(merged)
 
 		added := 0
@@ -223,7 +305,12 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 		}
 		concepts = merged
 		if deps.Log != nil {
-			deps.Log.Info("concept_graph_build: coverage pass added concepts", "path_id", in.PathID.String(), "pass", pass, "added", added, "total", len(knownKeys))
+			deps.Log.Info("concept_graph_build: coverage round added concepts", "path_id", in.PathID.String(), "round", round, "added", added, "total", len(knownKeys))
+		}
+
+		missingTopics = dedupeStrings(nextTopics)
+		if len(missingTopics) == 0 {
+			break
 		}
 	}
 
@@ -292,6 +379,24 @@ func parseConceptInventoryDelta(obj map[string]any) ([]conceptInvItem, conceptCo
 		})
 	}
 	return out, cov, nil
+}
+
+func splitStringBatches(in []string, size int) [][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	if size <= 0 {
+		return [][]string{in}
+	}
+	out := make([][]string, 0, (len(in)+size-1)/size)
+	for start := 0; start < len(in); start += size {
+		end := start + size
+		if end > len(in) {
+			end = len(in)
+		}
+		out = append(out, in[start:end])
+	}
+	return out
 }
 
 func renderChunkExcerptsByIDsOrdered(chunkByID map[uuid.UUID]*types.MaterialChunk, ids []uuid.UUID, maxChars int, maxTotalChars int) (string, []uuid.UUID) {
