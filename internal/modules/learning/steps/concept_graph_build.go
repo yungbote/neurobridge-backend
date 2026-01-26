@@ -119,6 +119,11 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && string(row.Metadata) != "null" {
 			var meta map[string]any
 			if json.Unmarshal(row.Metadata, &meta) == nil {
+				if intake := mapFromAny(meta["intake"]); intake != nil {
+					if !boolFromAny(intake["paths_confirmed"]) {
+						return out, nil
+					}
+				}
 				intentMD = strings.TrimSpace(stringFromAny(meta["intake_md"]))
 				allowFiles = intakeMaterialAllowlistFromPathMeta(meta)
 			}

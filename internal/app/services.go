@@ -263,6 +263,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.JobRun,
 		jobService,
 		repos.Path,
+		repos.UserPersonalizationPrefs,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(waitpointInterpret); err != nil {
@@ -378,6 +379,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.Path,
 		repos.MaterialFile,
 		repos.MaterialFileSignature,
+		repos.UserPersonalizationPrefs,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
 	)
 	if err := jobRegistry.Register(pathGroupingRefine); err != nil {
 		return Services{}, err

@@ -198,6 +198,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	reg := waitpoint.NewRegistry()
 	_ = reg.Register(waitcfg.PathIntakeStructureConfig())
+	_ = reg.Register(waitcfg.PathGroupingRefineConfig())
 
 	interp := waitpoint.NewInterpreter(reg)
 
@@ -510,18 +511,74 @@ func (p *Pipeline) applyPathIntakeSelection(
 		}
 		intake["paths_confirmed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	if confirmed, ok := selection["paths_confirmed"].(bool); ok {
+		intake["paths_confirmed"] = confirmed
+		intake["paths_confirmed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if refined, ok := selection["paths_refined"].(bool); ok {
+		intake["paths_refined"] = refined
+		if refined {
+			if _, ok := selection["paths_refined_at"]; !ok {
+				intake["paths_refined_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+			}
+		}
+	}
+	if mode, ok := selection["paths_refined_mode"].(string); ok {
+		if strings.TrimSpace(mode) != "" {
+			intake["paths_refined_mode"] = strings.TrimSpace(mode)
+		}
+	}
+	if refinedAt, ok := selection["paths_refined_at"].(string); ok && strings.TrimSpace(refinedAt) != "" {
+		intake["paths_refined_at"] = strings.TrimSpace(refinedAt)
+	}
 	if paths, ok := selection["paths"]; ok {
 		intake["paths"] = paths
 	}
 
 	intake["needs_clarification"] = false
 	meta["intake"] = intake
+	meta["intake_refine_pending"] = false
 	meta["intake_updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 
 	metaJSON, _ := json.Marshal(meta)
-	return p.path.UpdateFields(dbc, pathID, map[string]interface{}{
+	if err := p.path.UpdateFields(dbc, pathID, map[string]interface{}{
 		"metadata": datatypes.JSON(metaJSON),
-	})
+	}); err != nil {
+		return err
+	}
+
+	if p.prefs != nil {
+		if prefSingle, ok := selection["grouping_prefer_single"].(bool); ok {
+			_ = p.updateGroupingPrefs(dbc, path, prefSingle)
+		}
+	}
+
+	return nil
+}
+
+func (p *Pipeline) updateGroupingPrefs(dbc dbctx.Context, path *types.Path, preferSingle bool) error {
+	if p == nil || p.prefs == nil || path == nil || path.UserID == nil || *path.UserID == uuid.Nil {
+		return nil
+	}
+	row, _ := p.prefs.GetByUserID(dbc, *path.UserID)
+	prefs := map[string]any{}
+	if row != nil && len(row.PrefsJSON) > 0 && string(row.PrefsJSON) != "null" {
+		_ = json.Unmarshal(row.PrefsJSON, &prefs)
+	}
+	pg := map[string]any{}
+	if existing, ok := prefs["path_grouping"].(map[string]any); ok && existing != nil {
+		pg = existing
+	}
+	pg["prefer_single_path"] = preferSingle
+	pg["prefer_multi_path"] = !preferSingle
+	pg["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	prefs["path_grouping"] = pg
+	payload, _ := json.Marshal(prefs)
+	rowOut := &types.UserPersonalizationPrefs{
+		UserID:    *path.UserID,
+		PrefsJSON: datatypes.JSON(payload),
+	}
+	return p.prefs.Upsert(dbc, rowOut)
 }
 
 // enqueueChatRespondForMessage enqueues a chat_respond job for continued conversation.
@@ -680,5 +737,3 @@ func (p *Pipeline) enqueueChatRespondForMessage(
 	}
 	return nil
 }
-
-

@@ -275,6 +275,10 @@ func (u Usecases) PathGroupingRefine(ctx context.Context, in PathGroupingRefineI
 		Path:     u.deps.Path,
 		Files:    u.deps.Files,
 		FileSigs: u.deps.FileSigs,
+		Prefs:    u.deps.Prefs,
+		Threads:  u.deps.Threads,
+		Messages: u.deps.Messages,
+		Notify:   u.deps.Notify,
 	}, steps.PathGroupingRefineInput(in))
 }
 

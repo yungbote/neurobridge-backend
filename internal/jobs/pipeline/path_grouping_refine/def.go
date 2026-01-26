@@ -5,6 +5,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Pipeline struct {
@@ -13,6 +14,10 @@ type Pipeline struct {
 	path    repos.PathRepo
 	files   repos.MaterialFileRepo
 	fileSigs repos.MaterialFileSignatureRepo
+	prefs   repos.UserPersonalizationPrefsRepo
+	threads repos.ChatThreadRepo
+	messages repos.ChatMessageRepo
+	notify services.ChatNotifier
 }
 
 func New(
@@ -21,6 +26,10 @@ func New(
 	path repos.PathRepo,
 	files repos.MaterialFileRepo,
 	fileSigs repos.MaterialFileSignatureRepo,
+	prefs repos.UserPersonalizationPrefsRepo,
+	threads repos.ChatThreadRepo,
+	messages repos.ChatMessageRepo,
+	notify services.ChatNotifier,
 ) *Pipeline {
 	return &Pipeline{
 		db:      db,
@@ -28,6 +37,10 @@ func New(
 		path:    path,
 		files:   files,
 		fileSigs: fileSigs,
+		prefs:   prefs,
+		threads: threads,
+		messages: messages,
+		notify:  notify,
 	}
 }
 

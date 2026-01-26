@@ -108,6 +108,15 @@ func FromSegments(name string, segs []types.Segment, maxSections int) *Outline {
 		title = "Document"
 	}
 
+	if toc := extractTOCSections(segs, maxSections); len(toc) > 0 {
+		return &Outline{
+			Title:      title,
+			Sections:   toc,
+			Source:     "toc",
+			Confidence: 0.78,
+		}
+	}
+
 	headings := extractHeadingCandidates(segs, maxSections)
 	if len(headings) > 0 {
 		return &Outline{
@@ -129,6 +138,188 @@ func FromSegments(name string, segs []types.Segment, maxSections int) *Outline {
 	}
 
 	return nil
+}
+
+type tocLine struct {
+	Text      string
+	StartPage *int
+}
+
+func extractTOCSections(segs []types.Segment, maxSections int) []Section {
+	if len(segs) == 0 || maxSections <= 0 {
+		return nil
+	}
+	lines := collectTOCLines(segs, 220)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	start := -1
+	for i, ln := range lines {
+		if isTOCHeader(ln.Text) {
+			start = i + 1
+			break
+		}
+	}
+
+	parseFrom := func(idx int) []Section {
+		sections := make([]Section, 0, maxSections)
+		misses := 0
+		for i := idx; i < len(lines) && len(sections) < maxSections; i++ {
+			txt := strings.TrimSpace(lines[i].Text)
+			if txt == "" {
+				if len(sections) > 0 {
+					misses++
+				}
+				if misses >= 3 {
+					break
+				}
+				continue
+			}
+			title, path, page, ok := parseTOCLine(txt)
+			if !ok {
+				if len(sections) > 0 {
+					misses++
+					if misses >= 3 {
+						break
+					}
+				}
+				continue
+			}
+			if path == "" {
+				path = strconv.Itoa(len(sections) + 1)
+			}
+			if page == nil {
+				page = lines[i].StartPage
+			}
+			sections = append(sections, Section{
+				Title:     title,
+				Path:      path,
+				StartPage: page,
+				EndPage:   page,
+			})
+		}
+		if len(sections) < 4 {
+			return nil
+		}
+		return sections
+	}
+
+	if start >= 0 {
+		if sections := parseFrom(start); len(sections) > 0 {
+			return sections
+		}
+	}
+
+	// Fallback: look for dense dotted-leader patterns in early pages.
+	denseStart := firstDenseTOCWindow(lines, 4)
+	if denseStart >= 0 {
+		if sections := parseFrom(denseStart); len(sections) > 0 {
+			return sections
+		}
+	}
+
+	return nil
+}
+
+func collectTOCLines(segs []types.Segment, maxLines int) []tocLine {
+	if maxLines <= 0 {
+		maxLines = 200
+	}
+	out := make([]tocLine, 0, maxLines)
+
+	ordered := make([]types.Segment, 0, len(segs))
+	for _, seg := range segs {
+		if strings.TrimSpace(seg.Text) == "" {
+			continue
+		}
+		ordered = append(ordered, seg)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		pi := ordered[i].Page
+		pj := ordered[j].Page
+		if pi != nil && pj != nil {
+			if *pi == *pj {
+				return i < j
+			}
+			return *pi < *pj
+		}
+		if pi != nil && pj == nil {
+			return true
+		}
+		if pi == nil && pj != nil {
+			return false
+		}
+		return i < j
+	})
+
+	for _, seg := range ordered {
+		lines := strings.Split(seg.Text, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			out = append(out, tocLine{
+				Text:      line,
+				StartPage: seg.Page,
+			})
+			if len(out) >= maxLines {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func firstDenseTOCWindow(lines []tocLine, minMatches int) int {
+	if len(lines) == 0 || minMatches <= 0 {
+		return -1
+	}
+	window := 24
+	if len(lines) < window {
+		window = len(lines)
+	}
+	for i := 0; i+window <= len(lines); i++ {
+		matches := 0
+		for j := i; j < i+window; j++ {
+			if tocLinePattern.MatchString(lines[j].Text) {
+				matches++
+			}
+		}
+		if matches >= minMatches {
+			return i
+		}
+	}
+	return -1
+}
+
+func isTOCHeader(line string) bool {
+	l := strings.ToLower(strings.TrimSpace(line))
+	if l == "contents" || l == "table of contents" {
+		return true
+	}
+	return strings.Contains(l, "table of contents")
+}
+
+func parseTOCLine(line string) (title string, path string, page *int, ok bool) {
+	if line == "" {
+		return "", "", nil, false
+	}
+
+	if m := tocLinePattern.FindStringSubmatch(line); len(m) > 0 {
+		path = strings.TrimSpace(m[tocNumIdx])
+		title = strings.TrimSpace(m[tocTitleIdx])
+		pageNum := strings.TrimSpace(m[tocPageIdx])
+		if n, err := strconv.Atoi(pageNum); err == nil {
+			page = &n
+		}
+		if title != "" {
+			return title, path, page, true
+		}
+	}
+
+	return "", "", nil, false
 }
 
 func extractHeadingCandidates(segs []types.Segment, maxSections int) []Section {
@@ -281,6 +472,13 @@ func looksLikeHeading(line string) bool {
 }
 
 var headingNumPrefix = regexp.MustCompile(`^(\d+(\.\d+)*|[IVX]+)\s+`)
+var tocLinePattern = regexp.MustCompile(`^(?:(\d+(?:\.\d+)*|[IVXLC]+)[\.\)]?\s+)?(.+?)\s*\.{2,}\s*(\d+)\s*$`)
+
+const (
+	tocNumIdx   = 1
+	tocTitleIdx = 2
+	tocPageIdx  = 3
+)
 
 func floatFromAny(v any, def float64) float64 {
 	switch x := v.(type) {
