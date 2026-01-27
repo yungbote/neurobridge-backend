@@ -246,17 +246,24 @@ func FileSignatureSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
-	return SchemaVersionedObject(1, map[string]any{
-		"summary_md":         map[string]any{"type": "string"},
-		"topics":             StringArraySchema(),
-		"concept_keys":       StringArraySchema(),
-		"difficulty":         EnumSchema("intro", "intermediate", "advanced", "mixed", "unknown"),
-		"domain_tags":        StringArraySchema(),
-		"citations":          StringArraySchema(),
-		"outline_json":       outline,
-		"outline_confidence": NumberSchema(),
-		"language":           map[string]any{"type": "string"},
-		"quality":            quality,
+	return SchemaVersionedObject(2, map[string]any{
+		"summary_md":            map[string]any{"type": "string"},
+		"topics":                StringArraySchema(),
+		"concept_keys":          StringArraySchema(),
+		"difficulty":            EnumSchema("intro", "intermediate", "advanced", "mixed", "unknown"),
+		"domain_tags":           StringArraySchema(),
+		"citations":             StringArraySchema(),
+		"outline_json":          outline,
+		"outline_confidence":    NumberSchema(),
+		"language":              map[string]any{"type": "string"},
+		"quality":               quality,
+		"from_state":            map[string]any{"type": "string"},
+		"to_state":              map[string]any{"type": "string"},
+		"core_thread":           map[string]any{"type": "string"},
+		"destination_concepts":  StringArraySchema(),
+		"prerequisite_concepts": StringArraySchema(),
+		"assumed_knowledge":     StringArraySchema(),
+		"notes":                 StringArraySchema(),
 	}, []string{
 		"summary_md",
 		"topics",
@@ -268,6 +275,13 @@ func FileSignatureSchema() map[string]any {
 		"outline_confidence",
 		"language",
 		"quality",
+		"from_state",
+		"to_state",
+		"core_thread",
+		"destination_concepts",
+		"prerequisite_concepts",
+		"assumed_knowledge",
+		"notes",
 	})
 }
 

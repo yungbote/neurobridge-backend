@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -55,6 +56,8 @@ type FileSignatureBuildOutput struct {
 	SignaturesUpserted int       `json:"signatures_upserted"`
 	SectionsUpserted   int       `json:"sections_upserted"`
 	SignaturesSkipped  int       `json:"signatures_skipped"`
+	IntentsUpserted    int       `json:"intents_upserted"`
+	IntentsSkipped     int       `json:"intents_skipped"`
 }
 
 func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in FileSignatureBuildInput) (FileSignatureBuildOutput, error) {
@@ -117,6 +120,16 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		}
 		existingByFile[row.MaterialFileID] = row
 	}
+	existingIntents := map[uuid.UUID]*types.MaterialIntent{}
+	var intentRows []*types.MaterialIntent
+	if err := deps.DB.WithContext(ctx).Model(&types.MaterialIntent{}).Where("material_file_id IN ?", fileIDs).Find(&intentRows).Error; err == nil {
+		for _, row := range intentRows {
+			if row == nil || row.MaterialFileID == uuid.Nil {
+				continue
+			}
+			existingIntents[row.MaterialFileID] = row
+		}
+	}
 
 	perFile := envIntAllowZero("FILE_SIGNATURE_EXCERPTS_PER_FILE", 10)
 	if perFile <= 0 {
@@ -157,9 +170,12 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		}
 
 		fingerprint := fileFingerprint(f, chArr)
-		if row := existingByFile[f.ID]; row != nil && strings.TrimSpace(row.Fingerprint) == fingerprint && row.Version >= 1 {
-			out.SignaturesSkipped++
-			continue
+		if row := existingByFile[f.ID]; row != nil && strings.TrimSpace(row.Fingerprint) == fingerprint && row.Version >= 2 {
+			if existingIntents[f.ID] != nil {
+				out.SignaturesSkipped++
+				out.IntentsSkipped++
+				continue
+			}
 		}
 
 		excerpt := stratifiedChunkExcerptsWithLimits(chArr, perFile, maxChars, 0, maxTotal)
@@ -203,6 +219,14 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		outlineConf := floatFromAny(obj["outline_confidence"], 0.4)
 		lang := strings.TrimSpace(stringFromAny(obj["language"]))
 
+		fromState := strings.TrimSpace(stringFromAny(obj["from_state"]))
+		toState := strings.TrimSpace(stringFromAny(obj["to_state"]))
+		coreThread := strings.TrimSpace(stringFromAny(obj["core_thread"]))
+		destination := dedupeStrings(stringSliceFromAny(obj["destination_concepts"]))
+		prereq := dedupeStrings(stringSliceFromAny(obj["prerequisite_concepts"]))
+		assumed := dedupeStrings(stringSliceFromAny(obj["assumed_knowledge"]))
+		intentNotes := dedupeStrings(stringSliceFromAny(obj["notes"]))
+
 		quality := buildQualitySignals(chArr, excerpt, minTextChars)
 		if q := mapFromAny(obj["quality"]); q != nil {
 			quality["llm_quality"] = q
@@ -224,7 +248,7 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 			ID:                uuid.New(),
 			MaterialFileID:    f.ID,
 			MaterialSetID:     in.MaterialSetID,
-			Version:           1,
+			Version:           2,
 			Language:          lang,
 			Quality:           datatypes.JSON(mustJSON(quality)),
 			Difficulty:        difficulty,
@@ -241,10 +265,50 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 			UpdatedAt:         now,
 		}
 
+		intent := &types.MaterialIntent{
+			ID:                   uuid.New(),
+			MaterialFileID:       f.ID,
+			MaterialSetID:        in.MaterialSetID,
+			FromState:            fromState,
+			ToState:              toState,
+			CoreThread:           coreThread,
+			DestinationConcepts:  datatypes.JSON(mustJSON(destination)),
+			PrerequisiteConcepts: datatypes.JSON(mustJSON(prereq)),
+			AssumedKnowledge:     datatypes.JSON(mustJSON(assumed)),
+			Metadata:             datatypes.JSON(mustJSON(map[string]any{"notes": intentNotes, "source": "file_signature_build"})),
+			CreatedAt:            now,
+			UpdatedAt:            now,
+		}
+		if strings.TrimSpace(intent.FromState) == "" && strings.TrimSpace(intent.ToState) == "" &&
+			strings.TrimSpace(intent.CoreThread) == "" && len(destination) == 0 && len(prereq) == 0 && len(assumed) == 0 {
+			intent = fallbackMaterialIntent(f, row)
+			intent.MaterialSetID = in.MaterialSetID
+			intent.Metadata = datatypes.JSON(mustJSON(map[string]any{"notes": append(intentNotes, "fallback_intent"), "source": "file_signature_build"}))
+		}
+
 		if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 			if err := deps.FileSigs.UpsertByMaterialFileID(dbc, row); err != nil {
 				return err
+			}
+			if intent != nil {
+				if err := tx.Clauses(clause.OnConflict{
+					Columns: []clause.Column{{Name: "material_file_id"}},
+					DoUpdates: clause.AssignmentColumns([]string{
+						"material_set_id",
+						"from_state",
+						"to_state",
+						"core_thread",
+						"destination_concepts",
+						"prerequisite_concepts",
+						"assumed_knowledge",
+						"metadata",
+						"updated_at",
+					}),
+				}).Create(intent).Error; err != nil {
+					return err
+				}
+				out.IntentsUpserted++
 			}
 
 			sections := flattenOutlineSections(outlineJSON, maxSections)

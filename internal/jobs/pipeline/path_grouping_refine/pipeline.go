@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
-	runtime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	waitcfg "github.com/yungbote/neurobridge-backend/internal/waitpoint/configs"
@@ -34,6 +33,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 	threadID, _ := jc.PayloadUUID("thread_id")
 
+	stageCfg := stageConfig(jc.Payload())
+	waitForUser := true
+	confirmExternally := false
+	if stageCfg != nil {
+		if v, ok := stageCfg["wait_for_user"]; ok {
+			waitForUser = boolFromAny(v)
+		}
+		if boolFromAny(stageCfg["waitpoint_external"]) || boolFromAny(stageCfg["confirm_externally"]) {
+			confirmExternally = true
+			waitForUser = false
+		}
+	}
+
 	jc.Progress("refine", 2, "Refining path grouping")
 
 	out, err := learningmod.New(learningmod.UsecasesDeps{
@@ -47,12 +59,13 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Messages: p.messages,
 		Notify:   p.notify,
 	}).PathGroupingRefine(jc.Ctx, learningmod.PathGroupingRefineInput{
-		OwnerUserID:   jc.Job.OwnerUserID,
-		MaterialSetID: setID,
-		PathID:        pathID,
-		ThreadID:      threadID,
-		JobID:         jc.Job.ID,
-		WaitForUser:   true,
+		OwnerUserID:       jc.Job.OwnerUserID,
+		MaterialSetID:     setID,
+		PathID:            pathID,
+		ThreadID:          threadID,
+		JobID:             jc.Job.ID,
+		WaitForUser:       waitForUser,
+		ConfirmExternally: confirmExternally,
 	})
 	if err != nil {
 		jc.Fail("refine", err)
@@ -79,7 +92,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			}
 		}
 
-		spec := runtime.WaitpointSpec{
+		spec := jobrt.WaitpointSpec{
 			Version:  1,
 			Kind:     waitcfg.PathGroupingRefineKind,
 			Step:     "path_grouping_refine",
@@ -102,7 +115,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			}(),
 		}
 
-		state := runtime.WaitpointState{
+		if cfg := jobrt.StageWaitpointConfig(jc.Payload()); cfg != nil {
+			spec = jobrt.ApplyWaitpointConfig(spec, cfg)
+		}
+
+		state := jobrt.WaitpointState{
 			Version: 1,
 			Phase:   "awaiting_choice",
 		}
@@ -119,6 +136,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			"options":         options,
 			"files":           filesForWaitpoint,
 		}
+		if cfg := jobrt.StageWaitpointConfig(jc.Payload()); cfg != nil {
+			data["waitpoint_config"] = cfg
+		}
 
 		jc.WaitForUser(
 			"waiting_user",
@@ -131,14 +151,50 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	var options any
+	if out.Meta != nil {
+		options = out.Meta["options"]
+	}
 	jc.Succeed("done", map[string]any{
-		"material_set_id":   setID.String(),
-		"path_id":           pathID.String(),
-		"status":            out.Status,
-		"paths_before":      out.PathsBefore,
-		"paths_after":       out.PathsAfter,
-		"files_considered":  out.FilesConsidered,
-		"confidence":        out.Confidence,
+		"material_set_id":    setID.String(),
+		"path_id":            pathID.String(),
+		"status":             out.Status,
+		"paths_before":       out.PathsBefore,
+		"paths_after":        out.PathsAfter,
+		"files_considered":   out.FilesConsidered,
+		"confidence":         out.Confidence,
+		"meta":               out.Meta,
+		"intake":             out.Intake,
+		"needs_confirmation": out.NeedsConfirmation,
+		"prompt":             out.Prompt,
+		"options":            options,
 	})
 	return nil
+}
+
+func stageConfig(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	raw, ok := payload["stage_config"]
+	if !ok || raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func boolFromAny(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		return s == "true" || s == "1" || s == "yes" || s == "y"
+	default:
+		s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
+		return s == "true" || s == "1" || s == "yes" || s == "y"
+	}
 }

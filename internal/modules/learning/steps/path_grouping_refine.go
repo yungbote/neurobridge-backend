@@ -15,8 +15,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
-	infclient "github.com/yungbote/neurobridge-backend/internal/inference/client"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	infclient "github.com/yungbote/neurobridge-backend/internal/inference/client"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -35,24 +35,27 @@ type PathGroupingRefineDeps struct {
 }
 
 type PathGroupingRefineInput struct {
-	OwnerUserID   uuid.UUID
-	MaterialSetID uuid.UUID
-	PathID        uuid.UUID
-	ThreadID      uuid.UUID
-	JobID         uuid.UUID
-	WaitForUser   bool
+	OwnerUserID       uuid.UUID
+	MaterialSetID     uuid.UUID
+	PathID            uuid.UUID
+	ThreadID          uuid.UUID
+	JobID             uuid.UUID
+	WaitForUser       bool
+	ConfirmExternally bool
 }
 
 type PathGroupingRefineOutput struct {
-	PathID          uuid.UUID      `json:"path_id"`
-	Status          string         `json:"status"`
-	PathsBefore     int            `json:"paths_before"`
-	PathsAfter      int            `json:"paths_after"`
-	FilesConsidered int            `json:"files_considered"`
-	Confidence      float64        `json:"confidence"`
-	ThreadID        uuid.UUID      `json:"thread_id,omitempty"`
-	Meta            map[string]any `json:"meta,omitempty"`
-	Intake          map[string]any `json:"intake,omitempty"`
+	PathID            uuid.UUID      `json:"path_id"`
+	Status            string         `json:"status"`
+	PathsBefore       int            `json:"paths_before"`
+	PathsAfter        int            `json:"paths_after"`
+	FilesConsidered   int            `json:"files_considered"`
+	Confidence        float64        `json:"confidence"`
+	ThreadID          uuid.UUID      `json:"thread_id,omitempty"`
+	Meta              map[string]any `json:"meta,omitempty"`
+	Intake            map[string]any `json:"intake,omitempty"`
+	Prompt            string         `json:"prompt,omitempty"`
+	NeedsConfirmation bool           `json:"needs_confirmation,omitempty"`
 }
 
 func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in PathGroupingRefineInput) (PathGroupingRefineOutput, error) {
@@ -186,7 +189,7 @@ func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in Pat
 	shouldApply := shouldApplyGrouping(candidateMode, avgIntra, avgInter, mergeThreshold, splitThreshold, bridgeWeak, len(bridgeInfo.Strong) > 0, len(bridgeInfo.Medium) > 0)
 
 	if !shouldApply {
-		if in.WaitForUser && in.ThreadID != uuid.Nil && in.JobID != uuid.Nil && deps.Threads != nil && deps.Messages != nil {
+		if in.WaitForUser || in.ConfirmExternally {
 			intake["needs_clarification"] = true
 			intake["paths_confirmed"] = false
 			intake["paths_refined"] = false
@@ -216,41 +219,54 @@ func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in Pat
 			}
 
 			content := formatGroupingChoiceMD(intake, pathsAny, candidatePaths)
-			created, err := appendIntakeQuestionsMessage(ctx, PathIntakeDeps{
-				DB:       deps.DB,
-				Threads:  deps.Threads,
-				Messages: deps.Messages,
-				Notify:   deps.Notify,
-			}, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, content, nil)
-			if err != nil {
-				out.Status = "skipped_low_confidence"
+			options := []map[string]any{
+				{
+					"id":                 "keep_current",
+					"choice":             "1",
+					"label":              "Keep current grouping",
+					"paths":              pathsAny,
+					"prefer_single_path": len(pathsAny) == 1,
+				},
+				{
+					"id":                 "use_refined",
+					"choice":             "2",
+					"label":              "Use refined grouping",
+					"paths":              candidatePaths,
+					"prefer_single_path": len(candidatePaths) == 1,
+				},
+			}
+
+			out.Prompt = content
+			out.Intake = intake
+			out.NeedsConfirmation = true
+			out.Meta = map[string]any{"options": options}
+
+			if in.WaitForUser && in.ThreadID != uuid.Nil && in.JobID != uuid.Nil && deps.Threads != nil && deps.Messages != nil {
+				created, err := appendIntakeQuestionsMessage(ctx, PathIntakeDeps{
+					DB:       deps.DB,
+					Threads:  deps.Threads,
+					Messages: deps.Messages,
+					Notify:   deps.Notify,
+				}, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, content, nil)
+				if err != nil {
+					out.Status = "skipped_low_confidence"
+					return out, nil
+				}
+
+				out.Status = "waiting_user"
+				out.ThreadID = in.ThreadID
+				out.Meta = map[string]any{
+					"question_id":  created.ID.String(),
+					"question_seq": created.Seq,
+					"options":      options,
+				}
 				return out, nil
 			}
 
-			out.Status = "waiting_user"
-			out.ThreadID = in.ThreadID
-			out.Meta = map[string]any{
-				"question_id":  created.ID.String(),
-				"question_seq": created.Seq,
-				"options": []map[string]any{
-					{
-						"id":                 "keep_current",
-						"choice":             "1",
-						"label":              "Keep current grouping",
-						"paths":              pathsAny,
-						"prefer_single_path": len(pathsAny) == 1,
-					},
-					{
-						"id":                 "use_refined",
-						"choice":             "2",
-						"label":              "Use refined grouping",
-						"paths":              candidatePaths,
-						"prefer_single_path": len(candidatePaths) == 1,
-					},
-				},
+			if in.ConfirmExternally {
+				out.Status = "needs_confirmation"
+				return out, nil
 			}
-			out.Intake = intake
-			return out, nil
 		}
 
 		out.Status = "skipped_low_confidence"
@@ -791,14 +807,14 @@ func buildSinglePathWithSegments(clusters [][]uuid.UUID, intake map[string]any, 
 	}
 
 	path := map[string]any{
-		"path_id":               pathID,
-		"title":                 title,
-		"goal":                  goal,
-		"core_file_ids":         allIDs,
-		"support_file_ids":      []string{},
-		"confidence":            clamp01((intra - inter + 1) / 2),
-		"notes":                 notes,
-		"segments":              segments,
+		"path_id":                 pathID,
+		"title":                   title,
+		"goal":                    goal,
+		"core_file_ids":           allIDs,
+		"support_file_ids":        []string{},
+		"confidence":              clamp01((intra - inter + 1) / 2),
+		"notes":                   notes,
+		"segments":                segments,
 		"segment_bridge_file_ids": bridgeIDs,
 	}
 	return []any{path}

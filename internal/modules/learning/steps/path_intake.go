@@ -47,15 +47,20 @@ type PathIntakeInput struct {
 	// WaitForUser controls whether we are allowed to pause for user answers.
 	// In child-mode learning_build, this should be true; in inline/dev flows it can be false.
 	WaitForUser bool
+	// ConfirmExternally keeps paths unconfirmed and emits prompt content without pausing.
+	ConfirmExternally bool
 }
 
 type PathIntakeOutput struct {
-	PathID   uuid.UUID      `json:"path_id"`
-	ThreadID uuid.UUID      `json:"thread_id"`
-	Status   string         `json:"status"` // "succeeded" | "waiting_user"
-	Intake   map[string]any `json:"intake,omitempty"`
-	Meta     map[string]any `json:"meta,omitempty"`
-	Now      string         `json:"now,omitempty"`
+	PathID            uuid.UUID      `json:"path_id"`
+	ThreadID          uuid.UUID      `json:"thread_id"`
+	Status            string         `json:"status"` // "succeeded" | "waiting_user" | "needs_confirmation"
+	Intake            map[string]any `json:"intake,omitempty"`
+	Meta              map[string]any `json:"meta,omitempty"`
+	Prompt            string         `json:"prompt,omitempty"`
+	Workflow          any            `json:"workflow,omitempty"`
+	NeedsConfirmation bool           `json:"needs_confirmation,omitempty"`
+	Now               string         `json:"now,omitempty"`
 }
 
 func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (PathIntakeOutput, error) {
@@ -164,13 +169,35 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	if qMsg != nil {
 		answer := userAnswerAfter(messages, qMsg.Seq)
 		if strings.TrimSpace(answer) == "" {
-			if !in.WaitForUser {
+			if !in.WaitForUser && !in.ConfirmExternally {
 				// Non-interactive mode: proceed with assumptions and do not re-ask.
 				intake := buildFallbackIntake(files, summary, userContextBefore(messages, qMsg.Seq), "")
 				intake["paths_confirmed"] = true
 				filter := buildIntakeMaterialFilter(files, intake)
 				_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
 				out.Intake = intake
+				return out, nil
+			}
+			if in.ConfirmExternally {
+				var existingIntake map[string]any
+				if deps.Path != nil {
+					if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 {
+						var meta map[string]any
+						if json.Unmarshal(row.Metadata, &meta) == nil {
+							existingIntake = mapFromAny(meta["intake"])
+						}
+					}
+				}
+				out.Intake = existingIntake
+				out.Prompt = strings.TrimSpace(qMsg.Content)
+				out.Workflow = buildIntakeWorkflowV1(existingIntake, true)
+				out.NeedsConfirmation = true
+				out.Status = "needs_confirmation"
+				out.Meta = map[string]any{
+					"reason":       "awaiting_user_answer",
+					"question_seq": qMsg.Seq,
+					"question_id":  qMsg.ID.String(),
+				}
 				return out, nil
 			}
 			out.Status = "waiting_user"
@@ -222,22 +249,32 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		intakeMD = formatIntakeSummaryMD(intake)
 	}
 
-	if in.WaitForUser {
+	if in.WaitForUser || in.ConfirmExternally {
 		intake["paths_confirmed"] = false
 		filter := buildIntakeMaterialFilter(files, intake)
 		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD, "intake_material_filter": filter})
 		content := formatIntakeQuestionsMD(intake, intakeMD)
 		workflow := buildIntakeWorkflowV1(intake, true)
-		created, err := appendIntakeQuestionsMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, content, workflow)
-		if err != nil {
-			deps.Log.Warn("path_intake: failed to post intake questions; proceeding", "error", err)
-		} else if created != nil {
-			out.Status = "waiting_user"
-			out.Meta = map[string]any{
-				"reason":       "awaiting_path_confirmation",
-				"question_id":  created.ID.String(),
-				"question_seq": created.Seq,
+		out.Prompt = content
+		out.Workflow = workflow
+		out.NeedsConfirmation = true
+		if in.WaitForUser {
+			created, err := appendIntakeQuestionsMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, content, workflow)
+			if err != nil {
+				deps.Log.Warn("path_intake: failed to post intake questions; proceeding", "error", err)
+			} else if created != nil {
+				out.Status = "waiting_user"
+				out.Meta = map[string]any{
+					"reason":       "awaiting_path_confirmation",
+					"question_id":  created.ID.String(),
+					"question_seq": created.Seq,
+				}
+				out.Intake = intake
+				return out, nil
 			}
+		}
+		if in.ConfirmExternally {
+			out.Status = "needs_confirmation"
 			out.Intake = intake
 			return out, nil
 		}
@@ -247,6 +284,9 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	filter := buildIntakeMaterialFilter(files, intake)
 	_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_md": intakeMD, "intake_material_filter": filter})
 	_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, intakeMD)
+	out.NeedsConfirmation = false
+	out.Prompt = ""
+	out.Workflow = nil
 	out.Intake = intake
 	return out, nil
 }

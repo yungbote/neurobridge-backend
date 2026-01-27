@@ -71,6 +71,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"signatures_upserted": out.SignaturesUpserted,
 		"signatures_skipped":  out.SignaturesSkipped,
 		"sections_upserted":   out.SectionsUpserted,
+		"intents_upserted":    out.IntentsUpserted,
+		"intents_skipped":     out.IntentsSkipped,
 	})
 	return nil
 }

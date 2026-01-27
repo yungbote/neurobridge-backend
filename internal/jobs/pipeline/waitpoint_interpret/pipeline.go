@@ -25,9 +25,14 @@ type orchestratorProbe struct {
 		ChildJobID string `json:"child_job_id"`
 	} `json:"waiting,omitempty"`
 
-	Stages map[string]struct {
-		ChildJobID string `json:"child_job_id,omitempty"`
-	} `json:"stages,omitempty"`
+	Stages map[string]orchestratorStageProbe `json:"stages,omitempty"`
+}
+
+type orchestratorStageProbe struct {
+	ChildJobID     string `json:"child_job_id,omitempty"`
+	ChildJobType   string `json:"child_job_type,omitempty"`
+	ChildJobStatus string `json:"child_job_status,omitempty"`
+	Status         string `json:"status,omitempty"`
 }
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -107,11 +112,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		jc.Succeed("done", map[string]any{"mode": "not_learning_build"})
 		return nil
 	}
-
-	if !strings.EqualFold(strings.TrimSpace(build.Status), "waiting_user") {
-		jc.Succeed("done", map[string]any{"mode": "build_not_waiting"})
-		return nil
-	}
+	buildWasWaitingUser := strings.EqualFold(strings.TrimSpace(build.Status), "waiting_user")
 
 	// ─────────────────────────────────────────────────────────────
 	// Find blocking child job from orchestrator state
@@ -145,7 +146,18 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	if childJobID == uuid.Nil {
-		jc.Succeed("done", map[string]any{"mode": "no_child_waitpoint"})
+		childJobID, stageName = p.findPausedWaitpointChild(jc, build, stageName, probe)
+	}
+
+	if childJobID == uuid.Nil {
+		mode := "no_child_waitpoint"
+		if !buildWasWaitingUser {
+			mode = "build_not_waiting"
+		}
+		jc.Succeed("done", map[string]any{
+			"mode":         mode,
+			"build_status": strings.TrimSpace(build.Status),
+		})
 		return nil
 	}
 
@@ -199,6 +211,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	reg := waitpoint.NewRegistry()
 	_ = reg.Register(waitcfg.PathIntakeStructureConfig())
 	_ = reg.Register(waitcfg.PathGroupingRefineConfig())
+	_ = reg.Register(waitcfg.YAMLIntentConfig())
 
 	interp := waitpoint.NewInterpreter(reg)
 
@@ -315,6 +328,84 @@ func pausedStageFromJobStage(stage string) string {
 		return strings.TrimSpace(strings.TrimPrefix(s, "waiting_user_"))
 	}
 	return ""
+}
+
+func (p *Pipeline) findPausedWaitpointChild(
+	jc *jobrt.Context,
+	build *types.JobRun,
+	preferredStage string,
+	probe orchestratorProbe,
+) (uuid.UUID, string) {
+	if jc == nil || build == nil || build.ID == uuid.Nil || p.jobRuns == nil || probe.Stages == nil {
+		return uuid.Nil, ""
+	}
+	stageByID := map[uuid.UUID]string{}
+	ids := make([]uuid.UUID, 0, len(probe.Stages))
+	for stageName, ss := range probe.Stages {
+		if !stageLooksLikeWaitpoint(stageName, ss) {
+			continue
+		}
+		id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID))
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		stageByID[id] = stageName
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return uuid.Nil, ""
+	}
+	rows, err := p.jobRuns.GetByIDs(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, ids)
+	if err != nil {
+		return uuid.Nil, ""
+	}
+	// Prefer an explicitly paused stage when present.
+	if strings.TrimSpace(preferredStage) != "" {
+		for _, row := range rows {
+			if row == nil || row.ID == uuid.Nil {
+				continue
+			}
+			stageName := stageByID[row.ID]
+			if !strings.EqualFold(strings.TrimSpace(stageName), strings.TrimSpace(preferredStage)) {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(row.Status), "waiting_user") {
+				return row.ID, stageName
+			}
+		}
+	}
+	var chosen *types.JobRun
+	chosenStage := ""
+	for _, row := range rows {
+		if row == nil || row.ID == uuid.Nil {
+			continue
+		}
+		if row.OwnerUserID != build.OwnerUserID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row.Status), "waiting_user") {
+			continue
+		}
+		if chosen == nil || row.UpdatedAt.After(chosen.UpdatedAt) {
+			chosen = row
+			chosenStage = stageByID[row.ID]
+		}
+	}
+	if chosen == nil {
+		return uuid.Nil, ""
+	}
+	return chosen.ID, chosenStage
+}
+
+func stageLooksLikeWaitpoint(stageName string, ss orchestratorStageProbe) bool {
+	name := strings.ToLower(strings.TrimSpace(stageName))
+	if strings.HasSuffix(name, "_waitpoint") || strings.Contains(name, "waitpoint") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(ss.ChildJobType), "waitpoint_stage") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(ss.ChildJobStatus), "waiting_user")
 }
 
 // parseWaitpointEnvelope decodes the waitpoint envelope from job result JSON.
@@ -450,7 +541,7 @@ func (p *Pipeline) resumeJobs(
 	if parentJobID != uuid.Nil {
 		if err := p.db.WithContext(jc.Ctx).
 			Model(&types.JobRun{}).
-			Where("id = ? AND status = ?", parentJobID, "waiting_user").
+			Where("id = ? AND status IN ?", parentJobID, []string{"waiting_user", "running", "queued"}).
 			Updates(map[string]interface{}{
 				"status":       "queued",
 				"stage":        "queued",

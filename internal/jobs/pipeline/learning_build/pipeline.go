@@ -20,50 +20,6 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
-var stageOrder = []string{
-	"web_resources_seed",
-	"ingest_chunks",
-	"file_signature_build",
-	// Ask clarifying questions early; downstream graph/planning uses intake context.
-	"path_intake",
-	"path_grouping_refine",
-	// Split into separate paths when intake confirms multiple groups.
-	"path_structure_dispatch",
-	"embed_chunks",
-	"material_set_summarize",
-	"user_profile_refresh",
-	"teaching_patterns_seed",
-	"concept_graph_build",
-	"material_signal_build",
-	// Post-concept structure refinement across sibling subpaths (best-effort, non-destructive).
-	"path_structure_refine",
-	"material_kg_build",
-	"concept_cluster_build",
-	"chain_signature_build",
-	"path_plan_build",
-	"path_cover_render",
-	"node_figures_plan_build",
-	"node_figures_render",
-	"node_videos_plan_build",
-	"node_videos_render",
-	"node_doc_build",
-	"realize_activities",
-	"coverage_coherence_audit",
-	"progression_compact",
-	"variant_stats_refresh",
-	"priors_refresh",
-	"completed_unit_refresh",
-}
-
-var dispatchStageOrder = []string{
-	"web_resources_seed",
-	"ingest_chunks",
-	"file_signature_build",
-	"path_intake",
-	"path_grouping_refine",
-	"path_structure_dispatch",
-}
-
 func (p *Pipeline) Run(jc *jobrt.Context) error {
 	if jc == nil || jc.Job == nil {
 		return nil
@@ -236,11 +192,15 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 	if threadID != uuid.Nil {
 		finalResult["thread_id"] = threadID.String()
 	}
-	order := stageOrder
+	order := pipelineStageOrder(p.log)
 	if p.shouldStopAfterDispatch(jc.Ctx, pathID) {
-		order = dispatchStageOrder
+		order = pipelineDispatchOrder(p.log)
 	}
-	stages := buildChildStagesForNames(order, setID, sagaID, pathID, threadID)
+	specs := map[string]yamlStageSpec{}
+	if rt := currentPipelineRuntime(p.log); rt != nil {
+		specs = rt.Stages
+	}
+	stages := buildChildStagesForNames(order, setID, sagaID, pathID, threadID, specs)
 	return engine.Run(jc, stages, finalResult, init)
 }
 
@@ -319,8 +279,9 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		Bootstrap: p.bootstrap,
 	})
 
-	total := len(stageOrder)
-	for i, stageName := range stageOrder {
+	order := pipelineStageOrder(p.log)
+	total := len(order)
+	for i, stageName := range order {
 		if p.isCanceled(jc) {
 			return nil
 		}
@@ -381,6 +342,15 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 				JobID:       jc.Job.ID,
 				WaitForUser: false,
 			})
+		case "path_intake_waitpoint":
+			// Inline mode is non-interactive; skip waitpoints.
+			stageErr = nil
+		case "path_grouping_refine":
+			// Inline mode skips interactive grouping refinement.
+			stageErr = nil
+		case "path_grouping_refine_waitpoint":
+			// Inline mode is non-interactive; skip waitpoints.
+			stageErr = nil
 		case "path_structure_dispatch":
 			// Inline mode is a dev-only execution path. The production dispatch logic runs in child mode.
 			// Treat as a no-op so inline builds remain functional.

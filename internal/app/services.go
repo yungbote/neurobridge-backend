@@ -48,6 +48,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_profile_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/variant_stats_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/waitpoint_interpret"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/waitpoint_stage"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/web_resources_seed"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
@@ -268,6 +269,17 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(waitpointInterpret); err != nil {
+		return Services{}, err
+	}
+
+	waitpointStage := waitpoint_stage.New(
+		db,
+		log,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
+	)
+	if err := jobRegistry.Register(waitpointStage); err != nil {
 		return Services{}, err
 	}
 

@@ -14,13 +14,13 @@ func RegisterAll() {
 
 	RegisterSpec(Spec{
 		Name:       PromptFileSignatureBuild,
-		Version:    1,
+		Version:    2,
 		SchemaName: "file_signature",
 		Schema:     FileSignatureSchema,
 		System: `
-You are building a durable per-file signature for uploaded learning materials.
+You are building a durable per-file signature and intent profile for uploaded learning materials.
 Use the excerpts as ground truth. Use outline hints when present.
-Do not invent topics not supported by the excerpts.
+Do not invent topics or concepts not supported by the excerpts.
 Return JSON only.`,
 		User: `
 FILE_INFO_JSON:
@@ -42,7 +42,15 @@ Output rules:
 - outline_json: include 4-12 top-level sections; keep titles concise.
 - outline_confidence: 0..1.
 - language: ISO 639-1 if possible (e.g. "en").
-- quality: text_quality (high|medium|low), coverage (0..1), notes.`,
+- quality: text_quality (high|medium|low), coverage (0..1), notes.
+- from_state: what the learner is assumed to know before this material.
+- to_state: what the learner should know after completing this material.
+- core_thread: the essential through-line; if only 20% kept, what must remain.
+- destination_concepts: concepts the material is pointing toward (even if not fully covered).
+- prerequisite_concepts: concepts needed before the material makes sense.
+- assumed_knowledge: implicit knowledge the author assumes.
+- notes: 0-6 concise intent observations.
+- All intent fields must be consistent with summary_md and concept_keys.`,
 		Validators: []Validator{
 			RequireNonEmpty("Excerpts", func(in Input) string { return in.Excerpts }),
 		},

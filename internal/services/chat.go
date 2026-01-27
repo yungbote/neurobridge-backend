@@ -266,6 +266,7 @@ func (s *chatService) ListPendingIntakeQuestions(dbc dbctx.Context, limit int) (
 	// Pending questions: intake question message whose linked path_intake job is still waiting_user.
 	//
 	// We join on metadata->>'job_id' (written by path_intake) so we don't surface stale intake prompts from completed builds.
+	waitingJobTypes := []string{"path_intake", "path_grouping_refine", "waitpoint_stage"}
 	questions := []*types.ChatMessage{}
 	if err := transaction.WithContext(dbc.Ctx).
 		Table("chat_message AS m").
@@ -273,7 +274,7 @@ func (s *chatService) ListPendingIntakeQuestions(dbc dbctx.Context, limit int) (
 		Joins("JOIN job_run AS j ON j.id::text = m.metadata->>'job_id'").
 		Where("m.user_id = ? AND m.deleted_at IS NULL", rd.UserID).
 		Where("m.metadata->>'kind' = ?", "path_intake_questions").
-		Where("j.owner_user_id = ? AND j.job_type = ? AND j.status = ?", rd.UserID, "path_intake", "waiting_user").
+		Where("j.owner_user_id = ? AND j.job_type IN ? AND j.status = ?", rd.UserID, waitingJobTypes, "waiting_user").
 		Order("m.created_at DESC").
 		Limit(limit).
 		Find(&questions).Error; err != nil {
@@ -502,9 +503,13 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		if th.JobID != nil && *th.JobID != uuid.Nil && s.jobRuns != nil {
 			if rows, err := s.jobRuns.GetByIDs(inner, []uuid.UUID{*th.JobID}); err == nil && len(rows) > 0 && rows[0] != nil {
 				buildJob := rows[0]
+				buildIsPaused := strings.EqualFold(strings.TrimSpace(buildJob.Status), "waiting_user")
+				if !buildIsPaused {
+					buildIsPaused = s.hasPausedWaitpointChild(inner, buildJob)
+				}
 				if buildJob.OwnerUserID == rd.UserID &&
 					strings.EqualFold(strings.TrimSpace(buildJob.JobType), "learning_build") &&
-					strings.EqualFold(strings.TrimSpace(buildJob.Status), "waiting_user") {
+					buildIsPaused {
 					// Thread has a paused build - route through waitpoint_interpret.
 					seqUser := th.NextSeq + 1
 					userMsg = &types.ChatMessage{
@@ -753,7 +758,6 @@ func parsePathStructureCommand(content string) (pathStructureCommand, bool) {
 	return pathStructureCommand{}, false
 }
 
-
 func (s *chatService) RebuildThread(dbc dbctx.Context, threadID uuid.UUID) (*types.JobRun, error) {
 	rd := ctxutil.GetRequestData(dbc.Ctx)
 	if rd == nil || rd.UserID == uuid.Nil {
@@ -950,4 +954,82 @@ func (s *chatService) GetTurn(dbc dbctx.Context, turnID uuid.UUID) (*types.ChatT
 	}
 	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
 	return s.turns.GetByID(repoCtx, rd.UserID, turnID)
+}
+
+type orchestratorStateProbe struct {
+	Stages map[string]orchestratorStageProbe `json:"stages,omitempty"`
+}
+
+type orchestratorStageProbe struct {
+	ChildJobID   string `json:"child_job_id,omitempty"`
+	ChildJobType string `json:"child_job_type,omitempty"`
+}
+
+func (s *chatService) hasPausedWaitpointChild(dbc dbctx.Context, build *types.JobRun) bool {
+	if s == nil || s.jobRuns == nil || build == nil || build.ID == uuid.Nil {
+		return false
+	}
+	candidates := waitpointChildCandidates(build.Result)
+	if len(candidates) == 0 {
+		return false
+	}
+	ids := make([]uuid.UUID, 0, len(candidates))
+	for id := range candidates {
+		if id != uuid.Nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	rows, err := s.jobRuns.GetByIDs(dbc, ids)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row == nil || row.ID == uuid.Nil {
+			continue
+		}
+		if row.OwnerUserID != build.OwnerUserID {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(row.Status), "waiting_user") {
+			return true
+		}
+	}
+	return false
+}
+
+func waitpointChildCandidates(raw datatypes.JSON) map[uuid.UUID]string {
+	out := map[uuid.UUID]string{}
+	if len(raw) == 0 {
+		return out
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return out
+	}
+	var probe orchestratorStateProbe
+	if err := json.Unmarshal(raw, &probe); err != nil || probe.Stages == nil {
+		return out
+	}
+	for stageName, ss := range probe.Stages {
+		if !isWaitpointStageName(stageName, ss) {
+			continue
+		}
+		id, err := uuid.Parse(strings.TrimSpace(ss.ChildJobID))
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		out[id] = stageName
+	}
+	return out
+}
+
+func isWaitpointStageName(stageName string, ss orchestratorStageProbe) bool {
+	name := strings.ToLower(strings.TrimSpace(stageName))
+	if strings.HasSuffix(name, "_waitpoint") || strings.Contains(name, "waitpoint") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(ss.ChildJobType), "waitpoint_stage")
 }
