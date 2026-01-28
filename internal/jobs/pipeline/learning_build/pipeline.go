@@ -329,7 +329,21 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.UserProfileRefresh(jc.Ctx, learningmod.UserProfileRefreshInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "teaching_patterns_seed":
 			_, stageErr = uc.TeachingPatternsSeed(jc.Ctx, learningmod.TeachingPatternsSeedInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "path_intake_pre":
+			_, stageErr = uc.PathIntake(jc.Ctx, learningmod.PathIntakeInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				PathID:        pathID,
+				ThreadID: func() uuid.UUID {
+					tid, _ := jc.PayloadUUID("thread_id")
+					return tid
+				}(),
+				JobID:       jc.Job.ID,
+				WaitForUser: false,
+			})
 		case "path_intake":
+			// Backward compatibility for older stage graphs.
 			_, stageErr = uc.PathIntake(jc.Ctx, learningmod.PathIntakeInput{
 				OwnerUserID:   jc.Job.OwnerUserID,
 				MaterialSetID: setID,
@@ -345,8 +359,11 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		case "path_intake_waitpoint":
 			// Inline mode is non-interactive; skip waitpoints.
 			stageErr = nil
-		case "path_grouping_refine":
+		case "path_grouping_refine_pre":
 			// Inline mode skips interactive grouping refinement.
+			stageErr = nil
+		case "path_grouping_refine":
+			// Backward compatibility for older stage graphs.
 			stageErr = nil
 		case "path_grouping_refine_waitpoint":
 			// Inline mode is non-interactive; skip waitpoints.
@@ -379,6 +396,14 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_doc_build":
 			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "node_doc_media_patch":
+			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				PathID:        pathID,
+				MediaPatch:    true,
+			})
 		case "realize_activities":
 			_, stageErr = uc.NodeContentBuild(jc.Ctx, learningmod.NodeContentBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, PathID: pathID})
 			if stageErr == nil {

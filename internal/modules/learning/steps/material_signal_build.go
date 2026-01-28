@@ -207,10 +207,12 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 				}
 				if !force {
 					if existing := existingIntents[f.ID]; existing != nil {
-						intentsMu.Lock()
-						intentByFile[f.ID] = existing
-						intentsMu.Unlock()
-						continue
+						if !intentNeedsRebuild(existing) {
+							intentsMu.Lock()
+							intentByFile[f.ID] = existing
+							intentsMu.Unlock()
+							continue
+						}
 					}
 				}
 				intent, err := buildMaterialIntent(ctx, deps, f, sigByFile[f.ID], chunksByFile[f.ID], settings)
@@ -587,6 +589,45 @@ func fallbackMaterialIntent(f *types.MaterialFile, sig *types.MaterialFileSignat
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
+}
+
+func intentNeedsRebuild(intent *types.MaterialIntent) bool {
+	if intent == nil {
+		return true
+	}
+	if intentHasFallbackNote(intent.Metadata) {
+		return true
+	}
+	if strings.TrimSpace(intent.CoreThread) != "" {
+		return false
+	}
+	if len(jsonListFromRaw(intent.DestinationConcepts)) > 0 {
+		return false
+	}
+	if len(jsonListFromRaw(intent.PrerequisiteConcepts)) > 0 {
+		return false
+	}
+	if len(jsonListFromRaw(intent.AssumedKnowledge)) > 0 {
+		return false
+	}
+	return true
+}
+
+func intentHasFallbackNote(meta datatypes.JSON) bool {
+	if len(meta) == 0 || strings.TrimSpace(string(meta)) == "" || strings.TrimSpace(string(meta)) == "null" {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(meta, &payload); err != nil {
+		return false
+	}
+	notes := dedupeStrings(stringSliceFromAny(payload["notes"]))
+	for _, n := range notes {
+		if strings.EqualFold(strings.TrimSpace(n), "fallback_intent") {
+			return true
+		}
+	}
+	return false
 }
 
 func buildChunkSignals(ctx context.Context, deps MaterialSignalBuildDeps, intent *types.MaterialIntent, batch []chunkSignalInput, settings materialSignalSettings) ([]*types.MaterialChunkSignal, map[uuid.UUID]map[string]any) {

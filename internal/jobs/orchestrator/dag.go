@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,7 +67,10 @@ func (e *DAGEngine) Run(ctx *jobrt.Context, stages []Stage, finalResult map[stri
 	stageByName := map[string]Stage{}
 	for _, s := range stages {
 		stageByName[s.Name] = s
-		st.EnsureStage(s.Name, effectiveMode(s))
+		ss := st.EnsureStage(s.Name, effectiveMode(s))
+		if ss != nil && len(ss.Deps) == 0 && len(s.Deps) > 0 {
+			ss.Deps = append([]string(nil), s.Deps...)
+		}
 	}
 
 	if e.waitGate(ctx, st, stages) {
@@ -664,6 +668,7 @@ func saveStateWithEncoder(ctx *jobrt.Context, st *OrchestratorState, encoder fun
 	if ctx == nil || ctx.Job == nil || st == nil {
 		return nil
 	}
+	annotatePipelineMetrics(st)
 	res := EncodeState(st)
 	if encoder != nil {
 		res = encoder(st)
@@ -687,6 +692,216 @@ func earliestTime(a, b *time.Time) *time.Time {
 		return b
 	}
 	return a
+}
+
+func annotatePipelineMetrics(st *OrchestratorState) {
+	if st == nil {
+		return
+	}
+	st.ensure()
+	now := time.Now().UTC()
+	stageMetrics := map[string]any{}
+	for name, ss := range st.Stages {
+		if ss == nil {
+			continue
+		}
+		deps := append([]string(nil), ss.Deps...)
+		sort.Strings(deps)
+		unmet := unmetDepsForStage(ss, st)
+		stageMetrics[name] = map[string]any{
+			"status":           ss.Status,
+			"deps":             deps,
+			"unmet_deps":       unmet,
+			"blocked_by":       blockedByForStage(ss, unmet, now),
+			"duration_ms":      durationMsForStage(ss, now),
+			"attempts":         ss.Attempts,
+			"child_job_id":     strings.TrimSpace(ss.ChildJobID),
+			"child_job_type":   strings.TrimSpace(ss.ChildJobType),
+			"child_job_status": strings.TrimSpace(ss.ChildJobStatus),
+			"started_at":       ss.StartedAt,
+			"finished_at":      ss.FinishedAt,
+			"next_run_at":      ss.NextRunAt,
+		}
+	}
+	cp, cpMs := criticalPathFromState(st, now)
+	st.Meta["pipeline_metrics"] = map[string]any{
+		"computed_at":      now,
+		"critical_path":    cp,
+		"critical_path_ms": cpMs,
+		"stage_metrics":    stageMetrics,
+	}
+}
+
+func unmetDepsForStage(ss *StageState, st *OrchestratorState) []string {
+	if ss == nil || st == nil || len(ss.Deps) == 0 {
+		return nil
+	}
+	unmet := make([]string, 0, len(ss.Deps))
+	for _, dep := range ss.Deps {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		ds := st.Stages[dep]
+		if ds == nil {
+			unmet = append(unmet, dep)
+			continue
+		}
+		if ds.Status != StageSucceeded && ds.Status != StageSkipped {
+			unmet = append(unmet, dep)
+		}
+	}
+	sort.Strings(unmet)
+	return unmet
+}
+
+func blockedByForStage(ss *StageState, unmet []string, now time.Time) string {
+	if ss == nil {
+		return ""
+	}
+	switch ss.Status {
+	case StageSucceeded, StageSkipped, StageFailed:
+		return ""
+	}
+	if ss.NextRunAt != nil && now.Before(*ss.NextRunAt) {
+		return "retry_backoff"
+	}
+	if len(unmet) > 0 {
+		return "deps"
+	}
+	if ss.Status == StageWaitingChild {
+		if strings.EqualFold(strings.TrimSpace(ss.ChildJobStatus), "waiting_user") {
+			return "waiting_user"
+		}
+		if s := strings.TrimSpace(ss.ChildJobStatus); s != "" {
+			return "child_" + strings.ToLower(s)
+		}
+		return "waiting_child"
+	}
+	if ss.Status == StageRunning {
+		return "running"
+	}
+	return ""
+}
+
+func durationMsForStage(ss *StageState, now time.Time) int64 {
+	if ss == nil || ss.StartedAt == nil {
+		return 0
+	}
+	end := now
+	if ss.FinishedAt != nil && ss.FinishedAt.After(*ss.StartedAt) {
+		end = *ss.FinishedAt
+	}
+	if end.Before(*ss.StartedAt) {
+		return 0
+	}
+	return end.Sub(*ss.StartedAt).Milliseconds()
+}
+
+func criticalPathFromState(st *OrchestratorState, now time.Time) ([]string, int64) {
+	if st == nil || len(st.Stages) == 0 {
+		return nil, 0
+	}
+	names := make([]string, 0, len(st.Stages))
+	for name := range st.Stages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	indeg := map[string]int{}
+	out := map[string][]string{}
+	for _, name := range names {
+		indeg[name] = 0
+	}
+	for _, name := range names {
+		ss := st.Stages[name]
+		if ss == nil {
+			continue
+		}
+		for _, dep := range ss.Deps {
+			dep = strings.TrimSpace(dep)
+			if dep == "" {
+				continue
+			}
+			if _, ok := indeg[dep]; !ok {
+				continue
+			}
+			indeg[name]++
+			out[dep] = append(out[dep], name)
+		}
+	}
+	queue := make([]string, 0, len(names))
+	for _, name := range names {
+		if indeg[name] == 0 {
+			queue = append(queue, name)
+		}
+	}
+	topo := make([]string, 0, len(names))
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		topo = append(topo, name)
+		next := out[name]
+		sort.Strings(next)
+		for _, n := range next {
+			indeg[n]--
+			if indeg[n] == 0 {
+				queue = append(queue, n)
+			}
+		}
+		sort.Strings(queue)
+	}
+	if len(topo) != len(names) {
+		topo = names
+	}
+	duration := map[string]float64{}
+	for _, name := range names {
+		duration[name] = float64(durationMsForStage(st.Stages[name], now))
+	}
+	dist := map[string]float64{}
+	prev := map[string]string{}
+	for _, name := range topo {
+		ss := st.Stages[name]
+		bestDep := ""
+		bestDist := 0.0
+		if ss != nil {
+			for _, dep := range ss.Deps {
+				dep = strings.TrimSpace(dep)
+				if dep == "" {
+					continue
+				}
+				if d := dist[dep]; d > bestDist {
+					bestDist = d
+					bestDep = dep
+				}
+			}
+		}
+		dist[name] = bestDist + duration[name]
+		if bestDep != "" {
+			prev[name] = bestDep
+		}
+	}
+	end := ""
+	maxDist := -1.0
+	for _, name := range topo {
+		if dist[name] > maxDist {
+			maxDist = dist[name]
+			end = name
+		}
+	}
+	if end == "" || maxDist <= 0 {
+		return nil, 0
+	}
+	path := make([]string, 0, len(topo))
+	for cur := end; cur != ""; cur = prev[cur] {
+		path = append(path, cur)
+		if _, ok := prev[cur]; !ok {
+			break
+		}
+	}
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	return path, int64(maxDist)
 }
 
 // Ensure the compiler doesn't drop unused imports when building helper types.

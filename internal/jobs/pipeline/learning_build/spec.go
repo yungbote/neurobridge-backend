@@ -23,14 +23,18 @@ var learningBuildSpecFS embed.FS
 var fallbackStageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
-	"file_signature_build",
-	"path_intake",
-	"path_grouping_refine",
-	"path_structure_dispatch",
-	"embed_chunks",
 	"material_set_summarize",
+	"file_signature_build",
+	"path_intake_pre",
 	"user_profile_refresh",
 	"teaching_patterns_seed",
+	"progression_compact",
+	"variant_stats_refresh",
+	"path_intake_waitpoint",
+	"path_grouping_refine_pre",
+	"path_grouping_refine_waitpoint",
+	"path_structure_dispatch",
+	"embed_chunks",
 	"concept_graph_build",
 	"material_signal_build",
 	"path_structure_refine",
@@ -44,10 +48,9 @@ var fallbackStageOrder = []string{
 	"node_videos_plan_build",
 	"node_videos_render",
 	"node_doc_build",
+	"node_doc_media_patch",
 	"realize_activities",
 	"coverage_coherence_audit",
-	"progression_compact",
-	"variant_stats_refresh",
 	"priors_refresh",
 	"completed_unit_refresh",
 }
@@ -55,22 +58,27 @@ var fallbackStageOrder = []string{
 var fallbackDispatchStageOrder = []string{
 	"web_resources_seed",
 	"ingest_chunks",
+	"material_set_summarize",
 	"file_signature_build",
-	"path_intake",
-	"path_grouping_refine",
+	"path_intake_pre",
+	"path_intake_waitpoint",
+	"path_grouping_refine_pre",
+	"path_grouping_refine_waitpoint",
 	"path_structure_dispatch",
 }
 
 var fallbackStageDeps = map[string][]string{
-	"ingest_chunks":        {"web_resources_seed"},
-	"file_signature_build": {"ingest_chunks"},
-
-	"embed_chunks":           {"path_structure_dispatch"},
+	"ingest_chunks":          {"web_resources_seed"},
+	"file_signature_build":   {"ingest_chunks"},
 	"material_set_summarize": {"ingest_chunks"},
-	"path_intake":            {"file_signature_build"},
 
-	"path_grouping_refine":    {"path_intake"},
-	"path_structure_dispatch": {"path_grouping_refine"},
+	"embed_chunks":          {"path_structure_dispatch"},
+	"path_intake_pre":       {"file_signature_build"},
+	"path_intake_waitpoint": {"path_intake_pre"},
+
+	"path_grouping_refine_pre":       {"path_intake_waitpoint"},
+	"path_grouping_refine_waitpoint": {"path_grouping_refine_pre"},
+	"path_structure_dispatch":        {"path_grouping_refine_waitpoint"},
 
 	"concept_graph_build":   {"path_structure_dispatch"},
 	"material_signal_build": {"concept_graph_build"},
@@ -79,10 +87,12 @@ var fallbackStageDeps = map[string][]string{
 	"concept_cluster_build": {"concept_graph_build"},
 	"chain_signature_build": {"concept_cluster_build"},
 
-	"user_profile_refresh":   {"path_intake"},
+	"user_profile_refresh":   {"path_intake_pre"},
 	"teaching_patterns_seed": {"user_profile_refresh"},
+	"progression_compact":    {"user_profile_refresh"},
+	"variant_stats_refresh":  {"user_profile_refresh"},
 
-	"path_plan_build":   {"concept_graph_build", "material_signal_build", "material_set_summarize", "user_profile_refresh", "path_intake"},
+	"path_plan_build":   {"concept_graph_build", "material_signal_build", "material_set_summarize", "user_profile_refresh", "path_intake_pre"},
 	"path_cover_render": {"path_plan_build"},
 
 	"node_figures_plan_build": {"path_plan_build", "embed_chunks", "material_kg_build"},
@@ -90,12 +100,11 @@ var fallbackStageDeps = map[string][]string{
 	"node_videos_plan_build":  {"path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_videos_render":      {"node_videos_plan_build"},
 
-	"node_doc_build": {"path_plan_build", "embed_chunks", "node_figures_render", "node_videos_render", "material_kg_build"},
+	"node_doc_build":       {"path_plan_build", "embed_chunks", "material_kg_build"},
+	"node_doc_media_patch": {"node_doc_build", "node_figures_render", "node_videos_render", "material_kg_build"},
 
 	"realize_activities":       {"path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_build", "material_kg_build"},
 	"coverage_coherence_audit": {"realize_activities"},
-	"progression_compact":      {"user_profile_refresh"},
-	"variant_stats_refresh":    {"user_profile_refresh"},
 	"priors_refresh":           {"realize_activities", "variant_stats_refresh", "chain_signature_build"},
 	"completed_unit_refresh":   {"realize_activities", "progression_compact", "chain_signature_build"},
 }

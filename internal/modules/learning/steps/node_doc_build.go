@@ -102,6 +102,7 @@ type NodeDocBuildInput struct {
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
 	PathID        uuid.UUID
+	MediaPatch    bool
 }
 
 type NodeDocBuildOutput struct {
@@ -207,9 +208,11 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, err
 	}
 	hasDoc := map[uuid.UUID]bool{}
+	existingDocByNodeID := map[uuid.UUID]*types.LearningNodeDoc{}
 	for _, d := range existingDocs {
 		if d != nil && d.PathNodeID != uuid.Nil {
 			hasDoc[d.PathNodeID] = true
+			existingDocByNodeID[d.PathNodeID] = d
 		}
 	}
 
@@ -598,6 +601,8 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		pathNarrativePromptJSON = "(none)"
 	}
 
+	mediaPatchMode := in.MediaPatch
+
 	type nodeWork struct {
 		Node        *types.PathNode
 		NodeKind    string
@@ -606,6 +611,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		ConceptKeys []string
 		PrereqKeys  []string
 		ConceptCSV  string
+		ExistingDoc *types.LearningNodeDoc
 		// Prompt-friendly knowledge graph context for ConceptKeys (cross-path mastery transfer).
 		UserKnowledgeJSON    string
 		TeachingPatternsJSON string
@@ -617,9 +623,16 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		if info.Node == nil || info.Node.ID == uuid.Nil {
 			continue
 		}
-		if hasDoc[info.Node.ID] {
+		existing := existingDocByNodeID[info.Node.ID]
+		if existing != nil && !mediaPatchMode {
 			out.DocsExisting++
 			continue
+		}
+		if existing != nil && mediaPatchMode {
+			if len(figAssetsByNode[info.Node.ID]) == 0 && len(vidAssetsByNode[info.Node.ID]) == 0 {
+				out.DocsExisting++
+				continue
+			}
 		}
 		queryText := strings.TrimSpace(info.Node.Title + " " + info.Goal + " " + info.ConceptCSV)
 		work = append(work, nodeWork{
@@ -630,6 +643,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			ConceptKeys: info.ConceptKeys,
 			PrereqKeys:  info.PrereqKeys,
 			ConceptCSV:  info.ConceptCSV,
+			ExistingDoc: existing,
 			QueryText:   queryText,
 		})
 	}
@@ -1553,6 +1567,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				reqs.MinDiagrams = 0
 			}
 			hasGeneratedFigures := len(figAssetsByNode[w.Node.ID]) > 0
+			hasGeneratedVideos := len(vidAssetsByNode[w.Node.ID]) > 0
 			// Optional: if a video is available in the allowed assets list, suggest it (the model may include it if helpful).
 			videoAsset := firstVideoAssetFromAssetsJSON(assetsJSON)
 
@@ -1685,7 +1700,30 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	- Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
 	- Use markdown in md fields; do not include raw HTML.
 	- If using a figure/video URL, it MUST come from AVAILABLE_MEDIA_ASSETS_JSON.
-	%s`, diagramRuleLine, diagramPrefRule)
+		%s`, diagramRuleLine, diagramPrefRule)
+
+			var patchedDoc *content.NodeDocV1
+			if mediaPatchMode && w.ExistingDoc != nil && (hasGeneratedFigures || hasGeneratedVideos) {
+				if len(w.ExistingDoc.DocJSON) > 0 && string(w.ExistingDoc.DocJSON) != "null" {
+					var existing content.NodeDocV1
+					if err := json.Unmarshal(w.ExistingDoc.DocJSON, &existing); err == nil && len(existing.Blocks) > 0 {
+						doc := existing
+						if hasGeneratedFigures {
+							doc = ensureNodeDocHasGeneratedFigure(doc, figAssetsByNode[w.Node.ID], allowedChunkIDs, chunkIDs)
+						}
+						if hasGeneratedVideos {
+							doc = ensureNodeDocHasVideo(doc, videoAsset)
+						}
+						if deduped, hit := content.DedupNodeDocV1(doc); len(hit) > 0 {
+							doc = deduped
+						}
+						if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
+							doc = withIDs
+						}
+						patchedDoc = &doc
+					}
+				}
+			}
 
 			var lastErrors []string
 			for attempt := 1; attempt <= 3; attempt++ {
@@ -1892,57 +1930,103 @@ Return ONLY JSON matching schema.`,
 					generatedFigures,
 				) + feedback
 
-				obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
-				latency := int(time.Since(start).Milliseconds())
-
-				if genErr != nil {
-					// Misconfigured schema is a deterministic 400; retrying wastes time.
-					if strings.Contains(strings.ToLower(genErr.Error()), "invalid_json_schema") {
-						return fmt.Errorf("node_doc_build: openai schema rejected: %w", genErr)
-					}
-					lastErrors = []string{"generate_failed: " + genErr.Error()}
-					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
-							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
-						})
-					}
-					// Retry bounded attempts (OpenAI client already retries transient HTTP failures).
-					continue
-				}
-
-				var gen content.NodeDocGenV1
-				rawDoc, _ := json.Marshal(obj)
-				if uErr := json.Unmarshal(rawDoc, &gen); uErr != nil {
-					lastErrors = []string{"schema_unmarshal_failed"}
-					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
-							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
-						})
-					}
-					continue
-				}
-
+				latency := 0
+				doc := content.NodeDocV1{}
 				var orderRepairMetrics map[string]any
-				gen, orderRepairMetrics = content.RepairNodeDocGenOrder(gen)
-				if orderErrs, orderMetrics := content.NodeDocGenOrderIssues(gen); len(orderErrs) > 0 {
-					if orderRepairMetrics == nil {
-						orderRepairMetrics = map[string]any{}
+				patchedUsed := false
+				if patchedDoc != nil && attempt == 1 {
+					doc = *patchedDoc
+					latency = int(time.Since(start).Milliseconds())
+					patchedUsed = true
+					orderRepairMetrics = map[string]any{"media_patch": true}
+				} else {
+					obj, genErr := deps.AI.GenerateJSON(gctx, system, user, "node_doc_gen_v1", docSchema)
+					latency = int(time.Since(start).Milliseconds())
+
+					if genErr != nil {
+						// Misconfigured schema is a deterministic 400; retrying wastes time.
+						if strings.Contains(strings.ToLower(genErr.Error()), "invalid_json_schema") {
+							return fmt.Errorf("node_doc_build: openai schema rejected: %w", genErr)
+						}
+						lastErrors = []string{"generate_failed: " + genErr.Error()}
+						if deps.GenRuns != nil {
+							_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+								makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
+							})
+						}
+						// Retry bounded attempts (OpenAI client already retries transient HTTP failures).
+						continue
 					}
-					orderRepairMetrics["order_issues"] = orderMetrics
-					orderRepairMetrics["order_errors"] = orderErrs
+
+					var gen content.NodeDocGenV1
+					rawDoc, _ := json.Marshal(obj)
+					if uErr := json.Unmarshal(rawDoc, &gen); uErr != nil {
+						lastErrors = []string{"schema_unmarshal_failed"}
+						if deps.GenRuns != nil {
+							_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+								makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
+							})
+						}
+						continue
+					}
+
+					gen, orderRepairMetrics = content.RepairNodeDocGenOrder(gen)
+					if orderErrs, orderMetrics := content.NodeDocGenOrderIssues(gen); len(orderErrs) > 0 {
+						if orderRepairMetrics == nil {
+							orderRepairMetrics = map[string]any{}
+						}
+						orderRepairMetrics["order_issues"] = orderMetrics
+						orderRepairMetrics["order_errors"] = orderErrs
+					}
+
+					if outlineErrs := outlineHeadingOrderErrors(gen, outline); len(outlineErrs) > 0 {
+						lastErrors = append([]string{"outline_mismatch"}, outlineErrs...)
+						if deps.GenRuns != nil {
+							_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+								makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
+							})
+						}
+						continue
+					}
+
+					if len(gen.ConceptKeys) == 0 {
+						fallback := dedupeStrings(w.ConceptKeys)
+						if len(fallback) == 0 {
+							for _, sec := range outline.Sections {
+								fallback = append(fallback, sec.ConceptKeys...)
+							}
+							fallback = dedupeStrings(fallback)
+						}
+						if len(fallback) == 0 {
+							fallback = dedupeStrings(w.PrereqKeys)
+						}
+						if len(fallback) == 0 && strings.TrimSpace(w.ConceptCSV) != "" {
+							fallback = dedupeStrings(strings.Split(w.ConceptCSV, ","))
+						}
+						if len(fallback) == 0 {
+							title := strings.TrimSpace(w.Node.Title)
+							if title == "" {
+								title = "general"
+							}
+							fallback = []string{title}
+						}
+						gen.ConceptKeys = fallback
+					}
+
+					var convErrs []string
+					doc, convErrs = content.ConvertNodeDocGenV1ToV1(gen)
+					if len(convErrs) > 0 {
+						lastErrors = append([]string{"convert_failed"}, convErrs...)
+						if deps.GenRuns != nil {
+							_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
+								makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
+							})
+						}
+						continue
+					}
 				}
 
-				if outlineErrs := outlineHeadingOrderErrors(gen, outline); len(outlineErrs) > 0 {
-					lastErrors = append([]string{"outline_mismatch"}, outlineErrs...)
-					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
-							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
-						})
-					}
-					continue
-				}
-
-				if len(gen.ConceptKeys) == 0 {
+				if len(doc.ConceptKeys) == 0 {
 					fallback := dedupeStrings(w.ConceptKeys)
 					if len(fallback) == 0 {
 						for _, sec := range outline.Sections {
@@ -1963,18 +2047,7 @@ Return ONLY JSON matching schema.`,
 						}
 						fallback = []string{title}
 					}
-					gen.ConceptKeys = fallback
-				}
-
-				doc, convErrs := content.ConvertNodeDocGenV1ToV1(gen)
-				if len(convErrs) > 0 {
-					lastErrors = append([]string{"convert_failed"}, convErrs...)
-					if deps.GenRuns != nil {
-						_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
-							makeGenRun("node_doc", nil, in.OwnerUserID, pathID, w.Node.ID, "failed", nodeDocPromptVersion, attempt, latency, lastErrors, nil),
-						})
-					}
-					continue
+					doc.ConceptKeys = fallback
 				}
 
 				// Best-effort pruning of onboarding/meta blocks that should never appear in static docs.
@@ -2035,21 +2108,19 @@ Return ONLY JSON matching schema.`,
 					}
 				}
 
-				if len(availableAssets) > 0 {
-					mediaUsedMu.Lock()
-					doc, mediaStats := dedupeNodeDocMedia(doc, availableAssets, mediaUsed)
-					for _, url := range nodeDocMediaURLs(doc) {
-						if url != "" {
-							mediaUsed[url] = true
-						}
+				mediaUsedMu.Lock()
+				doc, mediaStats := dedupeNodeDocMedia(doc, availableAssets, mediaUsed)
+				for _, url := range nodeDocMediaURLs(doc) {
+					if url != "" {
+						mediaUsed[url] = true
 					}
-					mediaUsedMu.Unlock()
-					if len(mediaStats) > 0 {
-						if orderRepairMetrics == nil {
-							orderRepairMetrics = map[string]any{}
-						}
-						orderRepairMetrics["media_dedupe"] = mediaStats
+				}
+				mediaUsedMu.Unlock()
+				if len(mediaStats) > 0 {
+					if orderRepairMetrics == nil {
+						orderRepairMetrics = map[string]any{}
 					}
+					orderRepairMetrics["media_dedupe"] = mediaStats
 				}
 
 				if patched, changed := sanitizeNodeDocDiagrams(doc); changed {
@@ -2086,6 +2157,9 @@ Return ONLY JSON matching schema.`,
 				}
 
 				errs, metrics := content.ValidateNodeDocV1(doc, allowedChunkIDs, reqs)
+				if patchedUsed && metrics != nil {
+					metrics["media_patch"] = true
+				}
 				if len(polishStats) > 0 {
 					metrics["meta_polish"] = polishStats
 				}
@@ -2141,8 +2215,8 @@ Return ONLY JSON matching schema.`,
 				}
 
 				// Persist the scrubbed-and-validated doc (not the raw model output bytes).
-				rawDoc, _ = json.Marshal(doc)
-				canon, cErr := content.CanonicalizeJSON(rawDoc)
+				rawDocBytes, _ := json.Marshal(doc)
+				canon, cErr := content.CanonicalizeJSON(rawDocBytes)
 				if cErr != nil {
 					return cErr
 				}

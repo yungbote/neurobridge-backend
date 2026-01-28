@@ -2,6 +2,7 @@ package node_doc_build
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -20,6 +21,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 	sagaID, _ := jc.PayloadUUID("saga_id")
 	pathID, _ := jc.PayloadUUID("path_id")
+	stageCfg := stageConfig(jc.Payload())
+	mediaPatch := false
+	if stageCfg != nil {
+		mediaPatch = boolFromAny(stageCfg["media_patch"])
+	}
 
 	jc.Progress("docs", 2, "Writing unit docs")
 	out, err := learningmod.New(learningmod.UsecasesDeps{
@@ -46,6 +52,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		MaterialSetID: setID,
 		SagaID:        sagaID,
 		PathID:        pathID,
+		MediaPatch:    mediaPatch,
 	})
 	if err != nil {
 		jc.Fail("docs", err)
@@ -60,4 +67,31 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"docs_existing":   out.DocsExisting,
 	})
 	return nil
+}
+
+func stageConfig(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	raw, ok := payload["stage_config"]
+	if !ok || raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func boolFromAny(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		return s == "true" || s == "1" || s == "yes" || s == "y"
+	default:
+		s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
+		return s == "true" || s == "1" || s == "yes" || s == "y"
+	}
 }

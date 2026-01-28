@@ -52,15 +52,16 @@ type PathIntakeInput struct {
 }
 
 type PathIntakeOutput struct {
-	PathID            uuid.UUID      `json:"path_id"`
-	ThreadID          uuid.UUID      `json:"thread_id"`
-	Status            string         `json:"status"` // "succeeded" | "waiting_user" | "needs_confirmation"
-	Intake            map[string]any `json:"intake,omitempty"`
-	Meta              map[string]any `json:"meta,omitempty"`
-	Prompt            string         `json:"prompt,omitempty"`
-	Workflow          any            `json:"workflow,omitempty"`
-	NeedsConfirmation bool           `json:"needs_confirmation,omitempty"`
-	Now               string         `json:"now,omitempty"`
+	PathID            uuid.UUID        `json:"path_id"`
+	ThreadID          uuid.UUID        `json:"thread_id"`
+	Status            string           `json:"status"` // "succeeded" | "waiting_user" | "needs_confirmation"
+	Intake            map[string]any   `json:"intake,omitempty"`
+	Files             []map[string]any `json:"files,omitempty"`
+	Meta              map[string]any   `json:"meta,omitempty"`
+	Prompt            string           `json:"prompt,omitempty"`
+	Workflow          any              `json:"workflow,omitempty"`
+	NeedsConfirmation bool             `json:"needs_confirmation,omitempty"`
+	Now               string           `json:"now,omitempty"`
 }
 
 func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (PathIntakeOutput, error) {

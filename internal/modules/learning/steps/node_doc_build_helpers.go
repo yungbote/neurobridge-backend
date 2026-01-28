@@ -110,6 +110,19 @@ func nodeDocMediaURLs(doc content.NodeDocV1) []string {
 	return out
 }
 
+func docHasBlockType(doc content.NodeDocV1, blockType string) bool {
+	blockType = strings.ToLower(strings.TrimSpace(blockType))
+	if blockType == "" || len(doc.Blocks) == 0 {
+		return false
+	}
+	for _, b := range doc.Blocks {
+		if strings.EqualFold(strings.TrimSpace(stringFromAny(b["type"])), blockType) {
+			return true
+		}
+	}
+	return false
+}
+
 func mediaURLsFromNodeDocJSON(docJSON []byte) []string {
 	if len(docJSON) == 0 {
 		return nil

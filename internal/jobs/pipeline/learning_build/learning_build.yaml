@@ -6,9 +6,12 @@ stages:
     depends_on: []
   - name: ingest_chunks
     depends_on: [web_resources_seed]
+  - name: material_set_summarize
+    depends_on: [ingest_chunks]
   - name: file_signature_build
     depends_on: [ingest_chunks]
-  - name: path_intake
+  - name: path_intake_pre
+    job_type: path_intake
     depends_on: [file_signature_build]
     config:
       waitpoint:
@@ -39,8 +42,51 @@ stages:
             selection:
               commit_type: change
               paths_confirmed: false
-  - name: path_grouping_refine
-    depends_on: [path_intake]
+  - name: user_profile_refresh
+    depends_on: [path_intake_pre]
+  - name: teaching_patterns_seed
+    depends_on: [user_profile_refresh]
+  - name: progression_compact
+    depends_on: [user_profile_refresh]
+  - name: variant_stats_refresh
+    depends_on: [user_profile_refresh]
+  - name: path_intake_waitpoint
+    type: waitpoint
+    depends_on: [path_intake_pre]
+    config:
+      message_kind: path_intake_questions
+      waitpoint:
+        kind: path_intake.structure_v1
+        step: path_intake
+        actions:
+          - id: confirm
+            label: Confirm
+            token: confirm
+            variant: primary
+          - id: regroup
+            label: Change grouping
+            token: change grouping
+            variant: secondary
+        intents:
+          - id: confirm
+            label: Confirm grouping
+            description: Proceed with the proposed grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll proceed with these paths and continue.
+            selection:
+              commit_type: confirm
+              paths_confirmed: true
+          - id: regroup
+            label: Regroup files
+            description: Change the grouping or move files between paths
+            action: confirm_resume
+            confirm_message: Got it — I'll regroup the files based on your notes and continue.
+            selection:
+              commit_type: change
+              paths_confirmed: false
+  - name: path_grouping_refine_pre
+    job_type: path_grouping_refine
+    depends_on: [path_intake_waitpoint]
     config:
       waitpoint:
         kind: path_grouping_refine.structure_v1
@@ -70,16 +116,44 @@ stages:
             selection:
               paths_refined: true
               paths_confirmed: true
+  - name: path_grouping_refine_waitpoint
+    type: waitpoint
+    depends_on: [path_grouping_refine_pre]
+    config:
+      message_kind: path_intake_questions
+      waitpoint:
+        kind: path_grouping_refine.structure_v1
+        step: path_grouping_refine
+        actions:
+          - id: keep_current
+            label: Keep current
+            token: keep current
+            variant: primary
+          - id: use_refined
+            label: Use refined
+            token: use refined
+            variant: secondary
+        intents:
+          - id: keep_current
+            label: Keep current grouping
+            description: Keep the current grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll keep the current grouping and continue.
+            selection:
+              paths_refined: false
+              paths_confirmed: true
+          - id: use_refined
+            label: Use refined grouping
+            description: Switch to the refined grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll use the refined grouping and continue.
+            selection:
+              paths_refined: true
+              paths_confirmed: true
   - name: path_structure_dispatch
-    depends_on: [path_grouping_refine]
+    depends_on: [path_grouping_refine_waitpoint]
   - name: embed_chunks
     depends_on: [path_structure_dispatch]
-  - name: material_set_summarize
-    depends_on: [ingest_chunks]
-  - name: user_profile_refresh
-    depends_on: [path_intake]
-  - name: teaching_patterns_seed
-    depends_on: [user_profile_refresh]
   - name: concept_graph_build
     depends_on: [path_structure_dispatch]
   - name: material_signal_build
@@ -93,7 +167,7 @@ stages:
   - name: chain_signature_build
     depends_on: [concept_cluster_build]
   - name: path_plan_build
-    depends_on: [concept_graph_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake]
+    depends_on: [concept_graph_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
   - name: path_cover_render
     depends_on: [path_plan_build]
   - name: node_figures_plan_build
@@ -105,15 +179,16 @@ stages:
   - name: node_videos_render
     depends_on: [node_videos_plan_build]
   - name: node_doc_build
-    depends_on: [path_plan_build, embed_chunks, node_figures_render, node_videos_render, material_kg_build]
+    depends_on: [path_plan_build, embed_chunks, material_kg_build]
+  - name: node_doc_media_patch
+    job_type: node_doc_build
+    depends_on: [node_doc_build, node_figures_render, node_videos_render, material_kg_build]
+    config:
+      media_patch: true
   - name: realize_activities
     depends_on: [path_plan_build, embed_chunks, user_profile_refresh, concept_graph_build, material_kg_build]
   - name: coverage_coherence_audit
     depends_on: [realize_activities]
-  - name: progression_compact
-    depends_on: [user_profile_refresh]
-  - name: variant_stats_refresh
-    depends_on: [user_profile_refresh]
   - name: priors_refresh
     depends_on: [realize_activities, variant_stats_refresh, chain_signature_build]
   - name: completed_unit_refresh
@@ -123,7 +198,10 @@ variants:
     stages:
       - web_resources_seed
       - ingest_chunks
+      - material_set_summarize
       - file_signature_build
-      - path_intake
-      - path_grouping_refine
+      - path_intake_pre
+      - path_intake_waitpoint
+      - path_grouping_refine_pre
+      - path_grouping_refine_waitpoint
       - path_structure_dispatch

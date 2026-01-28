@@ -592,25 +592,35 @@ func (p *Pipeline) applyPathIntakeSelection(
 	}
 
 	// Apply selection
+	now := time.Now().UTC()
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	lockKnown := false
+	lockValue := false
 	if commitType, ok := selection["commit_type"].(string); ok {
 		ct := strings.ToLower(strings.TrimSpace(commitType))
 		intake["paths_confirmation_type"] = ct
 		if ct == "confirm" {
 			intake["paths_confirmed"] = true
+			lockKnown = true
+			lockValue = true
 		} else if ct == "change" {
 			intake["paths_confirmed"] = false
+			lockKnown = true
+			lockValue = false
 		}
-		intake["paths_confirmed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+		intake["paths_confirmed_at"] = nowRFC3339
 	}
 	if confirmed, ok := selection["paths_confirmed"].(bool); ok {
 		intake["paths_confirmed"] = confirmed
-		intake["paths_confirmed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+		intake["paths_confirmed_at"] = nowRFC3339
+		lockKnown = true
+		lockValue = confirmed
 	}
 	if refined, ok := selection["paths_refined"].(bool); ok {
 		intake["paths_refined"] = refined
 		if refined {
 			if _, ok := selection["paths_refined_at"]; !ok {
-				intake["paths_refined_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+				intake["paths_refined_at"] = nowRFC3339
 			}
 		}
 	}
@@ -627,9 +637,16 @@ func (p *Pipeline) applyPathIntakeSelection(
 	}
 
 	intake["needs_clarification"] = false
+	if lockKnown {
+		intake["paths_confirmed_by_user"] = lockValue
+		meta["intake_confirmed_by_user"] = lockValue
+		if lockValue {
+			meta["intake_confirmed_at"] = nowRFC3339
+		}
+	}
 	meta["intake"] = intake
 	meta["intake_refine_pending"] = false
-	meta["intake_updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	meta["intake_updated_at"] = nowRFC3339
 
 	metaJSON, _ := json.Marshal(meta)
 	if err := p.path.UpdateFields(dbc, pathID, map[string]interface{}{
