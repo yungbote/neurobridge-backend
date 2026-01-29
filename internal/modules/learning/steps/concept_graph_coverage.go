@@ -57,6 +57,7 @@ type conceptCoverageInput struct {
 
 	InitialCoverage conceptCoverage
 	Concepts        []conceptInvItem
+	SeedTopics      []string
 
 	// Optional file allowlist from path intake.
 	MaterialFileFilter map[uuid.UUID]bool
@@ -302,7 +303,19 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 	}
 
 	missingTopics := in.InitialCoverage.MissingTopics
+	seedTopics := normalizeCoverageSeedTopics(in.SeedTopics, signals)
+	if len(seedTopics) > 0 {
+		result.AdaptiveParams["CONCEPT_GRAPH_COVERAGE_SEED_TOPICS"] = map[string]any{"actual": len(seedTopics)}
+		if len(missingTopics) == 0 || signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+			missingTopics = append(missingTopics, seedTopics...)
+		} else if len(missingTopics) < maxInt(6, maxTopics/2) {
+			missingTopics = append(missingTopics, seedTopics...)
+		}
+	}
+	missingTopics = dedupeStrings(missingTopics)
 	concepts := in.Concepts
+	stallRounds := 0
+	prevMissing := dedupeStrings(missingTopics)
 
 	batchSize := maxTopics
 	if batchSize <= 0 {
@@ -472,26 +485,32 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 				})
 				obj, err := deps.AI.GenerateJSON(tctx, p.System, p.User, p.SchemaName, p.Schema)
 				timer(err)
-				if err != nil && isContextLengthExceeded(err) && extraMaxTotal > 12000 {
-					maxTotal := maxInt(12000, extraMaxTotal/2)
-					shorter, _ := renderChunkExcerptsByIDsOrdered(in.ChunkByID, task.CandidateIDs, extraMaxChars, maxTotal)
-					if strings.TrimSpace(shorter) != "" {
-						p2, berr := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
-							PathIntentMD: in.IntentMD,
-							ConceptsJSON: conceptsJSON,
-							Excerpts:     shorter,
-						})
-						if berr == nil {
-							timer = llmTimer(deps.Log, "concept_inventory_delta", map[string]any{
-								"stage":         "concept_graph_build",
-								"path_id":       in.PathID.String(),
-								"round":         round,
-								"topic_count":   len(task.MissingTopics),
-								"excerpt_chars": len(shorter),
-								"retry":         "shorter",
+				if err != nil && isContextLengthExceeded(err) {
+					retryMax := extraMaxTotal
+					if retryMax <= 0 {
+						retryMax = 20000
+					}
+					if retryMax > 12000 {
+						maxTotal := maxInt(12000, retryMax/2)
+						shorter, _ := renderChunkExcerptsByIDsOrdered(in.ChunkByID, task.CandidateIDs, extraMaxChars, maxTotal)
+						if strings.TrimSpace(shorter) != "" {
+							p2, berr := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
+								PathIntentMD: in.IntentMD,
+								ConceptsJSON: conceptsJSON,
+								Excerpts:     shorter,
 							})
-							obj, err = deps.AI.GenerateJSON(tctx, p2.System, p2.User, p2.SchemaName, p2.Schema)
-							timer(err)
+							if berr == nil {
+								timer = llmTimer(deps.Log, "concept_inventory_delta", map[string]any{
+									"stage":         "concept_graph_build",
+									"path_id":       in.PathID.String(),
+									"round":         round,
+									"topic_count":   len(task.MissingTopics),
+									"excerpt_chars": len(shorter),
+									"retry":         "shorter",
+								})
+								obj, err = deps.AI.GenerateJSON(tctx, p2.System, p2.User, p2.SchemaName, p2.Schema)
+								timer(err)
+							}
 						}
 					}
 				}
@@ -550,9 +569,61 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 			deps.Log.Info("concept_graph_build: coverage round added concepts", "path_id", in.PathID.String(), "round", round, "added", added, "total", len(knownKeys))
 		}
 
-		missingTopics = dedupeStrings(nextTopics)
+		missingNext := dedupeStrings(nextTopics)
+		minAdded := coverageStallMinAdded(len(concepts), signals)
+		missingChanged := !sameStringSet(prevMissing, missingNext)
+		if added < minAdded && !missingChanged {
+			stallRounds++
+		} else {
+			stallRounds = 0
+		}
+		prevMissing = missingNext
+		missingTopics = missingNext
+		if stallRounds >= 2 {
+			break
+		}
 		if len(missingTopics) == 0 {
 			break
+		}
+	}
+
+	if shouldRunSectionSweep(signals) {
+		sections, sectionChunks := collectSectionChunks(in.Chunks)
+		undercovered := undercoveredSections(sections, sectionChunks, concepts, in.ChunkByID)
+		if len(undercovered) > 0 {
+			perSection := 1
+			if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+				perSection = 2
+			}
+			sweepTasks := buildSectionSweepTasks(undercovered, sectionChunks, seenChunkIDs, perSection, extraMaxChars, extraMaxTotal, signals)
+			if len(sweepTasks) > 0 {
+				result.AdaptiveParams["CONCEPT_GRAPH_SECTION_SWEEP"] = map[string]any{
+					"sections": len(undercovered),
+					"tasks":    len(sweepTasks),
+				}
+				conceptsJSON := conceptsJSONForDelta(concepts)
+				newConcepts, nextTopics := runCoverageDeltaTasks(ctx, deps, in.PathID, in.IntentMD, in.ChunkByID, sweepTasks, conceptsJSON, extraMaxChars, extraMaxTotal)
+				if len(newConcepts) > 0 {
+					merged, _ := normalizeConceptInventory(append(concepts, newConcepts...), in.AllowedChunkIDs)
+					merged, _ = dedupeConceptInventoryByKey(merged)
+					added := 0
+					for _, c := range merged {
+						k := strings.TrimSpace(c.Key)
+						if k == "" || knownKeys[k] {
+							continue
+						}
+						knownKeys[k] = true
+						added++
+					}
+					concepts = merged
+					if deps.Log != nil && added > 0 {
+						deps.Log.Info("concept_graph_build: section sweep added concepts", "path_id", in.PathID.String(), "added", added, "total", len(knownKeys))
+					}
+				}
+				if len(nextTopics) > 0 && len(missingTopics) == 0 {
+					missingTopics = dedupeStrings(nextTopics)
+				}
+			}
 		}
 	}
 
@@ -565,6 +636,468 @@ func completeConceptCoverage(ctx context.Context, deps ConceptGraphBuildDeps, in
 		deps.Log.Info(stage+": adaptive params", "adaptive", adaptiveStageMeta(stage, adaptiveEnabled, signals, result.AdaptiveParams))
 	}
 	return result
+}
+
+func normalizeCoverageSeedTopics(in []string, signals AdaptiveSignals) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	limit := outlineSeedTopicLimit(signals)
+	if limit <= 0 {
+		limit = 40
+	}
+	out := make([]string, 0, minInt(limit, len(in)))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		clean := sanitizeOutlineTitle(raw)
+		if clean == "" {
+			continue
+		}
+		if !acceptOutlineTitle(clean) {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, clean)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func coverageStallMinAdded(total int, signals AdaptiveSignals) int {
+	if total < 1 {
+		return 1
+	}
+	minAdded := int(math.Round(float64(total) * 0.01))
+	if minAdded < 2 {
+		minAdded = 2
+	}
+	if signals.PageCount >= 500 || signals.ChunkCount >= 1500 {
+		if minAdded < 4 {
+			minAdded = 4
+		}
+	}
+	return minAdded
+}
+
+func sameStringSet(a []string, b []string) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) != len(b) {
+		amap := map[string]bool{}
+		for _, v := range a {
+			amap[strings.ToLower(strings.TrimSpace(v))] = true
+		}
+		for _, v := range b {
+			key := strings.ToLower(strings.TrimSpace(v))
+			if key == "" {
+				continue
+			}
+			if !amap[key] {
+				return false
+			}
+			delete(amap, key)
+		}
+		return len(amap) == 0
+	}
+	amap := map[string]bool{}
+	for _, v := range a {
+		key := strings.ToLower(strings.TrimSpace(v))
+		if key == "" {
+			continue
+		}
+		amap[key] = true
+	}
+	for _, v := range b {
+		key := strings.ToLower(strings.TrimSpace(v))
+		if key == "" {
+			continue
+		}
+		if !amap[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldRunSectionSweep(signals AdaptiveSignals) bool {
+	if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+		return true
+	}
+	return false
+}
+
+func collectSectionChunks(chunks []*types.MaterialChunk) ([]string, map[string][]*types.MaterialChunk) {
+	bySection := map[string][]*types.MaterialChunk{}
+	for _, ch := range chunks {
+		if ch == nil || ch.ID == uuid.Nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
+			continue
+		}
+		if strings.TrimSpace(ch.Text) == "" {
+			continue
+		}
+		sec := strings.TrimSpace(stringFromAny(chunkMetaMap(ch)["section_path"]))
+		if sec == "" {
+			continue
+		}
+		bySection[sec] = append(bySection[sec], ch)
+	}
+	if len(bySection) == 0 {
+		return nil, bySection
+	}
+	sections := make([]string, 0, len(bySection))
+	for sec := range bySection {
+		sections = append(sections, sec)
+	}
+	sort.Slice(sections, func(i, j int) bool { return sections[i] < sections[j] })
+	for _, sec := range sections {
+		arr := bySection[sec]
+		sort.Slice(arr, func(i, j int) bool { return arr[i].Index < arr[j].Index })
+		bySection[sec] = arr
+	}
+	return sections, bySection
+}
+
+func sectionMinCitations(totalChunks int) int {
+	if totalChunks >= 30 {
+		return 3
+	}
+	if totalChunks >= 12 {
+		return 2
+	}
+	return 1
+}
+
+func undercoveredSections(sections []string, sectionChunks map[string][]*types.MaterialChunk, concepts []conceptInvItem, chunkByID map[uuid.UUID]*types.MaterialChunk) []string {
+	if len(sections) == 0 || len(sectionChunks) == 0 {
+		return nil
+	}
+	citeCounts := map[string]int{}
+	for _, c := range concepts {
+		for _, cid := range c.Citations {
+			id, err := uuid.Parse(strings.TrimSpace(cid))
+			if err != nil || id == uuid.Nil {
+				continue
+			}
+			ch := chunkByID[id]
+			if ch == nil {
+				continue
+			}
+			sec := strings.TrimSpace(stringFromAny(chunkMetaMap(ch)["section_path"]))
+			if sec == "" {
+				continue
+			}
+			citeCounts[sec]++
+		}
+	}
+	type secStat struct {
+		Key    string
+		Chunks int
+	}
+	stats := make([]secStat, 0, len(sections))
+	for _, sec := range sections {
+		total := len(sectionChunks[sec])
+		minCites := sectionMinCitations(total)
+		if citeCounts[sec] < minCites {
+			stats = append(stats, secStat{Key: sec, Chunks: total})
+		}
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].Chunks == stats[j].Chunks {
+			return stats[i].Key < stats[j].Key
+		}
+		return stats[i].Chunks > stats[j].Chunks
+	})
+	out := make([]string, 0, len(stats))
+	for _, st := range stats {
+		out = append(out, st.Key)
+	}
+	return out
+}
+
+func pickSectionChunkIDs(chunks []*types.MaterialChunk, perSection int, seen map[uuid.UUID]bool) []uuid.UUID {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if perSection < 1 {
+		perSection = 1
+	}
+	unseen := make([]*types.MaterialChunk, 0, len(chunks))
+	for _, ch := range chunks {
+		if ch == nil || ch.ID == uuid.Nil {
+			continue
+		}
+		if seen != nil && seen[ch.ID] {
+			continue
+		}
+		unseen = append(unseen, ch)
+	}
+	use := unseen
+	if len(use) < perSection {
+		use = chunks
+	}
+	n := len(use)
+	if n == 0 {
+		return nil
+	}
+	k := perSection
+	if k > n {
+		k = n
+	}
+	ids := make([]uuid.UUID, 0, k)
+	step := float64(n) / float64(k)
+	for i := 0; i < k; i++ {
+		idx := int(float64(i) * step)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= n {
+			idx = n - 1
+		}
+		id := use[idx].ID
+		if id != uuid.Nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+type coverageDeltaTask struct {
+	Excerpts     string
+	CandidateIDs []uuid.UUID
+	Label        string
+}
+
+func buildSectionSweepTasks(sections []string, sectionChunks map[string][]*types.MaterialChunk, seen map[uuid.UUID]bool, perSection int, maxChars int, maxTotal int, signals AdaptiveSignals) []coverageDeltaTask {
+	if len(sections) == 0 {
+		return nil
+	}
+	if maxChars <= 0 {
+		maxChars = 700
+	}
+	if maxTotal <= 0 {
+		maxTotal = 20000
+	}
+	limit := outlineSeedTopicLimit(signals)
+	if limit > 0 && len(sections) > limit {
+		sections = sections[:limit]
+	}
+	avgLen := 0
+	samples := 0
+	for _, sec := range sections {
+		for _, ch := range sectionChunks[sec] {
+			if ch == nil || ch.ID == uuid.Nil {
+				continue
+			}
+			txt := strings.TrimSpace(ch.Text)
+			if txt == "" {
+				continue
+			}
+			avgLen += len(txt)
+			samples++
+			if samples >= 120 {
+				break
+			}
+		}
+		if samples >= 120 {
+			break
+		}
+	}
+	if samples > 0 {
+		avgLen = int(math.Round(float64(avgLen) / float64(samples)))
+	}
+	if avgLen <= 0 {
+		avgLen = defaultAvgChunkChars(signals.ContentType)
+	}
+	avgBudget := avgLen + 40
+	if avgBudget < 1 {
+		avgBudget = 300
+	}
+	sectionsPerTask := maxTotal / maxInt(1, avgBudget*perSection)
+	if sectionsPerTask < 1 {
+		sectionsPerTask = 1
+	}
+	if sectionsPerTask > 24 {
+		sectionsPerTask = 24
+	}
+
+	chunkByID := sectionChunkByID(sectionChunks)
+	tasks := make([]coverageDeltaTask, 0)
+	var (
+		batchIDs []uuid.UUID
+		count    int
+	)
+	flush := func() {
+		if len(batchIDs) == 0 {
+			return
+		}
+		ex, used := renderChunkExcerptsByIDsOrdered(chunkByID, batchIDs, maxChars, maxTotal)
+		if strings.TrimSpace(ex) == "" {
+			batchIDs = nil
+			count = 0
+			return
+		}
+		for _, id := range used {
+			if seen != nil && id != uuid.Nil {
+				seen[id] = true
+			}
+		}
+		tasks = append(tasks, coverageDeltaTask{
+			Excerpts:     ex,
+			CandidateIDs: used,
+			Label:        "section_sweep",
+		})
+		batchIDs = nil
+		count = 0
+	}
+
+	for _, sec := range sections {
+		ids := pickSectionChunkIDs(sectionChunks[sec], perSection, seen)
+		if len(ids) == 0 {
+			continue
+		}
+		if count >= sectionsPerTask {
+			flush()
+		}
+		batchIDs = append(batchIDs, ids...)
+		count++
+	}
+	flush()
+	return tasks
+}
+
+func sectionChunkByID(sectionChunks map[string][]*types.MaterialChunk) map[uuid.UUID]*types.MaterialChunk {
+	out := map[uuid.UUID]*types.MaterialChunk{}
+	for _, chunks := range sectionChunks {
+		for _, ch := range chunks {
+			if ch == nil || ch.ID == uuid.Nil {
+				continue
+			}
+			out[ch.ID] = ch
+		}
+	}
+	return out
+}
+
+func runCoverageDeltaTasks(ctx context.Context, deps ConceptGraphBuildDeps, pathID uuid.UUID, intent string, chunkByID map[uuid.UUID]*types.MaterialChunk, tasks []coverageDeltaTask, conceptsJSON string, maxChars int, maxTotal int) ([]conceptInvItem, []string) {
+	if deps.AI == nil || len(tasks) == 0 {
+		return nil, nil
+	}
+	var (
+		mu             sync.Mutex
+		newConceptsAll []conceptInvItem
+		nextTopics     []string
+	)
+
+	tg, tctx := errgroup.WithContext(ctx)
+	concCeiling := envIntAllowZero("CONCEPT_GRAPH_COVERAGE_CONCURRENCY", 16)
+	if concCeiling <= 0 {
+		concCeiling = 4
+	}
+	conc := len(tasks)
+	if conc > concCeiling {
+		conc = concCeiling
+	}
+	if conc < 1 {
+		conc = 1
+	}
+	tg.SetLimit(conc)
+
+	for _, task := range tasks {
+		task := task
+		tg.Go(func() error {
+			if err := tctx.Err(); err != nil {
+				return err
+			}
+			p, err := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
+				PathIntentMD: intent,
+				ConceptsJSON: conceptsJSON,
+				Excerpts:     task.Excerpts,
+			})
+			if err != nil {
+				if deps.Log != nil {
+					deps.Log.Warn("concept_graph_build: coverage delta prompt build failed (continuing)", "error", err, "path_id", pathID.String())
+				}
+				return nil
+			}
+
+			logMeta := map[string]any{
+				"stage":         "concept_graph_build",
+				"path_id":       pathID.String(),
+				"excerpt_chars": len(task.Excerpts),
+			}
+			if task.Label != "" {
+				logMeta["scope"] = task.Label
+			}
+			timer := llmTimer(deps.Log, "concept_inventory_delta", logMeta)
+			obj, err := deps.AI.GenerateJSON(tctx, p.System, p.User, p.SchemaName, p.Schema)
+			timer(err)
+			if err != nil && isContextLengthExceeded(err) {
+				retryMax := maxTotal
+				if retryMax <= 0 {
+					retryMax = 20000
+				}
+				if retryMax > 12000 {
+					maxTotal := maxInt(12000, retryMax/2)
+					shorter, _ := renderChunkExcerptsByIDsOrdered(chunkByID, task.CandidateIDs, maxChars, maxTotal)
+					if strings.TrimSpace(shorter) != "" {
+						p2, berr := prompts.Build(prompts.PromptConceptInventoryDelta, prompts.Input{
+							PathIntentMD: intent,
+							ConceptsJSON: conceptsJSON,
+							Excerpts:     shorter,
+						})
+						if berr == nil {
+							timer = llmTimer(deps.Log, "concept_inventory_delta", map[string]any{
+								"stage":         "concept_graph_build",
+								"path_id":       pathID.String(),
+								"excerpt_chars": len(shorter),
+								"retry":         "shorter",
+								"scope":         task.Label,
+							})
+							obj, err = deps.AI.GenerateJSON(tctx, p2.System, p2.User, p2.SchemaName, p2.Schema)
+							timer(err)
+						}
+					}
+				}
+			}
+			if err != nil {
+				if deps.Log != nil {
+					deps.Log.Warn("concept_graph_build: coverage delta generation failed (continuing)", "error", err, "path_id", pathID.String())
+				}
+				return nil
+			}
+
+			newConcepts, cov, perr := parseConceptInventoryDelta(obj)
+			if perr != nil {
+				if deps.Log != nil {
+					deps.Log.Warn("concept_graph_build: coverage delta parse failed (continuing)", "error", perr, "path_id", pathID.String())
+				}
+				return nil
+			}
+			mu.Lock()
+			if len(newConcepts) > 0 {
+				newConceptsAll = append(newConceptsAll, newConcepts...)
+			}
+			if len(cov.MissingTopics) > 0 {
+				nextTopics = append(nextTopics, cov.MissingTopics...)
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := tg.Wait(); err != nil && tctx.Err() != nil {
+		return nil, nil
+	}
+	return newConceptsAll, nextTopics
 }
 
 func conceptsJSONForDelta(concepts []conceptInvItem) string {
@@ -808,6 +1341,13 @@ func coverageTargetChunkIDs(
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

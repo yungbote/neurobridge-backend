@@ -517,9 +517,9 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				}
 			}
 
-			buildInventory := func(seed string) (conceptCoverage, []conceptInvItem, error) {
+			buildInventory := func(excerpt string, seed string, retry string) (conceptCoverage, []conceptInvItem, error) {
 				invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
-					Excerpts:             ex,
+					Excerpts:             excerpt,
 					PathIntentMD:         intentMD,
 					CrossDocSectionsJSON: "",
 					SeedConceptKeysJSON:  seed,
@@ -527,13 +527,17 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				if err != nil {
 					return conceptCoverage{}, nil, err
 				}
-				timer := llmTimer(deps.Log, "concept_inventory", map[string]any{
+				logMeta := map[string]any{
 					"stage":         "concept_graph_build",
 					"scope":         "file",
 					"file_id":       f.ID.String(),
 					"path_id":       pathID.String(),
-					"excerpt_chars": len(ex),
-				})
+					"excerpt_chars": len(excerpt),
+				}
+				if retry != "" {
+					logMeta["retry"] = retry
+				}
+				timer := llmTimer(deps.Log, "concept_inventory", logMeta)
 				invObj, err := deps.AI.GenerateJSON(gInvCtx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
 				timer(err)
 				if err != nil {
@@ -550,7 +554,20 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				return cov, concepts, nil
 			}
 
-			invCoverage, conceptsOut, err := buildInventory(seedJSON)
+			invCoverage, conceptsOut, err := buildInventory(ex, seedJSON, "")
+			if err != nil && isContextLengthExceeded(err) {
+				retryMax := invMaxTotal
+				if retryMax <= 0 {
+					retryMax = 20000
+				}
+				if retryMax > 12000 {
+					shorterMax := maxInt(12000, retryMax/2)
+					if shorter, _ := buildConceptGraphExcerpts(fchunks, invPerFile, excerptMaxChars, excerptMaxLines, shorterMax); strings.TrimSpace(shorter) != "" {
+						ex = shorter
+						invCoverage, conceptsOut, err = buildInventory(ex, seedJSON, "shorter")
+					}
+				}
+			}
 			if err != nil {
 				if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 					return err
@@ -566,7 +583,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				fileSignals.FileCount = 1
 				seedWeak, _ := conceptInventoryWeak(invCoverage, conceptsOut, seedMetaFile, fileSignals, signals.ContentType, adaptiveEnabled)
 				if seedWeak {
-					invCoverage, conceptsOut, err = buildInventory("")
+					invCoverage, conceptsOut, err = buildInventory(ex, "", "seed_retry")
 					if err != nil {
 						if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 							return err
@@ -660,53 +677,256 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				seedJSON = string(b)
 			}
 		}
-		buildGlobalInventory := func(seed string) (conceptCoverage, []conceptInvItem, error) {
-			invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
-				Excerpts:             excerpts,
-				PathIntentMD:         intentMD,
-				CrossDocSectionsJSON: crossDocSectionsJSON,
-				SeedConceptKeysJSON:  seed,
-			})
-			if err != nil {
-				return conceptCoverage{}, nil, err
-			}
-			timer := llmTimer(deps.Log, "concept_inventory", map[string]any{
-				"stage":         "concept_graph_build",
-				"scope":         "global",
-				"path_id":       pathID.String(),
-				"excerpt_chars": len(excerpts),
-			})
-			invObj, err := deps.AI.GenerateJSON(ctx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
-			timer(err)
-			if err != nil {
-				return conceptCoverage{}, nil, err
-			}
-			cov := parseConceptCoverage(invObj)
-			concepts, err := parseConceptInventory(invObj)
-			if err != nil {
-				return cov, nil, err
-			}
-			if len(concepts) == 0 {
-				return cov, nil, fmt.Errorf("concept_graph_build: global inventory returned 0 concepts")
-			}
-			return cov, concepts, nil
+		sliceMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_INVENTORY_SLICE_MAX_TOTAL_CHARS", 0)
+		sliceMaxTotal := computeInventorySliceMaxTotal(signals, adaptiveEnabled, sliceMaxTotalCeiling)
+		if sliceMaxTotal <= 0 {
+			sliceMaxTotal = 20000
 		}
 
-		globalCoverage, globalConcepts, err := buildGlobalInventory(seedJSON)
+		slicePerFile := perFile
+		if slicePerFile <= 0 {
+			if adaptiveEnabled {
+				largeSingle := signals.FileCount <= 1 && (signals.PageCount >= 200 || signals.ChunkCount >= 600)
+				if largeSingle {
+					slicePerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/8.0)), 12, 40)
+				} else {
+					slicePerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/12.0)), 3, 18)
+				}
+			} else {
+				slicePerFile = 6
+			}
+		}
+
+		sliceMaxCeiling := envIntAllowZero("CONCEPT_GRAPH_INVENTORY_SLICES_MAX", 0)
+		if sliceMaxCeiling < 0 {
+			sliceMaxCeiling = 0
+		}
+		sliceMax := computeInventorySliceMax(signals, adaptiveEnabled, sliceMaxCeiling)
+		sampleEstimate := estimateInventorySampleCount(chunks, slicePerFile, sliceMaxTotal, signals)
+		sliceCount := computeInventorySliceCount(signals, sampleEstimate, sliceMax)
+		if sliceCount < 1 {
+			sliceCount = 1
+		}
+		sliceConcCeiling := envIntAllowZero("CONCEPT_GRAPH_INVENTORY_SLICE_CONCURRENCY", 0)
+		sliceConc := computeInventorySliceConcurrency(signals, sliceCount, sliceConcCeiling)
+		adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICES"] = map[string]any{
+			"actual":  sliceCount,
+			"ceiling": sliceMaxCeiling,
+		}
+		adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICE_MAX_TOTAL_CHARS"] = map[string]any{
+			"actual":  sliceMaxTotal,
+			"ceiling": sliceMaxTotalCeiling,
+		}
+		adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICE_CONCURRENCY"] = map[string]any{
+			"actual":  sliceConc,
+			"ceiling": sliceConcCeiling,
+		}
+		adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICE_EXCERPTS_PER_FILE"] = map[string]any{
+			"actual": slicePerFile,
+		}
+		if sampleEstimate > 0 {
+			adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICE_SAMPLE_ESTIMATE"] = map[string]any{
+				"actual": sampleEstimate,
+			}
+		}
+
+		type globalInvResult struct {
+			Coverage conceptCoverage
+			Concepts []conceptInvItem
+			ChunkIDs []uuid.UUID
+			Err      error
+		}
+		type globalInvAggregate struct {
+			Concepts   []conceptInvItem
+			Coverage   conceptCoverage
+			ChunkIDs   []uuid.UUID
+			ConfSum    float64
+			ConfCount  int
+			SliceCount int
+		}
+		runGlobalInventory := func(sliceTotal int, seed string) (globalInvAggregate, error) {
+			agg := globalInvAggregate{SliceCount: sliceTotal}
+			if sliceTotal < 1 {
+				sliceTotal = 1
+			}
+			runInventoryForExcerpts := func(invCtx context.Context, ex string, sliceIdx int, retry string) globalInvResult {
+				if strings.TrimSpace(ex) == "" {
+					return globalInvResult{Err: fmt.Errorf("concept_graph_build: empty inventory excerpts")}
+				}
+				invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
+					Excerpts:             ex,
+					PathIntentMD:         intentMD,
+					CrossDocSectionsJSON: crossDocSectionsJSON,
+					SeedConceptKeysJSON:  seed,
+				})
+				if err != nil {
+					return globalInvResult{Err: err}
+				}
+				logMeta := map[string]any{
+					"stage":         "concept_graph_build",
+					"scope":         "global",
+					"path_id":       pathID.String(),
+					"slice":         sliceIdx,
+					"slice_count":   sliceTotal,
+					"excerpt_chars": len(ex),
+				}
+				if retry != "" {
+					logMeta["retry"] = retry
+				}
+				timer := llmTimer(deps.Log, "concept_inventory", logMeta)
+				invObj, err := deps.AI.GenerateJSON(invCtx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
+				timer(err)
+				if err != nil {
+					return globalInvResult{Err: err}
+				}
+				cov := parseConceptCoverage(invObj)
+				concepts, err := parseConceptInventory(invObj)
+				if err != nil {
+					return globalInvResult{Coverage: cov, Err: err}
+				}
+				if len(concepts) == 0 {
+					return globalInvResult{Coverage: cov, Err: fmt.Errorf("concept_graph_build: global inventory returned 0 concepts")}
+				}
+				return globalInvResult{Coverage: cov, Concepts: concepts}
+			}
+
+			slices := buildInventorySlices(chunks, sliceTotal)
+			if len(slices) == 0 {
+				slices = []inventorySlice{{Index: 0, Chunks: chunks}}
+			}
+
+			var (
+				concMu sync.Mutex
+			)
+			gSlices, gSlicesCtx := errgroup.WithContext(ctx)
+			gSlices.SetLimit(sliceConc)
+			for _, slice := range slices {
+				slice := slice
+				gSlices.Go(func() error {
+					fileOrder := sliceFileOrder(slice.Chunks, slice.Index)
+					ex, ids := buildConceptGraphExcerptsOrdered(slice.Chunks, slicePerFile, excerptMaxChars, excerptMaxLines, sliceMaxTotal, fileOrder)
+					if strings.TrimSpace(ex) == "" {
+						return nil
+					}
+					res := runInventoryForExcerpts(gSlicesCtx, ex, slice.Index, "")
+					if res.Err != nil && isContextLengthExceeded(res.Err) {
+						retryMax := sliceMaxTotal
+						if retryMax <= 0 {
+							retryMax = 20000
+						}
+						if retryMax > 12000 {
+							shorterMax := maxInt(12000, retryMax/2)
+							if shorter, shorterIDs := buildConceptGraphExcerptsOrdered(slice.Chunks, slicePerFile, excerptMaxChars, excerptMaxLines, shorterMax, fileOrder); strings.TrimSpace(shorter) != "" {
+								ex = shorter
+								ids = shorterIDs
+								res = runInventoryForExcerpts(gSlicesCtx, ex, slice.Index, "shorter")
+							}
+						}
+					}
+					if res.Err != nil {
+						return res.Err
+					}
+					concMu.Lock()
+					agg.Concepts = append(agg.Concepts, res.Concepts...)
+					if len(res.Coverage.MissingTopics) > 0 {
+						agg.Coverage.MissingTopics = append(agg.Coverage.MissingTopics, res.Coverage.MissingTopics...)
+					}
+					if res.Coverage.Confidence > 0 {
+						agg.ConfSum += res.Coverage.Confidence
+						agg.ConfCount++
+						agg.Coverage.Notes = strings.TrimSpace(strings.Join([]string{agg.Coverage.Notes, res.Coverage.Notes}, " "))
+					}
+					concMu.Unlock()
+					if len(ids) > 0 {
+						concMu.Lock()
+						agg.ChunkIDs = append(agg.ChunkIDs, ids...)
+						concMu.Unlock()
+					}
+					return nil
+				})
+			}
+			if err := gSlices.Wait(); err != nil {
+				return agg, err
+			}
+			if len(agg.Concepts) == 0 {
+				return agg, fmt.Errorf("concept_graph_build: global inventory returned 0 concepts")
+			}
+			if agg.ConfCount > 0 {
+				agg.Coverage.Confidence = agg.ConfSum / float64(agg.ConfCount)
+			}
+			agg.Coverage.MissingTopics = dedupeStrings(agg.Coverage.MissingTopics)
+			return agg, nil
+		}
+
+		sliceSeed := seedJSON
+		if sliceCount > 1 {
+			// Avoid bias from a tiny seed list when fanning out across slices.
+			sliceSeed = ""
+		}
+		globalAgg, err := runGlobalInventory(sliceCount, sliceSeed)
 		if err != nil {
 			return out, err
 		}
-		if seedJSON != "" && setSeedMeta.Usable {
+
+		globalConcepts := globalAgg.Concepts
+		globalCoverage := globalAgg.Coverage
+		allChunkIDs := globalAgg.ChunkIDs
+		confSum := globalAgg.ConfSum
+		confCount := globalAgg.ConfCount
+
+		if sliceSeed != "" && setSeedMeta.Usable {
 			seedWeak, _ := conceptInventoryWeak(globalCoverage, globalConcepts, setSeedMeta, signals, signals.ContentType, adaptiveEnabled)
 			if seedWeak {
-				globalCoverage, globalConcepts, err = buildGlobalInventory("")
+				// Retry once without seed for stability.
+				globalAgg, err = runGlobalInventory(1, "")
 				if err != nil {
 					return out, err
 				}
+				globalConcepts = globalAgg.Concepts
+				globalCoverage = globalAgg.Coverage
+				allChunkIDs = globalAgg.ChunkIDs
+				confSum = globalAgg.ConfSum
+				confCount = globalAgg.ConfCount
+				sliceSeed = ""
 			}
 		}
+
+		guardrailMin := minConceptsGuardrail(signals)
+		weakAfter, _ := conceptInventoryWeak(globalCoverage, globalConcepts, setSeedMeta, signals, signals.ContentType, adaptiveEnabled)
+		if weakAfter && guardrailMin > 0 {
+			boostedCount := boostInventorySliceCount(sliceCount, sliceMax, len(globalConcepts), guardrailMin)
+			if boostedCount > sliceCount {
+				boostSeed := sliceSeed
+				if boostedCount > 1 {
+					boostSeed = ""
+				}
+				boostAgg, berr := runGlobalInventory(boostedCount, boostSeed)
+				if berr != nil {
+					return out, berr
+				}
+				globalConcepts = append(globalConcepts, boostAgg.Concepts...)
+				allChunkIDs = appendUniqueChunkIDs(allChunkIDs, boostAgg.ChunkIDs)
+				globalCoverage.MissingTopics = append(globalCoverage.MissingTopics, boostAgg.Coverage.MissingTopics...)
+				globalCoverage.Notes = strings.TrimSpace(strings.Join([]string{globalCoverage.Notes, boostAgg.Coverage.Notes}, " "))
+				confSum += boostAgg.ConfSum
+				confCount += boostAgg.ConfCount
+				if confCount > 0 {
+					globalCoverage.Confidence = confSum / float64(confCount)
+				}
+				globalCoverage.MissingTopics = dedupeStrings(globalCoverage.MissingTopics)
+				adaptiveParams["CONCEPT_GRAPH_INVENTORY_SLICE_BOOST"] = map[string]any{
+					"actual":   boostedCount,
+					"previous": sliceCount,
+				}
+				sliceCount = boostedCount
+			}
+		}
+
 		conceptsOut = globalConcepts
 		invCoverage = globalCoverage
+		if len(allChunkIDs) > 0 {
+			excerptChunkIDs = appendUniqueChunkIDs(excerptChunkIDs, allChunkIDs)
+		}
 	}
 
 	if len(conceptsOut) == 0 {
@@ -751,6 +971,12 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		Signals:            signals,
 		Stage:              "concept_graph_build",
 	}
+	if outlineSeeds := outlineSeedTopics(files, sigByFile, signals); len(outlineSeeds) > 0 {
+		coverageInput.SeedTopics = outlineSeeds
+		adaptiveParams["CONCEPT_GRAPH_OUTLINE_SEED_TOPICS"] = map[string]any{
+			"actual": len(outlineSeeds),
+		}
+	}
 	coverageInput.TargetedOnly = envBool("CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY", true)
 	if fastMode {
 		fastPasses := envIntAllowZero("CONCEPT_GRAPH_FAST_COVERAGE_PASSES", 1)
@@ -786,6 +1012,85 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPTS_PER_FILE"] = map[string]any{"actual": coverageInput.ExtraPerFile, "ceiling": fastPerFileCeiling}
 		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_CHARS"] = map[string]any{"actual": coverageInput.ExtraMaxChars, "ceiling": fastMaxCharsCeiling}
 		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{"actual": coverageInput.ExtraMaxTotal, "ceiling": fastMaxTotalCeiling}
+	}
+	coverageBoost := false
+	guardrailMin := minConceptsGuardrail(signals)
+	if guardrailMin > 0 && len(conceptsOut) < guardrailMin {
+		coverageBoost = true
+	} else {
+		if weakAfter, _ := conceptInventoryWeak(invCoverage, conceptsOut, setSeedMeta, signals, signals.ContentType, adaptiveEnabled); weakAfter {
+			coverageBoost = true
+		}
+	}
+	largeDoc := signals.PageCount >= 200 || signals.ChunkCount >= 600
+	forceBroadSweep := largeDoc && len(invCoverage.MissingTopics) == 0
+	if coverageBoost && !fastMode {
+		adaptiveParams["CONCEPT_GRAPH_COVERAGE_BOOST"] = map[string]any{
+			"enabled":   true,
+			"concepts":  len(conceptsOut),
+			"guardrail": guardrailMin,
+		}
+		if _, set := os.LookupEnv("CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY"); !set {
+			coverageInput.TargetedOnly = false
+			adaptiveParams["CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY"] = map[string]any{
+				"actual":  coverageInput.TargetedOnly,
+				"boosted": true,
+			}
+		}
+		if passesEnv, passesSet := envIntAllowZeroWithSet("CONCEPT_GRAPH_COVERAGE_PASSES", -1); !passesSet || passesEnv == 0 {
+			desired := desiredCoveragePasses(signals)
+			if desired > coverageInput.Passes {
+				coverageInput.Passes = desired
+				adaptiveParams["CONCEPT_GRAPH_COVERAGE_PASSES"] = map[string]any{
+					"actual":  coverageInput.Passes,
+					"boosted": true,
+				}
+			}
+		}
+		if perFileEnv, perFileSet := envIntAllowZeroWithSet("CONCEPT_GRAPH_COVERAGE_EXCERPTS_PER_FILE", 0); !perFileSet || perFileEnv == 0 {
+			desiredPerFile := clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/10.0)), 3, perFileEnv)
+			if desiredPerFile > coverageInput.ExtraPerFile {
+				coverageInput.ExtraPerFile = desiredPerFile
+				adaptiveParams["CONCEPT_GRAPH_COVERAGE_EXCERPTS_PER_FILE"] = map[string]any{
+					"actual":  coverageInput.ExtraPerFile,
+					"boosted": true,
+				}
+			}
+		}
+	}
+	if forceBroadSweep && !fastMode {
+		adaptiveParams["CONCEPT_GRAPH_COVERAGE_BROAD_SWEEP"] = map[string]any{
+			"enabled":  true,
+			"pages":    signals.PageCount,
+			"chunks":   signals.ChunkCount,
+			"concepts": len(conceptsOut),
+		}
+		if _, set := os.LookupEnv("CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY"); !set {
+			coverageInput.TargetedOnly = false
+			adaptiveParams["CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY"] = map[string]any{
+				"actual":  coverageInput.TargetedOnly,
+				"boosted": true,
+			}
+		}
+		if passesEnv, passesSet := envIntAllowZeroWithSet("CONCEPT_GRAPH_COVERAGE_PASSES", -1); !passesSet || passesEnv == 0 {
+			if coverageInput.Passes < 2 {
+				coverageInput.Passes = 2
+				adaptiveParams["CONCEPT_GRAPH_COVERAGE_PASSES"] = map[string]any{
+					"actual":  coverageInput.Passes,
+					"boosted": true,
+				}
+			}
+		}
+		if perFileEnv, perFileSet := envIntAllowZeroWithSet("CONCEPT_GRAPH_COVERAGE_EXCERPTS_PER_FILE", 0); !perFileSet || perFileEnv == 0 {
+			desiredPerFile := clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/10.0)), 4, perFileEnv)
+			if desiredPerFile > coverageInput.ExtraPerFile {
+				coverageInput.ExtraPerFile = desiredPerFile
+				adaptiveParams["CONCEPT_GRAPH_COVERAGE_EXCERPTS_PER_FILE"] = map[string]any{
+					"actual":  coverageInput.ExtraPerFile,
+					"boosted": true,
+				}
+			}
+		}
 	}
 	const coverageStart = 35
 	const coverageEnd = 55
@@ -2172,6 +2477,11 @@ func conceptInventoryWeak(cov conceptCoverage, concepts []conceptInvItem, seedMe
 		"CONCEPT_GRAPH_SEED_MIN_CONCEPTS":      map[string]any{"actual": minConcepts},
 		"CONCEPT_GRAPH_SEED_MIN_COVERAGE_CONF": map[string]any{"actual": minCoverage},
 	}
+	guardrailMin := minConceptsGuardrail(signals)
+	if guardrailMin > minConcepts {
+		minConcepts = guardrailMin
+		params["CONCEPT_GRAPH_MIN_CONCEPTS_GUARDRAIL"] = map[string]any{"actual": guardrailMin}
+	}
 	if len(concepts) < minConcepts {
 		return true, params
 	}
@@ -2182,6 +2492,611 @@ func conceptInventoryWeak(cov conceptCoverage, concepts []conceptInvItem, seedMe
 		return true, params
 	}
 	return false, params
+}
+
+func minConceptsGuardrail(signals AdaptiveSignals) int {
+	minConcepts := 12
+	largeDoc := signals.PageCount >= 50 || signals.ChunkCount >= 200
+	if largeDoc {
+		if signals.PageCount > 0 {
+			minConcepts = maxInt(minConcepts, int(math.Round(float64(signals.PageCount)*0.08)))
+		}
+		if signals.ChunkCount > 0 {
+			minConcepts = maxInt(minConcepts, int(math.Round(float64(signals.ChunkCount)*0.03)))
+		}
+		if signals.FileCount > 1 {
+			minConcepts = maxInt(minConcepts, signals.FileCount*5)
+		}
+		if minConcepts < 20 {
+			minConcepts = 20
+		}
+	}
+	return minConcepts
+}
+
+func desiredCoveragePasses(signals AdaptiveSignals) int {
+	if signals.PageCount >= 500 || signals.ChunkCount >= 1500 {
+		return 3
+	}
+	if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+		return 2
+	}
+	return 1
+}
+
+type inventorySlice struct {
+	Index  int
+	Chunks []*types.MaterialChunk
+}
+
+func buildInventorySlices(chunks []*types.MaterialChunk, sliceCount int) []inventorySlice {
+	if sliceCount <= 1 {
+		return []inventorySlice{{Index: 0, Chunks: chunks}}
+	}
+	sorted := make([]*types.MaterialChunk, 0, len(chunks))
+	for _, ch := range chunks {
+		if ch == nil {
+			continue
+		}
+		sorted = append(sorted, ch)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		ai := sorted[i]
+		aj := sorted[j]
+		if ai.MaterialFileID != aj.MaterialFileID {
+			return ai.MaterialFileID.String() < aj.MaterialFileID.String()
+		}
+		return ai.Index < aj.Index
+	})
+	slices := make([][]*types.MaterialChunk, sliceCount)
+	for i, ch := range sorted {
+		slices[i%sliceCount] = append(slices[i%sliceCount], ch)
+	}
+	out := make([]inventorySlice, 0, sliceCount)
+	for i := 0; i < sliceCount; i++ {
+		if len(slices[i]) == 0 {
+			continue
+		}
+		out = append(out, inventorySlice{Index: i, Chunks: slices[i]})
+	}
+	return out
+}
+
+func computeInventorySliceCount(signals AdaptiveSignals, baseSampleCount int, sliceMax int) int {
+	if baseSampleCount <= 0 || signals.ChunkCount <= 0 {
+		return 1
+	}
+	ratio := float64(baseSampleCount) / float64(signals.ChunkCount)
+	if ratio <= 0 {
+		ratio = 0.01
+	}
+	target := 0.1
+	if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+		target = 0.2
+	}
+	if signals.PageCount >= 500 || signals.ChunkCount >= 1500 {
+		target = 0.25
+	}
+	if ratio >= target {
+		return 1
+	}
+	slices := int(math.Ceil(target / ratio))
+	if slices < 1 {
+		slices = 1
+	}
+	if sliceMax > 0 && slices > sliceMax {
+		slices = sliceMax
+	}
+	return slices
+}
+
+func computeInventorySliceMaxTotal(signals AdaptiveSignals, adaptiveEnabled bool, ceiling int) int {
+	target := 20000
+	if adaptiveEnabled {
+		if signals.PageCount > 0 {
+			target = int(math.Round(float64(signals.PageCount) * 120))
+		} else if signals.ChunkCount > 0 {
+			target = int(math.Round(float64(signals.ChunkCount) * 60))
+		}
+	}
+	target = int(math.Round(float64(target) * inventorySliceContentScale(signals.ContentType)))
+	if adaptiveEnabled {
+		if ceiling > 0 {
+			target = clampIntCeiling(target, 12000, ceiling)
+		} else {
+			target = clampIntCeiling(target, 12000, 24000)
+		}
+	} else if ceiling > 0 {
+		target = clampIntCeiling(target, 12000, ceiling)
+	}
+	if ceiling <= 0 && target < 8000 {
+		target = 8000
+	}
+	return target
+}
+
+func computeInventorySliceMax(signals AdaptiveSignals, adaptiveEnabled bool, ceiling int) int {
+	if adaptiveEnabled {
+		adaptiveMax := 6
+		if signals.PageCount > 0 {
+			adaptiveMax = clampIntCeiling(int(math.Round(float64(signals.PageCount)/120.0)), 3, 12)
+		} else if signals.ChunkCount > 0 {
+			adaptiveMax = clampIntCeiling(int(math.Round(float64(signals.ChunkCount)/300.0)), 3, 12)
+		}
+		if ceiling > 0 {
+			return clampIntCeiling(adaptiveMax, 1, ceiling)
+		}
+		return adaptiveMax
+	}
+	if ceiling > 0 {
+		return ceiling
+	}
+	return 6
+}
+
+func computeInventorySliceConcurrency(signals AdaptiveSignals, sliceCount int, ceiling int) int {
+	if sliceCount < 1 {
+		sliceCount = 1
+	}
+	conc := sliceCount
+	if ceiling > 0 && conc > ceiling {
+		conc = ceiling
+	}
+	if ceiling <= 0 {
+		desired := 4
+		if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+			desired = 8
+		}
+		if signals.PageCount >= 500 || signals.ChunkCount >= 1500 {
+			desired = 12
+		}
+		if conc > desired {
+			conc = desired
+		}
+	}
+	if conc < 1 {
+		conc = 1
+	}
+	return conc
+}
+
+func estimateInventorySampleCount(chunks []*types.MaterialChunk, perFile int, maxTotal int, signals AdaptiveSignals) int {
+	if len(chunks) == 0 {
+		return 0
+	}
+	totalChunks := 0
+	byFile := map[uuid.UUID]int{}
+	for _, ch := range chunks {
+		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
+			continue
+		}
+		if strings.TrimSpace(ch.Text) == "" {
+			continue
+		}
+		totalChunks++
+		byFile[ch.MaterialFileID]++
+	}
+	if totalChunks == 0 {
+		return 0
+	}
+	fileCount := len(byFile)
+	maxByPerFile := 0
+	if perFile > 0 && fileCount > 0 {
+		maxByPerFile = perFile * fileCount
+	}
+
+	avgLen := averageChunkCharLen(chunks, 200)
+	if avgLen <= 0 {
+		avgLen = defaultAvgChunkChars(signals.ContentType)
+	}
+	avgBudget := avgLen + 40
+	if avgBudget < 1 {
+		avgBudget = 1
+	}
+	maxByTotal := totalChunks
+	if maxTotal > 0 {
+		maxByTotal = int(math.Floor(float64(maxTotal) / float64(avgBudget)))
+		if maxByTotal < 1 {
+			maxByTotal = 1
+		}
+	}
+
+	est := totalChunks
+	if maxByPerFile > 0 && maxByPerFile < est {
+		est = maxByPerFile
+	}
+	if maxTotal > 0 && maxByTotal < est {
+		est = maxByTotal
+	}
+	if est > totalChunks {
+		est = totalChunks
+	}
+	if est < 1 {
+		est = 1
+	}
+	return est
+}
+
+func averageChunkCharLen(chunks []*types.MaterialChunk, maxSamples int) int {
+	if maxSamples <= 0 {
+		maxSamples = 100
+	}
+	total := 0
+	count := 0
+	for _, ch := range chunks {
+		if ch == nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
+			continue
+		}
+		txt := strings.TrimSpace(ch.Text)
+		if txt == "" {
+			continue
+		}
+		total += len(txt)
+		count++
+		if count >= maxSamples {
+			break
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return int(math.Round(float64(total) / float64(count)))
+}
+
+func defaultAvgChunkChars(contentType string) int {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "slides":
+		return 220
+	case "prose":
+		return 450
+	case "code":
+		return 320
+	default:
+		return 360
+	}
+}
+
+func inventorySliceContentScale(contentType string) float64 {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "slides":
+		return 0.85
+	case "code":
+		return 0.9
+	default:
+		return 1.0
+	}
+}
+
+func sliceFileOrder(chunks []*types.MaterialChunk, offset int) []uuid.UUID {
+	if len(chunks) == 0 {
+		return nil
+	}
+	byFile := map[uuid.UUID]bool{}
+	for _, ch := range chunks {
+		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		byFile[ch.MaterialFileID] = true
+	}
+	if len(byFile) == 0 {
+		return nil
+	}
+	fileIDs := make([]uuid.UUID, 0, len(byFile))
+	for fid := range byFile {
+		fileIDs = append(fileIDs, fid)
+	}
+	sort.Slice(fileIDs, func(i, j int) bool { return fileIDs[i].String() < fileIDs[j].String() })
+	if offset == 0 || len(fileIDs) <= 1 {
+		return fileIDs
+	}
+	shift := offset % len(fileIDs)
+	if shift == 0 {
+		return fileIDs
+	}
+	out := append([]uuid.UUID{}, fileIDs[shift:]...)
+	out = append(out, fileIDs[:shift]...)
+	return out
+}
+
+func buildConceptGraphExcerptsOrdered(chunks []*types.MaterialChunk, perFile int, maxChars int, maxLines int, maxTotalChars int, fileOrder []uuid.UUID) (string, []uuid.UUID) {
+	useAll := perFile <= 0
+	if maxChars <= 0 {
+		maxChars = 700
+	}
+	byFile := map[uuid.UUID][]*types.MaterialChunk{}
+	for _, ch := range chunks {
+		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		if isUnextractableChunk(ch) {
+			continue
+		}
+		if strings.TrimSpace(ch.Text) == "" {
+			continue
+		}
+		byFile[ch.MaterialFileID] = append(byFile[ch.MaterialFileID], ch)
+	}
+	if len(byFile) == 0 {
+		return "", nil
+	}
+	ordered := make([]uuid.UUID, 0, len(byFile))
+	if len(fileOrder) > 0 {
+		seen := map[uuid.UUID]bool{}
+		for _, fid := range fileOrder {
+			if _, ok := byFile[fid]; ok {
+				ordered = append(ordered, fid)
+				seen[fid] = true
+			}
+		}
+		if len(ordered) < len(byFile) {
+			rest := make([]uuid.UUID, 0, len(byFile)-len(ordered))
+			for fid := range byFile {
+				if !seen[fid] {
+					rest = append(rest, fid)
+				}
+			}
+			sort.Slice(rest, func(i, j int) bool { return rest[i].String() < rest[j].String() })
+			ordered = append(ordered, rest...)
+		}
+	} else {
+		for fid := range byFile {
+			ordered = append(ordered, fid)
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].String() < ordered[j].String() })
+	}
+
+	var b strings.Builder
+	linesUsed := 0
+	ids := make([]uuid.UUID, 0)
+
+outer:
+	for _, fid := range ordered {
+		arr := byFile[fid]
+		sort.Slice(arr, func(i, j int) bool { return arr[i].Index < arr[j].Index })
+		n := len(arr)
+		if n == 0 {
+			continue
+		}
+		k := perFile
+		if useAll || k > n {
+			k = n
+		}
+		if maxLines > 0 {
+			remaining := maxLines - linesUsed
+			if remaining <= 0 {
+				break
+			}
+			if k > remaining {
+				k = remaining
+			}
+		}
+		if k <= 0 {
+			break
+		}
+
+		step := float64(n) / float64(k)
+		for i := 0; i < k; i++ {
+			idx := int(float64(i) * step)
+			if idx < 0 {
+				idx = 0
+			}
+			if idx >= n {
+				idx = n - 1
+			}
+			ch := arr[idx]
+			line := buildEnrichedChunkLine(ch, maxChars)
+			if line == "" {
+				continue
+			}
+			if maxTotalChars > 0 && b.Len()+len(line) > maxTotalChars {
+				break outer
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+			ids = append(ids, ch.ID)
+			linesUsed++
+			if maxLines > 0 && linesUsed >= maxLines {
+				break outer
+			}
+		}
+		b.WriteString("\n")
+		if maxTotalChars > 0 && b.Len() >= maxTotalChars {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String()), ids
+}
+
+func outlineSeedTopics(files []*types.MaterialFile, sigByFile map[uuid.UUID]*types.MaterialFileSignature, signals AdaptiveSignals) []string {
+	if len(files) == 0 {
+		return nil
+	}
+	limit := outlineSeedTopicLimit(signals)
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	seen := map[string]bool{}
+	add := func(title string) {
+		clean := sanitizeOutlineTitle(title)
+		if clean == "" {
+			return
+		}
+		if !acceptOutlineTitle(clean) {
+			return
+		}
+		key := strings.ToLower(clean)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, clean)
+	}
+
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		if sig := sigByFile[f.ID]; sig != nil && len(sig.OutlineJSON) > 0 && string(sig.OutlineJSON) != "null" {
+			var outline map[string]any
+			if err := json.Unmarshal(sig.OutlineJSON, &outline); err == nil {
+				sections := flattenOutlineSections(outline, limit)
+				for _, sec := range sections {
+					if sec == nil {
+						continue
+					}
+					add(sec.Title)
+					if len(out) >= limit {
+						return out
+					}
+				}
+			}
+		}
+		if len(out) >= limit {
+			return out
+		}
+		if len(f.ExtractionDiagnostics) > 0 && string(f.ExtractionDiagnostics) != "null" {
+			if hint := outlineHintFromDiagnostics(f.ExtractionDiagnostics, limit); hint != nil {
+				sections := flattenOutlineSections(hint, limit)
+				for _, sec := range sections {
+					if sec == nil {
+						continue
+					}
+					add(sec.Title)
+					if len(out) >= limit {
+						return out
+					}
+				}
+			}
+		}
+		if len(out) >= limit {
+			return out
+		}
+	}
+	return out
+}
+
+func outlineSeedTopicLimit(signals AdaptiveSignals) int {
+	limit := 40
+	if signals.PageCount >= 200 || signals.ChunkCount >= 600 {
+		limit = 80
+	}
+	if signals.PageCount >= 500 || signals.ChunkCount >= 1500 {
+		limit = 120
+	}
+	if signals.FileCount > 1 {
+		limit += clampIntCeiling(signals.FileCount*4, 0, 40)
+	}
+	if strings.EqualFold(strings.TrimSpace(signals.ContentType), "slides") {
+		limit = clampIntCeiling(limit/2, 20, limit)
+	}
+	if limit < 20 {
+		limit = 20
+	}
+	if limit > 160 {
+		limit = 160
+	}
+	return limit
+}
+
+func sanitizeOutlineTitle(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	s := strings.TrimSpace(raw)
+	s = strings.TrimLeft(s, "•*-–—·■✓")
+	s = strings.TrimRight(s, "•*-–—·")
+	s = strings.Join(strings.Fields(s), " ")
+	if headingNumPrefix.MatchString(s) {
+		s = strings.TrimSpace(headingNumPrefix.ReplaceAllString(s, ""))
+	}
+	s = strings.Trim(s, ".")
+	return strings.TrimSpace(s)
+}
+
+func acceptOutlineTitle(title string) bool {
+	if title == "" {
+		return false
+	}
+	l := strings.ToLower(strings.TrimSpace(title))
+	if l == "contents" || l == "table of contents" || l == "index" || l == "preface" || l == "foreword" {
+		return false
+	}
+	if strings.Contains(l, "isbn") || strings.Contains(l, "copyright") {
+		return false
+	}
+	if len(title) < 3 && !strings.Contains(title, "C++") {
+		return false
+	}
+	if looksLikeHeading(title) || headingNumPrefix.MatchString(title) || strings.Contains(title, "C++") {
+		return true
+	}
+	letters := 0
+	for _, r := range title {
+		if unicode.IsLetter(r) {
+			letters++
+		}
+	}
+	if letters >= 3 && len(title) <= 90 {
+		return true
+	}
+	return false
+}
+
+func boostInventorySliceCount(base int, ceiling int, currentConcepts int, guardrail int) int {
+	if base < 1 {
+		base = 1
+	}
+	if guardrail < 1 {
+		return base
+	}
+	if currentConcepts < 1 {
+		currentConcepts = 1
+	}
+	if currentConcepts >= guardrail {
+		return base
+	}
+	boostFactor := int(math.Ceil(float64(guardrail) / float64(currentConcepts)))
+	if boostFactor < 2 {
+		return base
+	}
+	if boostFactor > 3 {
+		boostFactor = 3
+	}
+	boosted := base * boostFactor
+	if ceiling > 0 && boosted > ceiling {
+		boosted = ceiling
+	}
+	if boosted < base {
+		boosted = base
+	}
+	return boosted
+}
+
+func appendUniqueChunkIDs(base []uuid.UUID, add []uuid.UUID) []uuid.UUID {
+	if len(add) == 0 {
+		return base
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, id := range base {
+		if id != uuid.Nil {
+			seen[id] = true
+		}
+	}
+	for _, id := range add {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		base = append(base, id)
+		seen[id] = true
+	}
+	return base
 }
 
 func parseConceptInventory(obj map[string]any) ([]conceptInvItem, error) {
