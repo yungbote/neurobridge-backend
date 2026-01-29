@@ -37,6 +37,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:       p.vec,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
+		Artifacts: p.artifacts,
 	}).MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
@@ -53,6 +54,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"saga_id":         sagaID.String(),
 		"summary_id":      out.SummaryID.String(),
 		"vector_id":       out.VectorID,
+		"cache_hit":       out.CacheHit,
 	})
 	return nil
 }

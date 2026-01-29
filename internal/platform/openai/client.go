@@ -88,6 +88,19 @@ func NewOpenAIClient(log *logger.Logger) (OpenAIClient, error) { return NewClien
 
 // -------------------------------------------------------------------------------
 
+// WithModel returns a client that uses the provided model for text generation calls.
+// If model is empty or base is nil, it returns the base client unchanged.
+func WithModel(base Client, model string) Client {
+	model = strings.TrimSpace(model)
+	if base == nil || model == "" {
+		return base
+	}
+	if c, ok := base.(*client); ok {
+		return c.cloneWithModel(model)
+	}
+	return base
+}
+
 type client struct {
 	log             *logger.Logger
 	baseURL         string
@@ -112,9 +125,9 @@ type client struct {
 	noTempPrefixes []string        // prefix matches (lowercased), e.g. "o1-", "o3-"
 
 	// Runtime learning: if a model rejects temperature, remember for TTL and omit thereafter.
-	noTempMu  sync.RWMutex
+	noTempMu   sync.RWMutex
 	noTempSeen map[string]time.Time
-	noTempTTL time.Duration
+	noTempTTL  time.Duration
 }
 
 func NewClient(log *logger.Logger) (Client, error) {
@@ -212,25 +225,59 @@ func NewClient(log *logger.Logger) (Client, error) {
 	}
 
 	return &client{
-		log:               log.With("service", "OpenAIClient"),
-		baseURL:           baseURL,
-		apiKey:            apiKey,
-		model:             model,
-		embedModel:        embed,
-		imageModel:        imageModel,
-		imageSize:         imageSize,
-		videoModel:        videoModel,
-		videoSize:         videoSize,
-		httpClient:        &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-		responsesClient:   &http.Client{Timeout: time.Duration(responsesTimeoutSec) * time.Second},
-		maxRetries:        maxRetries,
-		temperature:       tempPtr,
+		log:                log.With("service", "OpenAIClient"),
+		baseURL:            baseURL,
+		apiKey:             apiKey,
+		model:              model,
+		embedModel:         embed,
+		imageModel:         imageModel,
+		imageSize:          imageSize,
+		videoModel:         videoModel,
+		videoSize:          videoSize,
+		httpClient:         &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		responsesClient:    &http.Client{Timeout: time.Duration(responsesTimeoutSec) * time.Second},
+		maxRetries:         maxRetries,
+		temperature:        tempPtr,
 		disableTemperature: disableTemperature,
-		noTempModels:      noTempModels,
-		noTempPrefixes:    noTempPrefixes,
-		noTempSeen:        map[string]time.Time{},
-		noTempTTL:         noTempTTL,
+		noTempModels:       noTempModels,
+		noTempPrefixes:     noTempPrefixes,
+		noTempSeen:         map[string]time.Time{},
+		noTempTTL:          noTempTTL,
 	}, nil
+}
+
+func (c *client) cloneWithModel(model string) *client {
+	if c == nil || strings.TrimSpace(model) == "" {
+		return c
+	}
+	clone := &client{
+		log:                c.log,
+		baseURL:            c.baseURL,
+		apiKey:             c.apiKey,
+		model:              strings.TrimSpace(model),
+		embedModel:         c.embedModel,
+		imageModel:         c.imageModel,
+		imageSize:          c.imageSize,
+		videoModel:         c.videoModel,
+		videoSize:          c.videoSize,
+		httpClient:         c.httpClient,
+		responsesClient:    c.responsesClient,
+		maxRetries:         c.maxRetries,
+		temperature:        c.temperature,
+		disableTemperature: c.disableTemperature,
+		noTempModels:       c.noTempModels,
+		noTempPrefixes:     c.noTempPrefixes,
+		noTempSeen:         map[string]time.Time{},
+		noTempTTL:          c.noTempTTL,
+	}
+
+	c.noTempMu.RLock()
+	for k, v := range c.noTempSeen {
+		clone.noTempSeen[k] = v
+	}
+	c.noTempMu.RUnlock()
+
+	return clone
 }
 
 func parseBoolEnv(key string, def bool) bool {
@@ -1422,13 +1469,3 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 	}
 	return full.String(), nil
 }
-
-
-
-
-
-
-
-
-
-

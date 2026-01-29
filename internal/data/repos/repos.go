@@ -66,6 +66,7 @@ type LearningNodeFigureRepo = learning.LearningNodeFigureRepo
 type LearningNodeVideoRepo = learning.LearningNodeVideoRepo
 type LearningDocGenerationRunRepo = learning.LearningDocGenerationRunRepo
 type LearningDrillInstanceRepo = learning.LearningDrillInstanceRepo
+type LearningArtifactRepo = learning.LearningArtifactRepo
 type LibraryTaxonomyNodeRepo = learning.LibraryTaxonomyNodeRepo
 type LibraryTaxonomyEdgeRepo = learning.LibraryTaxonomyEdgeRepo
 type LibraryTaxonomyMembershipRepo = learning.LibraryTaxonomyMembershipRepo
@@ -221,6 +222,9 @@ func NewLearningDocGenerationRunRepo(db *gorm.DB, baseLog *logger.Logger) Learni
 }
 func NewLearningDrillInstanceRepo(db *gorm.DB, baseLog *logger.Logger) LearningDrillInstanceRepo {
 	return learning.NewLearningDrillInstanceRepo(db, baseLog)
+}
+func NewLearningArtifactRepo(db *gorm.DB, baseLog *logger.Logger) LearningArtifactRepo {
+	return learning.NewLearningArtifactRepo(db, baseLog)
 }
 func NewLibraryTaxonomyNodeRepo(db *gorm.DB, baseLog *logger.Logger) LibraryTaxonomyNodeRepo {
 	return learning.NewLibraryTaxonomyNodeRepo(db, baseLog)

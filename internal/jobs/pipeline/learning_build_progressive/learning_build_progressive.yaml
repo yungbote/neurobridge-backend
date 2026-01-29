@@ -1,0 +1,171 @@
+pipeline: learning_build_progressive
+version: 1
+stages:
+  - name: web_resources_seed
+    job_type: web_resources_seed
+    depends_on: []
+  - name: ingest_chunks
+    depends_on: [web_resources_seed]
+  - name: material_set_summarize
+    depends_on: [ingest_chunks]
+  - name: file_signature_build
+    depends_on: [ingest_chunks]
+  - name: path_intake_pre
+    job_type: path_intake
+    depends_on: [file_signature_build]
+    config:
+      waitpoint:
+        kind: path_intake.structure_v1
+        actions:
+          - id: confirm
+            label: Confirm
+            token: confirm
+            variant: primary
+          - id: regroup
+            label: Change grouping
+            token: change grouping
+            variant: secondary
+        intents:
+          - id: confirm
+            label: Confirm grouping
+            description: Proceed with the proposed grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll proceed with these paths and continue.
+            selection:
+              commit_type: confirm
+              paths_confirmed: true
+          - id: regroup
+            label: Regroup files
+            description: Change the grouping or move files between paths
+            action: confirm_resume
+            confirm_message: Got it — I'll regroup the files based on your notes and continue.
+            selection:
+              commit_type: change
+              paths_confirmed: false
+  - name: user_profile_refresh
+    depends_on: [file_signature_build]
+  - name: path_intake_waitpoint
+    type: waitpoint
+    depends_on: [path_intake_pre]
+    config:
+      message_kind: path_intake_questions
+      waitpoint:
+        kind: path_intake.structure_v1
+        step: path_intake
+        actions:
+          - id: confirm
+            label: Confirm
+            token: confirm
+            variant: primary
+          - id: regroup
+            label: Change grouping
+            token: change grouping
+            variant: secondary
+        intents:
+          - id: confirm
+            label: Confirm grouping
+            description: Proceed with the proposed grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll proceed with these paths and continue.
+            selection:
+              commit_type: confirm
+              paths_confirmed: true
+          - id: regroup
+            label: Regroup files
+            description: Change the grouping or move files between paths
+            action: confirm_resume
+            confirm_message: Got it — I'll regroup the files based on your notes and continue.
+            selection:
+              commit_type: change
+              paths_confirmed: false
+  - name: path_grouping_refine_pre
+    job_type: path_grouping_refine
+    depends_on: [path_intake_waitpoint]
+    config:
+      waitpoint:
+        kind: path_grouping_refine.structure_v1
+        actions:
+          - id: keep_current
+            label: Keep current
+            token: keep current
+            variant: primary
+          - id: use_refined
+            label: Use refined
+            token: use refined
+            variant: secondary
+        intents:
+          - id: keep_current
+            label: Keep current grouping
+            description: Keep the current grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll keep the current grouping and continue.
+            selection:
+              paths_refined: false
+              paths_confirmed: true
+          - id: use_refined
+            label: Use refined grouping
+            description: Switch to the refined grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll use the refined grouping and continue.
+            selection:
+              paths_refined: true
+              paths_confirmed: true
+  - name: path_grouping_refine_waitpoint
+    type: waitpoint
+    depends_on: [path_grouping_refine_pre]
+    config:
+      message_kind: path_intake_questions
+      waitpoint:
+        kind: path_grouping_refine.structure_v1
+        step: path_grouping_refine
+        actions:
+          - id: keep_current
+            label: Keep current
+            token: keep current
+            variant: primary
+          - id: use_refined
+            label: Use refined
+            token: use refined
+            variant: secondary
+        intents:
+          - id: keep_current
+            label: Keep current grouping
+            description: Keep the current grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll keep the current grouping and continue.
+            selection:
+              paths_refined: false
+              paths_confirmed: true
+          - id: use_refined
+            label: Use refined grouping
+            description: Switch to the refined grouping
+            action: confirm_resume
+            confirm_message: Got it — I'll use the refined grouping and continue.
+            selection:
+              paths_refined: true
+              paths_confirmed: true
+  - name: path_structure_dispatch
+    depends_on: [path_grouping_refine_waitpoint]
+  - name: embed_chunks
+    depends_on: [ingest_chunks]
+  - name: concept_graph_build
+    depends_on: [path_structure_dispatch]
+    config:
+      mode: fast
+  - name: concept_graph_patch_build
+    depends_on: [concept_graph_build]
+  - name: material_signal_build
+    depends_on: [concept_graph_patch_build]
+  - name: path_structure_refine
+    depends_on: [concept_graph_patch_build]
+  - name: path_plan_build
+    depends_on: [concept_graph_patch_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
+  - name: path_cover_render
+    depends_on: [path_plan_build]
+  - name: node_doc_build
+    depends_on: [path_plan_build, embed_chunks]
+    config:
+      node_limit: 2
+      node_select_mode: outline_and_lesson
+      mark_remaining_pending: true
+variants:

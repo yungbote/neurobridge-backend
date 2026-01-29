@@ -701,19 +701,51 @@ func annotatePipelineMetrics(st *OrchestratorState) {
 	st.ensure()
 	now := time.Now().UTC()
 	stageMetrics := map[string]any{}
+	cacheHits := []string{}
+	validationStages := []string{}
+	warningStages := []string{}
+	earliestStart := (*time.Time)(nil)
+	latestFinish := (*time.Time)(nil)
+	allTerminal := true
+	stageDurations := make(map[string]int64)
 	for name, ss := range st.Stages {
 		if ss == nil {
 			continue
 		}
+		if ss.Status != StageSucceeded && ss.Status != StageFailed && ss.Status != StageSkipped {
+			allTerminal = false
+		}
 		deps := append([]string(nil), ss.Deps...)
 		sort.Strings(deps)
 		unmet := unmetDepsForStage(ss, st)
+		quality, cacheHit, hasValidation, hasWarnings := extractQualitySignals(ss)
+		if cacheHit {
+			cacheHits = append(cacheHits, name)
+		}
+		if hasValidation {
+			validationStages = append(validationStages, name)
+		}
+		if hasWarnings {
+			warningStages = append(warningStages, name)
+		}
+		dur := durationMsForStage(ss, now)
+		stageDurations[name] = dur
+		if ss.StartedAt != nil {
+			if earliestStart == nil || ss.StartedAt.Before(*earliestStart) {
+				earliestStart = ss.StartedAt
+			}
+		}
+		if ss.FinishedAt != nil {
+			if latestFinish == nil || ss.FinishedAt.After(*latestFinish) {
+				latestFinish = ss.FinishedAt
+			}
+		}
 		stageMetrics[name] = map[string]any{
 			"status":           ss.Status,
 			"deps":             deps,
 			"unmet_deps":       unmet,
 			"blocked_by":       blockedByForStage(ss, unmet, now),
-			"duration_ms":      durationMsForStage(ss, now),
+			"duration_ms":      dur,
 			"attempts":         ss.Attempts,
 			"child_job_id":     strings.TrimSpace(ss.ChildJobID),
 			"child_job_type":   strings.TrimSpace(ss.ChildJobType),
@@ -722,13 +754,145 @@ func annotatePipelineMetrics(st *OrchestratorState) {
 			"finished_at":      ss.FinishedAt,
 			"next_run_at":      ss.NextRunAt,
 		}
+		if len(quality) > 0 {
+			stageMetrics[name].(map[string]any)["quality"] = quality
+		}
 	}
 	cp, cpMs := criticalPathFromState(st, now)
+	pipelineElapsed := int64(0)
+	var pipelineStartAny any
+	var pipelineFinishAny any
+	if earliestStart != nil {
+		pipelineStartAny = *earliestStart
+		if allTerminal && latestFinish != nil {
+			pipelineFinishAny = *latestFinish
+			pipelineElapsed = latestFinish.Sub(*earliestStart).Milliseconds()
+		} else {
+			pipelineElapsed = now.Sub(*earliestStart).Milliseconds()
+		}
+	}
+	type slowStage struct {
+		Name       string `json:"name"`
+		DurationMS int64  `json:"duration_ms"`
+	}
+	slowest := make([]slowStage, 0, len(stageDurations))
+	for name, dur := range stageDurations {
+		if dur <= 0 {
+			continue
+		}
+		slowest = append(slowest, slowStage{Name: name, DurationMS: dur})
+	}
+	sort.Slice(slowest, func(i, j int) bool { return slowest[i].DurationMS > slowest[j].DurationMS })
+	if len(slowest) > 8 {
+		slowest = slowest[:8]
+	}
+	stageShare := map[string]float64{}
+	if pipelineElapsed > 0 {
+		for name, dur := range stageDurations {
+			if dur <= 0 {
+				continue
+			}
+			stageShare[name] = float64(dur) / float64(pipelineElapsed)
+		}
+	}
 	st.Meta["pipeline_metrics"] = map[string]any{
-		"computed_at":      now,
-		"critical_path":    cp,
-		"critical_path_ms": cpMs,
-		"stage_metrics":    stageMetrics,
+		"computed_at":         now,
+		"pipeline_started_at": pipelineStartAny,
+		"pipeline_finished_at": pipelineFinishAny,
+		"pipeline_elapsed_ms": pipelineElapsed,
+		"critical_path":       cp,
+		"critical_path_ms":    cpMs,
+		"stage_metrics":       stageMetrics,
+		"stage_time_share":    stageShare,
+		"slowest_stages":      slowest,
+		"cache_hits":          cacheHits,
+		"validation_stages":   validationStages,
+		"warning_stages":      warningStages,
+	}
+}
+
+func extractQualitySignals(ss *StageState) (map[string]any, bool, bool, bool) {
+	quality := map[string]any{}
+	cacheHit := false
+	hasValidation := false
+	hasWarnings := false
+	out := stageOutputMap(ss)
+	if out == nil {
+		return quality, cacheHit, hasValidation, hasWarnings
+	}
+	if v, ok := out["cache_hit"]; ok {
+		cacheHit = boolFromAny(v)
+		quality["cache_hit"] = cacheHit
+	}
+	if v, ok := out["cache_status"]; ok {
+		quality["cache_status"] = v
+	}
+	if v, ok := out["validation_errors"]; ok {
+		quality["validation_errors"] = v
+		hasValidation = hasValue(v)
+	}
+	if v, ok := out["quality_warnings"]; ok {
+		quality["quality_warnings"] = v
+		hasWarnings = hasValue(v)
+	}
+	return quality, cacheHit, hasValidation, hasWarnings
+}
+
+func stageOutputMap(ss *StageState) map[string]any {
+	if ss == nil {
+		return nil
+	}
+	if ss.ChildResult != nil {
+		switch t := ss.ChildResult.(type) {
+		case map[string]any:
+			return t
+		case []byte:
+			var out map[string]any
+			if json.Unmarshal(t, &out) == nil {
+				return out
+			}
+		case string:
+			var out map[string]any
+			if json.Unmarshal([]byte(t), &out) == nil {
+				return out
+			}
+		}
+	}
+	if ss.Outputs != nil && len(ss.Outputs) > 0 {
+		return ss.Outputs
+	}
+	return nil
+}
+
+func boolFromAny(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "true") || strings.TrimSpace(t) == "1"
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+func hasValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(t) != ""
+	case []string:
+		return len(t) > 0
+	case []any:
+		return len(t) > 0
+	case map[string]any:
+		return len(t) > 0
+	default:
+		return true
 	}
 }
 

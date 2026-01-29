@@ -149,7 +149,7 @@ func TagSegments(in []Segment, extra map[string]any) []Segment {
 	return out
 }
 
-func TextSignalWeak(segs []Segment) bool {
+func TextSignalLen(segs []Segment) int {
 	total := 0
 	for _, s := range segs {
 		k := ""
@@ -163,6 +163,11 @@ func TextSignalWeak(segs []Segment) bool {
 			total += len(s.Text)
 		}
 	}
+	return total
+}
+
+func TextSignalWeak(segs []Segment) bool {
+	total := TextSignalLen(segs)
 	return total < 500
 }
 

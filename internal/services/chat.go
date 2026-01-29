@@ -296,7 +296,7 @@ func (s *chatService) ListPendingIntakeQuestions(dbc dbctx.Context, limit int) (
 		Joins("JOIN job_run AS jb ON jb.id = t.job_id").
 		Where("m.user_id = ? AND m.deleted_at IS NULL", rd.UserID).
 		Where("m.metadata->>'kind' = ?", "path_intake_review").
-		Where("jb.owner_user_id = ? AND jb.job_type = ? AND jb.status IN ?", rd.UserID, "learning_build", activeStatuses).
+		Where("jb.owner_user_id = ? AND jb.job_type IN ? AND jb.status IN ?", rd.UserID, []string{"learning_build", "learning_build_progressive"}, activeStatuses).
 		Order("m.created_at DESC").
 		Limit(limit).
 		Find(&reviews).Error; err != nil {
@@ -508,7 +508,8 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 					buildIsPaused = s.hasPausedWaitpointChild(inner, buildJob)
 				}
 				if buildJob.OwnerUserID == rd.UserID &&
-					strings.EqualFold(strings.TrimSpace(buildJob.JobType), "learning_build") &&
+					(strings.EqualFold(strings.TrimSpace(buildJob.JobType), "learning_build") ||
+						strings.EqualFold(strings.TrimSpace(buildJob.JobType), "learning_build_progressive")) &&
 					buildIsPaused {
 					// Thread has a paused build - route through waitpoint_interpret.
 					seqUser := th.NextSeq + 1

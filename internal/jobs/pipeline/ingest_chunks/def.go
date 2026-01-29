@@ -17,6 +17,7 @@ type Pipeline struct {
 	extract   ingestion.ContentExtractionService
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
+	artifacts repos.LearningArtifactRepo
 }
 
 func New(
@@ -27,6 +28,7 @@ func New(
 	extract ingestion.ContentExtractionService,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
+	artifacts repos.LearningArtifactRepo,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
@@ -36,6 +38,7 @@ func New(
 		extract:   extract,
 		saga:      saga,
 		bootstrap: bootstrap,
+		artifacts: artifacts,
 	}
 }
 

@@ -16,6 +16,7 @@ type Input struct {
 	MaterialSetIntentJSON   string
 	MaterialSetCoverageJSON string
 	MaterialSetEdgesJSON    string
+	MaterialSetSummaryJSON  string
 	UserSetsJSON            string
 	// Material set summary
 	BundleExcerpt string
@@ -27,6 +28,7 @@ type Input struct {
 	ConceptsJSON         string
 	EdgesJSON            string
 	CrossDocSectionsJSON string
+	SeedConceptKeysJSON  string
 	PathNarrativeJSON    string
 	StyleManifestJSON    string
 	NodeNarrativeJSON    string

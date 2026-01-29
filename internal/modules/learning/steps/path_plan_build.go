@@ -50,6 +50,7 @@ type PathPlanBuildInput struct {
 type PathPlanBuildOutput struct {
 	PathID uuid.UUID `json:"path_id"`
 	Nodes  int       `json:"nodes"`
+	Adaptive map[string]any `json:"adaptive,omitempty"`
 }
 
 func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuildInput) (PathPlanBuildOutput, error) {
@@ -69,6 +70,19 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("path_plan_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("path_plan_build: adaptive params", "adaptive", adaptiveStageMeta("path_plan_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("path_plan_build", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	// Idempotency: if nodes already exist, don't rebuild structure (preserve stable IDs/ranks).
 	existingNodes, err := deps.PathNodes.GetByPathIDs(dbctx.Context{Ctx: ctx}, []uuid.UUID{pathID})
@@ -239,7 +253,25 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	}
 	edgesJSON, _ := json.Marshal(map[string]any{"edges": earr})
 
-	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, 30)
+	topConcepts := envIntAllowZero("PATH_PLAN_SIGNAL_TOP_CONCEPTS", 0)
+	if adaptiveEnabled {
+		ceiling := topConcepts
+		if ceiling < 0 {
+			ceiling = 0
+		}
+		topConcepts = adaptiveFromRatio(signals.ConceptCount, 0.4, 20, ceiling)
+		if signals.ConceptCount > 80 && topConcepts < 40 {
+			topConcepts = 40
+		}
+		adaptiveParams["PATH_PLAN_SIGNAL_TOP_CONCEPTS"] = map[string]any{
+			"actual":  topConcepts,
+			"ceiling": ceiling,
+		}
+	}
+	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, pathID, topConcepts, adaptiveEnabled, signals)
+	if len(signalCtx.Meta) > 0 {
+		adaptiveParams["signal_context"] = signalCtx.Meta
+	}
 
 	// ---- Prompt: Path charter ----
 	charterPrompt, err := prompts.Build(prompts.PromptPathCharter, prompts.Input{
@@ -252,6 +284,13 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	})
 	if err != nil {
 		return out, err
+	}
+	if deps.Log != nil {
+		deps.Log.Info(
+			"path_plan_build: signal context window",
+			"top_concepts", topConcepts,
+			"context_meta", signalCtx.Meta,
+		)
 	}
 	charterObj, err := deps.AI.GenerateJSON(ctx, charterPrompt.System, charterPrompt.User, charterPrompt.SchemaName, charterPrompt.Schema)
 	if err != nil {

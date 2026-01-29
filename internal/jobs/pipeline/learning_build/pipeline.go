@@ -249,10 +249,11 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 		TeachingPatterns: p.inline.TeachingPatterns,
 
-		NodeDocs: p.inline.NodeDocs,
-		Figures:  p.inline.NodeFigures,
-		Videos:   p.inline.NodeVideos,
-		GenRuns:  p.inline.DocGenRuns,
+		NodeDocs:  p.inline.NodeDocs,
+		Figures:   p.inline.NodeFigures,
+		Videos:    p.inline.NodeVideos,
+		GenRuns:   p.inline.DocGenRuns,
+		Artifacts: p.inline.Artifacts,
 
 		Assets: p.inline.Assets,
 
@@ -316,7 +317,15 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		case "material_set_summarize":
 			_, stageErr = uc.MaterialSetSummarize(jc.Ctx, learningmod.MaterialSetSummarizeInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "concept_graph_build":
-			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+			mode := ""
+			if spec, ok := pipelineStageSpec(p.log, stageName); ok {
+				if v, ok := spec.Config["mode"]; ok && v != nil {
+					mode = strings.TrimSpace(fmt.Sprint(v))
+				}
+			}
+			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID, Mode: mode})
+		case "concept_graph_patch_build":
+			_, stageErr = uc.ConceptGraphPatchBuild(jc.Ctx, learningmod.ConceptGraphPatchBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_signal_build":
 			_, stageErr = uc.MaterialSignalBuild(jc.Ctx, learningmod.MaterialSignalBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_kg_build":

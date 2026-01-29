@@ -65,10 +65,14 @@ type RealizeActivitiesInput struct {
 }
 
 type RealizeActivitiesOutput struct {
-	PathID         uuid.UUID `json:"path_id"`
-	ActivitiesMade int       `json:"activities_made"`
-	VariantsMade   int       `json:"variants_made"`
+	PathID             uuid.UUID `json:"path_id"`
+	ActivitiesMade     int       `json:"activities_made"`
+	VariantsMade       int       `json:"variants_made"`
+	ActivitiesExisting int       `json:"activities_existing"`
+	Adaptive           map[string]any `json:"adaptive,omitempty"`
 }
+
+const activityPromptVersion = "activity_content_v1@1"
 
 func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in RealizeActivitiesInput) (RealizeActivitiesOutput, error) {
 	out := RealizeActivitiesOutput{}
@@ -93,6 +97,19 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("realize_activities")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("realize_activities: adaptive params", "adaptive", adaptiveStageMeta("realize_activities", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("realize_activities", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	up, err := deps.UserProfile.GetByUserID(dbctx.Context{Ctx: ctx}, in.OwnerUserID)
 	if err != nil || up == nil || strings.TrimSpace(up.ProfileDoc) == "" {
@@ -136,15 +153,45 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 	if err != nil {
 		return out, err
 	}
-	existingRank := map[uuid.UUID]map[int]bool{}
+	type existingActivityRef struct {
+		Join      *types.PathNodeActivity
+		Activity  *types.Activity
+		InputHash string
+	}
+	existingByNodeSlot := map[uuid.UUID]map[int]*existingActivityRef{}
+	activityIDs := make([]uuid.UUID, 0, len(existingJoins))
+	for _, j := range existingJoins {
+		if j == nil || j.ActivityID == uuid.Nil {
+			continue
+		}
+		activityIDs = append(activityIDs, j.ActivityID)
+	}
+	activityByID := map[uuid.UUID]*types.Activity{}
+	if len(activityIDs) > 0 {
+		if rows, err := deps.Activities.GetByIDs(dbctx.Context{Ctx: ctx}, activityIDs); err == nil {
+			for _, a := range rows {
+				if a != nil && a.ID != uuid.Nil {
+					activityByID[a.ID] = a
+				}
+			}
+		}
+	}
 	for _, j := range existingJoins {
 		if j == nil || j.PathNodeID == uuid.Nil {
 			continue
 		}
-		if existingRank[j.PathNodeID] == nil {
-			existingRank[j.PathNodeID] = map[int]bool{}
+		act := activityByID[j.ActivityID]
+		if act == nil {
+			continue
 		}
-		existingRank[j.PathNodeID][j.Rank] = true
+		if existingByNodeSlot[j.PathNodeID] == nil {
+			existingByNodeSlot[j.PathNodeID] = map[int]*existingActivityRef{}
+		}
+		existingByNodeSlot[j.PathNodeID][j.Rank] = &existingActivityRef{
+			Join:      j,
+			Activity:  act,
+			InputHash: activityInputHashFromMetadata(act.Metadata),
+		}
 	}
 
 	// Concepts for joins (key -> id)
@@ -246,6 +293,8 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		ConceptCSV       string
 		QueryText        string
 		TitleHint        string
+		Existing         *types.Activity
+		ExistingHash     string
 	}
 
 	work := make([]activitySlotWork, 0)
@@ -280,8 +329,9 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				continue
 			}
 			slotIndex := intFromAny(slotObj["slot"], i)
-			if existingRank[node.ID] != nil && existingRank[node.ID][slotIndex] {
-				continue
+			var existingRef *existingActivityRef
+			if existingByNodeSlot[node.ID] != nil {
+				existingRef = existingByNodeSlot[node.ID][slotIndex]
 			}
 
 			kind := strings.TrimSpace(stringFromAny(slotObj["kind"]))
@@ -320,6 +370,18 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				ConceptCSV:       conceptCSV,
 				QueryText:        strings.TrimSpace(node.Title + " " + nodeGoal + " " + kind + " " + conceptCSV),
 				TitleHint:        strings.TrimSpace(kind + ": " + node.Title),
+				Existing: func() *types.Activity {
+					if existingRef != nil {
+						return existingRef.Activity
+					}
+					return nil
+				}(),
+				ExistingHash: func() string {
+					if existingRef != nil {
+						return existingRef.InputHash
+					}
+					return ""
+				}(),
 			})
 		}
 	}
@@ -333,7 +395,10 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 		return out, nil
 	}
 
-	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, 0)
+	signalCtx := loadMaterialSetSignalContext(ctx, deps.DB, in.MaterialSetID, pathID, 0, adaptiveEnabled, signals)
+	if len(signalCtx.Meta) > 0 {
+		adaptiveParams["signal_context"] = signalCtx.Meta
+	}
 	if len(signalCtx.WeightsByKey) > 0 {
 		for i := range work {
 			if len(work[i].PrimaryKeys) == 0 {
@@ -395,6 +460,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 	var actsMade int32
 	var varsMade int32
+	var existingCount int32
 
 	for i := range work {
 		w := work[i]
@@ -409,6 +475,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
 				MaterialSetID: sourceSetID,
+				PathID:        pathID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      qEmb[0],
@@ -418,6 +485,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				LexicalK:      6,
 				FinalK:        12,
 				ChunkEmbs:     chunkEmbs,
+				AdaptiveStage: "realize_activities",
 			})
 			if len(chunkIDs) == 0 {
 				if len(chunkEmbs) == 0 {
@@ -440,6 +508,30 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					userKnowledgeJSON = uj
 				}
 			}
+			inputHash := activityInputHash(activityHashInput{
+				PromptVersion:     activityPromptVersion,
+				NodeID:            w.NodeID,
+				NodeTitle:         w.NodeTitle,
+				NodeGoal:          w.NodeGoal,
+				NodeDifficulty:    w.NodeDifficulty,
+				SlotIndex:         w.SlotIndex,
+				Kind:              w.Kind,
+				EstimatedMinutes:  w.EstimatedMinutes,
+				PrimaryKeys:       w.PrimaryKeys,
+				ConceptCSV:        w.ConceptCSV,
+				PathCharterJSON:   charterJSON,
+				UserProfileDoc:    up.ProfileDoc,
+				UserKnowledgeJSON: userKnowledgeJSON,
+				TeachingJSON:      teachingJSON,
+				ChunkIDs:          chunkIDs,
+				ChunkByID:         chunkByID,
+				Excerpts:          excerpts,
+			})
+			if w.Existing != nil && strings.TrimSpace(w.ExistingHash) != "" && strings.TrimSpace(w.ExistingHash) == inputHash {
+				atomic.AddInt32(&existingCount, 1)
+				return nil
+			}
+
 			p, err := prompts.Build(prompts.PromptActivityContent, prompts.Input{
 				UserProfileDoc:       up.ProfileDoc,
 				TeachingPatternsJSON: teachingJSON,
@@ -509,6 +601,9 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			}
 
 			activityID := uuid.New()
+			if w.Existing != nil && w.Existing.ID != uuid.Nil {
+				activityID = w.Existing.ID
+			}
 			variantID := uuid.New()
 			vectorID := "activity_variant:" + variantID.String()
 
@@ -521,25 +616,60 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					}
 				}
 
-				act := &types.Activity{
-					ID:               activityID,
-					OwnerType:        "path",
-					OwnerID:          &pathID,
-					Kind:             actKind,
-					Title:            actTitle,
-					ContentJSON:      datatypes.JSON(contentJSON),
-					EstimatedMinutes: actMinutes,
-					Difficulty:       w.NodeDifficulty,
-					Status:           "draft",
-					Metadata: datatypes.JSON(mustJSON(map[string]any{
-						"path_node_id": w.NodeID.String(),
-						"slot":         w.SlotIndex,
-					})),
-					CreatedAt: time.Now().UTC(),
-					UpdatedAt: time.Now().UTC(),
+				now := time.Now().UTC()
+				meta := map[string]any{
+					"path_node_id":   w.NodeID.String(),
+					"slot":           w.SlotIndex,
+					"input_hash":     inputHash,
+					"prompt_version": activityPromptVersion,
 				}
-				if _, err := deps.Activities.Create(dbc, []*types.Activity{act}); err != nil {
-					return err
+
+				if w.Existing != nil && w.Existing.ID != uuid.Nil {
+					if rows, err := deps.Variants.GetByActivityIDs(dbc, []uuid.UUID{activityID}); err == nil && len(rows) > 0 {
+						variantIDs := make([]uuid.UUID, 0, len(rows))
+						for _, v := range rows {
+							if v != nil && v.ID != uuid.Nil {
+								variantIDs = append(variantIDs, v.ID)
+							}
+						}
+						if len(variantIDs) > 0 {
+							_ = deps.ActivityCitations.FullDeleteByActivityVariantIDs(dbc, variantIDs)
+						}
+					}
+					_ = deps.Variants.FullDeleteByActivityIDs(dbc, []uuid.UUID{activityID})
+					_ = deps.ActivityConcepts.FullDeleteByActivityIDs(dbc, []uuid.UUID{activityID})
+
+					w.Existing.OwnerType = "path"
+					w.Existing.OwnerID = &pathID
+					w.Existing.Kind = actKind
+					w.Existing.Title = actTitle
+					w.Existing.ContentJSON = datatypes.JSON(contentJSON)
+					w.Existing.EstimatedMinutes = actMinutes
+					w.Existing.Difficulty = w.NodeDifficulty
+					w.Existing.Status = "draft"
+					w.Existing.Metadata = datatypes.JSON(mustJSON(meta))
+					w.Existing.UpdatedAt = now
+					if err := deps.Activities.Update(dbc, w.Existing); err != nil {
+						return err
+					}
+				} else {
+					act := &types.Activity{
+						ID:               activityID,
+						OwnerType:        "path",
+						OwnerID:          &pathID,
+						Kind:             actKind,
+						Title:            actTitle,
+						ContentJSON:      datatypes.JSON(contentJSON),
+						EstimatedMinutes: actMinutes,
+						Difficulty:       w.NodeDifficulty,
+						Status:           "draft",
+						Metadata:         datatypes.JSON(mustJSON(meta)),
+						CreatedAt:        now,
+						UpdatedAt:        now,
+					}
+					if _, err := deps.Activities.Create(dbc, []*types.Activity{act}); err != nil {
+						return err
+					}
 				}
 
 				varRow := &types.ActivityVariant{
@@ -637,6 +767,7 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 	out.ActivitiesMade = int(atomic.LoadInt32(&actsMade))
 	out.VariantsMade = int(atomic.LoadInt32(&varsMade))
+	out.ActivitiesExisting = int(atomic.LoadInt32(&existingCount))
 	if deps.Graph != nil {
 		if err := syncPathActivitiesToNeo4j(ctx, deps, pathID); err != nil {
 			deps.Log.Warn("neo4j activities sync failed (continuing)", "error", err, "path_id", pathID.String())
@@ -1109,4 +1240,90 @@ func filterAllowedChunkIDStrings(in []string, allowed map[string]bool, fallback 
 		return []string{s}
 	}
 	return nil
+}
+
+type activityHashInput struct {
+	PromptVersion     string
+	NodeID            uuid.UUID
+	NodeTitle         string
+	NodeGoal          string
+	NodeDifficulty    string
+	SlotIndex         int
+	Kind              string
+	EstimatedMinutes  int
+	PrimaryKeys       []string
+	ConceptCSV        string
+	PathCharterJSON   string
+	UserProfileDoc    string
+	UserKnowledgeJSON string
+	TeachingJSON      string
+	ChunkIDs          []uuid.UUID
+	ChunkByID         map[uuid.UUID]*types.MaterialChunk
+	Excerpts          string
+}
+
+func activityInputHash(in activityHashInput) string {
+	payload := map[string]any{
+		"prompt_version": in.PromptVersion,
+		"node": map[string]any{
+			"id":         in.NodeID.String(),
+			"title":      strings.TrimSpace(in.NodeTitle),
+			"goal":       strings.TrimSpace(in.NodeGoal),
+			"difficulty": strings.TrimSpace(in.NodeDifficulty),
+		},
+		"slot": map[string]any{
+			"index":             in.SlotIndex,
+			"kind":              strings.TrimSpace(in.Kind),
+			"estimated_minutes": in.EstimatedMinutes,
+			"primary_keys":      dedupeStrings(in.PrimaryKeys),
+			"concept_csv":       strings.TrimSpace(in.ConceptCSV),
+		},
+		"context": map[string]any{
+			"charter_hash":        hashString(in.PathCharterJSON),
+			"user_profile_hash":   hashString(in.UserProfileDoc),
+			"user_knowledge_hash": hashString(in.UserKnowledgeJSON),
+			"teaching_hash":       hashString(in.TeachingJSON),
+			"excerpts_hash":       hashString(in.Excerpts),
+		},
+		"chunks": activityChunkFingerprint(in.ChunkByID, in.ChunkIDs),
+	}
+	canon, err := learningcontent.CanonicalizeJSON(payload)
+	if err != nil {
+		return ""
+	}
+	return learningcontent.HashBytes(canon)
+}
+
+func activityInputHashFromMetadata(raw datatypes.JSON) string {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return ""
+	}
+	meta := map[string]any{}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stringFromAny(meta["input_hash"]))
+}
+
+func activityChunkFingerprint(byID map[uuid.UUID]*types.MaterialChunk, ids []uuid.UUID) []map[string]any {
+	out := make([]map[string]any, 0, len(ids))
+	seen := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ch := byID[id]
+		if ch == nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id":         id.String(),
+			"updated_at": ch.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return stringFromAny(out[i]["id"]) < stringFromAny(out[j]["id"])
+	})
+	return out
 }

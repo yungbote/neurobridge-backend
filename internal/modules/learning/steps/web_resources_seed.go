@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -114,6 +115,26 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 	}
 	out.PathID = pathID
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("web_resources_seed")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	applyAdaptiveMeta := func(meta any) any {
+		merged := map[string]any{}
+		if metaMap, ok := meta.(map[string]any); ok && metaMap != nil {
+			for k, v := range metaMap {
+				merged[k] = v
+			}
+		}
+		merged["adaptive"] = adaptiveStageMeta("web_resources_seed", adaptiveEnabled, signals, adaptiveParams)
+		return merged
+	}
+	defer func() {
+		out.Meta = applyAdaptiveMeta(out.Meta)
+	}()
+
 	files, err := deps.Files.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, in.MaterialSetID)
 	if err != nil {
 		return out, err
@@ -198,7 +219,7 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 			return out, nil
 		}
 		out.ResourcesPlanned = len(planV1.Resources)
-		return deps.fetchAndPersistPlanV1(ctx, in, pathID, planV1, &out)
+		return deps.fetchAndPersistPlanV1(ctx, in, pathID, planV1, &out, signals, adaptiveEnabled)
 	}
 
 	plan, err := buildWebResourcePlanV2(ctx, deps, spec)
@@ -214,16 +235,15 @@ func WebResourcesSeed(ctx context.Context, deps WebResourcesSeedDeps, in WebReso
 		return out, nil
 	}
 
-	maxFetch := envInt("WEB_RESOURCES_MAX_FETCH", 10)
-	if maxFetch < 1 {
-		maxFetch = 1
+	maxFetch, maxBytes, webParams := computeWebResourceLimits(signals, adaptiveEnabled)
+	for k, v := range webParams {
+		adaptiveParams[k] = v
 	}
 	if strings.EqualFold(strings.TrimSpace(spec.CoverageTarget), "mastery") && maxFetch < 14 {
 		maxFetch = 14
 	}
-	maxBytes := int64(envInt("WEB_RESOURCES_MAX_BYTES", 2*1024*1024))
-	if maxBytes < 64*1024 {
-		maxBytes = 64 * 1024
+	if deps.Log != nil && adaptiveEnabled {
+		deps.Log.Info("web_resources_seed: adaptive params", "adaptive", adaptiveStageMeta("web_resources_seed", adaptiveEnabled, signals, adaptiveParams))
 	}
 
 	client := newWebHTTPClient()
@@ -734,18 +754,11 @@ func (deps WebResourcesSeedDeps) persistWebPlanV2(ctx context.Context, pathID uu
 	})
 }
 
-func (deps WebResourcesSeedDeps) fetchAndPersistPlanV1(ctx context.Context, in WebResourcesSeedInput, pathID uuid.UUID, plan webResourcePlanV1, out *WebResourcesSeedOutput) (WebResourcesSeedOutput, error) {
+func (deps WebResourcesSeedDeps) fetchAndPersistPlanV1(ctx context.Context, in WebResourcesSeedInput, pathID uuid.UUID, plan webResourcePlanV1, out *WebResourcesSeedOutput, signals AdaptiveSignals, adaptiveEnabled bool) (WebResourcesSeedOutput, error) {
 	if out == nil {
 		out = &WebResourcesSeedOutput{}
 	}
-	maxFetch := envInt("WEB_RESOURCES_MAX_FETCH", 10)
-	if maxFetch < 1 {
-		maxFetch = 1
-	}
-	maxBytes := int64(envInt("WEB_RESOURCES_MAX_BYTES", 2*1024*1024))
-	if maxBytes < 64*1024 {
-		maxBytes = 64 * 1024
-	}
+	maxFetch, maxBytes, _ := computeWebResourceLimits(signals, adaptiveEnabled)
 
 	client := newWebHTTPClient()
 	fetched := 0
@@ -873,6 +886,36 @@ Return 8–14 resources.`, strings.TrimSpace(prompt))
 	}
 	out.Resources = normalizeWebResourceList(out.Resources)
 	return out, nil
+}
+
+func computeWebResourceLimits(signals AdaptiveSignals, adaptiveEnabled bool) (int, int64, map[string]any) {
+	params := map[string]any{}
+	maxFetchCeiling := envInt("WEB_RESOURCES_MAX_FETCH", 10)
+	maxFetch := maxFetchCeiling
+	if adaptiveEnabled {
+		maxFetch = clampIntCeiling(int(math.Round(float64(signals.FileCount)/2.0)), 2, maxFetchCeiling)
+	}
+	if maxFetch < 1 {
+		maxFetch = 1
+	}
+	params["WEB_RESOURCES_MAX_FETCH"] = map[string]any{"actual": maxFetch, "ceiling": maxFetchCeiling}
+
+	maxBytesCeiling := envIntAllowZero("WEB_RESOURCES_MAX_BYTES", 2*1024*1024)
+	maxBytes := maxBytesCeiling
+	if maxBytes <= 0 {
+		maxBytes = 2 * 1024 * 1024
+		maxBytesCeiling = maxBytes
+	}
+	if adaptiveEnabled {
+		raw := int(math.Round(float64(maxInt(signals.FileCount, 1)) * 300000))
+		maxBytes = clampIntCeiling(raw, 200000, maxBytesCeiling)
+	}
+	if maxBytes < 64*1024 {
+		maxBytes = 64 * 1024
+	}
+	params["WEB_RESOURCES_MAX_BYTES"] = map[string]any{"actual": maxBytes, "ceiling": maxBytesCeiling}
+
+	return maxFetch, int64(maxBytes), params
 }
 
 func buildWebResourcePlanV2(ctx context.Context, deps WebResourcesSeedDeps, spec CurriculumSpecV1) (webResourcePlanV2, error) {

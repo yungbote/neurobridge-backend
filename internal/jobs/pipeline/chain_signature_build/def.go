@@ -22,6 +22,7 @@ type Pipeline struct {
 	vec       pinecone.VectorStore
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
+	artifacts repos.LearningArtifactRepo
 }
 
 func New(
@@ -36,6 +37,7 @@ func New(
 	vec pinecone.VectorStore,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
+	artifacts repos.LearningArtifactRepo,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
@@ -49,6 +51,7 @@ func New(
 		vec:       vec,
 		saga:      saga,
 		bootstrap: bootstrap,
+		artifacts: artifacts,
 	}
 }
 

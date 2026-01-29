@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -34,6 +35,7 @@ type ChainSignatureBuildDeps struct {
 	Vec       pc.VectorStore
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
+	Artifacts repos.LearningArtifactRepo
 }
 
 type ChainSignatureBuildInput struct {
@@ -47,6 +49,7 @@ type ChainSignatureBuildOutput struct {
 	PathID          uuid.UUID `json:"path_id"`
 	ChainsUpserted  int       `json:"chains_upserted"`
 	PineconeBatches int       `json:"pinecone_batches"`
+	CacheHit        bool      `json:"cache_hit,omitempty"`
 }
 
 func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in ChainSignatureBuildInput) (ChainSignatureBuildOutput, error) {
@@ -170,6 +173,70 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 	// Stable ordering for deterministic batch behavior.
 	sort.Slice(cands, func(i, j int) bool { return cands[i].VectorID < cands[j].VectorID })
 
+	var chainInputHash string
+	if deps.Artifacts != nil && artifactCacheEnabled() {
+		existingChains, _ := deps.Chains.ListByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
+		if len(existingChains) > 0 {
+			type chainInput struct {
+				Label       string           `json:"label"`
+				ConceptKeys []string         `json:"concept_keys"`
+				Edges       []keys.ChainEdge `json:"edges"`
+			}
+			chInputs := make([]chainInput, 0, len(cands))
+			for _, c := range cands {
+				chInputs = append(chInputs, chainInput{
+					Label:       strings.TrimSpace(c.Label),
+					ConceptKeys: dedupeStrings(c.ConceptKeys),
+					Edges:       c.Edges,
+				})
+			}
+			payload := map[string]any{
+				"concept_keys": allKeys,
+				"chains":       chInputs,
+				"env":          envSnapshot([]string{"CHAIN_SIGNATURE_"}, []string{"OPENAI_EMBED_MODEL", "OPENAI_MODEL"}),
+			}
+			if h, err := computeArtifactHash("chain_signature_build", in.MaterialSetID, pathID, payload); err == nil {
+				chainInputHash = h
+			}
+			if chainInputHash != "" {
+				if _, hit, err := artifactCacheGet(ctx, deps.Artifacts, in.OwnerUserID, in.MaterialSetID, pathID, "chain_signature_build", chainInputHash); err == nil && hit {
+					out.CacheHit = true
+					return out, nil
+				}
+				if artifactCacheSeedExisting() {
+					maxConceptUpdated := time.Time{}
+					for _, c := range concepts {
+						if c != nil && c.UpdatedAt.After(maxConceptUpdated) {
+							maxConceptUpdated = c.UpdatedAt
+						}
+					}
+					maxChainUpdated := time.Time{}
+					for _, c := range existingChains {
+						if c != nil && c.UpdatedAt.After(maxChainUpdated) {
+							maxChainUpdated = c.UpdatedAt
+						}
+					}
+					if maxChainUpdated.IsZero() || !maxChainUpdated.Before(maxConceptUpdated) {
+						_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+							OwnerUserID:   in.OwnerUserID,
+							MaterialSetID: in.MaterialSetID,
+							PathID:        pathID,
+							ArtifactType:  "chain_signature_build",
+							InputHash:     chainInputHash,
+							Version:       artifactHashVersion,
+							Metadata: marshalMeta(map[string]any{
+								"chains": len(existingChains),
+								"seeded": true,
+							}),
+						})
+						out.CacheHit = true
+						return out, nil
+					}
+				}
+			}
+		}
+	}
+
 	docs := make([]string, 0, len(cands))
 	for i := range cands {
 		label := strings.TrimSpace(cands[i].Label)
@@ -289,6 +356,21 @@ func ChainSignatureBuild(ctx context.Context, deps ChainSignatureBuildDeps, in C
 			}
 			out.PineconeBatches++
 		}
+	}
+
+	if chainInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+		_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+			OwnerUserID:   in.OwnerUserID,
+			MaterialSetID: in.MaterialSetID,
+			PathID:        pathID,
+			ArtifactType:  "chain_signature_build",
+			InputHash:     chainInputHash,
+			Version:       artifactHashVersion,
+			Metadata: marshalMeta(map[string]any{
+				"chains_upserted":  out.ChainsUpserted,
+				"pinecone_batches": out.PineconeBatches,
+			}),
+		})
 	}
 
 	return out, nil

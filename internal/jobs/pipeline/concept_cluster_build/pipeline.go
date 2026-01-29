@@ -36,6 +36,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:       p.vec,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
+		Artifacts: p.artifacts,
 	}).ConceptClusterBuild(jc.Ctx, learningmod.ConceptClusterBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,

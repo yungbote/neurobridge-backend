@@ -97,6 +97,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Extract:   p.extract,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
+		Artifacts: p.artifacts,
 	}).IngestChunks(jobCtx, learningmod.IngestChunksInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
@@ -127,6 +128,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"files_total":           out.FilesTotal,
 		"files_processed":       out.FilesProcessed,
 		"files_already_chunked": out.FilesAlreadyChunked,
+		"cache_hit":             out.CacheHit,
 	})
 	return nil
 }

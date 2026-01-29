@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,13 +31,13 @@ type conceptRow struct {
 }
 
 type overlapPair struct {
-	APathID          uuid.UUID `json:"a_path_id"`
-	BPathID          uuid.UUID `json:"b_path_id"`
-	Overlap          float64   `json:"overlap"`
-	AContainedInB    float64   `json:"a_contained_in_b"`
-	BContainedInA    float64   `json:"b_contained_in_a"`
-	SuggestedAction  string    `json:"suggested_action"` // "merge" | "nest" | "cross_link" | "separate"
-	SuggestedDetails string    `json:"suggested_details,omitempty"`
+	APathID           uuid.UUID `json:"a_path_id"`
+	BPathID           uuid.UUID `json:"b_path_id"`
+	Overlap           float64   `json:"overlap"`
+	AContainedInB     float64   `json:"a_contained_in_b"`
+	BContainedInA     float64   `json:"b_contained_in_a"`
+	SuggestedAction   string    `json:"suggested_action"` // "merge" | "nest" | "cross_link" | "separate"
+	SuggestedDetails  string    `json:"suggested_details,omitempty"`
 	TopSharedConcepts []string  `json:"top_shared_concepts,omitempty"` // names
 }
 
@@ -164,6 +165,16 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	crossMin := envFloat("PATH_STRUCTURE_REFINE_CROSSLINK_MIN_OVERLAP", 0.45)
 	nestMin := envFloat("PATH_STRUCTURE_REFINE_NEST_MIN_CONTAINMENT", 0.82)
 	nestMaxReverse := envFloat("PATH_STRUCTURE_REFINE_NEST_MAX_REVERSE_CONTAINMENT", 0.68)
+	contentType := "mixed"
+	if adaptiveParamsEnabledForStage("path_structure_refine") && p.files != nil {
+		if ct := detectContentTypeForPaths(dbc, p.files, withGraph); ct != "" {
+			contentType = ct
+		}
+		mergeMin = clamp01(adjustRefineThreshold("PATH_STRUCTURE_REFINE_MERGE_MIN_OVERLAP", mergeMin, contentType))
+		crossMin = clamp01(adjustRefineThreshold("PATH_STRUCTURE_REFINE_CROSSLINK_MIN_OVERLAP", crossMin, contentType))
+		nestMin = clamp01(adjustRefineThreshold("PATH_STRUCTURE_REFINE_NEST_MIN_CONTAINMENT", nestMin, contentType))
+		nestMaxReverse = clamp01(adjustRefineThreshold("PATH_STRUCTURE_REFINE_NEST_MAX_REVERSE_CONTAINMENT", nestMaxReverse, contentType))
+	}
 
 	// Compute a stable signature across all (path, concept, weight) tuples so we can de-dupe messages.
 	signature := computeSignature(withGraph, byPath)
@@ -213,10 +224,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"pairs":      pairs,
 		"thresholds": map[string]any{
-			"merge_min_overlap":       mergeMin,
-			"crosslink_min_overlap":   crossMin,
-			"nest_min_containment":    nestMin,
-			"nest_max_reverse":        nestMaxReverse,
+			"merge_min_overlap":     mergeMin,
+			"crosslink_min_overlap": crossMin,
+			"nest_min_containment":  nestMin,
+			"nest_max_reverse":      nestMaxReverse,
+			"content_type":          contentType,
 		},
 	}
 	progMeta["structure_refinement_v1"] = refObj
@@ -238,10 +250,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"path_id":     pathID.String(),
-		"program_id":  programID.String(),
-		"signature":   signature,
-		"pair_count":  len(pairs),
+		"path_id":    pathID.String(),
+		"program_id": programID.String(),
+		"signature":  signature,
+		"pair_count": len(pairs),
 	})
 	return nil
 }
@@ -256,6 +268,21 @@ func envFloat(key string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
 }
 
 func mustJSON(v any) []byte {
@@ -418,13 +445,13 @@ func computePairs(paths []*types.Path, byPath map[uuid.UUID]*dist, mergeMin, cro
 			_ = large
 
 			out = append(out, overlapPair{
-				APathID:          a.ID,
-				BPathID:          b.ID,
-				Overlap:          round3(overlap),
-				AContainedInB:    round3(aInB),
-				BContainedInA:    round3(bInA),
-				SuggestedAction:  action,
-				SuggestedDetails: details,
+				APathID:           a.ID,
+				BPathID:           b.ID,
+				Overlap:           round3(overlap),
+				AContainedInB:     round3(aInB),
+				BContainedInA:     round3(bInA),
+				SuggestedAction:   action,
+				SuggestedDetails:  details,
 				TopSharedConcepts: topIDs,
 			})
 		}
@@ -644,4 +671,161 @@ func appendRefinementMessage(
 		notify.MessageCreated(owner, threadID, created, nil)
 	}
 	return created, nil
+}
+
+func adaptiveParamsEnabledForStage(stage string) bool {
+	if !envBool("ADAPTIVE_PARAMS_ENABLED", true) {
+		return false
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return true
+	}
+	envKey := "ADAPTIVE_PARAMS_DISABLE_" + strings.ToUpper(stage)
+	if envBool(envKey, false) {
+		return false
+	}
+	if raw := strings.TrimSpace(os.Getenv("ADAPTIVE_PARAMS_DISABLE_STAGES")); raw != "" {
+		parts := strings.Split(raw, ",")
+		for _, p := range parts {
+			if strings.EqualFold(strings.TrimSpace(p), stage) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func detectContentTypeForPaths(dbc dbctx.Context, filesRepo repos.MaterialFileRepo, paths []*types.Path) string {
+	if filesRepo == nil || len(paths) == 0 {
+		return "mixed"
+	}
+	setIDs := make([]uuid.UUID, 0, len(paths))
+	for _, p := range paths {
+		if p == nil || p.MaterialSetID == nil || *p.MaterialSetID == uuid.Nil {
+			continue
+		}
+		setIDs = append(setIDs, *p.MaterialSetID)
+	}
+	setIDs = dedupeUUIDs(setIDs)
+	if len(setIDs) == 0 {
+		return "mixed"
+	}
+	files, err := filesRepo.GetByMaterialSetIDs(dbc, setIDs)
+	if err != nil || len(files) == 0 {
+		return "mixed"
+	}
+	codeExts := map[string]bool{
+		".go": true, ".py": true, ".js": true, ".ts": true, ".java": true,
+		".c": true, ".cc": true, ".cpp": true, ".rs": true, ".cs": true,
+		".rb": true, ".php": true, ".swift": true, ".kt": true, ".m": true,
+	}
+	slideExts := map[string]bool{".ppt": true, ".pptx": true, ".key": true}
+
+	codeCount := 0
+	slideCount := 0
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(f.OriginalName))
+		mime := strings.ToLower(strings.TrimSpace(f.MimeType))
+		kind := strings.ToLower(strings.TrimSpace(f.ExtractedKind))
+		ext := strings.ToLower(filepath.Ext(name))
+
+		if slideExts[ext] || strings.Contains(mime, "presentation") || strings.Contains(kind, "slides") {
+			slideCount++
+			continue
+		}
+		if codeExts[ext] || strings.HasPrefix(mime, "text/x-") || strings.Contains(mime, "text/plain") {
+			codeCount++
+			continue
+		}
+	}
+
+	total := len(files)
+	if slideCount*100 >= total*60 {
+		return "slides"
+	}
+	if codeCount*100 >= total*60 {
+		return "code"
+	}
+	if slideCount == 0 && codeCount == 0 {
+		return "prose"
+	}
+	return "mixed"
+}
+
+func adjustRefineThreshold(name string, base float64, contentType string) float64 {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	switch name {
+	case "PATH_STRUCTURE_REFINE_CROSSLINK_MIN_OVERLAP":
+		switch ct {
+		case "prose":
+			return base - 0.05
+		case "slides":
+			return base - 0.04
+		case "mixed":
+			return base - 0.03
+		case "code":
+			return base + 0.01
+		}
+	case "PATH_STRUCTURE_REFINE_MERGE_MIN_OVERLAP":
+		switch ct {
+		case "code":
+			return base + 0.05
+		case "prose":
+			return base - 0.02
+		case "slides":
+			return base - 0.03
+		case "mixed":
+			return base + 0.01
+		}
+	case "PATH_STRUCTURE_REFINE_NEST_MIN_CONTAINMENT":
+		switch ct {
+		case "code":
+			return base + 0.04
+		case "prose":
+			return base + 0.02
+		case "slides":
+			return base - 0.02
+		case "mixed":
+			return base + 0.01
+		}
+	case "PATH_STRUCTURE_REFINE_NEST_MAX_REVERSE_CONTAINMENT":
+		switch ct {
+		case "mixed":
+			return base - 0.05
+		case "slides":
+			return base - 0.03
+		case "code":
+			return base + 0.02
+		case "prose":
+			return base + 0.01
+		}
+	}
+	return base
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func dedupeUUIDs(in []uuid.UUID) []uuid.UUID {
+	seen := map[uuid.UUID]bool{}
+	out := make([]uuid.UUID, 0, len(in))
+	for _, id := range in {
+		if id == uuid.Nil || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }

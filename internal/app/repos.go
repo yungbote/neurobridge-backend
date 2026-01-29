@@ -65,6 +65,7 @@ type Repos struct {
 	LearningNodeVideo        repos.LearningNodeVideoRepo
 	DocGenerationRun         repos.LearningDocGenerationRunRepo
 	DrillInstance            repos.LearningDrillInstanceRepo
+	LearningArtifact         repos.LearningArtifactRepo
 	ChatThread               repos.ChatThreadRepo
 	ChatMessage              repos.ChatMessageRepo
 	ChatThreadState          repos.ChatThreadStateRepo
@@ -138,6 +139,7 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		LearningNodeVideo:        repos.NewLearningNodeVideoRepo(db, log),
 		DocGenerationRun:         repos.NewLearningDocGenerationRunRepo(db, log),
 		DrillInstance:            repos.NewLearningDrillInstanceRepo(db, log),
+		LearningArtifact:         repos.NewLearningArtifactRepo(db, log),
 		ChatThread:               repos.NewChatThreadRepo(db, log),
 		ChatMessage:              repos.NewChatMessageRepo(db, log),
 		ChatThreadState:          repos.NewChatThreadStateRepo(db, log),

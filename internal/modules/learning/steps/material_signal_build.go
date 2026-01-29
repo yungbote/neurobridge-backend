@@ -37,6 +37,7 @@ type MaterialSignalBuildDeps struct {
 	MaterialSets repos.MaterialSetRepo
 	AI           openai.Client
 	Bootstrap    services.LearningBuildBootstrapService
+	Artifacts    repos.LearningArtifactRepo
 }
 
 type MaterialSignalBuildInput struct {
@@ -59,8 +60,9 @@ type MaterialSignalBuildOutput struct {
 	GlobalCoverageUpserted int `json:"global_coverage_upserted"`
 	EmergentUpserted       int `json:"emergent_upserted"`
 
-	Skipped bool           `json:"skipped"`
-	Trace   map[string]any `json:"trace,omitempty"`
+	Skipped  bool           `json:"skipped"`
+	Trace    map[string]any `json:"trace,omitempty"`
+	CacheHit bool           `json:"cache_hit,omitempty"`
 }
 
 func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in MaterialSignalBuildInput) (MaterialSignalBuildOutput, error) {
@@ -88,6 +90,19 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("material_signal_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		out.Trace["adaptive"] = adaptiveStageMeta("material_signal_build", adaptiveEnabled, signals, adaptiveParams)
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("material_signal_build: adaptive params", "adaptive", adaptiveStageMeta("material_signal_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+	}()
 
 	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID)
 	if err != nil {
@@ -174,6 +189,101 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 		}
 	}
 
+	var signalInputHash string
+	if deps.Artifacts != nil && artifactCacheEnabled() && !force {
+		payload := map[string]any{
+			"files":      filesFingerprint(files),
+			"signatures": signaturesFingerprint(fileSigs),
+			"chunks":     chunksFingerprint(chunks),
+			"env":        envSnapshot([]string{"MATERIAL_SIGNAL_"}, []string{"OPENAI_MODEL"}),
+		}
+		if h, err := computeArtifactHash("material_signal_build", in.MaterialSetID, pathID, payload); err == nil {
+			signalInputHash = h
+		}
+
+		allIntentsReady := true
+		for _, f := range files {
+			if f == nil || f.ID == uuid.Nil {
+				continue
+			}
+			if intent := existingIntents[f.ID]; intent == nil || intentNeedsRebuild(intent) {
+				allIntentsReady = false
+				break
+			}
+		}
+		allSignalsReady := true
+		for _, ch := range chunks {
+			if ch == nil || ch.ID == uuid.Nil {
+				continue
+			}
+			if existingSignals[ch.ID] == nil {
+				allSignalsReady = false
+				break
+			}
+		}
+
+		setIntentReady := false
+		var setIntent types.MaterialSetIntent
+		if err := deps.DB.WithContext(ctx).
+			Where("material_set_id = ?", in.MaterialSetID).
+			First(&setIntent).Error; err == nil && setIntent.ID != uuid.Nil {
+			setIntentReady = true
+		}
+
+		setCoverageReady := false
+		var covCount int64
+		_ = deps.DB.WithContext(ctx).Model(&types.MaterialSetConceptCoverage{}).
+			Where("material_set_id = ? AND path_id IS NOT DISTINCT FROM ?", in.MaterialSetID, pathID).
+			Count(&covCount).Error
+		if covCount > 0 {
+			setCoverageReady = true
+		}
+
+		if signalInputHash != "" && allIntentsReady && allSignalsReady && setIntentReady && setCoverageReady {
+			if _, hit, err := artifactCacheGet(ctx, deps.Artifacts, in.OwnerUserID, in.MaterialSetID, pathID, "material_signal_build", signalInputHash); err == nil && hit {
+				out.CacheHit = true
+				out.Skipped = true
+				return out, nil
+			}
+			if artifactCacheSeedExisting() {
+				maxSigUpdated := maxSignatureUpdatedAt(fileSigs)
+				maxChunkUpdated := maxChunkUpdatedAt(chunks)
+				maxInput := maxSigUpdated
+				if maxChunkUpdated.After(maxInput) {
+					maxInput = maxChunkUpdated
+				}
+				maxIntentUpdated := time.Time{}
+				for _, intent := range existingIntents {
+					if intent != nil && intent.UpdatedAt.After(maxIntentUpdated) {
+						maxIntentUpdated = intent.UpdatedAt
+					}
+				}
+				maxOutput := maxIntentUpdated
+				if setIntent.UpdatedAt.After(maxOutput) {
+					maxOutput = setIntent.UpdatedAt
+				}
+				if maxOutput.IsZero() || !maxOutput.Before(maxInput) {
+					_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+						OwnerUserID:   in.OwnerUserID,
+						MaterialSetID: in.MaterialSetID,
+						PathID:        pathID,
+						ArtifactType:  "material_signal_build",
+						InputHash:     signalInputHash,
+						Version:       artifactHashVersion,
+						Metadata: marshalMeta(map[string]any{
+							"files_total":  len(files),
+							"chunks_total": len(chunks),
+							"seeded":       true,
+						}),
+					})
+					out.CacheHit = true
+					out.Skipped = true
+					return out, nil
+				}
+			}
+		}
+	}
+
 	// Load path concept mapping for canonical IDs.
 	concepts, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
@@ -190,7 +300,10 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 		}
 	}
 
-	settings := loadMaterialSignalSettings()
+	settings, settingsParams := loadMaterialSignalSettings(signals, adaptiveEnabled)
+	for k, v := range settingsParams {
+		adaptiveParams[k] = v
+	}
 	intentByFile := map[uuid.UUID]*types.MaterialIntent{}
 	var intentsMu sync.Mutex
 
@@ -444,14 +557,43 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 		out.ChunkLinksUpserted = len(chunkLinkRows)
 	}
 
+	var setSummary *types.MaterialSetSummary
+	if deps.DB != nil {
+		var s types.MaterialSetSummary
+		if err := deps.DB.WithContext(ctx).Model(&types.MaterialSetSummary{}).Where("material_set_id = ?", in.MaterialSetID).Take(&s).Error; err == nil && s.MaterialSetID != uuid.Nil {
+			setSummary = &s
+		}
+	}
+	var existingSetIntent *types.MaterialSetIntent
+	{
+		var it types.MaterialSetIntent
+		if err := deps.DB.WithContext(ctx).Model(&types.MaterialSetIntent{}).Where("material_set_id = ?", in.MaterialSetID).Take(&it).Error; err == nil && it.MaterialSetID != uuid.Nil {
+			existingSetIntent = &it
+		}
+	}
+
 	if envBool("MATERIAL_SIGNAL_SET_ENABLED", true) {
-		if err := upsertMaterialSetIntent(ctx, deps, in.MaterialSetID, files, intentByFile, setCoverageRows, edgeRows, settings); err != nil && deps.Log != nil {
-			deps.Log.Warn("material_signal_build: set intent failed (continuing)", "error", err)
+		minCoverage := envIntAllowZero("MATERIAL_SIGNAL_SET_MIN_COVERAGE_FOR_REFRESH", 12)
+		minEdges := envIntAllowZero("MATERIAL_SIGNAL_SET_MIN_EDGES_FOR_REFRESH", 6)
+		minCoverageCeiling := minCoverage
+		minEdgesCeiling := minEdges
+		if adaptiveEnabled {
+			minCoverage = adaptiveFromRatio(signals.ConceptCount, 0.1, 8, minCoverageCeiling)
+			minEdges = adaptiveFromRatio(signals.EdgeCount, 0.1, 6, minEdgesCeiling)
+		}
+		adaptiveParams["MATERIAL_SIGNAL_SET_MIN_COVERAGE_FOR_REFRESH"] = map[string]any{"actual": minCoverage, "ceiling": minCoverageCeiling}
+		adaptiveParams["MATERIAL_SIGNAL_SET_MIN_EDGES_FOR_REFRESH"] = map[string]any{"actual": minEdges, "ceiling": minEdgesCeiling}
+		if shouldRefreshSetIntent(existingSetIntent, len(setCoverageRows), len(edgeRows), minCoverage, minEdges) {
+			if err := upsertMaterialSetIntent(ctx, deps, in.MaterialSetID, files, intentByFile, setCoverageRows, edgeRows, setSummary, settings); err != nil && deps.Log != nil {
+				deps.Log.Warn("material_signal_build: set intent failed (continuing)", "error", err)
+			}
 		}
 	}
 
 	var setIntent *types.MaterialSetIntent
-	{
+	if existingSetIntent != nil {
+		setIntent = existingSetIntent
+	} else {
 		var it types.MaterialSetIntent
 		if err := deps.DB.WithContext(ctx).Model(&types.MaterialSetIntent{}).Where("material_set_id = ?", in.MaterialSetID).Take(&it).Error; err == nil && it.MaterialSetID != uuid.Nil {
 			setIntent = &it
@@ -489,6 +631,23 @@ func MaterialSignalBuild(ctx context.Context, deps MaterialSignalBuildDeps, in M
 		}
 	}
 
+	if signalInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+		_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+			OwnerUserID:   in.OwnerUserID,
+			MaterialSetID: in.MaterialSetID,
+			PathID:        pathID,
+			ArtifactType:  "material_signal_build",
+			InputHash:     signalInputHash,
+			Version:       artifactHashVersion,
+			Metadata: marshalMeta(map[string]any{
+				"files_total":            len(files),
+				"intents_upserted":       out.IntentsUpserted,
+				"chunk_signals_upserted": out.ChunkSignalsUpserted,
+				"set_coverage_upserted":  out.SetCoverageUpserted,
+			}),
+		})
+	}
+
 	return out, nil
 }
 
@@ -506,8 +665,8 @@ type materialSignalSettings struct {
 	MaxChunkLinks             int
 }
 
-func loadMaterialSignalSettings() materialSignalSettings {
-	return materialSignalSettings{
+func loadMaterialSignalSettings(signals AdaptiveSignals, adaptiveEnabled bool) (materialSignalSettings, map[string]any) {
+	settings := materialSignalSettings{
 		IntentConcurrency:         envInt("MATERIAL_SIGNAL_INTENT_CONCURRENCY", 4),
 		SignalConcurrency:         envInt("MATERIAL_SIGNAL_CONCURRENCY", 6),
 		ChunkBatchSize:            envInt("MATERIAL_SIGNAL_CHUNK_BATCH_SIZE", 32),
@@ -518,6 +677,48 @@ func loadMaterialSignalSettings() materialSignalSettings {
 		MaxLinksPerConcept:        envIntAllowZero("MATERIAL_SIGNAL_MAX_LINKS_PER_CONCEPT", 6),
 		MaxChunkLinks:             envIntAllowZero("MATERIAL_SIGNAL_MAX_CHUNK_LINKS", 1200),
 	}
+	params := map[string]any{}
+	chunkBatchCeiling := envInt("MATERIAL_SIGNAL_CHUNK_BATCH_SIZE", 32)
+	if adaptiveEnabled {
+		settings.ChunkBatchSize = clampIntCeiling(int(math.Round(float64(signals.ChunkCount)/4.0)), 16, chunkBatchCeiling)
+	}
+	params["MATERIAL_SIGNAL_CHUNK_BATCH_SIZE"] = map[string]any{
+		"actual":  settings.ChunkBatchSize,
+		"ceiling": chunkBatchCeiling,
+	}
+
+	maxChunksPerFileCeiling := envIntAllowZero("MATERIAL_SIGNAL_MAX_CHUNKS_PER_FILE", 0)
+	if adaptiveEnabled {
+		settings.MaxChunksPerFile = clampIntCeiling(int(math.Round(signals.AvgChunksPerFile*0.6)), 20, maxChunksPerFileCeiling)
+	}
+	params["MATERIAL_SIGNAL_MAX_CHUNKS_PER_FILE"] = map[string]any{
+		"actual":  settings.MaxChunksPerFile,
+		"ceiling": maxChunksPerFileCeiling,
+	}
+
+	maxLinksPerConceptCeiling := envIntAllowZero("MATERIAL_SIGNAL_MAX_LINKS_PER_CONCEPT", 6)
+	if adaptiveEnabled {
+		settings.MaxLinksPerConcept = clampIntCeiling(int(math.Round(float64(signals.ChunkCount)/40.0)), 4, maxLinksPerConceptCeiling)
+	}
+	params["MATERIAL_SIGNAL_MAX_LINKS_PER_CONCEPT"] = map[string]any{
+		"actual":  settings.MaxLinksPerConcept,
+		"ceiling": maxLinksPerConceptCeiling,
+	}
+
+	maxChunkLinksCeiling := envIntAllowZero("MATERIAL_SIGNAL_MAX_CHUNK_LINKS", 1200)
+	if adaptiveEnabled {
+		settings.MaxChunkLinks = clampIntCeiling(int(math.Round(float64(signals.ChunkCount)*6.0)), 300, maxChunkLinksCeiling)
+	}
+	params["MATERIAL_SIGNAL_MAX_CHUNK_LINKS"] = map[string]any{
+		"actual":  settings.MaxChunkLinks,
+		"ceiling": maxChunkLinksCeiling,
+	}
+	chunkExcerptCeiling := envInt("MATERIAL_SIGNAL_CHUNK_EXCERPT_CHARS", 650)
+	if adaptiveEnabled {
+		settings.ChunkExcerptChars = clampIntCeiling(adjustExcerptCharsByContentType(settings.ChunkExcerptChars, signals.ContentType), 200, chunkExcerptCeiling)
+	}
+	params["MATERIAL_SIGNAL_CHUNK_EXCERPT_CHARS"] = map[string]any{"actual": settings.ChunkExcerptChars, "ceiling": chunkExcerptCeiling}
+	return settings, params
 }
 
 type chunkSignalInput struct {
@@ -1422,7 +1623,7 @@ func buildChunkLinks(materialSetID uuid.UUID, rows []*types.MaterialChunkSignal,
 	return out
 }
 
-func upsertMaterialSetIntent(ctx context.Context, deps MaterialSignalBuildDeps, materialSetID uuid.UUID, files []*types.MaterialFile, intents map[uuid.UUID]*types.MaterialIntent, coverage []*types.MaterialSetConceptCoverage, edges []*types.MaterialEdge, settings materialSignalSettings) error {
+func upsertMaterialSetIntent(ctx context.Context, deps MaterialSignalBuildDeps, materialSetID uuid.UUID, files []*types.MaterialFile, intents map[uuid.UUID]*types.MaterialIntent, coverage []*types.MaterialSetConceptCoverage, edges []*types.MaterialEdge, summary *types.MaterialSetSummary, settings materialSignalSettings) error {
 	if deps.DB == nil || deps.AI == nil {
 		return nil
 	}
@@ -1490,11 +1691,13 @@ func upsertMaterialSetIntent(ctx context.Context, deps MaterialSignalBuildDeps, 
 		"material_set_id": materialSetID.String(),
 		"file_count":      len(files),
 	})
+	summaryJSON := materialSetSummaryJSON(summary)
 	p, err := prompts.Build(prompts.PromptMaterialSetSignal, prompts.Input{
 		MaterialContextJSON:     string(ctxJSON),
 		MaterialIntentsJSON:     string(intentsJSON),
 		MaterialSetCoverageJSON: string(coverageJSON),
 		MaterialSetEdgesJSON:    string(edgesJSON),
+		MaterialSetSummaryJSON:  summaryJSON,
 	})
 	if err != nil {
 		return err
@@ -1534,6 +1737,52 @@ func upsertMaterialSetIntent(ctx context.Context, deps MaterialSignalBuildDeps, 
 			"updated_at",
 		}),
 	}).Create(row).Error
+}
+
+func shouldRefreshSetIntent(existing *types.MaterialSetIntent, coverageCount, edgeCount int, minCoverage, minEdges int) bool {
+	if existing == nil {
+		return true
+	}
+	meta := map[string]any{}
+	_ = json.Unmarshal(existing.Metadata, &meta)
+	source := strings.ToLower(strings.TrimSpace(stringFromAny(meta["source"])))
+	if source != "material_set_summarize" {
+		return true
+	}
+	if minCoverage < 0 {
+		minCoverage = 0
+	}
+	if minEdges < 0 {
+		minEdges = 0
+	}
+	if coverageCount >= minCoverage || edgeCount >= minEdges {
+		return true
+	}
+	if strings.TrimSpace(existing.FromState) == "" && strings.TrimSpace(existing.ToState) == "" && strings.TrimSpace(existing.CoreThread) == "" {
+		return true
+	}
+	return false
+}
+
+func materialSetSummaryJSON(summary *types.MaterialSetSummary) string {
+	if summary == nil || summary.MaterialSetID == uuid.Nil {
+		return ""
+	}
+	out := map[string]any{
+		"subject":      strings.TrimSpace(summary.Subject),
+		"level":        strings.TrimSpace(summary.Level),
+		"summary_md":   strings.TrimSpace(summary.SummaryMD),
+		"tags":         jsonListFromRaw(summary.Tags),
+		"concept_keys": jsonListFromRaw(summary.ConceptKeys),
+		"summary_id":   summary.ID.String(),
+		"material_set": summary.MaterialSetID.String(),
+		"updated_at":   summary.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 type crossSetOutput struct {

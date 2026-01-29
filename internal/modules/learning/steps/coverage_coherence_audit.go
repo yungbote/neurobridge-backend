@@ -41,7 +41,9 @@ type CoverageCoherenceAuditInput struct {
 }
 
 type CoverageCoherenceAuditOutput struct {
-	AuditWritten bool `json:"audit_written"`
+	AuditWritten    bool              `json:"audit_written"`
+	Acceptance      *AcceptanceResult `json:"acceptance,omitempty"`
+	QualityWarnings []string          `json:"quality_warnings,omitempty"`
 }
 
 func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps, in CoverageCoherenceAuditInput) (CoverageCoherenceAuditOutput, error) {
@@ -141,6 +143,19 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 	}
 
 	now := time.Now().UTC()
+	var acceptance *AcceptanceResult
+	if deps.DB != nil {
+		metrics, mErr := ComputeAcceptanceMetrics(ctx, deps.DB, pathID)
+		if mErr != nil {
+			deps.Log.Warn("coverage_coherence_audit: acceptance metrics failed (continuing)", "error", mErr, "path_id", pathID.String())
+		} else {
+			res := EvaluateAcceptance(metrics, DefaultAcceptanceThresholds())
+			acceptance = &res
+			if !res.Passed && len(res.Warnings) > 0 {
+				out.QualityWarnings = append(out.QualityWarnings, res.Warnings...)
+			}
+		}
+	}
 	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		pr, err := deps.Path.GetByID(dbc, pathID)
@@ -153,12 +168,17 @@ func CoverageCoherenceAudit(ctx context.Context, deps CoverageCoherenceAuditDeps
 		}
 		meta["audit"] = obj
 		meta["audit_updated_at"] = now.Format(time.RFC3339Nano)
+		if acceptance != nil {
+			meta["acceptance"] = acceptance
+			meta["acceptance_updated_at"] = now.Format(time.RFC3339Nano)
+		}
 		return deps.Path.UpdateFields(dbc, pathID, map[string]interface{}{"metadata": datatypes.JSON(mustJSON(meta))})
 	}); err != nil {
 		return out, err
 	}
 
 	out.AuditWritten = true
+	out.Acceptance = acceptance
 	return out, nil
 }
 

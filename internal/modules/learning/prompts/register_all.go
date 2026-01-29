@@ -58,7 +58,7 @@ Output rules:
 
 	RegisterSpec(Spec{
 		Name:       PromptMaterialSetSummary,
-		Version:    1,
+		Version:    2,
 		SchemaName: "material_set_summary",
 		Schema:     MaterialSetSummarySchema,
 		System: `
@@ -70,13 +70,21 @@ Return JSON only.`,
 Materials excerpt (each line may include chunk_id):
 {{.BundleExcerpt}}
 
+MATERIAL_INTENTS_JSON (optional; per-file intents if available):
+{{.MaterialIntentsJSON}}
+
 Output rules:
 - summary_md: 6-18 sentence markdown summary.
 - tags: 8-18 single-word lowercase tags (letters/numbers only).
 - concept_keys: 12-40 stable snake_case keys.
 - subject: short subject string.
 - level: intro|intermediate|advanced.
-- warnings: e.g. low_text_signal, heavily_visual, noisy_ocr.`,
+- warnings: e.g. low_text_signal, heavily_visual, noisy_ocr.
+- set_intent (optional): if confident, include collective intent/structure:
+  - from_state, to_state, core_thread
+  - spine_file_ids, satellite_file_ids (use file ids from MATERIAL_INTENTS_JSON)
+  - gaps_concept_keys, redundancy_notes, conflict_notes
+  - edge_hints (optional; leave empty if unsure).`,
 		Validators: []Validator{
 			RequireNonEmpty("BundleExcerpt", func(in Input) string { return in.BundleExcerpt }),
 		},
@@ -145,7 +153,7 @@ Output rules:
 
 	RegisterSpec(Spec{
 		Name:       PromptMaterialSetSignal,
-		Version:    1,
+		Version:    2,
 		SchemaName: "material_set_signal",
 		Schema:     MaterialSetSignalSchema,
 		System: `
@@ -155,6 +163,9 @@ Return JSON only.`,
 		User: `
 MATERIAL_SET_CONTEXT_JSON:
 {{.MaterialContextJSON}}
+
+MATERIAL_SET_SUMMARY_JSON (optional; existing summary/tags/concepts):
+{{.MaterialSetSummaryJSON}}
 
 MATERIAL_INTENTS_JSON:
 {{.MaterialIntentsJSON}}
@@ -201,7 +212,7 @@ Output rules:
 
 	RegisterSpec(Spec{
 		Name:       PromptConceptInventory,
-		Version:    2, // schema version is inside ConceptInventorySchema() (currently const 3)
+		Version:    3, // schema version is inside ConceptInventorySchema() (currently const 3)
 		SchemaName: "concept_inventory",
 		Schema:     ConceptInventorySchema,
 		System: `
@@ -216,11 +227,15 @@ PATH_INTENT_MD (optional; user goal context for relevance/noise filtering):
 CROSS_DOC_SECTION_GRAPH_JSON (optional; related sections across files):
 {{.CrossDocSectionsJSON}}
 
+SEED_CONCEPT_KEYS_JSON (optional; hint list from file signatures):
+{{.SeedConceptKeysJSON}}
+
 EXCERPTS (each line includes chunk_id):
 {{.Excerpts}}
 
 Task:
 - Extract ALL distinct concepts present in excerpts, but prioritize those that support the PATH_INTENT_MD.
+- If SEED_CONCEPT_KEYS_JSON is provided, include those concepts when supported by excerpts; add any missing concepts from the material.
 - If PATH_INTENT_MD implies deprioritized topics, include them only if they are prerequisite scaffolding.
 - Organize into hierarchy via parent_key + depth.
 - Provide summary + key_points + aliases + importance.

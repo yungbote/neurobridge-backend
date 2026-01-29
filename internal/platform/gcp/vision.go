@@ -227,7 +227,7 @@ func (s *visionService) OCRFileInGCS(ctx context.Context, gcsSourceURI string, m
 		gcsOutputPrefix += "/"
 	}
 	if maxPages <= 0 {
-		maxPages = 200
+		maxPages = math.MaxInt32
 	}
 
 	if s.cleanOutputPrefix {

@@ -74,112 +74,11 @@ func TeachingPatternsSeed(ctx context.Context, deps TeachingPatternsSeedDeps, in
 		return out, fmt.Errorf("teaching_patterns_seed: missing user_profile_doc (run user_profile_refresh first)")
 	}
 
-	p, err := prompts.Build(prompts.PromptTeachingPatterns, prompts.Input{
-		UserProfileDoc: up.ProfileDoc,
-	})
+	seeded, err := SeedTeachingPatternsFromDoc(ctx, deps, up.ProfileDoc, in.SagaID)
 	if err != nil {
 		return out, err
 	}
-	obj, err := deps.AI.GenerateJSON(ctx, p.System, p.User, p.SchemaName, p.Schema)
-	if err != nil {
-		return out, err
-	}
-	patternsOut := parseTeachingPatterns(obj)
-	if len(patternsOut) == 0 {
-		return out, fmt.Errorf("teaching_patterns_seed: 0 patterns returned")
-	}
-
-	// Stable ordering.
-	sort.Slice(patternsOut, func(i, j int) bool { return patternsOut[i].PatternKey < patternsOut[j].PatternKey })
-
-	docs := make([]string, 0, len(patternsOut))
-	vectorIDs := make([]string, 0, len(patternsOut))
-	for _, p := range patternsOut {
-		vectorIDs = append(vectorIDs, "teaching_pattern:"+p.PatternKey)
-		docs = append(docs, strings.TrimSpace(p.Name+"\n"+p.WhenToUse))
-	}
-	embs, err := deps.AI.Embed(ctx, docs)
-	if err != nil {
-		return out, err
-	}
-	if len(embs) != len(patternsOut) {
-		return out, fmt.Errorf("teaching_patterns_seed: embedding count mismatch (got %d want %d)", len(embs), len(patternsOut))
-	}
-
-	ns := index.TeachingPatternsNamespace()
-	const batchSize = 64
-
-	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-		if in.PathID == uuid.Nil {
-			if _, err := deps.Bootstrap.EnsurePath(dbc, in.OwnerUserID, in.MaterialSetID); err != nil {
-				return err
-			}
-		}
-
-		for i, p := range patternsOut {
-			spec := map[string]any{
-				"representation": p.Representation,
-				"constraints":    p.Constraints,
-			}
-			row := &types.TeachingPattern{
-				ID:          uuid.New(),
-				PatternKey:  p.PatternKey,
-				Name:        p.Name,
-				WhenToUse:   p.WhenToUse,
-				PatternSpec: datatypes.JSON(mustJSON(spec)),
-				Embedding:   datatypes.JSON(mustJSON(embs[i])),
-				VectorID:    "teaching_pattern:" + p.PatternKey,
-			}
-			if err := deps.Patterns.UpsertByPatternKey(dbc, row); err != nil {
-				return err
-			}
-			out.Seeded++
-		}
-
-		if deps.Vec != nil {
-			for start := 0; start < len(vectorIDs); start += batchSize {
-				end := start + batchSize
-				if end > len(vectorIDs) {
-					end = len(vectorIDs)
-				}
-				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
-					"namespace": ns,
-					"ids":       vectorIDs[start:end],
-				}); err != nil {
-					return err
-				}
-			}
-		}
-
-		return nil
-	}); err != nil {
-		return out, err
-	}
-
-	if deps.Vec != nil {
-		for start := 0; start < len(patternsOut); start += batchSize {
-			end := start + batchSize
-			if end > len(patternsOut) {
-				end = len(patternsOut)
-			}
-			pv := make([]pc.Vector, 0, end-start)
-			for i := start; i < end; i++ {
-				p := patternsOut[i]
-				pv = append(pv, pc.Vector{
-					ID:     "teaching_pattern:" + p.PatternKey,
-					Values: embs[i],
-					Metadata: map[string]any{
-						"type":        "teaching_pattern",
-						"pattern_key": p.PatternKey,
-						"name":        p.Name,
-					},
-				})
-			}
-			_ = deps.Vec.Upsert(ctx, ns, pv)
-		}
-	}
-
+	out.Seeded = seeded
 	return out, nil
 }
 
@@ -222,4 +121,117 @@ func parseTeachingPatterns(obj map[string]any) []teachingPatternOut {
 		})
 	}
 	return out
+}
+
+// SeedTeachingPatternsFromDoc generates and persists teaching patterns from a profile doc.
+// If sagaID is uuid.Nil or deps.Saga is nil, vector deletes are skipped and upserts run best-effort.
+func SeedTeachingPatternsFromDoc(ctx context.Context, deps TeachingPatternsSeedDeps, profileDoc string, sagaID uuid.UUID) (int, error) {
+	if deps.DB == nil || deps.Log == nil || deps.Patterns == nil || deps.AI == nil {
+		return 0, fmt.Errorf("teaching_patterns_seed: missing deps")
+	}
+	profileDoc = strings.TrimSpace(profileDoc)
+	if profileDoc == "" {
+		return 0, fmt.Errorf("teaching_patterns_seed: empty profile_doc")
+	}
+	p, err := prompts.Build(prompts.PromptTeachingPatterns, prompts.Input{
+		UserProfileDoc: profileDoc,
+	})
+	if err != nil {
+		return 0, err
+	}
+	obj, err := deps.AI.GenerateJSON(ctx, p.System, p.User, p.SchemaName, p.Schema)
+	if err != nil {
+		return 0, err
+	}
+	patternsOut := parseTeachingPatterns(obj)
+	if len(patternsOut) == 0 {
+		return 0, fmt.Errorf("teaching_patterns_seed: 0 patterns returned")
+	}
+
+	// Stable ordering.
+	sort.Slice(patternsOut, func(i, j int) bool { return patternsOut[i].PatternKey < patternsOut[j].PatternKey })
+
+	docs := make([]string, 0, len(patternsOut))
+	vectorIDs := make([]string, 0, len(patternsOut))
+	for _, p := range patternsOut {
+		vectorIDs = append(vectorIDs, "teaching_pattern:"+p.PatternKey)
+		docs = append(docs, strings.TrimSpace(p.Name+"\n"+p.WhenToUse))
+	}
+	embs, err := deps.AI.Embed(ctx, docs)
+	if err != nil {
+		return 0, err
+	}
+	if len(embs) != len(patternsOut) {
+		return 0, fmt.Errorf("teaching_patterns_seed: embedding count mismatch (got %d want %d)", len(embs), len(patternsOut))
+	}
+
+	ns := index.TeachingPatternsNamespace()
+	const batchSize = 64
+	seeded := 0
+
+	if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+		for i, p := range patternsOut {
+			spec := map[string]any{
+				"representation": p.Representation,
+				"constraints":    p.Constraints,
+			}
+			row := &types.TeachingPattern{
+				ID:          uuid.New(),
+				PatternKey:  p.PatternKey,
+				Name:        p.Name,
+				WhenToUse:   p.WhenToUse,
+				PatternSpec: datatypes.JSON(mustJSON(spec)),
+				Embedding:   datatypes.JSON(mustJSON(embs[i])),
+				VectorID:    "teaching_pattern:" + p.PatternKey,
+			}
+			if err := deps.Patterns.UpsertByPatternKey(dbc, row); err != nil {
+				return err
+			}
+			seeded++
+		}
+
+		if deps.Vec != nil && deps.Saga != nil && sagaID != uuid.Nil {
+			for start := 0; start < len(vectorIDs); start += batchSize {
+				end := start + batchSize
+				if end > len(vectorIDs) {
+					end = len(vectorIDs)
+				}
+				if err := deps.Saga.AppendAction(dbc, sagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+					"namespace": ns,
+					"ids":       vectorIDs[start:end],
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	if deps.Vec != nil {
+		for start := 0; start < len(patternsOut); start += batchSize {
+			end := start + batchSize
+			if end > len(patternsOut) {
+				end = len(patternsOut)
+			}
+			pv := make([]pc.Vector, 0, end-start)
+			for i := start; i < end; i++ {
+				p := patternsOut[i]
+				pv = append(pv, pc.Vector{
+					ID:     "teaching_pattern:" + p.PatternKey,
+					Values: embs[i],
+					Metadata: map[string]any{
+						"type":        "teaching_pattern",
+						"pattern_key": p.PatternKey,
+						"name":        p.Name,
+					},
+				})
+			}
+			_ = deps.Vec.Upsert(ctx, ns, pv)
+		}
+	}
+
+	return seeded, nil
 }

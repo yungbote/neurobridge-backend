@@ -32,6 +32,7 @@ type ConceptClusterBuildDeps struct {
 	Vec       pc.VectorStore
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
+	Artifacts repos.LearningArtifactRepo
 }
 
 type ConceptClusterBuildInput struct {

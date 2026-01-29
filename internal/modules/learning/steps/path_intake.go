@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +89,20 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	out.ThreadID = in.ThreadID
 	out.Now = time.Now().UTC().Format(time.RFC3339Nano)
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("path_intake")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	applyAdaptiveMeta := func(meta map[string]any) map[string]any {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["adaptive"] = adaptiveStageMeta("path_intake", adaptiveEnabled, signals, adaptiveParams)
+		return meta
+	}
+
 	// If this path's intake is locked (e.g., derived paths from an earlier split), skip regeneration and reuse.
 	if deps.Path != nil {
 		if row, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID); err == nil && row != nil && len(row.Metadata) > 0 && strings.TrimSpace(string(row.Metadata)) != "" && strings.TrimSpace(string(row.Metadata)) != "null" {
@@ -100,6 +115,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 						out.Intake = map[string]any{}
 					}
 					out.Meta = map[string]any{"reason": "intake_locked"}
+					out.Meta = applyAdaptiveMeta(out.Meta)
 					return out, nil
 				}
 			}
@@ -162,6 +178,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		filter := buildIntakeMaterialFilter(files, intake)
 		_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
 		out.Intake = intake
+		out.Meta = applyAdaptiveMeta(out.Meta)
 		return out, nil
 	}
 
@@ -177,6 +194,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 				filter := buildIntakeMaterialFilter(files, intake)
 				_ = writePathIntakeMeta(ctx, deps, pathID, intake, map[string]any{"intake_material_filter": filter})
 				out.Intake = intake
+				out.Meta = applyAdaptiveMeta(out.Meta)
 				return out, nil
 			}
 			if in.ConfirmExternally {
@@ -199,6 +217,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 					"question_seq": qMsg.Seq,
 					"question_id":  qMsg.ID.String(),
 				}
+				out.Meta = applyAdaptiveMeta(out.Meta)
 				return out, nil
 			}
 			out.Status = "waiting_user"
@@ -207,6 +226,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 				"question_seq": qMsg.Seq,
 				"question_id":  qMsg.ID.String(),
 			}
+			out.Meta = applyAdaptiveMeta(out.Meta)
 			return out, nil
 		}
 
@@ -221,11 +241,17 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		}
 
 		assistantCtx := assistantContextSince(messages, qMsg.Seq)
-		intake, intakeMD, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userContextBefore(messages, qMsg.Seq), answer, assistantCtx, existingIntake, true)
+		intake, intakeMD, intakeParams, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userContextBefore(messages, qMsg.Seq), answer, assistantCtx, existingIntake, true, adaptiveEnabled, signals)
 		if err != nil {
 			deps.Log.Warn("path_intake: generate (with answers) failed; proceeding with fallback", "error", err)
 			intake = buildFallbackIntake(files, summary, userContextBefore(messages, qMsg.Seq), answer)
 			intakeMD = formatIntakeSummaryMD(intake)
+		}
+		if intakeParams != nil {
+			adaptiveParams = intakeParams
+		}
+		if deps.Log != nil && adaptiveEnabled {
+			deps.Log.Info("path_intake: adaptive params", "adaptive", adaptiveStageMeta("path_intake", adaptiveEnabled, signals, adaptiveParams))
 		}
 		intake["paths_confirmed"] = true
 		filter := buildIntakeMaterialFilter(files, intake)
@@ -238,16 +264,23 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		})
 		_ = maybeAppendIntakeAckMessage(ctx, deps, in.OwnerUserID, in.ThreadID, in.JobID, in.MaterialSetID, pathID, intake, intakeMD)
 		out.Intake = intake
+		out.Meta = applyAdaptiveMeta(out.Meta)
 		return out, nil
 	}
 
 	userCtx := userContextBefore(messages, 1<<30)
 
-	intake, intakeMD, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userCtx, "", "", nil, false)
+	intake, intakeMD, intakeParams, err := generateIntake(ctx, deps, files, fileSigs, chunks, summary, prefsAny, userCtx, "", "", nil, false, adaptiveEnabled, signals)
 	if err != nil {
 		deps.Log.Warn("path_intake: generate failed; proceeding with fallback", "error", err)
 		intake = buildFallbackIntake(files, summary, userCtx, "")
 		intakeMD = formatIntakeSummaryMD(intake)
+	}
+	if intakeParams != nil {
+		adaptiveParams = intakeParams
+	}
+	if deps.Log != nil && adaptiveEnabled {
+		deps.Log.Info("path_intake: adaptive params", "adaptive", adaptiveStageMeta("path_intake", adaptiveEnabled, signals, adaptiveParams))
 	}
 
 	if in.WaitForUser || in.ConfirmExternally {
@@ -270,6 +303,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 					"question_id":  created.ID.String(),
 					"question_seq": created.Seq,
 				}
+				out.Meta = applyAdaptiveMeta(out.Meta)
 				out.Intake = intake
 				return out, nil
 			}
@@ -277,6 +311,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 		if in.ConfirmExternally {
 			out.Status = "needs_confirmation"
 			out.Intake = intake
+			out.Meta = applyAdaptiveMeta(out.Meta)
 			return out, nil
 		}
 	}
@@ -289,6 +324,7 @@ func PathIntake(ctx context.Context, deps PathIntakeDeps, in PathIntakeInput) (P
 	out.Prompt = ""
 	out.Workflow = nil
 	out.Intake = intake
+	out.Meta = applyAdaptiveMeta(out.Meta)
 	return out, nil
 }
 
@@ -402,7 +438,7 @@ func assistantContextSince(msgs []*types.ChatMessage, startSeq int64) string {
 			continue
 		}
 		if len(txt) > 1200 {
-			txt = txt[:1200] + "..."
+			txt = shorten(txt, 1200)
 		}
 		parts = append(parts, txt)
 		if len(parts) > maxMessages {
@@ -425,7 +461,9 @@ func generateIntake(
 	assistantContext string,
 	existingIntake map[string]any,
 	isFollowup bool,
-) (map[string]any, string, error) {
+	adaptiveEnabled bool,
+	signals AdaptiveSignals,
+) (map[string]any, string, map[string]any, error) {
 	fileItems := make([]map[string]any, 0, len(files))
 	for _, f := range files {
 		if f == nil {
@@ -584,7 +622,7 @@ func generateIntake(
 		}
 	}
 
-	excerpts := buildIntakeMaterialExcerpts(files, chunks)
+	excerpts, excerptParams := buildIntakeMaterialExcerpts(files, chunks, signals, adaptiveEnabled)
 	if strings.TrimSpace(excerpts) != "" {
 		user.WriteString("\nMATERIAL_EXCERPTS (ground truth snippets; may be incomplete):\n")
 		user.WriteString(excerpts)
@@ -757,14 +795,14 @@ func generateIntake(
 
 	obj, err := deps.AI.GenerateJSON(ctx, system, user.String(), "path_intake", schema)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	normalizeIntakePaths(obj, files, fileSigs)
-	softSplitSanityCheck(ctx, obj, files, fileSigs, deps.AI, isFollowup)
+	softSplitSanityCheck(ctx, obj, files, fileSigs, deps.AI, isFollowup, adaptiveEnabled, signals, excerptParams)
 	intakeMD := formatIntakeSummaryMD(obj)
 	_ = isFollowup // reserved for future logic; keeps signature stable
-	return obj, intakeMD, nil
+	return obj, intakeMD, excerptParams, nil
 }
 
 func parseAITopics(raw datatypes.JSON) []string {
@@ -1086,7 +1124,17 @@ func normalizeIntakePaths(intake map[string]any, files []*types.MaterialFile, fi
 	}
 }
 
-func softSplitSanityCheck(ctx context.Context, intake map[string]any, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature, ai openai.Client, isFollowup bool) {
+func softSplitSanityCheck(
+	ctx context.Context,
+	intake map[string]any,
+	files []*types.MaterialFile,
+	fileSigs map[uuid.UUID]*types.MaterialFileSignature,
+	ai openai.Client,
+	isFollowup bool,
+	adaptiveEnabled bool,
+	signals AdaptiveSignals,
+	adaptiveParams map[string]any,
+) {
 	if intake == nil || isFollowup {
 		return
 	}
@@ -1174,7 +1222,12 @@ func softSplitSanityCheck(ctx context.Context, intake map[string]any, files []*t
 	}
 	maxPairScore := 0.0
 	if ai != nil && envBool("PATH_INTAKE_PAIR_SCORE", false) {
-		if ps := scorePairSimilarity(ctx, files, fileSigs, intentByID, ai); ps > maxPairScore {
+		if ps, params := scorePairSimilarity(ctx, files, fileSigs, intentByID, ai, signals, adaptiveEnabled); ps > maxPairScore {
+			if adaptiveParams != nil {
+				for k, v := range params {
+					adaptiveParams[k] = v
+				}
+			}
 			maxPairScore = ps
 		}
 	}
@@ -1253,13 +1306,20 @@ func avgSignatureEmbedding(fileIDs []string, fileSigs map[uuid.UUID]*types.Mater
 	return sum
 }
 
-func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature, intentByID map[string]map[string]any, ai openai.Client) float64 {
+func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileSigs map[uuid.UUID]*types.MaterialFileSignature, intentByID map[string]map[string]any, ai openai.Client, signals AdaptiveSignals, adaptiveEnabled bool) (float64, map[string]any) {
+	params := map[string]any{}
 	if ai == nil || len(files) < 2 {
-		return 0
+		return 0, params
 	}
 	maxFiles := envIntAllowZero("PATH_INTAKE_PAIR_SCORE_MAX_FILES", 8)
+	maxFilesCeiling := maxFiles
+	if adaptiveEnabled {
+		fc := maxInt(signals.FileCount, len(files))
+		maxFiles = clampIntCeiling(int(math.Round(float64(fc)*1.0)), 6, maxFilesCeiling)
+	}
+	params["PATH_INTAKE_PAIR_SCORE_MAX_FILES"] = map[string]any{"actual": maxFiles, "ceiling": maxFilesCeiling}
 	if maxFiles > 0 && len(files) > maxFiles {
-		return 0
+		return 0, params
 	}
 
 	type fileDesc struct {
@@ -1301,13 +1361,20 @@ func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileS
 		}
 	}
 	if len(descs) < 2 {
-		return 0
+		return 0, params
 	}
 
 	maxPairs := envIntAllowZero("PATH_INTAKE_PAIR_SCORE_MAX_PAIRS", 40)
 	if maxPairs <= 0 {
 		maxPairs = 40
 	}
+	maxPairsCeiling := maxPairs
+	if adaptiveEnabled {
+		fc := maxInt(signals.FileCount, len(files))
+		raw := int(math.Round(float64(fc*fc) / 2.0))
+		maxPairs = clampIntCeiling(raw, 20, maxPairsCeiling)
+	}
+	params["PATH_INTAKE_PAIR_SCORE_MAX_PAIRS"] = map[string]any{"actual": maxPairs, "ceiling": maxPairsCeiling}
 
 	type pair struct {
 		A string `json:"a_id"`
@@ -1326,7 +1393,7 @@ func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileS
 		}
 	}
 	if len(pairs) == 0 {
-		return 0
+		return 0, params
 	}
 
 	descLines := make([]string, 0, len(descs))
@@ -1375,7 +1442,7 @@ func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileS
 
 	obj, err := ai.GenerateJSON(ctx, system, user, "pair_score", schema)
 	if err != nil {
-		return 0
+		return 0, params
 	}
 	rows := sliceAny(obj["scores"])
 	maxScore := 0.0
@@ -1389,7 +1456,7 @@ func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileS
 			maxScore = score
 		}
 	}
-	return maxScore
+	return maxScore, params
 }
 
 func addTokens(dst map[string]bool, text string) {

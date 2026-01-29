@@ -38,6 +38,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:             p.vec,
 		Saga:            p.saga,
 		Bootstrap:       p.bootstrap,
+		Artifacts:       p.artifacts,
 	}).ChainSignatureBuild(jc.Ctx, learningmod.ChainSignatureBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
@@ -55,6 +56,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"path_id":          out.PathID.String(),
 		"chains_upserted":  out.ChainsUpserted,
 		"pinecone_batches": out.PineconeBatches,
+		"cache_hit":        out.CacheHit,
 	})
 	return nil
 }

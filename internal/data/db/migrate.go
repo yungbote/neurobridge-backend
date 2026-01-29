@@ -80,6 +80,7 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.LearningNodeVideo{},
 		&types.LearningDocGenerationRun{},
 		&types.LearningDrillInstance{},
+		&types.LearningArtifact{},
 		// Library taxonomy (user-specific evolving DAG)
 		&types.LibraryTaxonomyNode{},
 		&types.LibraryTaxonomyEdge{},

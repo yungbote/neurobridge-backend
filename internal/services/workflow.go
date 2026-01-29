@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -184,8 +185,10 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 		if trimmedPrompt != "" {
 			payload["prompt"] = trimmedPrompt
 		}
+		jobType := resolveLearningBuildJobType()
+		payload["build_job_type"] = jobType
 		entityID := set.ID
-		createdJob, err := w.jobs.Enqueue(inner, userID, "learning_build", "material_set", &entityID, payload)
+		createdJob, err := w.jobs.Enqueue(inner, userID, jobType, "material_set", &entityID, payload)
 		if err != nil {
 			return err
 		}
@@ -258,4 +261,29 @@ func (w *workflowService) UploadMaterialsAndStartLearningBuildWithChat(
 
 	// Keep behavior similar: return immediately; worker will run the job.
 	return set, pathID, thread, job, nil
+}
+
+func resolveLearningBuildJobType() string {
+	if v := strings.TrimSpace(os.Getenv("LEARNING_BUILD_DEFAULT_JOB_TYPE")); v != "" {
+		return v
+	}
+	if envBool("LEARNING_BUILD_PROGRESSIVE_ENABLED", false) {
+		return "learning_build_progressive"
+	}
+	return "learning_build"
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
 }

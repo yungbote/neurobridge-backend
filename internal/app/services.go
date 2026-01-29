@@ -16,11 +16,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/completed_unit_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_cluster_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_patch_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/file_signature_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build_progressive"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_refine"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/library_taxonomy_route"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_kg_build"
@@ -306,7 +308,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	ingestChunks := ingest_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, extractor, sagaSvc, bootstrapSvc)
+	ingestChunks := ingest_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, extractor, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(ingestChunks); err != nil {
 		return Services{}, err
 	}
@@ -322,6 +324,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.PineconeVectorStore,
 		sagaSvc,
 		bootstrapSvc,
+		repos.LearningArtifact,
 	)
 	if err := jobRegistry.Register(fileSignatureBuild); err != nil {
 		return Services{}, err
@@ -332,13 +335,18 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	materialSummarize := material_set_summarize.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.MaterialSetSummary, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	materialSummarize := material_set_summarize.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.MaterialSetSummary, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(materialSummarize); err != nil {
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
+		return Services{}, err
+	}
+
+	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	if err := jobRegistry.Register(conceptGraphPatch); err != nil {
 		return Services{}, err
 	}
 
@@ -353,6 +361,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialSet,
 		clients.OpenaiClient,
 		bootstrapSvc,
+		repos.LearningArtifact,
 	)
 	if err := jobRegistry.Register(materialSignal); err != nil {
 		return Services{}, err
@@ -363,12 +372,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	conceptCluster := concept_cluster_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	conceptCluster := concept_cluster_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(conceptCluster); err != nil {
 		return Services{}, err
 	}
 
-	chainSignatures := chain_signature_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, repos.ConceptEdge, repos.ChainSignature, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	chainSignatures := chain_signature_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, repos.ConceptEdge, repos.ChainSignature, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(chainSignatures); err != nil {
 		return Services{}, err
 	}
@@ -437,6 +446,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		repos.Path,
 		repos.Concept,
+		repos.MaterialFile,
 		repos.ChatThread,
 		repos.ChatMessage,
 		chatNotifier,
@@ -755,6 +765,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			NodeVideos:         repos.LearningNodeVideo,
 			DocGenRuns:         repos.DocGenerationRun,
 			Assets:             repos.Asset,
+			Artifacts:          repos.LearningArtifact,
 
 			Activities:        repos.Activity,
 			Variants:          repos.ActivityVariant,
@@ -772,6 +783,76 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		},
 	)
 	if err := jobRegistry.Register(learningBuild); err != nil {
+		return Services{}, err
+	}
+
+	learningBuildProgressive := learning_build_progressive.New(
+		db,
+		log,
+		jobService,
+		repos.Path,
+		repos.ChatThread,
+		repos.ChatMessage,
+		chatNotifier,
+		sagaSvc,
+		bootstrapSvc,
+		&learning_build_progressive.InlineDeps{
+			Extract: extractor,
+			AI:      clients.OpenaiClient,
+			Vec:     clients.PineconeVectorStore,
+			Graph:   clients.Neo4j,
+			Bucket:  clients.GcpBucket,
+			Avatar:  avatarService,
+
+			Files:        repos.MaterialFile,
+			FileSigs:     repos.MaterialFileSignature,
+			FileSections: repos.MaterialFileSection,
+			Chunks:       repos.MaterialChunk,
+			MaterialSets: repos.MaterialSet,
+			Summaries:    repos.MaterialSetSummary,
+
+			Concepts: repos.Concept,
+			Evidence: repos.ConceptEvidence,
+			Edges:    repos.ConceptEdge,
+
+			Clusters: repos.ConceptCluster,
+			Members:  repos.ConceptClusterMember,
+
+			ChainSignatures: repos.ChainSignature,
+
+			StylePrefs:       repos.UserStylePreference,
+			ConceptState:     repos.UserConceptState,
+			ProgEvents:       repos.UserProgressionEvent,
+			UserProfile:      repos.UserProfileVector,
+			UserPrefs:        repos.UserPersonalizationPrefs,
+			TeachingPatterns: repos.TeachingPattern,
+
+			Path:               repos.Path,
+			PathNodes:          repos.PathNode,
+			PathNodeActivities: repos.PathNodeActivity,
+			NodeDocs:           repos.LearningNodeDoc,
+			NodeFigures:        repos.LearningNodeFigure,
+			NodeVideos:         repos.LearningNodeVideo,
+			DocGenRuns:         repos.DocGenerationRun,
+			Assets:             repos.Asset,
+			Artifacts:          repos.LearningArtifact,
+
+			Activities:        repos.Activity,
+			Variants:          repos.ActivityVariant,
+			ActivityConcepts:  repos.ActivityConcept,
+			ActivityCitations: repos.ActivityCitation,
+
+			UserEvents:            repos.UserEvent,
+			UserEventCursors:      repos.UserEventCursor,
+			UserProgressionEvents: repos.UserProgressionEvent,
+			VariantStats:          repos.ActivityVariantStat,
+
+			ChainPriors:    repos.ChainPrior,
+			CohortPriors:   repos.CohortPrior,
+			CompletedUnits: repos.UserCompletedUnit,
+		},
+	)
+	if err := jobRegistry.Register(learningBuildProgressive); err != nil {
 		return Services{}, err
 	}
 

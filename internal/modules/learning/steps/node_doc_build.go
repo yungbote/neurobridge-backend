@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -103,6 +104,10 @@ type NodeDocBuildInput struct {
 	SagaID        uuid.UUID
 	PathID        uuid.UUID
 	MediaPatch    bool
+	NodeLimit     int
+	NodeSelect    string
+	MarkPending   bool
+	Report        func(stage string, pct int, message string)
 }
 
 type NodeDocBuildOutput struct {
@@ -115,9 +120,21 @@ type NodeDocBuildOutput struct {
 	FiguresWritten  int `json:"figures_written"`
 	VideosWritten   int `json:"videos_written"`
 	TablesWritten   int `json:"tables_written"`
+	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
 const nodeDocPromptVersion = "node_doc_v2@1"
+
+type nodeInfo struct {
+	Node        *types.PathNode
+	NodeKind    string
+	DocTemplate string
+	Goal        string
+	ConceptKeys []string
+	PrereqKeys  []string
+	ConceptCSV  string
+	Meta        map[string]any
+}
 
 func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	out := NodeDocBuildOutput{}
@@ -136,6 +153,22 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, err
 	}
 	out.PathID = pathID
+
+	reporter := newProgressReporter("docs", in.Report, 2, 2*time.Second)
+	reporter.Update(2, "Preparing unit docs")
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("node_doc_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("node_doc_build: adaptive params", "adaptive", adaptiveStageMeta("node_doc_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("node_doc_build", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	// Safety: don't break legacy installs where migrations haven't created the new tables yet.
 	if !deps.DB.Migrator().HasTable(&types.LearningNodeDoc{}) {
@@ -193,6 +226,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return out, fmt.Errorf("node_doc_build: no path nodes (run path_plan_build first)")
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Index < nodes[j].Index })
+	reporter.Update(5, fmt.Sprintf("Loaded %d path nodes", len(nodes)))
 
 	nodeIDs := make([]uuid.UUID, 0, len(nodes))
 	nodesByID := map[uuid.UUID]*types.PathNode{}
@@ -407,6 +441,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	if len(allChunks) == 0 {
 		return out, fmt.Errorf("node_doc_build: no chunks for material set")
 	}
+	reporter.Update(8, fmt.Sprintf("Loaded %d chunks", len(allChunks)))
 
 	chunkByID := map[uuid.UUID]*types.MaterialChunk{}
 	for _, ch := range allChunks {
@@ -512,18 +547,8 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		return chunkEmbs, chunkEmbsErr
 	}
 
-	type nodeInfo struct {
-		Node        *types.PathNode
-		NodeKind    string
-		DocTemplate string
-		Goal        string
-		ConceptKeys []string
-		PrereqKeys  []string
-		ConceptCSV  string
-		Meta        map[string]any
-	}
-
 	infoByID := map[uuid.UUID]nodeInfo{}
+	nodeKindByID := map[uuid.UUID]string{}
 	for _, node := range nodes {
 		if node == nil || node.ID == uuid.Nil {
 			continue
@@ -549,6 +574,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			ConceptCSV:  conceptCSV,
 			Meta:        nodeMeta,
 		}
+		nodeKindByID[node.ID] = nodeKind
 	}
 
 	patternHierarchyJSON := ""
@@ -571,6 +597,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	}
 
 	styleManifestJSON := ""
+	reporter.Update(9, "Generating style manifest")
 	if js, updates := ensureStyleManifest(ctx, deps, pathID, pathMeta, pathIntentMD, pathStyleJSON, patternHierarchyJSON, pathStructureJSON); js != "" {
 		styleManifestJSON = js
 		if len(updates) > 0 {
@@ -580,8 +607,10 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			}
 		}
 	}
+	reporter.Update(11, "Style manifest ready")
 
 	pathNarrativeJSON := ""
+	reporter.Update(12, "Planning path narrative")
 	if js, updates := ensurePathNarrativePlan(ctx, deps, pathID, pathMeta, pathIntentMD, patternHierarchyJSON, pathStructureJSON, styleManifestJSON); js != "" {
 		pathNarrativeJSON = js
 		if len(updates) > 0 {
@@ -591,6 +620,7 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			}
 		}
 	}
+	reporter.Update(14, "Path narrative ready")
 
 	styleManifestPromptJSON := strings.TrimSpace(styleManifestJSON)
 	if styleManifestPromptJSON == "" {
@@ -618,25 +648,25 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		QueryText            string
 		QueryEmb             []float32
 	}
-	work := make([]nodeWork, 0, len(nodes))
-	for _, info := range infoByID {
+	selectedNodes, pendingIDs := selectPathNodesForBuild(nodes, nodeKindByID, in.NodeLimit, in.NodeSelect)
+	if len(selectedNodes) == 0 {
+		selectedNodes = nodes
+		pendingIDs = map[uuid.UUID]bool{}
+	}
+
+	work := make([]nodeWork, 0, len(selectedNodes))
+	for _, node := range selectedNodes {
+		if node == nil || node.ID == uuid.Nil {
+			continue
+		}
+		info := infoByID[node.ID]
 		if info.Node == nil || info.Node.ID == uuid.Nil {
 			continue
 		}
-		existing := existingDocByNodeID[info.Node.ID]
-		if existing != nil && !mediaPatchMode {
-			out.DocsExisting++
-			continue
-		}
-		if existing != nil && mediaPatchMode {
-			if len(figAssetsByNode[info.Node.ID]) == 0 && len(vidAssetsByNode[info.Node.ID]) == 0 {
-				out.DocsExisting++
-				continue
-			}
-		}
+		existing := existingDocByNodeID[node.ID]
 		queryText := strings.TrimSpace(info.Node.Title + " " + info.Goal + " " + info.ConceptCSV)
 		work = append(work, nodeWork{
-			Node:        info.Node,
+			Node:        node,
 			NodeKind:    info.NodeKind,
 			DocTemplate: info.DocTemplate,
 			Goal:        info.Goal,
@@ -649,6 +679,21 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	}
 	if len(work) == 0 {
 		return out, nil
+	}
+	const nodeProgressStart = 25
+	const nodeProgressEnd = 95
+	nodeCount := len(work)
+	reporter.Update(nodeProgressStart, fmt.Sprintf("Writing %d docs", nodeCount))
+
+	if in.MarkPending {
+		markPendingNodes(ctx, deps, nodes, infoByID, pendingIDs, existingDocByNodeID)
+		if len(pendingIDs) > 0 {
+			updatePathMeta(ctx, deps, pathID, pathMeta, map[string]any{
+				"progressive_mode":        true,
+				"progressive_nodes_total": len(nodes),
+				"progressive_nodes_ready": len(nodes) - len(pendingIDs),
+			})
+		}
 	}
 
 	patternContextByNodeID := map[uuid.UUID]string{}
@@ -1190,6 +1235,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	if err := og.Wait(); err != nil && octx.Err() != nil {
 		return out, err
 	}
+	reporter.Update(20, "Outlines ready")
 
 	// Update thread summaries using outlines (for nodes we are building now).
 	for _, w := range work {
@@ -1266,12 +1312,17 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 			return out, err
 		}
 	}
+	reporter.Update(24, "Narrative hints ready")
 
 	// Distribute uncovered chunk IDs across docs-to-build so that every chunk is cited at least once.
 	// This is bounded per node for prompt size; increase NODE_DOC_MUST_CITE_PER_NODE for larger material sets.
 	mustCiteByNodeID := map[uuid.UUID][]uuid.UUID{}
 	if len(uncoveredChunkIDs) > 0 {
-		perNode := envInt("NODE_DOC_MUST_CITE_PER_NODE", 2)
+		perNodeCeiling := envInt("NODE_DOC_MUST_CITE_PER_NODE", 2)
+		perNode := perNodeCeiling
+		if adaptiveEnabled {
+			perNode = clampIntCeiling(int(math.Round(signals.ChunksPerNode*0.3)), 2, perNodeCeiling)
+		}
 		if perNode < 1 {
 			perNode = 1
 		}
@@ -1284,6 +1335,10 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		}
 		if perNode > 10 {
 			perNode = 10
+		}
+		adaptiveParams["NODE_DOC_MUST_CITE_PER_NODE"] = map[string]any{
+			"actual":  perNode,
+			"ceiling": perNodeCeiling,
 		}
 
 		counts := make([]int, len(work))
@@ -1362,21 +1417,47 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	}
 	chunksNS := index.ChunksNamespace(sourceSetID)
 
+	diagramLimitCeiling := envIntAllowZero("NODE_DOC_DIAGRAMS_LIMIT", -1)
+	diagramLimit := diagramLimitCeiling
+	if diagramLimitCeiling >= 0 && adaptiveEnabled {
+		diagramLimit = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*0.1)), 0, diagramLimitCeiling)
+	}
+	if diagramLimit < 0 {
+		diagramLimit = -1
+	}
+	adaptiveParams["NODE_DOC_DIAGRAMS_LIMIT"] = map[string]any{
+		"actual":  diagramLimit,
+		"ceiling": diagramLimitCeiling,
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)
 
 	var written int32
+	var existingCount int32
 	var diagrams int32
 	var figures int32
 	var videos int32
 	var tables int32
+	var nodeUnitsDone int32
+	var nodesEvidenceDone int32
+	var nodesDocsDone int32
+	nodeUnitsTotal := nodeCount * 4
 
 	for i := range work {
 		w := work[i]
-		g.Go(func() error {
+		g.Go(func() (err error) {
 			if w.Node == nil || w.Node.ID == uuid.Nil {
 				return nil
 			}
+			defer func() {
+				if err != nil {
+					return
+				}
+				atomic.AddInt32(&nodeUnitsDone, 3)
+				done := int(atomic.AddInt32(&nodesDocsDone, 1))
+				reporter.UpdateRange(int(atomic.LoadInt32(&nodeUnitsDone)), nodeUnitsTotal, nodeProgressStart, nodeProgressEnd, fmt.Sprintf("Writing docs %d/%d", done, nodeCount))
+			}()
 
 			outline := outlineByNodeID[w.Node.ID]
 			outline = normalizeOutline(outline, w.Node.Title, w.ConceptKeys)
@@ -1456,6 +1537,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 
 					ids, _, _ := graphAssistedChunkIDs(sctx, deps.DB, deps.Vec, chunkRetrievePlan{
 						MaterialSetID: sourceSetID,
+						PathID:        pathID,
 						ChunksNS:      chunksNS,
 						QueryText:     sectionQueries[i],
 						QueryEmb:      qEmb,
@@ -1464,6 +1546,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 						SeedK:         semanticK,
 						LexicalK:      lexicalK,
 						FinalK:        finalK,
+						AdaptiveStage: "node_doc_build",
 					})
 					ids = dedupeUUIDsPreserveOrder(ids)
 
@@ -1498,6 +1581,9 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 			if err := sg.Wait(); err != nil && sctx.Err() != nil {
 				return err
 			}
+			atomic.AddInt32(&nodeUnitsDone, 1)
+			evidenceDone := int(atomic.AddInt32(&nodesEvidenceDone, 1))
+			reporter.UpdateRange(int(atomic.LoadInt32(&nodeUnitsDone)), nodeUnitsTotal, nodeProgressStart, nodeProgressEnd, fmt.Sprintf("Grounding sources %d/%d", evidenceDone, nodeCount))
 
 			union := make([]uuid.UUID, 0)
 			for _, ids := range sectionChunkIDs {
@@ -1555,13 +1641,10 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 					updateNodeMeta(ctx, deps, w.Node.ID, nodeMeta, updates)
 				}
 			}
+			reporter.UpdateRange(int(atomic.LoadInt32(&nodeUnitsDone)), nodeUnitsTotal, nodeProgressStart, nodeProgressEnd, fmt.Sprintf("Writing %s", strings.TrimSpace(w.Node.Title)))
 
 			// ---- Learner-facing doc with validation + retry ----
 			reqs := nodeDocRequirementsForTemplate(w.NodeKind, w.DocTemplate)
-			diagramLimit := envIntAllowZero("NODE_DOC_DIAGRAMS_LIMIT", -1)
-			if diagramLimit < 0 {
-				diagramLimit = -1
-			}
 			diagramsDisabled := diagramLimit == 0
 			if diagramsDisabled {
 				reqs.MinDiagrams = 0
@@ -1572,6 +1655,45 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 			videoAsset := firstVideoAssetFromAssetsJSON(assetsJSON)
 
 			requireDiagrams := !diagramsDisabled && reqs.MinDiagrams > 0
+
+			intentForPrompt := strings.TrimSpace(pathIntentMD)
+			if intentForPrompt == "" {
+				intentForPrompt = "(none)"
+			}
+			inputHash := nodeDocInputHash(nodeDocHashInput{
+				PromptVersion:       nodeDocPromptVersion,
+				SchemaVersion:       1,
+				NodeID:              w.Node.ID,
+				NodeTitle:           w.Node.Title,
+				NodeGoal:            w.Goal,
+				NodeKind:            w.NodeKind,
+				DocTemplate:         w.DocTemplate,
+				ConceptKeys:         w.ConceptKeys,
+				PrereqKeys:          w.PrereqKeys,
+				PathIntentMD:        intentForPrompt,
+				PathStyleJSON:       pathStyleJSON,
+				StyleManifestJSON:   styleManifestJSON,
+				PathNarrativeJSON:   pathNarrativePromptJSON,
+				NodeNarrativeJSON:   nodeNarrativeJSON,
+				PatternContextJSON:  patternContextByNodeID[w.Node.ID],
+				NarrativeContext:    string(nctxJSON),
+				OutlineJSON:         string(outlineJSON),
+				SectionEvidenceJSON: string(sectionEvidenceJSON),
+				EquationsJSON:       equationsJSON,
+				UserProfileDoc:      userProfileDoc,
+				UserKnowledgeJSON:   w.UserKnowledgeJSON,
+				TeachingJSON:        w.TeachingPatternsJSON,
+				MediaRankJSON:       mediaRankJSON,
+				MustCiteIDs:         mustCiteIDsAllowed,
+				ChunkIDs:            chunkIDs,
+				Assets:              nodeMediaFingerprint(figAssetsByNode[w.Node.ID], vidAssetsByNode[w.Node.ID], assetsJSON),
+				Requirements:        nodeDocRequirementsFingerprint(reqs, diagramsDisabled, requireDiagrams),
+				MediaPatch:          mediaPatchMode,
+			})
+			if w.ExistingDoc != nil && strings.TrimSpace(w.ExistingDoc.SourcesHash) == inputHash {
+				atomic.AddInt32(&existingCount, 1)
+				return nil
+			}
 
 			mediaRequirementLine := "- Media blocks (figure/diagram/table) are optional; include only if they materially improve learning."
 			if reqs.RequireMedia {
@@ -1775,10 +1897,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 					generatedFigures = strings.TrimSpace(b.String())
 				}
 
-				intentForPrompt := strings.TrimSpace(pathIntentMD)
-				if intentForPrompt == "" {
-					intentForPrompt = "(none)"
-				}
+				// intentForPrompt computed earlier for hashing; reuse.
 				suggestedOutline := docTemplateSuggestedOutline(w.NodeKind, w.DocTemplate)
 
 				teachingJSON := strings.TrimSpace(w.TeachingPatternsJSON)
@@ -2221,7 +2340,7 @@ Return ONLY JSON matching schema.`,
 					return cErr
 				}
 				contentHash := content.HashBytes(canon)
-				sourcesHash := content.HashSources(nodeDocPromptVersion, 1, mapKeys(allowedChunkIDs))
+				sourcesHash := inputHash
 
 				docText, _ := metrics["doc_text"].(string)
 				docText = content.SanitizeStringForPostgres(docText)
@@ -2269,12 +2388,326 @@ Return ONLY JSON matching schema.`,
 	if err := g.Wait(); err != nil {
 		return out, err
 	}
+	reporter.Update(98, "Unit docs ready")
 
 	out.DocsWritten = int(atomic.LoadInt32(&written))
+	out.DocsExisting = int(atomic.LoadInt32(&existingCount))
 	out.DiagramsWritten = int(atomic.LoadInt32(&diagrams))
 	out.FiguresWritten = int(atomic.LoadInt32(&figures))
 	out.VideosWritten = int(atomic.LoadInt32(&videos))
 	out.TablesWritten = int(atomic.LoadInt32(&tables))
 
+	if in.MarkPending && len(selectedNodes) > 0 {
+		selectedIDs := make([]uuid.UUID, 0, len(selectedNodes))
+		for _, n := range selectedNodes {
+			if n != nil && n.ID != uuid.Nil {
+				selectedIDs = append(selectedIDs, n.ID)
+			}
+		}
+		readyIDs := map[uuid.UUID]bool{}
+		if deps.NodeDocs != nil && len(selectedIDs) > 0 {
+			if rows, err := deps.NodeDocs.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, selectedIDs); err == nil {
+				for _, d := range rows {
+					if d != nil && d.PathNodeID != uuid.Nil {
+						readyIDs[d.PathNodeID] = true
+					}
+				}
+			}
+		}
+		markReadyNodes(ctx, deps, selectedNodes, infoByID, readyIDs)
+		if len(nodes) > 0 {
+			updatePathMeta(ctx, deps, pathID, pathMeta, map[string]any{
+				"progressive_mode":        true,
+				"progressive_nodes_total": len(nodes),
+				"progressive_nodes_ready": len(nodes) - len(pendingIDs),
+			})
+		}
+	}
+
 	return out, nil
+}
+
+type nodeDocHashInput struct {
+	PromptVersion       string
+	SchemaVersion       int
+	NodeID              uuid.UUID
+	NodeTitle           string
+	NodeGoal            string
+	NodeKind            string
+	DocTemplate         string
+	ConceptKeys         []string
+	PrereqKeys          []string
+	PathIntentMD        string
+	PathStyleJSON       string
+	StyleManifestJSON   string
+	PathNarrativeJSON   string
+	NodeNarrativeJSON   string
+	PatternContextJSON  string
+	NarrativeContext    string
+	OutlineJSON         string
+	SectionEvidenceJSON string
+	EquationsJSON       string
+	UserProfileDoc      string
+	UserKnowledgeJSON   string
+	TeachingJSON        string
+	MediaRankJSON       string
+	MustCiteIDs         []uuid.UUID
+	ChunkIDs            []uuid.UUID
+	Assets              []map[string]any
+	Requirements        map[string]any
+	MediaPatch          bool
+}
+
+func nodeDocInputHash(in nodeDocHashInput) string {
+	payload := map[string]any{
+		"prompt_version": in.PromptVersion,
+		"schema_version": in.SchemaVersion,
+		"node": map[string]any{
+			"id":           in.NodeID.String(),
+			"title":        strings.TrimSpace(in.NodeTitle),
+			"goal":         strings.TrimSpace(in.NodeGoal),
+			"kind":         strings.TrimSpace(in.NodeKind),
+			"doc_template": strings.TrimSpace(in.DocTemplate),
+			"concept_keys": dedupeStrings(in.ConceptKeys),
+			"prereq_keys":  dedupeStrings(in.PrereqKeys),
+		},
+		"path": map[string]any{
+			"intent_hash":    hashString(in.PathIntentMD),
+			"style_hash":     hashString(in.PathStyleJSON),
+			"manifest_hash":  hashString(in.StyleManifestJSON),
+			"narrative_hash": hashString(in.PathNarrativeJSON),
+		},
+		"narrative": map[string]any{
+			"node_hash":       hashString(in.NodeNarrativeJSON),
+			"pattern_hash":    hashString(in.PatternContextJSON),
+			"context_hash":    hashString(in.NarrativeContext),
+			"media_rank_hash": hashString(in.MediaRankJSON),
+		},
+		"outline_hash":          hashString(in.OutlineJSON),
+		"section_evidence_hash": hashString(in.SectionEvidenceJSON),
+		"equations_hash":        hashString(in.EquationsJSON),
+		"user_profile_hash":     hashString(in.UserProfileDoc),
+		"user_knowledge_hash":   hashString(in.UserKnowledgeJSON),
+		"teaching_hash":         hashString(in.TeachingJSON),
+		"must_cite_ids":         uuidStrings(in.MustCiteIDs),
+		"chunk_ids":             uuidStrings(in.ChunkIDs),
+		"assets":                in.Assets,
+		"requirements":          in.Requirements,
+		"media_patch":           in.MediaPatch,
+	}
+	canon, err := content.CanonicalizeJSON(payload)
+	if err != nil {
+		return ""
+	}
+	return content.HashBytes(canon)
+}
+
+func nodeMediaFingerprint(figs []*mediaAssetCandidate, vids []*mediaAssetCandidate, assetsJSON string) []map[string]any {
+	out := make([]map[string]any, 0, len(figs)+len(vids)+1)
+	add := func(c *mediaAssetCandidate) {
+		if c == nil {
+			return
+		}
+		out = append(out, map[string]any{
+			"type":       strings.TrimSpace(c.Kind),
+			"url":        strings.TrimSpace(c.URL),
+			"key":        strings.TrimSpace(c.Key),
+			"source":     strings.TrimSpace(c.Source),
+			"asset_kind": strings.TrimSpace(c.AssetKind),
+			"file_name":  strings.TrimSpace(c.FileName),
+			"mime_type":  strings.TrimSpace(c.MimeType),
+			"chunk_ids":  dedupeStrings(c.ChunkIDs),
+			"page":       c.Page,
+			"start_sec":  c.StartSec,
+			"end_sec":    c.EndSec,
+		})
+	}
+	for _, f := range figs {
+		add(f)
+	}
+	for _, v := range vids {
+		add(v)
+	}
+	if strings.TrimSpace(assetsJSON) != "" {
+		out = append(out, map[string]any{
+			"type":        "assets_json",
+			"assets_hash": hashString(assetsJSON),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := strings.TrimSpace(stringFromAny(out[i]["type"]))
+		tj := strings.TrimSpace(stringFromAny(out[j]["type"]))
+		if ti != tj {
+			return ti < tj
+		}
+		ui := strings.TrimSpace(stringFromAny(out[i]["url"]))
+		uj := strings.TrimSpace(stringFromAny(out[j]["url"]))
+		if ui != uj {
+			return ui < uj
+		}
+		ki := strings.TrimSpace(stringFromAny(out[i]["key"]))
+		kj := strings.TrimSpace(stringFromAny(out[j]["key"]))
+		return ki < kj
+	})
+	return out
+}
+
+func nodeDocRequirementsFingerprint(reqs content.NodeDocRequirements, diagramsDisabled, requireDiagrams bool) map[string]any {
+	return map[string]any{
+		"min_word_count":     reqs.MinWordCount,
+		"min_paragraphs":     reqs.MinParagraphs,
+		"min_callouts":       reqs.MinCallouts,
+		"min_quick_checks":   reqs.MinQuickChecks,
+		"min_headings":       reqs.MinHeadings,
+		"min_diagrams":       reqs.MinDiagrams,
+		"min_tables":         reqs.MinTables,
+		"min_why_it_matters": reqs.MinWhyItMatters,
+		"min_intuition":      reqs.MinIntuition,
+		"min_mental_models":  reqs.MinMentalModels,
+		"min_pitfalls":       reqs.MinPitfalls,
+		"min_steps":          reqs.MinSteps,
+		"min_checklist":      reqs.MinChecklist,
+		"require_media":      reqs.RequireMedia,
+		"diagrams_disabled":  diagramsDisabled,
+		"require_diagrams":   requireDiagrams,
+	}
+}
+
+func hashString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return content.HashBytes([]byte(s))
+}
+
+func selectPathNodesForBuild(nodes []*types.PathNode, nodeKindByID map[uuid.UUID]string, limit int, mode string) ([]*types.PathNode, map[uuid.UUID]bool) {
+	if limit <= 0 || len(nodes) == 0 {
+		return nodes, map[uuid.UUID]bool{}
+	}
+	limit = clampIntCeiling(limit, 1, 0)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+
+	selected := make([]*types.PathNode, 0, limit)
+	selectedIDs := map[uuid.UUID]bool{}
+
+	pick := func(n *types.PathNode) {
+		if n == nil || n.ID == uuid.Nil {
+			return
+		}
+		if selectedIDs[n.ID] {
+			return
+		}
+		selected = append(selected, n)
+		selectedIDs[n.ID] = true
+	}
+
+	if mode == "outline_and_lesson" || mode == "outline+lesson" || mode == "outline_lesson" {
+		for _, n := range nodes {
+			if n == nil || n.ID == uuid.Nil {
+				continue
+			}
+			kind := strings.ToLower(strings.TrimSpace(nodeKindByID[n.ID]))
+			if kind == "module" || kind == "outline" || kind == "overview" {
+				pick(n)
+				break
+			}
+		}
+		for _, n := range nodes {
+			if n == nil || n.ID == uuid.Nil {
+				continue
+			}
+			kind := strings.ToLower(strings.TrimSpace(nodeKindByID[n.ID]))
+			if kind == "lesson" {
+				pick(n)
+				break
+			}
+		}
+	}
+
+	for _, n := range nodes {
+		if len(selected) >= limit {
+			break
+		}
+		pick(n)
+	}
+
+	pending := map[uuid.UUID]bool{}
+	for _, n := range nodes {
+		if n == nil || n.ID == uuid.Nil {
+			continue
+		}
+		if !selectedIDs[n.ID] {
+			pending[n.ID] = true
+		}
+	}
+
+	return selected, pending
+}
+
+func markPendingNodes(
+	ctx context.Context,
+	deps NodeDocBuildDeps,
+	nodes []*types.PathNode,
+	infoByID map[uuid.UUID]nodeInfo,
+	pendingIDs map[uuid.UUID]bool,
+	existing map[uuid.UUID]*types.LearningNodeDoc,
+) {
+	if len(pendingIDs) == 0 {
+		return
+	}
+	for _, n := range nodes {
+		if n == nil || n.ID == uuid.Nil {
+			continue
+		}
+		if !pendingIDs[n.ID] {
+			continue
+		}
+		info := infoByID[n.ID]
+		meta := info.Meta
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		if existing != nil && existing[n.ID] != nil {
+			updateNodeContentState(ctx, deps, n.ID, meta, "ready")
+			continue
+		}
+		updateNodeContentState(ctx, deps, n.ID, meta, "pending")
+	}
+}
+
+func markReadyNodes(
+	ctx context.Context,
+	deps NodeDocBuildDeps,
+	nodes []*types.PathNode,
+	infoByID map[uuid.UUID]nodeInfo,
+	readyIDs map[uuid.UUID]bool,
+) {
+	if len(nodes) == 0 {
+		return
+	}
+	for _, n := range nodes {
+		if n == nil || n.ID == uuid.Nil {
+			continue
+		}
+		if readyIDs != nil && !readyIDs[n.ID] {
+			continue
+		}
+		info := infoByID[n.ID]
+		meta := info.Meta
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		updateNodeContentState(ctx, deps, n.ID, meta, "ready")
+	}
+}
+
+func updateNodeContentState(ctx context.Context, deps NodeDocBuildDeps, nodeID uuid.UUID, base map[string]any, state string) {
+	if strings.TrimSpace(state) == "" {
+		return
+	}
+	updateNodeMeta(ctx, deps, nodeID, base, map[string]any{
+		"content_state": strings.ToLower(strings.TrimSpace(state)),
+		"content_ready": strings.EqualFold(strings.TrimSpace(state), "ready"),
+	})
 }

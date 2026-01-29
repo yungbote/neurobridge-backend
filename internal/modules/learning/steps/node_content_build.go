@@ -324,6 +324,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
 				MaterialSetID: sourceSetID,
+				PathID:        pathID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      w.QueryEmb,
@@ -333,6 +334,7 @@ func NodeContentBuild(ctx context.Context, deps NodeContentBuildDeps, in NodeCon
 				LexicalK:      6,
 				FinalK:        14,
 				ChunkEmbs:     chunkEmbs,
+				AdaptiveStage: "node_content_build",
 			})
 			if len(chunkIDs) == 0 {
 				if len(chunkEmbs) == 0 {

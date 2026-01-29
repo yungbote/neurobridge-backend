@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -76,6 +77,23 @@ func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in Pat
 	}
 	out.PathID = pathID
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("path_grouping_refine")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	applyAdaptiveMeta := func(meta map[string]any) map[string]any {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["adaptive"] = adaptiveStageMeta("path_grouping_refine", adaptiveEnabled, signals, adaptiveParams)
+		return meta
+	}
+	defer func() {
+		out.Meta = applyAdaptiveMeta(out.Meta)
+	}()
+
 	path, err := deps.Path.GetByID(dbctx.Context{Ctx: ctx}, pathID)
 	if err != nil {
 		return out, err
@@ -116,9 +134,21 @@ func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in Pat
 		return out, nil
 	}
 
-	maxFiles := envIntAllowZero("PATH_GROUPING_MAX_FILES", 40)
+	maxFilesCeiling := envIntAllowZero("PATH_GROUPING_MAX_FILES", 40)
+	if maxFilesCeiling <= 0 {
+		maxFilesCeiling = 40
+	}
+	maxFiles := maxFilesCeiling
+	if adaptiveEnabled {
+		maxFiles = clampIntCeiling(signals.FileCount, 6, maxFilesCeiling)
+	}
+	adaptiveParams["PATH_GROUPING_MAX_FILES"] = map[string]any{
+		"actual":  maxFiles,
+		"ceiling": maxFilesCeiling,
+	}
 	if maxFiles > 0 && len(files) > maxFiles {
 		out.Status = "skipped_too_many_files"
+		out.Meta = applyAdaptiveMeta(out.Meta)
 		return out, nil
 	}
 
@@ -153,12 +183,31 @@ func PathGroupingRefine(ctx context.Context, deps PathGroupingRefineDeps, in Pat
 	prefs := loadGroupingPrefs(ctx, deps, in.OwnerUserID)
 
 	pairScores := computePairScores(files, sigByFile)
-	pairScores = applyCrossEncoderScores(ctx, files, sigByFile, pairScores)
+	pairScores, ceParams := applyCrossEncoderScores(ctx, files, sigByFile, pairScores, signals, adaptiveEnabled)
+	for k, v := range ceParams {
+		adaptiveParams[k] = v
+	}
 
 	mergeThreshold := envFloatAllowZero("PATH_GROUPING_MIN_CONFIDENCE_MERGE", 0.60)
 	splitThreshold := envFloatAllowZero("PATH_GROUPING_MIN_CONFIDENCE_SPLIT", 0.55)
 	bridgeStrong := envFloatAllowZero("PATH_GROUPING_BRIDGE_STRONG", 0.70)
 	bridgeWeak := envFloatAllowZero("PATH_GROUPING_BRIDGE_WEAK", 0.40)
+	if adaptiveEnabled && signals.ContentType != "" {
+		mergeThreshold = clamp01(adjustThresholdByContentType("PATH_GROUPING_MIN_CONFIDENCE_MERGE", mergeThreshold, signals.ContentType))
+		splitThreshold = clamp01(adjustThresholdByContentType("PATH_GROUPING_MIN_CONFIDENCE_SPLIT", splitThreshold, signals.ContentType))
+		bridgeStrong = clamp01(adjustThresholdByContentType("PATH_GROUPING_BRIDGE_STRONG", bridgeStrong, signals.ContentType))
+		bridgeWeak = clamp01(adjustThresholdByContentType("PATH_GROUPING_BRIDGE_WEAK", bridgeWeak, signals.ContentType))
+		if bridgeWeak >= bridgeStrong {
+			bridgeWeak = clamp01(bridgeStrong - 0.05)
+		}
+	}
+	adaptiveParams["PATH_GROUPING_MIN_CONFIDENCE_MERGE"] = map[string]any{"actual": mergeThreshold}
+	adaptiveParams["PATH_GROUPING_MIN_CONFIDENCE_SPLIT"] = map[string]any{"actual": splitThreshold}
+	adaptiveParams["PATH_GROUPING_BRIDGE_STRONG"] = map[string]any{"actual": bridgeStrong}
+	adaptiveParams["PATH_GROUPING_BRIDGE_WEAK"] = map[string]any{"actual": bridgeWeak}
+	if deps.Log != nil && adaptiveEnabled {
+		deps.Log.Info("path_grouping_refine: adaptive params", "adaptive", adaptiveStageMeta("path_grouping_refine", adaptiveEnabled, signals, adaptiveParams))
+	}
 
 	applyGroupingPrefs(&mergeThreshold, &splitThreshold, &bridgeStrong, &bridgeWeak, prefs)
 
@@ -542,24 +591,32 @@ func computePairScores(files []*types.MaterialFile, sigs map[uuid.UUID]*types.Ma
 	return out
 }
 
-func applyCrossEncoderScores(ctx context.Context, files []*types.MaterialFile, sigs map[uuid.UUID]*types.MaterialFileSignature, base map[string]float64) map[string]float64 {
+func applyCrossEncoderScores(ctx context.Context, files []*types.MaterialFile, sigs map[uuid.UUID]*types.MaterialFileSignature, base map[string]float64, signals AdaptiveSignals, adaptiveEnabled bool) (map[string]float64, map[string]any) {
+	params := map[string]any{}
 	model := strings.TrimSpace(os.Getenv("NB_INFERENCE_SCORE_MODEL"))
 	if model == "" {
-		return base
+		return base, params
 	}
 	client, err := infclient.NewFromEnv()
 	if err != nil {
-		return base
+		return base, params
 	}
 
 	topK := envIntAllowZero("PATH_GROUPING_PAIR_TOPK", 12)
+	topKCeiling := topK
+	if adaptiveEnabled {
+		fc := maxInt(signals.FileCount, len(files))
+		raw := int(math.Round(float64(fc) / 2.0))
+		topK = clampIntCeiling(raw, 6, topKCeiling)
+	}
+	params["PATH_GROUPING_PAIR_TOPK"] = map[string]any{"actual": topK, "ceiling": topKCeiling}
 	if topK <= 0 {
-		return base
+		return base, params
 	}
 
 	pairs := selectTopPairs(files, sigs, base, topK)
 	if len(pairs) == 0 {
-		return base
+		return base, params
 	}
 	reqPairs := make([]infclient.TextScorePair, 0, len(pairs))
 	for _, p := range pairs {
@@ -568,12 +625,12 @@ func applyCrossEncoderScores(ctx context.Context, files []*types.MaterialFile, s
 	scores, err := client.ScorePairs(ctx, reqPairs)
 	if err != nil {
 		if errors.Is(err, infclient.ErrScoreNotConfigured) || errors.Is(err, infclient.ErrScoreNotSupported) {
-			return base
+			return base, params
 		}
-		return base
+		return base, params
 	}
 	if len(scores) != len(pairs) {
-		return base
+		return base, params
 	}
 
 	for i, p := range pairs {
@@ -582,7 +639,7 @@ func applyCrossEncoderScores(ctx context.Context, files []*types.MaterialFile, s
 		ceScore := float64(scores[i])
 		base[key] = 0.6*ceScore + 0.4*baseScore
 	}
-	return base
+	return base, params
 }
 
 type scorePair struct {
@@ -1355,7 +1412,16 @@ func titleCase(s string) string {
 		if parts[i] == "" {
 			continue
 		}
-		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
+		runes := []rune(parts[i])
+		if len(runes) == 0 {
+			continue
+		}
+		head := strings.ToUpper(string(runes[:1]))
+		tail := ""
+		if len(runes) > 1 {
+			tail = strings.ToLower(string(runes[1:]))
+		}
+		parts[i] = head + tail
 	}
 	return strings.Join(parts, " ")
 }

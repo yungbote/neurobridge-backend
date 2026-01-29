@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,7 @@ type EmbedChunksOutput struct {
 	ChunksEmbedded  int       `json:"chunks_embedded"`
 	PineconeUpserts int       `json:"pinecone_upserts"`
 	PineconeSkipped bool      `json:"pinecone_skipped"`
+	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
 func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput) (EmbedChunksOutput, error) {
@@ -70,6 +72,19 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("embed_chunks")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("embed_chunks: adaptive params", "adaptive", adaptiveStageMeta("embed_chunks", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("embed_chunks", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	// Derived material sets share the underlying chunk vectors namespace with their source upload batch.
 	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID)
@@ -110,19 +125,73 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 		return out, nil
 	}
 
-	batchSize := envInt("EMBED_CHUNKS_BATCH_SIZE", 128)
+	batchSizeCeiling := envInt("EMBED_CHUNKS_BATCH_SIZE", 128)
+	batchSize := batchSizeCeiling
+	if adaptiveEnabled {
+		batchSize = clampIntCeiling(int(math.Round(float64(signals.ChunkCount)/6.0)), 64, batchSizeCeiling)
+	}
+	adaptiveParams["EMBED_CHUNKS_BATCH_SIZE"] = map[string]any{
+		"actual":  batchSize,
+		"ceiling": batchSizeCeiling,
+	}
 	if batchSize < 8 {
 		batchSize = 8
 	}
 	if batchSize > 256 {
 		batchSize = 256
 	}
+	maxTokens := envIntAllowZero("EMBED_CHUNKS_MAX_TOKENS", 7000)
+	if maxTokens < 0 {
+		maxTokens = 0
+	}
+	adaptiveParams["EMBED_CHUNKS_MAX_TOKENS"] = map[string]any{"actual": maxTokens}
 	maxConc := envInt("EMBED_CHUNKS_CONCURRENCY", 6)
 	if maxConc < 1 {
 		maxConc = 1
 	}
+	adaptiveParams["EMBED_CHUNKS_CONCURRENCY"] = map[string]any{"actual": maxConc}
 
 	ns := index.ChunksNamespace(sourceSetID)
+
+	type embedItem struct {
+		Chunk  *types.MaterialChunk
+		Text   string
+		Tokens int
+	}
+	type embedBatch struct {
+		Items    []embedItem
+		Oversize bool
+	}
+
+	items := make([]embedItem, 0, len(missing))
+	for _, ch := range missing {
+		txt := chunkTextForEmbedding(ch)
+		items = append(items, embedItem{
+			Chunk:  ch,
+			Text:   txt,
+			Tokens: estimateTokens(txt),
+		})
+	}
+
+	batches := make([]embedBatch, 0, (len(items)/maxInt(batchSize, 1))+1)
+	cur := make([]embedItem, 0, batchSize)
+	curTokens := 0
+	for _, it := range items {
+		if maxTokens > 0 && it.Tokens > maxTokens {
+			batches = append(batches, embedBatch{Items: []embedItem{it}, Oversize: true})
+			continue
+		}
+		if len(cur) >= batchSize || (maxTokens > 0 && curTokens+it.Tokens > maxTokens && len(cur) > 0) {
+			batches = append(batches, embedBatch{Items: cur})
+			cur = make([]embedItem, 0, batchSize)
+			curTokens = 0
+		}
+		cur = append(cur, it)
+		curTokens += it.Tokens
+	}
+	if len(cur) > 0 {
+		batches = append(batches, embedBatch{Items: cur})
+	}
 
 	var chunksEmbedded int32
 	var pineconeUpserts int32
@@ -131,39 +200,74 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)
 
-	for start := 0; start < len(missing); start += batchSize {
-		end := start + batchSize
-		if end > len(missing) {
-			end = len(missing)
-		}
-		batch := missing[start:end]
-
+	for _, batch := range batches {
+		batch := batch
 		g.Go(func() error {
-			texts := make([]string, 0, len(batch))
-			for _, ch := range batch {
-				texts = append(texts, chunkTextForEmbedding(ch))
+			if len(batch.Items) == 0 {
+				return nil
 			}
 
-			vecs, err := deps.AI.Embed(gctx, texts)
-			if err != nil {
-				return err
-			}
-			if len(vecs) != len(batch) {
-				return fmt.Errorf("embed_chunks: embedding count mismatch (got %d want %d)", len(vecs), len(batch))
+			texts := make([]string, 0, len(batch.Items))
+			for _, it := range batch.Items {
+				texts = append(texts, it.Text)
 			}
 
-			ids := make([]string, 0, len(batch))
-			pv := make([]pc.Vector, 0, len(batch))
+			var vecs [][]float32
+			if batch.Oversize {
+				it := batch.Items[0]
+				parts := splitTextByTokens(it.Text, maxTokens)
+				if len(parts) == 0 {
+					parts = []string{it.Text}
+				}
+				partVecs := make([][]float32, 0, len(parts))
+				weights := make([]float64, 0, len(parts))
+				for _, part := range parts {
+					v, err := deps.AI.Embed(gctx, []string{part})
+					if err != nil {
+						return err
+					}
+					if len(v) != 1 {
+						return fmt.Errorf("embed_chunks: embedding count mismatch (got %d want 1)", len(v))
+					}
+					partVecs = append(partVecs, v[0])
+					weights = append(weights, float64(maxInt(estimateTokens(part), 1)))
+				}
+				avg := averageEmbeddingWeighted(partVecs, weights)
+				if len(avg) == 0 {
+					return fmt.Errorf("embed_chunks: empty embedding for oversize chunk")
+				}
+				vecs = [][]float32{avg}
+				if deps.Log != nil && len(parts) > 1 {
+					deps.Log.Warn("embed_chunks: split oversize chunk for embedding", "parts", len(parts), "tokens", it.Tokens)
+				}
+			} else {
+				var err error
+				vecs, err = deps.AI.Embed(gctx, texts)
+				if err != nil {
+					return err
+				}
+			}
+			if len(vecs) != len(batch.Items) {
+				return fmt.Errorf("embed_chunks: embedding count mismatch (got %d want %d)", len(vecs), len(batch.Items))
+			}
+
+			ids := make([]string, 0, len(batch.Items))
+			pv := make([]pc.Vector, 0, len(batch.Items))
 
 			// 1) Write embeddings to Postgres + append compensations in the same tx.
 			if err := deps.DB.WithContext(gctx).Transaction(func(tx *gorm.DB) error {
 				dbc := dbctx.Context{Ctx: gctx, Tx: tx}
 				// Bulk update is significantly faster than per-row updates.
-				if err := bulkUpdateChunkEmbeddings(dbc, batch, vecs); err != nil {
+				batchChunks := make([]*types.MaterialChunk, 0, len(batch.Items))
+				for _, it := range batch.Items {
+					batchChunks = append(batchChunks, it.Chunk)
+				}
+				if err := bulkUpdateChunkEmbeddings(dbc, batchChunks, vecs); err != nil {
 					return err
 				}
 
-				for i, ch := range batch {
+				for i, it := range batch.Items {
+					ch := it.Chunk
 					id := ch.ID.String()
 					ids = append(ids, id)
 
@@ -197,7 +301,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 				return err
 			}
 
-			atomic.AddInt32(&chunksEmbedded, int32(len(batch)))
+			atomic.AddInt32(&chunksEmbedded, int32(len(batch.Items)))
 
 			// 2) Upsert to Pinecone (best-effort, retrieval cache only).
 			if deps.Vec == nil {
@@ -272,4 +376,39 @@ func bulkUpdateChunkEmbeddings(dbc dbctx.Context, batch []*types.MaterialChunk, 
 	)
 	args = append(args, now, ids)
 	return dbc.Tx.WithContext(dbc.Ctx).Exec(query, args...).Error
+}
+
+func averageEmbeddingWeighted(vecs [][]float32, weights []float64) []float32 {
+	if len(vecs) == 0 {
+		return nil
+	}
+	dim := len(vecs[0])
+	if dim == 0 {
+		return nil
+	}
+	acc := make([]float64, dim)
+	var total float64
+	for i, v := range vecs {
+		if len(v) != dim {
+			continue
+		}
+		w := 1.0
+		if i < len(weights) && weights[i] > 0 {
+			w = weights[i]
+		}
+		total += w
+		for j, f := range v {
+			acc[j] += float64(f) * w
+		}
+	}
+	if total <= 0 {
+		out := make([]float32, dim)
+		copy(out, vecs[0])
+		return out
+	}
+	out := make([]float32, dim)
+	for i := range acc {
+		out[i] = float32(acc[i] / total)
+	}
+	return out
 }

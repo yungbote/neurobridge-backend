@@ -13,6 +13,7 @@ type Pipeline struct {
 	log      *logger.Logger
 	path     repos.PathRepo
 	concepts repos.ConceptRepo
+	files    repos.MaterialFileRepo
 
 	threads  repos.ChatThreadRepo
 	messages repos.ChatMessageRepo
@@ -24,6 +25,7 @@ func New(
 	baseLog *logger.Logger,
 	path repos.PathRepo,
 	concepts repos.ConceptRepo,
+	files repos.MaterialFileRepo,
 	threads repos.ChatThreadRepo,
 	messages repos.ChatMessageRepo,
 	notify services.ChatNotifier,
@@ -33,6 +35,7 @@ func New(
 		log:      baseLog.With("job", "path_structure_refine"),
 		path:     path,
 		concepts: concepts,
+		files:    files,
 		threads:  threads,
 		messages: messages,
 		notify:   notify,
@@ -40,4 +43,3 @@ func New(
 }
 
 func (p *Pipeline) Type() string { return "path_structure_refine" }
-

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -378,13 +379,64 @@ func shorten(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
-	return s[:max] + "..."
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return truncateUTF8(s, max) + "..."
+}
+
+// estimateTokens provides a cheap token estimate (~4 chars per token).
+func estimateTokens(s string) int {
+	n := utf8.RuneCountInString(strings.TrimSpace(s))
+	if n <= 0 {
+		return 0
+	}
+	return int(math.Ceil(float64(n) / 4.0))
+}
+
+func splitTextByTokens(s string, maxTokens int) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []string{}
+	}
+	if maxTokens <= 0 {
+		return []string{s}
+	}
+	maxRunes := maxTokens * 4
+	if maxRunes <= 0 {
+		return []string{s}
+	}
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return []string{s}
+	}
+	r := []rune(s)
+	out := make([]string, 0, (len(r)/maxRunes)+1)
+	for i := 0; i < len(r); i += maxRunes {
+		end := i + maxRunes
+		if end > len(r) {
+			end = len(r)
+		}
+		out = append(out, string(r[i:end]))
+	}
+	return out
+}
+
+func truncateUTF8(s string, max int) string {
+	if max <= 0 || s == "" {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
 
 func stratifiedChunkExcerpts(chunks []*types.MaterialChunk, perFile int, maxChars int) string {
-	if perFile <= 0 {
-		perFile = 12
-	}
+	useAll := perFile <= 0
 	if maxChars <= 0 {
 		maxChars = 700
 	}
@@ -419,7 +471,7 @@ func stratifiedChunkExcerpts(chunks []*types.MaterialChunk, perFile int, maxChar
 			continue
 		}
 		k := perFile
-		if k > n {
+		if useAll || k > n {
 			k = n
 		}
 		step := float64(n) / float64(k)
@@ -453,9 +505,7 @@ func stratifiedChunkExcerptsWithLimits(chunks []*types.MaterialChunk, perFile in
 }
 
 func stratifiedChunkExcerptsWithLimitsAndIDs(chunks []*types.MaterialChunk, perFile int, maxChars int, maxLines int, maxTotalChars int) (string, []uuid.UUID) {
-	if perFile <= 0 {
-		perFile = 12
-	}
+	useAll := perFile <= 0
 	if maxChars <= 0 {
 		maxChars = 700
 	}
@@ -495,7 +545,7 @@ outer:
 		}
 
 		k := perFile
-		if k > n {
+		if useAll || k > n {
 			k = n
 		}
 		if maxLines > 0 {

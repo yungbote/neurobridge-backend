@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,14 @@ func New(
 	videoAI gcp.Video,
 	caption openai.Caption,
 ) *Extractor {
+	maxPDFPagesRender := envIntAllowZero("INGEST_PDF_MAX_PAGES_RENDER", 200)
+	if maxPDFPagesRender < 0 {
+		maxPDFPagesRender = 0
+	}
+	maxPDFPagesCaption := envIntAllowZero("INGEST_PDF_MAX_PAGES_CAPTION", 60)
+	if maxPDFPagesCaption < 0 {
+		maxPDFPagesCaption = 0
+	}
 	return &Extractor{
 		DB:  db,
 		Log: log.With("component", "IngestionExtractor"),
@@ -105,8 +114,8 @@ func New(
 
 		// TODO: Get rid of infile hardcode values
 		MaxBytesDownload:          1024 * 1024 * 1024,
-		MaxPDFPagesRender:         200,
-		MaxPDFPagesCaption:        60,
+		MaxPDFPagesRender:         maxPDFPagesRender,
+		MaxPDFPagesCaption:        maxPDFPagesCaption,
 		MaxFramesVideo:            200,
 		MaxFramesCaption:          60,
 		MaxSecondsAudioTranscribe: 4 * 60 * 60,
@@ -118,6 +127,18 @@ func New(
 		VideoFrameIntervalSec: 2.0,
 		VideoSceneThreshold:   0.0,
 	}
+}
+
+func envIntAllowZero(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
 }
 
 func (e *Extractor) BestEffortNativeText(name, mime string, data []byte) (string, string, map[string]any) {
@@ -338,12 +359,18 @@ func (e *Extractor) PersistSegmentsAsChunks(dbc dbctx.Context, mf *types.Materia
 					}
 				}
 			}
+			var page *int
+			if seg.Page != nil {
+				p := *seg.Page
+				page = &p
+			}
 			chunk := &types.MaterialChunk{
 				ID:             uuid.New(),
 				MaterialFileID: mf.ID,
 				Index:          idx,
 				Text:           ptxt,
 				Embedding:      datatypes.JSON(nil),
+				Page:           page,
 				Metadata:       datatypes.JSON(mustJSON(localMeta)),
 				CreatedAt:      now,
 				UpdatedAt:      now,

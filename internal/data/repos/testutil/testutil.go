@@ -119,6 +119,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.LearningProfile{},
 		&types.TopicMastery{},
 		&types.TopicStylePreference{},
+		&types.LearningArtifact{},
 		&types.JobRun{},
 	)
 }

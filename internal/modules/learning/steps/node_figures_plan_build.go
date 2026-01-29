@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -59,6 +60,7 @@ type NodeFiguresPlanBuildOutput struct {
 	NodesSkipped    int       `json:"nodes_skipped"`
 	FiguresPlanned  int       `json:"figures_planned"`
 	FiguresExisting int       `json:"figures_existing"`
+	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
 const nodeFigurePlanPromptVersion = "figure_plan_v1@1"
@@ -81,6 +83,19 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 	}
 	out.PathID = pathID
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("node_figures_plan_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("node_figures_plan_build: adaptive params", "adaptive", adaptiveStageMeta("node_figures_plan_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("node_figures_plan_build", adaptiveEnabled, signals, adaptiveParams)
+	}()
+
 	// Optional: apply intake material allowlist (noise filtering / multi-material alignment).
 	var allowFiles map[uuid.UUID]bool
 	if deps.Path != nil {
@@ -95,10 +110,6 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 	// Feature gate: require image model configured, otherwise skip (no-op).
 	if strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL")) == "" {
 		deps.Log.Warn("OPENAI_IMAGE_MODEL missing; skipping node_figures_plan_build")
-		return out, nil
-	}
-	if envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1) == 0 {
-		deps.Log.Warn("NODE_FIGURES_RENDER_LIMIT=0; skipping node_figures_plan_build")
 		return out, nil
 	}
 
@@ -121,6 +132,23 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 		return out, fmt.Errorf("node_figures_plan_build: no path nodes (run path_plan_build first)")
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Index < nodes[j].Index })
+
+	maxFiguresCeiling := envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1)
+	maxFigures := maxFiguresCeiling
+	if maxFiguresCeiling >= 0 && adaptiveEnabled {
+		if signals.NodeCount == 0 {
+			signals.NodeCount = len(nodes)
+		}
+		maxFigures = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*1.5)), 0, maxFiguresCeiling)
+	}
+	adaptiveParams["NODE_FIGURES_RENDER_LIMIT"] = map[string]any{
+		"actual":  maxFigures,
+		"ceiling": maxFiguresCeiling,
+	}
+	if maxFigures == 0 {
+		deps.Log.Warn("NODE_FIGURES_RENDER_LIMIT=0; skipping node_figures_plan_build")
+		return out, nil
+	}
 
 	nodeIDs := make([]uuid.UUID, 0, len(nodes))
 	for _, n := range nodes {
@@ -298,6 +326,7 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
 				MaterialSetID: sourceSetID,
+				PathID:        pathID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      w.QueryEmb,
@@ -306,6 +335,7 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 				SeedK:         semanticK,
 				LexicalK:      lexicalK,
 				FinalK:        finalK,
+				AdaptiveStage: "node_figures_plan_build",
 			})
 			chunkIDs = dedupeUUIDsPreserveOrder(chunkIDs)
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -40,9 +41,12 @@ func buildCrossDocSectionGraph(
 	files []*types.MaterialFile,
 	chunks []*types.MaterialChunk,
 	embByChunk map[uuid.UUID][]float32,
-) (string, []sectionNode) {
+	signals AdaptiveSignals,
+	adaptiveEnabled bool,
+) (string, []sectionNode, map[string]any) {
+	params := map[string]any{}
 	if len(files) == 0 || len(chunks) == 0 {
-		return "", nil
+		return "", nil, params
 	}
 	fileNameByID := map[uuid.UUID]string{}
 	for _, f := range files {
@@ -94,12 +98,25 @@ func buildCrossDocSectionGraph(
 		sections = append(sections, *n)
 	}
 	if len(sections) == 0 {
-		return "", nil
+		return "", nil, params
 	}
 
-	maxSections := envIntAllowZero("CONCEPT_GRAPH_SECTION_MAX", 80)
-	if maxSections <= 0 {
-		maxSections = 80
+	sectionCount := len(sections)
+	if signals.SectionCount > 0 {
+		sectionCount = signals.SectionCount
+	}
+
+	maxSectionsCeiling := envIntAllowZero("CONCEPT_GRAPH_SECTION_MAX", 80)
+	if maxSectionsCeiling <= 0 {
+		maxSectionsCeiling = 80
+	}
+	maxSections := maxSectionsCeiling
+	if adaptiveEnabled {
+		maxSections = clampIntCeiling(int(math.Round(float64(sectionCount)*0.6)), 20, maxSectionsCeiling)
+	}
+	params["CONCEPT_GRAPH_SECTION_MAX"] = map[string]any{
+		"actual":  maxSections,
+		"ceiling": maxSectionsCeiling,
 	}
 	if len(sections) > maxSections {
 		sort.Slice(sections, func(i, j int) bool { return len(sections[i].ChunkIDs) > len(sections[j].ChunkIDs) })
@@ -174,7 +191,13 @@ func buildCrossDocSectionGraph(
 		docs = append(docs, sections[i].Summary)
 	}
 	if len(pending) > 0 && deps.AI != nil {
+		timer := llmTimer(deps.Log, "section_embeddings", map[string]any{
+			"stage":         "concept_graph_build",
+			"batch_size":    len(docs),
+			"section_count": len(sections),
+		})
 		embs, err := deps.AI.Embed(ctx, docs)
+		timer(err)
 		if err == nil && len(embs) == len(pending) {
 			for i := range pending {
 				sections[pending[i]].Emb = embs[i]
@@ -183,7 +206,23 @@ func buildCrossDocSectionGraph(
 	}
 
 	minScore := envFloatAllowZero("CONCEPT_GRAPH_SECTION_MIN_SCORE", 0.78)
-	topK := envIntAllowZero("CONCEPT_GRAPH_SECTION_TOPK", 3)
+	if adaptiveEnabled {
+		minScore = clamp01(adjustThresholdByContentType("CONCEPT_GRAPH_SECTION_MIN_SCORE", minScore, signals.ContentType))
+	}
+	params["CONCEPT_GRAPH_SECTION_MIN_SCORE"] = map[string]any{"actual": minScore}
+	topKCeiling := envIntAllowZero("CONCEPT_GRAPH_SECTION_TOPK", 3)
+	if topKCeiling <= 0 {
+		topKCeiling = 3
+	}
+	topK := topKCeiling
+	if adaptiveEnabled && signals.ConceptCount > 0 {
+		raw := int(math.Round(float64(sectionCount) / float64(signals.ConceptCount)))
+		topK = clampIntCeiling(raw, 2, topKCeiling)
+	}
+	params["CONCEPT_GRAPH_SECTION_TOPK"] = map[string]any{
+		"actual":  topK,
+		"ceiling": topKCeiling,
+	}
 	if topK <= 0 {
 		topK = 3
 	}
@@ -222,7 +261,7 @@ func buildCrossDocSectionGraph(
 	}
 
 	if len(edges) == 0 {
-		return "", sections
+		return "", sections, params
 	}
 	sectionsOut := make([]map[string]any, 0, len(sections))
 	for _, s := range sections {
@@ -252,9 +291,9 @@ func buildCrossDocSectionGraph(
 	}
 	b, _ := json.Marshal(payload)
 	if len(b) == 0 || string(b) == "null" {
-		return "", sections
+		return "", sections, params
 	}
-	return string(b), sections
+	return string(b), sections, params
 }
 
 func chunkMetaMap(ch *types.MaterialChunk) map[string]any {
@@ -272,9 +311,7 @@ func chunkMetaMap(ch *types.MaterialChunk) map[string]any {
 }
 
 func buildConceptGraphExcerpts(chunks []*types.MaterialChunk, perFile int, maxChars int, maxLines int, maxTotalChars int) (string, []uuid.UUID) {
-	if perFile <= 0 {
-		perFile = 12
-	}
+	useAll := perFile <= 0
 	if maxChars <= 0 {
 		maxChars = 700
 	}
@@ -310,7 +347,7 @@ outer:
 			continue
 		}
 		k := perFile
-		if k > n {
+		if useAll || k > n {
 			k = n
 		}
 		if maxLines > 0 {
@@ -435,14 +472,21 @@ type formulaExtracted struct {
 	Notes    string `json:"notes"`
 }
 
-func extractFormulasAndPersist(ctx context.Context, deps ConceptGraphBuildDeps, chunks []*types.MaterialChunk, allowedChunkIDs map[string]bool) {
+func extractFormulasAndPersist(ctx context.Context, deps ConceptGraphBuildDeps, chunks []*types.MaterialChunk, allowedChunkIDs map[string]bool, signals AdaptiveSignals, adaptiveEnabled bool) map[string]any {
+	params := map[string]any{}
 	if deps.AI == nil || deps.Chunks == nil || len(chunks) == 0 {
-		return
+		return params
 	}
 	maxChunks := envIntAllowZero("FORMULA_EXTRACT_MAX_CHUNKS", 60)
 	if maxChunks <= 0 {
 		maxChunks = 60
 	}
+	maxChunksCeiling := maxChunks
+	if adaptiveEnabled {
+		raw := int(math.Round(float64(maxInt(signals.ChunkCount, len(chunks))) * 0.15))
+		maxChunks = clampIntCeiling(raw, 20, maxChunksCeiling)
+	}
+	params["FORMULA_EXTRACT_MAX_CHUNKS"] = map[string]any{"actual": maxChunks, "ceiling": maxChunksCeiling}
 	candidates := make([]map[string]any, 0)
 	for _, ch := range chunks {
 		if len(candidates) >= maxChunks {
@@ -465,24 +509,29 @@ func extractFormulasAndPersist(ctx context.Context, deps ConceptGraphBuildDeps, 
 		})
 	}
 	if len(candidates) == 0 {
-		return
+		return params
 	}
 	b, _ := json.Marshal(map[string]any{"items": candidates})
 	prompt, err := prompts.Build(prompts.PromptFormulaExtraction, prompts.Input{FormulaCandidatesJSON: string(b)})
 	if err != nil {
-		return
+		return params
 	}
+	timer := llmTimer(deps.Log, "formula_extraction", map[string]any{
+		"stage":           "concept_graph_build",
+		"candidate_count": len(candidates),
+	})
 	obj, err := deps.AI.GenerateJSON(ctx, prompt.System, prompt.User, prompt.SchemaName, prompt.Schema)
+	timer(err)
 	if err != nil {
-		return
+		return params
 	}
 	raw, _ := json.Marshal(obj)
 	var out formulaExtraction
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return
+		return params
 	}
 	if len(out.Items) == 0 {
-		return
+		return params
 	}
 	chunkByID := map[string]*types.MaterialChunk{}
 	for _, ch := range chunks {
@@ -518,6 +567,7 @@ func extractFormulasAndPersist(ctx context.Context, deps ConceptGraphBuildDeps, 
 		})
 		ch.Metadata = metaJSON
 	}
+	return params
 }
 
 type assumedKnowledge struct {

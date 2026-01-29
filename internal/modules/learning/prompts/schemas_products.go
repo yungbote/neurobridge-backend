@@ -201,13 +201,45 @@ func StudyCycleSchema() map[string]any {
 // ---------- product schemas ----------
 
 func MaterialSetSummarySchema() map[string]any {
-	return SchemaVersionedObject(1, map[string]any{
+	setIntent := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"from_state":         map[string]any{"type": "string"},
+			"to_state":           map[string]any{"type": "string"},
+			"core_thread":        map[string]any{"type": "string"},
+			"spine_file_ids":     StringArraySchema(),
+			"satellite_file_ids": StringArraySchema(),
+			"gaps_concept_keys":  StringArraySchema(),
+			"redundancy_notes":   StringArraySchema(),
+			"conflict_notes":     StringArraySchema(),
+			"edge_hints": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"from_file_id":      map[string]any{"type": "string"},
+						"to_file_id":        map[string]any{"type": "string"},
+						"relation":          map[string]any{"type": "string"},
+						"strength":          NumberSchema(),
+						"bridging_concepts": StringArraySchema(),
+					},
+					"required":             []string{"from_file_id", "to_file_id", "relation", "strength", "bridging_concepts"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"from_state", "to_state", "core_thread", "spine_file_ids", "satellite_file_ids", "gaps_concept_keys", "redundancy_notes", "conflict_notes", "edge_hints"},
+		"additionalProperties": false,
+	}
+
+	return SchemaVersionedObject(2, map[string]any{
 		"subject":      map[string]any{"type": "string"},
 		"level":        EnumSchema("intro", "intermediate", "advanced"),
 		"summary_md":   map[string]any{"type": "string"},
 		"tags":         StringArraySchema(),
 		"concept_keys": StringArraySchema(),
-	}, []string{"subject", "level", "summary_md", "tags", "concept_keys"})
+		"set_intent":   setIntent,
+	}, []string{"subject", "level", "summary_md", "tags", "concept_keys", "set_intent"})
 }
 
 func FileSignatureSchema() map[string]any {

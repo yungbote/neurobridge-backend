@@ -20,6 +20,7 @@ type Pipeline struct {
 	materialSets repos.MaterialSetRepo
 	ai           openai.Client
 	bootstrap    services.LearningBuildBootstrapService
+	artifacts    repos.LearningArtifactRepo
 }
 
 func New(
@@ -33,6 +34,7 @@ func New(
 	materialSets repos.MaterialSetRepo,
 	ai openai.Client,
 	bootstrap services.LearningBuildBootstrapService,
+	artifacts repos.LearningArtifactRepo,
 ) *Pipeline {
 	return &Pipeline{
 		db:           db,
@@ -45,6 +47,7 @@ func New(
 		materialSets: materialSets,
 		ai:           ai,
 		bootstrap:    bootstrap,
+		artifacts:    artifacts,
 	}
 }
 

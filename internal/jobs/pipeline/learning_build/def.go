@@ -57,6 +57,7 @@ type InlineDeps struct {
 	NodeVideos         repos.LearningNodeVideoRepo
 	DocGenRuns         repos.LearningDocGenerationRunRepo
 	Assets             repos.AssetRepo
+	Artifacts          repos.LearningArtifactRepo
 
 	Activities        repos.ActivityRepo
 	Variants          repos.ActivityVariantRepo
@@ -116,6 +117,13 @@ func New(
 		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
 			maxPoll = time.Duration(ms) * time.Millisecond
 		}
+	}
+	minPollFloor := 2 * time.Second
+	if minPoll < minPollFloor {
+		if baseLog != nil {
+			baseLog.Warn("learning_build: min poll too low; clamping", "requested_ms", minPoll.Milliseconds(), "floor_ms", minPollFloor.Milliseconds())
+		}
+		minPoll = minPollFloor
 	}
 	if maxPoll < minPoll {
 		maxPoll = minPoll

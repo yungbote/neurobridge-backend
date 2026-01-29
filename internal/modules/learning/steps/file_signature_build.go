@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -40,6 +42,7 @@ type FileSignatureBuildDeps struct {
 	Vec          pc.VectorStore
 	Saga         services.SagaService
 	Bootstrap    services.LearningBuildBootstrapService
+	Artifacts    repos.LearningArtifactRepo
 }
 
 type FileSignatureBuildInput struct {
@@ -50,14 +53,16 @@ type FileSignatureBuildInput struct {
 }
 
 type FileSignatureBuildOutput struct {
-	PathID             uuid.UUID `json:"path_id"`
-	FilesTotal         int       `json:"files_total"`
-	FilesProcessed     int       `json:"files_processed"`
-	SignaturesUpserted int       `json:"signatures_upserted"`
-	SectionsUpserted   int       `json:"sections_upserted"`
-	SignaturesSkipped  int       `json:"signatures_skipped"`
-	IntentsUpserted    int       `json:"intents_upserted"`
-	IntentsSkipped     int       `json:"intents_skipped"`
+	PathID             uuid.UUID      `json:"path_id"`
+	FilesTotal         int            `json:"files_total"`
+	FilesProcessed     int            `json:"files_processed"`
+	SignaturesUpserted int            `json:"signatures_upserted"`
+	SectionsUpserted   int            `json:"sections_upserted"`
+	SignaturesSkipped  int            `json:"signatures_skipped"`
+	IntentsUpserted    int            `json:"intents_upserted"`
+	IntentsSkipped     int            `json:"intents_skipped"`
+	CacheHit           bool           `json:"cache_hit,omitempty"`
+	Adaptive           map[string]any `json:"adaptive,omitempty"`
 }
 
 func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in FileSignatureBuildInput) (FileSignatureBuildOutput, error) {
@@ -131,26 +136,157 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		}
 	}
 
+	var signatureInputHash string
+	if deps.Artifacts != nil && artifactCacheEnabled() {
+		type fpInput struct {
+			FileID      string `json:"file_id"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		fpInputs := make([]fpInput, 0, len(files))
+		allSigFresh := true
+		allIntentFresh := true
+		maxIntentUpdated := time.Time{}
+		for _, row := range intentRows {
+			if row != nil && row.UpdatedAt.After(maxIntentUpdated) {
+				maxIntentUpdated = row.UpdatedAt
+			}
+		}
+		for _, f := range files {
+			if f == nil || f.ID == uuid.Nil {
+				continue
+			}
+			fingerprint := fileContentFingerprint(f, chunksByFile[f.ID])
+			fpInputs = append(fpInputs, fpInput{FileID: f.ID.String(), Fingerprint: fingerprint})
+			if existing := existingByFile[f.ID]; existing == nil || strings.TrimSpace(existing.Fingerprint) != fingerprint || existing.Version < 2 {
+				allSigFresh = false
+			}
+			if intent := existingIntents[f.ID]; intent == nil || intentNeedsRebuild(intent) {
+				allIntentFresh = false
+			}
+		}
+		sort.Slice(fpInputs, func(i, j int) bool { return fpInputs[i].FileID < fpInputs[j].FileID })
+
+		payload := map[string]any{
+			"files":             filesFingerprint(files),
+			"file_fingerprints": fpInputs,
+			"env":               envSnapshot([]string{"FILE_SIGNATURE_", "FILE_INTENT_", "MATERIAL_INTENT_"}, []string{"OPENAI_MODEL"}),
+		}
+		if h, err := computeArtifactHash("file_signature_build", in.MaterialSetID, uuid.Nil, payload); err == nil {
+			signatureInputHash = h
+		}
+		if signatureInputHash != "" && allSigFresh && allIntentFresh {
+			if _, hit, err := artifactCacheGet(ctx, deps.Artifacts, in.OwnerUserID, in.MaterialSetID, uuid.Nil, "file_signature_build", signatureInputHash); err == nil && hit {
+				out.SignaturesSkipped = len(files)
+				out.IntentsSkipped = len(files)
+				out.CacheHit = true
+				return out, nil
+			}
+			if artifactCacheSeedExisting() {
+				maxSigUpdated := maxSignatureUpdatedAt(existing)
+				maxFileUpdated := maxFileUpdatedAt(files)
+				if (maxSigUpdated.IsZero() || !maxSigUpdated.Before(maxFileUpdated)) && (maxIntentUpdated.IsZero() || !maxIntentUpdated.Before(maxFileUpdated)) {
+					_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+						OwnerUserID:   in.OwnerUserID,
+						MaterialSetID: in.MaterialSetID,
+						PathID:        uuid.Nil,
+						ArtifactType:  "file_signature_build",
+						InputHash:     signatureInputHash,
+						Version:       artifactHashVersion,
+						Metadata: marshalMeta(map[string]any{
+							"files_total": len(files),
+							"seeded":      true,
+						}),
+					})
+					out.SignaturesSkipped = len(files)
+					out.IntentsSkipped = len(files)
+					out.CacheHit = true
+					return out, nil
+				}
+			}
+		}
+	}
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("file_signature_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, in.PathID)
+	}
+
 	perFile := envIntAllowZero("FILE_SIGNATURE_EXCERPTS_PER_FILE", 10)
+	perFileCeiling := perFile
 	if perFile <= 0 {
 		perFile = 10
 	}
 	maxChars := envIntAllowZero("FILE_SIGNATURE_EXCERPT_MAX_CHARS", 800)
+	maxCharsCeiling := maxChars
 	if maxChars <= 0 {
 		maxChars = 800
+		maxCharsCeiling = maxChars
 	}
 	maxTotal := envIntAllowZero("FILE_SIGNATURE_EXCERPT_MAX_TOTAL_CHARS", 12000)
+	maxTotalCeiling := maxTotal
 	if maxTotal <= 0 {
 		maxTotal = 12000
 	}
 	maxSections := envIntAllowZero("FILE_SIGNATURE_MAX_SECTIONS", 60)
+	maxSectionsCeiling := maxSections
 	if maxSections <= 0 {
 		maxSections = 60
 	}
+	if adaptiveEnabled {
+		if perFileCeiling <= 0 {
+			perFileCeiling = perFile
+		}
+		perFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/8.0)), 2, perFileCeiling)
+		if maxCharsCeiling <= 0 {
+			maxCharsCeiling = maxChars
+		}
+		maxChars = clampIntCeiling(adjustExcerptCharsByContentType(maxChars, signals.ContentType), 200, maxCharsCeiling)
+		if maxTotalCeiling <= 0 {
+			maxTotalCeiling = maxTotal
+		}
+		maxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 6000, maxTotalCeiling)
+		sectionCount := signals.SectionCount
+		if sectionCount <= 0 {
+			sectionCount = signals.PageCount
+		}
+		if maxSectionsCeiling <= 0 {
+			maxSectionsCeiling = maxSections
+		}
+		maxSections = clampIntCeiling(int(math.Round(float64(sectionCount)*0.8)), 20, maxSectionsCeiling)
+		if deps.Log != nil {
+			deps.Log.Info(
+				"file_signature_build: adaptive params",
+				"per_file", perFile,
+				"per_file_ceiling", perFileCeiling,
+				"max_total", maxTotal,
+				"max_total_ceiling", maxTotalCeiling,
+				"max_sections", maxSections,
+				"max_sections_ceiling", maxSectionsCeiling,
+				"signals", adaptiveSignalsMeta(signals),
+			)
+		}
+	}
+	adaptiveOut := map[string]any{
+		"FILE_SIGNATURE_EXCERPTS_PER_FILE":       map[string]any{"actual": perFile, "ceiling": perFileCeiling},
+		"FILE_SIGNATURE_EXCERPT_MAX_CHARS":       map[string]any{"actual": maxChars, "ceiling": maxCharsCeiling},
+		"FILE_SIGNATURE_EXCERPT_MAX_TOTAL_CHARS": map[string]any{"actual": maxTotal, "ceiling": maxTotalCeiling},
+		"FILE_SIGNATURE_MAX_SECTIONS":            map[string]any{"actual": maxSections, "ceiling": maxSectionsCeiling},
+	}
+	sigConc := envIntAllowZero("FILE_SIGNATURE_CONCURRENCY", 4)
+	if sigConc < 1 {
+		sigConc = 1
+	}
+	adaptiveOut["FILE_SIGNATURE_CONCURRENCY"] = map[string]any{"actual": sigConc}
 	minTextChars := envIntAllowZero("FILE_SIGNATURE_MIN_TEXT_CHARS", 500)
 	if minTextChars < 0 {
 		minTextChars = 0
 	}
+	if adaptiveEnabled {
+		minTextChars = clampIntCeiling(adjustMinTextCharsByContentType(minTextChars, signals.ContentType), 0, 0)
+	}
+	adaptiveOut["FILE_SIGNATURE_MIN_TEXT_CHARS"] = map[string]any{"actual": minTextChars}
+	out.Adaptive = adaptiveStageMeta("file_signature_build", adaptiveEnabled, signals, adaptiveOut)
 	sectionEmbedBatch := envIntAllowZero("FILE_SIGNATURE_SECTION_EMBED_BATCH_SIZE", 64)
 	if sectionEmbedBatch <= 0 {
 		sectionEmbedBatch = 64
@@ -160,7 +296,11 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		sectionEmbedConcurrency = 1
 	}
 
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(sigConc)
 	for _, f := range files {
+		f := f
 		if f == nil || f.ID == uuid.Nil {
 			continue
 		}
@@ -168,197 +308,229 @@ func FileSignatureBuild(ctx context.Context, deps FileSignatureBuildDeps, in Fil
 		if len(chArr) == 0 {
 			continue
 		}
-
-		fingerprint := fileFingerprint(f, chArr)
-		if row := existingByFile[f.ID]; row != nil && strings.TrimSpace(row.Fingerprint) == fingerprint && row.Version >= 2 {
-			if existingIntents[f.ID] != nil {
-				out.SignaturesSkipped++
-				out.IntentsSkipped++
-				continue
+		g.Go(func() error {
+			fingerprint := fileContentFingerprint(f, chArr)
+			if row := existingByFile[f.ID]; row != nil && strings.TrimSpace(row.Fingerprint) == fingerprint && row.Version >= 2 {
+				if existingIntents[f.ID] != nil {
+					mu.Lock()
+					out.SignaturesSkipped++
+					out.IntentsSkipped++
+					mu.Unlock()
+					return nil
+				}
 			}
-		}
 
-		excerpt := stratifiedChunkExcerptsWithLimits(chArr, perFile, maxChars, 0, maxTotal)
-		if strings.TrimSpace(excerpt) == "" {
-			continue
-		}
-
-		outlineHint := buildOutlineHint(f, chArr, maxSections)
-		fileInfo := map[string]any{
-			"file_id":        f.ID.String(),
-			"original_name":  strings.TrimSpace(f.OriginalName),
-			"mime_type":      strings.TrimSpace(f.MimeType),
-			"size_bytes":     f.SizeBytes,
-			"extracted_kind": strings.TrimSpace(f.ExtractedKind),
-		}
-
-		fileInfoJSON, _ := json.Marshal(fileInfo)
-		outlineHintJSON, _ := json.Marshal(outlineHint)
-
-		p, err := prompts.Build(prompts.PromptFileSignatureBuild, prompts.Input{
-			Excerpts:        excerpt,
-			FileInfoJSON:    string(fileInfoJSON),
-			OutlineHintJSON: string(outlineHintJSON),
-		})
-		if err != nil {
-			return out, err
-		}
-
-		obj, err := deps.AI.GenerateJSON(ctx, p.System, p.User, p.SchemaName, p.Schema)
-		if err != nil {
-			return out, err
-		}
-
-		summary := strings.TrimSpace(stringFromAny(obj["summary_md"]))
-		topics := dedupeStrings(stringSliceFromAny(obj["topics"]))
-		conceptKeys := dedupeStrings(stringSliceFromAny(obj["concept_keys"]))
-		difficulty := strings.TrimSpace(stringFromAny(obj["difficulty"]))
-		domainTags := dedupeStrings(stringSliceFromAny(obj["domain_tags"]))
-		citations := dedupeStrings(append(stringSliceFromAny(obj["citations"]), extractCitations(excerpt)...))
-		outlineJSON := mapFromAny(obj["outline_json"])
-		outlineConf := floatFromAny(obj["outline_confidence"], 0.4)
-		lang := strings.TrimSpace(stringFromAny(obj["language"]))
-
-		fromState := strings.TrimSpace(stringFromAny(obj["from_state"]))
-		toState := strings.TrimSpace(stringFromAny(obj["to_state"]))
-		coreThread := strings.TrimSpace(stringFromAny(obj["core_thread"]))
-		destination := dedupeStrings(stringSliceFromAny(obj["destination_concepts"]))
-		prereq := dedupeStrings(stringSliceFromAny(obj["prerequisite_concepts"]))
-		assumed := dedupeStrings(stringSliceFromAny(obj["assumed_knowledge"]))
-		intentNotes := dedupeStrings(stringSliceFromAny(obj["notes"]))
-
-		quality := buildQualitySignals(chArr, excerpt, minTextChars)
-		if q := mapFromAny(obj["quality"]); q != nil {
-			quality["llm_quality"] = q
-		}
-
-		embDoc := summary
-		if embDoc == "" {
-			embDoc = strings.TrimSpace(strings.Join(topics, " "))
-		}
-		var summaryEmb []float32
-		if strings.TrimSpace(embDoc) != "" {
-			if vecs, err := deps.AI.Embed(ctx, []string{embDoc}); err == nil && len(vecs) > 0 {
-				summaryEmb = vecs[0]
+			excerpt := stratifiedChunkExcerptsWithLimits(chArr, perFile, maxChars, 0, maxTotal)
+			if strings.TrimSpace(excerpt) == "" {
+				return nil
 			}
-		}
 
-		now := time.Now().UTC()
-		row := &types.MaterialFileSignature{
-			ID:                uuid.New(),
-			MaterialFileID:    f.ID,
-			MaterialSetID:     in.MaterialSetID,
-			Version:           2,
-			Language:          lang,
-			Quality:           datatypes.JSON(mustJSON(quality)),
-			Difficulty:        difficulty,
-			DomainTags:        datatypes.JSON(mustJSON(domainTags)),
-			Topics:            datatypes.JSON(mustJSON(topics)),
-			ConceptKeys:       datatypes.JSON(mustJSON(conceptKeys)),
-			SummaryMD:         summary,
-			SummaryEmbedding:  datatypes.JSON(mustJSON(summaryEmb)),
-			OutlineJSON:       datatypes.JSON(mustJSON(outlineJSON)),
-			OutlineConfidence: outlineConf,
-			Citations:         datatypes.JSON(mustJSON(citations)),
-			Fingerprint:       fingerprint,
-			CreatedAt:         now,
-			UpdatedAt:         now,
-		}
+			outlineHint := buildOutlineHint(f, chArr, maxSections)
+			fileInfo := map[string]any{
+				"file_id":        f.ID.String(),
+				"original_name":  strings.TrimSpace(f.OriginalName),
+				"mime_type":      strings.TrimSpace(f.MimeType),
+				"size_bytes":     f.SizeBytes,
+				"extracted_kind": strings.TrimSpace(f.ExtractedKind),
+			}
 
-		intent := &types.MaterialIntent{
-			ID:                   uuid.New(),
-			MaterialFileID:       f.ID,
-			MaterialSetID:        in.MaterialSetID,
-			FromState:            fromState,
-			ToState:              toState,
-			CoreThread:           coreThread,
-			DestinationConcepts:  datatypes.JSON(mustJSON(destination)),
-			PrerequisiteConcepts: datatypes.JSON(mustJSON(prereq)),
-			AssumedKnowledge:     datatypes.JSON(mustJSON(assumed)),
-			Metadata:             datatypes.JSON(mustJSON(map[string]any{"notes": intentNotes, "source": "file_signature_build"})),
-			CreatedAt:            now,
-			UpdatedAt:            now,
-		}
-		if strings.TrimSpace(intent.FromState) == "" && strings.TrimSpace(intent.ToState) == "" &&
-			strings.TrimSpace(intent.CoreThread) == "" && len(destination) == 0 && len(prereq) == 0 && len(assumed) == 0 {
-			intent = fallbackMaterialIntent(f, row)
-			intent.MaterialSetID = in.MaterialSetID
-			intent.Metadata = datatypes.JSON(mustJSON(map[string]any{"notes": append(intentNotes, "fallback_intent"), "source": "file_signature_build"}))
-		}
+			fileInfoJSON, _ := json.Marshal(fileInfo)
+			outlineHintJSON, _ := json.Marshal(outlineHint)
 
-		if err := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-			if err := deps.FileSigs.UpsertByMaterialFileID(dbc, row); err != nil {
+			p, err := prompts.Build(prompts.PromptFileSignatureBuild, prompts.Input{
+				Excerpts:        excerpt,
+				FileInfoJSON:    string(fileInfoJSON),
+				OutlineHintJSON: string(outlineHintJSON),
+			})
+			if err != nil {
 				return err
 			}
-			if intent != nil {
-				if err := tx.Clauses(clause.OnConflict{
-					Columns: []clause.Column{{Name: "material_file_id"}},
-					DoUpdates: clause.AssignmentColumns([]string{
-						"material_set_id",
-						"from_state",
-						"to_state",
-						"core_thread",
-						"destination_concepts",
-						"prerequisite_concepts",
-						"assumed_knowledge",
-						"metadata",
-						"updated_at",
-					}),
-				}).Create(intent).Error; err != nil {
+
+			obj, err := deps.AI.GenerateJSON(gctx, p.System, p.User, p.SchemaName, p.Schema)
+			if err != nil {
+				return err
+			}
+
+			summary := strings.TrimSpace(stringFromAny(obj["summary_md"]))
+			topics := dedupeStrings(stringSliceFromAny(obj["topics"]))
+			conceptKeys := dedupeStrings(stringSliceFromAny(obj["concept_keys"]))
+			difficulty := strings.TrimSpace(stringFromAny(obj["difficulty"]))
+			domainTags := dedupeStrings(stringSliceFromAny(obj["domain_tags"]))
+			citations := dedupeStrings(append(stringSliceFromAny(obj["citations"]), extractCitations(excerpt)...))
+			outlineJSON := mapFromAny(obj["outline_json"])
+			outlineConf := floatFromAny(obj["outline_confidence"], 0.4)
+			lang := strings.TrimSpace(stringFromAny(obj["language"]))
+
+			fromState := strings.TrimSpace(stringFromAny(obj["from_state"]))
+			toState := strings.TrimSpace(stringFromAny(obj["to_state"]))
+			coreThread := strings.TrimSpace(stringFromAny(obj["core_thread"]))
+			destination := dedupeStrings(stringSliceFromAny(obj["destination_concepts"]))
+			prereq := dedupeStrings(stringSliceFromAny(obj["prerequisite_concepts"]))
+			assumed := dedupeStrings(stringSliceFromAny(obj["assumed_knowledge"]))
+			intentNotes := dedupeStrings(stringSliceFromAny(obj["notes"]))
+
+			quality := buildQualitySignals(chArr, excerpt, minTextChars)
+			if q := mapFromAny(obj["quality"]); q != nil {
+				quality["llm_quality"] = q
+			}
+
+			embDoc := summary
+			if embDoc == "" {
+				embDoc = strings.TrimSpace(strings.Join(topics, " "))
+			}
+			var summaryEmb []float32
+			if strings.TrimSpace(embDoc) != "" {
+				if vecs, err := deps.AI.Embed(gctx, []string{embDoc}); err == nil && len(vecs) > 0 {
+					summaryEmb = vecs[0]
+				}
+			}
+
+			now := time.Now().UTC()
+			row := &types.MaterialFileSignature{
+				ID:                uuid.New(),
+				MaterialFileID:    f.ID,
+				MaterialSetID:     in.MaterialSetID,
+				Version:           2,
+				Language:          lang,
+				Quality:           datatypes.JSON(mustJSON(quality)),
+				Difficulty:        difficulty,
+				DomainTags:        datatypes.JSON(mustJSON(domainTags)),
+				Topics:            datatypes.JSON(mustJSON(topics)),
+				ConceptKeys:       datatypes.JSON(mustJSON(conceptKeys)),
+				SummaryMD:         summary,
+				SummaryEmbedding:  datatypes.JSON(mustJSON(summaryEmb)),
+				OutlineJSON:       datatypes.JSON(mustJSON(outlineJSON)),
+				OutlineConfidence: outlineConf,
+				Citations:         datatypes.JSON(mustJSON(citations)),
+				Fingerprint:       fingerprint,
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			}
+
+			intent := &types.MaterialIntent{
+				ID:                   uuid.New(),
+				MaterialFileID:       f.ID,
+				MaterialSetID:        in.MaterialSetID,
+				FromState:            fromState,
+				ToState:              toState,
+				CoreThread:           coreThread,
+				DestinationConcepts:  datatypes.JSON(mustJSON(destination)),
+				PrerequisiteConcepts: datatypes.JSON(mustJSON(prereq)),
+				AssumedKnowledge:     datatypes.JSON(mustJSON(assumed)),
+				Metadata:             datatypes.JSON(mustJSON(map[string]any{"notes": intentNotes, "source": "file_signature_build"})),
+				CreatedAt:            now,
+				UpdatedAt:            now,
+			}
+			if strings.TrimSpace(intent.FromState) == "" && strings.TrimSpace(intent.ToState) == "" &&
+				strings.TrimSpace(intent.CoreThread) == "" && len(destination) == 0 && len(prereq) == 0 && len(assumed) == 0 {
+				intent = fallbackMaterialIntent(f, row)
+				intent.MaterialSetID = in.MaterialSetID
+				intent.Metadata = datatypes.JSON(mustJSON(map[string]any{"notes": append(intentNotes, "fallback_intent"), "source": "file_signature_build"}))
+			}
+
+			sectionsUpserted := 0
+			intentUpserted := 0
+			if err := deps.DB.WithContext(gctx).Transaction(func(tx *gorm.DB) error {
+				dbc := dbctx.Context{Ctx: gctx, Tx: tx}
+				if err := deps.FileSigs.UpsertByMaterialFileID(dbc, row); err != nil {
 					return err
 				}
+				if intent != nil {
+					if err := tx.Clauses(clause.OnConflict{
+						Columns: []clause.Column{{Name: "material_file_id"}},
+						DoUpdates: clause.AssignmentColumns([]string{
+							"material_set_id",
+							"from_state",
+							"to_state",
+							"core_thread",
+							"destination_concepts",
+							"prerequisite_concepts",
+							"assumed_knowledge",
+							"metadata",
+							"updated_at",
+						}),
+					}).Create(intent).Error; err != nil {
+						return err
+					}
+					intentUpserted = 1
+				}
+
+				sections := flattenOutlineSections(outlineJSON, maxSections)
+				for i := range sections {
+					sections[i].MaterialFileID = f.ID
+					sections[i].SectionIndex = i + 1
+					sections[i].CreatedAt = now
+					sections[i].UpdatedAt = now
+				}
+
+				if len(sections) > 0 {
+					if err := deps.FileSections.DeleteByMaterialFileID(dbc, f.ID); err != nil {
+						return err
+					}
+					if err := attachSectionEmbeddings(gctx, deps.AI, sections, sectionEmbedBatch, sectionEmbedConcurrency); err != nil {
+						return err
+					}
+					if err := deps.FileSections.BulkUpsert(dbc, sections); err != nil {
+						return err
+					}
+					sectionsUpserted = len(sections)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if deps.Vec != nil && len(summaryEmb) > 0 {
+				ns := fmt.Sprintf("file_signatures:material_set:%s", in.MaterialSetID.String())
+				_ = deps.Vec.Upsert(gctx, ns, []pc.Vector{{
+					ID:     f.ID.String(),
+					Values: summaryEmb,
+					Metadata: map[string]any{
+						"material_set_id": in.MaterialSetID.String(),
+						"file_id":         f.ID.String(),
+						"topics":          topics,
+						"difficulty":      difficulty,
+						"language":        lang,
+					},
+				}})
+			}
+
+			mu.Lock()
+			out.FilesProcessed++
+			out.SignaturesUpserted++
+			if intentUpserted > 0 {
 				out.IntentsUpserted++
 			}
-
-			sections := flattenOutlineSections(outlineJSON, maxSections)
-			for i := range sections {
-				sections[i].MaterialFileID = f.ID
-				sections[i].SectionIndex = i + 1
-				sections[i].CreatedAt = now
-				sections[i].UpdatedAt = now
-			}
-
-			if len(sections) > 0 {
-				if err := deps.FileSections.DeleteByMaterialFileID(dbc, f.ID); err != nil {
-					return err
-				}
-				if err := attachSectionEmbeddings(ctx, deps.AI, sections, sectionEmbedBatch, sectionEmbedConcurrency); err != nil {
-					return err
-				}
-				if err := deps.FileSections.BulkUpsert(dbc, sections); err != nil {
-					return err
-				}
-				out.SectionsUpserted += len(sections)
-			}
+			out.SectionsUpserted += sectionsUpserted
+			mu.Unlock()
 			return nil
-		}); err != nil {
-			return out, err
-		}
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return out, err
+	}
 
-		if deps.Vec != nil && len(summaryEmb) > 0 {
-			ns := fmt.Sprintf("file_signatures:material_set:%s", in.MaterialSetID.String())
-			_ = deps.Vec.Upsert(ctx, ns, []pc.Vector{{
-				ID:     f.ID.String(),
-				Values: summaryEmb,
-				Metadata: map[string]any{
-					"material_set_id": in.MaterialSetID.String(),
-					"file_id":         f.ID.String(),
-					"topics":          topics,
-					"difficulty":      difficulty,
-					"language":        lang,
-				},
-			}})
-		}
-
-		out.FilesProcessed++
-		out.SignaturesUpserted++
+	if signatureInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+		_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+			OwnerUserID:   in.OwnerUserID,
+			MaterialSetID: in.MaterialSetID,
+			PathID:        uuid.Nil,
+			ArtifactType:  "file_signature_build",
+			InputHash:     signatureInputHash,
+			Version:       artifactHashVersion,
+			Metadata: marshalMeta(map[string]any{
+				"files_total":         len(files),
+				"files_processed":     out.FilesProcessed,
+				"signatures_upserted": out.SignaturesUpserted,
+				"intents_upserted":    out.IntentsUpserted,
+			}),
+		})
 	}
 
 	return out, nil
 }
 
-func fileFingerprint(f *types.MaterialFile, chunks []*types.MaterialChunk) string {
+func fileContentFingerprint(f *types.MaterialFile, chunks []*types.MaterialChunk) string {
 	h := sha1.New()
 	if f != nil {
 		_, _ = h.Write([]byte(strings.TrimSpace(f.OriginalName)))

@@ -140,6 +140,7 @@ type LearningNodeFigure = products.LearningNodeFigure
 type LearningNodeVideo = products.LearningNodeVideo
 type LearningDocGenerationRun = products.LearningDocGenerationRun
 type LearningDrillInstance = products.LearningDrillInstance
+type LearningArtifact = products.LearningArtifact
 type LibraryTaxonomyNode = products.LibraryTaxonomyNode
 type LibraryTaxonomyEdge = products.LibraryTaxonomyEdge
 type LibraryTaxonomyMembership = products.LibraryTaxonomyMembership

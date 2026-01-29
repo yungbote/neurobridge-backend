@@ -38,6 +38,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		MaterialSets: p.materialSets,
 		AI:           p.ai,
 		Bootstrap:    p.bootstrap,
+		Artifacts:    p.artifacts,
 	}).MaterialSignalBuild(jc.Ctx, learningmod.MaterialSignalBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
@@ -63,6 +64,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"global_coverage_upserted": out.GlobalCoverageUpserted,
 		"emergent_upserted":        out.EmergentUpserted,
 		"skipped":                  out.Skipped,
+		"cache_hit":                out.CacheHit,
+		"trace":                    out.Trace,
 	})
 	return nil
 }

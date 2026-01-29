@@ -15,6 +15,7 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -409,6 +410,35 @@ func buildDocAIResult(doc *documentaipb.Document, processor string, mimeType str
 	return out
 }
 
+func ParseDocAIJSON(docJSON []byte, processor string, mimeType string) (*DocAIResult, error) {
+	if len(docJSON) == 0 {
+		return &DocAIResult{Provider: "gcp_documentai", Processor: processor, MimeType: mimeType}, nil
+	}
+
+	var doc documentaipb.Document
+	if err := protojson.Unmarshal(docJSON, &doc); err == nil {
+		return buildDocAIResult(&doc, processor, mimeType), nil
+	}
+
+	// Batch output may wrap the document in a {"document": {...}} envelope.
+	var wrapper map[string]any
+	if err := json.Unmarshal(docJSON, &wrapper); err != nil {
+		return nil, err
+	}
+	rawDoc, ok := wrapper["document"]
+	if !ok {
+		return nil, fmt.Errorf("docai json missing document field")
+	}
+	b, err := json.Marshal(rawDoc)
+	if err != nil {
+		return nil, err
+	}
+	if err := protojson.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	return buildDocAIResult(&doc, processor, mimeType), nil
+}
+
 func textFromAnchor(full string, anchor *documentaipb.Document_TextAnchor) string {
 	if anchor == nil || len(anchor.TextSegments) == 0 || full == "" {
 		return ""
@@ -565,6 +595,10 @@ func processorName(project, location, processorID, version string) string {
 		return base + "/processorVersions/" + version
 	}
 	return base
+}
+
+func ProcessorName(project, location, processorID, version string) string {
+	return processorName(project, location, processorID, version)
 }
 
 func (s *documentService) listObjectsWithRetry(ctx context.Context, bucket, prefix string) ([]string, error) {

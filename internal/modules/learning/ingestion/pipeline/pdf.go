@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,21 +24,160 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+func countSegmentPages(segs []Segment) int {
+	if len(segs) == 0 {
+		return 0
+	}
+	seen := map[int]bool{}
+	for _, s := range segs {
+		if s.Page == nil {
+			continue
+		}
+		p := *s.Page
+		if p <= 0 {
+			continue
+		}
+		seen[p] = true
+	}
+	return len(seen)
+}
+
+func mergeDocAIResults(results []*gcp.DocAIResult) *gcp.DocAIResult {
+	if len(results) == 0 {
+		return nil
+	}
+	out := &gcp.DocAIResult{Provider: "gcp_documentai"}
+	var primary strings.Builder
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		if out.Processor == "" && strings.TrimSpace(r.Processor) != "" {
+			out.Processor = r.Processor
+		}
+		if out.MimeType == "" && strings.TrimSpace(r.MimeType) != "" {
+			out.MimeType = r.MimeType
+		}
+		if strings.TrimSpace(r.PrimaryText) != "" {
+			if primary.Len() > 0 {
+				primary.WriteString("\n")
+			}
+			primary.WriteString(r.PrimaryText)
+		}
+		out.Segments = append(out.Segments, r.Segments...)
+		out.Tables = append(out.Tables, r.Tables...)
+		out.Forms = append(out.Forms, r.Forms...)
+	}
+	out.PrimaryText = strings.TrimSpace(primary.String())
+	return out
+}
+
 func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath string) ([]Segment, []AssetRef, []string, map[string]any, error) {
 	diag := map[string]any{"pipeline": "pdf"}
 	var warnings []string
 	var assets []AssetRef
 	var segs []Segment
+	var pdfPageCount int
 
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, diag, err
 	}
 
+	if s.ex.Media != nil && strings.TrimSpace(pdfPath) != "" {
+		if n, err := s.ex.Media.CountPDFPages(ctx, pdfPath); err == nil && n > 0 {
+			pdfPageCount = n
+			diag["pdf_page_count"] = pdfPageCount
+		} else if err != nil {
+			diag["pdf_page_count_error"] = err.Error()
+		}
+	}
+
 	var docAIRes *gcp.DocAIResult
 	var docAIErr error
+	docAIProcessor := gcp.ProcessorName(s.ex.DocAIProjectID, s.ex.DocAILocation, s.ex.DocAIProcessorID, s.ex.DocAIProcessorVer)
+	batchAttempted := false
+	var docAIBatchErr error
+	if pdfPageCount > 200 && s.ex.DocAI != nil && s.ex.Bucket != nil && s.ex.MaterialBucketName != "" {
+		batchAttempted = true
+		inputKey := fmt.Sprintf("extraction/docai/input/%s/%s/source.pdf", mf.MaterialSetID.String(), mf.ID.String())
+		outputPrefix := fmt.Sprintf("extraction/docai/output/%s/%s/", mf.MaterialSetID.String(), mf.ID.String())
+		diag["docai_batch_input_key"] = inputKey
+		diag["docai_batch_output_prefix"] = outputPrefix
+
+		if strings.EqualFold(strings.TrimSpace(mf.MimeType), "application/pdf") && strings.TrimSpace(mf.StorageKey) != "" {
+			if mf.StorageKey != inputKey {
+				if err := s.ex.Bucket.CopyObject(ctx, gcp.BucketCategoryMaterial, mf.StorageKey, inputKey); err != nil {
+					docAIErr = fmt.Errorf("docai batch copy input: %w", err)
+					docAIBatchErr = docAIErr
+				}
+			}
+		} else if strings.TrimSpace(pdfPath) != "" {
+			if err := s.ex.UploadLocalToGCS(dbctx.Context{Ctx: ctx}, inputKey, pdfPath); err != nil {
+				docAIErr = fmt.Errorf("docai batch upload input: %w", err)
+				docAIBatchErr = docAIErr
+			}
+		} else {
+			docAIErr = fmt.Errorf("docai batch missing input pdf")
+			docAIBatchErr = docAIErr
+		}
+
+		if docAIErr == nil {
+			_ = s.ex.Bucket.DeletePrefix(ctx, gcp.BucketCategoryMaterial, outputPrefix)
+			batchRes, err := s.ex.DocAI.BatchProcessGCS(ctx, gcp.DocAIBatchRequest{
+				ProjectID:        s.ex.DocAIProjectID,
+				Location:         s.ex.DocAILocation,
+				ProcessorID:      s.ex.DocAIProcessorID,
+				ProcessorVersion: s.ex.DocAIProcessorVer,
+				MimeType:         "application/pdf",
+				InputGCSURI:      fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, inputKey),
+				OutputGCSURI:     fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, outputPrefix),
+			})
+			if err != nil {
+				docAIErr = fmt.Errorf("docai batch process: %w", err)
+				docAIBatchErr = docAIErr
+			} else {
+				diag["docai_batch_docs"] = batchRes.Documents
+				results := make([]*gcp.DocAIResult, 0, batchRes.Documents)
+				var batchWarns []string
+				for _, key := range batchRes.OutputObjects {
+					if !strings.HasSuffix(strings.ToLower(key), ".json") {
+						continue
+					}
+					rc, rerr := s.ex.Bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, key)
+					if rerr != nil {
+						batchWarns = append(batchWarns, fmt.Sprintf("docai batch download failed: %s: %v", key, rerr))
+						continue
+					}
+					b, rerr := io.ReadAll(rc)
+					_ = rc.Close()
+					if rerr != nil {
+						batchWarns = append(batchWarns, fmt.Sprintf("docai batch read failed: %s: %v", key, rerr))
+						continue
+					}
+					res, rerr := gcp.ParseDocAIJSON(b, docAIProcessor, "application/pdf")
+					if rerr != nil {
+						batchWarns = append(batchWarns, fmt.Sprintf("docai batch parse failed: %s: %v", key, rerr))
+						continue
+					}
+					results = append(results, res)
+				}
+				if len(batchWarns) > 0 {
+					warnings = append(warnings, batchWarns...)
+				}
+				docAIRes = mergeDocAIResults(results)
+				if docAIRes == nil {
+					docAIErr = fmt.Errorf("docai batch produced no documents")
+					docAIBatchErr = docAIErr
+				}
+			}
+		}
+	}
+	if docAIBatchErr != nil {
+		diag["docai_batch_error"] = docAIBatchErr.Error()
+	}
 
 	// Prefer local PDF bytes when we have a local pdfPath (e.g., PPTX->PDF)
-	if strings.TrimSpace(pdfPath) != "" && s.ex.DocAI != nil {
+	if docAIRes == nil && strings.TrimSpace(pdfPath) != "" && s.ex.DocAI != nil && (docAIErr != nil || !batchAttempted) {
 		b, rerr := os.ReadFile(pdfPath)
 		if rerr != nil {
 			docAIErr = fmt.Errorf("read local pdf for docai: %w", rerr)
@@ -53,7 +194,7 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 				FieldMask:        nil,
 			})
 		}
-	} else {
+	} else if docAIRes == nil && (docAIErr != nil || !batchAttempted) {
 		// Original behavior for true PDFs already in GCS
 		docAIRes, docAIErr = s.ex.TryDocAI(ctx, "application/pdf", mf.StorageKey)
 	}
@@ -87,7 +228,39 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 		}
 	}
 
-	if extractor.TextSignalWeak(segs) {
+	textLen := extractor.TextSignalLen(segs)
+	textWeak := textLen < 500
+	if !textWeak && mf != nil && mf.SizeBytes > 0 {
+		minChars := mf.SizeBytes / 200
+		if minChars < 500 {
+			minChars = 500
+		}
+		if int64(textLen) < minChars {
+			textWeak = true
+			diag["text_signal_len"] = textLen
+			diag["text_signal_min_chars"] = minChars
+			diag["text_signal_size_bytes"] = mf.SizeBytes
+		}
+	}
+	docAIPages := countSegmentPages(segs)
+	if docAIPages > 0 {
+		diag["docai_pages_found"] = docAIPages
+	}
+	if !textWeak && pdfPageCount > 0 {
+		minCharsPerPage := 200
+		minCharsByPages := pdfPageCount * minCharsPerPage
+		if textLen < minCharsByPages {
+			textWeak = true
+			diag["text_signal_len"] = textLen
+			diag["text_signal_min_chars_per_page"] = minCharsPerPage
+			diag["text_signal_min_chars_pages"] = minCharsByPages
+		}
+		if docAIPages == 0 && pdfPageCount >= 20 {
+			textWeak = true
+			diag["text_signal_reason"] = "missing_docai_pages"
+		}
+	}
+	if textWeak {
 		if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
 			warnings = append(warnings, "vision OCR fallback skipped (missing VISION_OCR_OUTPUT_PREFIX or MATERIAL_GCS_BUCKET_NAME)")
 		} else if s.ex.Vision != nil {
@@ -158,20 +331,24 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	} else if len(pageImages) == 0 {
 		warnings = append(warnings, "no page images rendered; figure_notes skipped")
 	} else {
-		capN := extractor.MinInt(len(pageImages), s.ex.MaxPDFPagesCaption)
+		capN := len(pageImages)
+		if s.ex.MaxPDFPagesCaption > 0 {
+			capN = extractor.MinInt(len(pageImages), s.ex.MaxPDFPagesCaption)
+		}
 		conceptN := 0
 		if diagramConceptsEnabled() {
-			maxConceptPages := envIntAllowZero("DIAGRAM_CONCEPTS_MAX_PAGES", 0)
-			if maxConceptPages <= 0 {
-				maxConceptPages = s.ex.MaxPDFPagesCaption
+			maxConceptCeiling := envIntAllowZero("DIAGRAM_CONCEPTS_MAX_PAGES", 0)
+			if maxConceptCeiling <= 0 {
+				maxConceptCeiling = s.ex.MaxPDFPagesCaption
 			}
-			conceptN = extractor.MinInt(len(pageImages), maxConceptPages)
+			adaptiveMax := clampIntCeiling(int(math.Round(float64(len(pageImages))*0.15)), 2, maxConceptCeiling)
+			conceptN = extractor.MinInt(len(pageImages), adaptiveMax)
 		}
 		var (
-			capMu       sync.Mutex
-			segsByPage  = make([][]Segment, capN)
+			capMu          sync.Mutex
+			segsByPage     = make([][]Segment, capN)
 			conceptsByPage = make([][]Segment, conceptN)
-			capWarnings []string
+			capWarnings    []string
 		)
 
 		g, gctx := errgroup.WithContext(ctx)
@@ -350,7 +527,7 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 			return nil, nil, []string{"pdf render failed: " + err.Error()}, diag
 		}
 
-		if len(paths) > s.ex.MaxPDFPagesRender {
+		if s.ex.MaxPDFPagesRender > 0 && len(paths) > s.ex.MaxPDFPagesRender {
 			warnings = append(warnings, fmt.Sprintf("pdf pages truncated: rendered %d capped to %d", len(paths), s.ex.MaxPDFPagesRender))
 			paths = paths[:s.ex.MaxPDFPagesRender]
 		}
@@ -466,6 +643,16 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 
 	diag["pages_rendered"] = len(pageAssets)
 	return pageAssets, pageAssets, warnings, diag
+}
+
+func clampIntCeiling(v, min, ceiling int) int {
+	if v < min {
+		v = min
+	}
+	if ceiling > 0 && v > ceiling {
+		v = ceiling
+	}
+	return v
 }
 
 // keep identical imports usage

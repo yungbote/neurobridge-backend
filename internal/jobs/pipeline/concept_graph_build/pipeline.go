@@ -59,17 +59,30 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			case <-stop:
 				return
 			case <-t.C:
-				jc.Progress("concept_graph", 2, "Building concept graph")
+				now := time.Now()
+				_ = jc.Update(map[string]any{
+					"heartbeat_at": now,
+					"updated_at":   now,
+				})
 			}
 		}
 	}()
 	defer stopTicker()
 
 	jc.Progress("concept_graph", 2, "Building concept graph")
+	mode := ""
+	if raw, ok := jc.Payload()["stage_config"]; ok && raw != nil {
+		if cfg, ok := raw.(map[string]any); ok {
+			if v, ok := cfg["mode"]; ok && v != nil {
+				mode = strings.TrimSpace(fmt.Sprint(v))
+			}
+		}
+	}
 	out, err := learningmod.New(learningmod.UsecasesDeps{
 		DB:        p.db,
 		Log:       p.log,
 		Files:     p.files,
+		FileSigs:  p.fileSigs,
 		Chunks:    p.chunks,
 		Path:      p.path,
 		Concepts:  p.concepts,
@@ -80,11 +93,16 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:       p.vec,
 		Saga:      p.saga,
 		Bootstrap: p.bootstrap,
+		Artifacts: p.artifacts,
 	}).ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
 		SagaID:        sagaID,
 		PathID:        pathID,
+		Mode:          mode,
+		Report: func(stage string, pct int, message string) {
+			jc.Progress(stage, pct, message)
+		},
 	})
 	stopTicker()
 	if err != nil {

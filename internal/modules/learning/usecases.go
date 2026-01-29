@@ -62,6 +62,7 @@ type UsecasesDeps struct {
 	Revisions repos.LearningNodeDocRevisionRepo
 	GenRuns   repos.LearningDocGenerationRunRepo
 	Drills    repos.LearningDrillInstanceRepo
+	Artifacts repos.LearningArtifactRepo
 
 	Assets repos.AssetRepo
 	ULI    repos.UserLibraryIndexRepo
@@ -133,8 +134,10 @@ type (
 	TeachingPatternsSeedInput  = steps.TeachingPatternsSeedInput
 	TeachingPatternsSeedOutput = steps.TeachingPatternsSeedOutput
 
-	ConceptGraphBuildInput  = steps.ConceptGraphBuildInput
-	ConceptGraphBuildOutput = steps.ConceptGraphBuildOutput
+	ConceptGraphBuildInput       = steps.ConceptGraphBuildInput
+	ConceptGraphBuildOutput      = steps.ConceptGraphBuildOutput
+	ConceptGraphPatchBuildInput  = steps.ConceptGraphPatchBuildInput
+	ConceptGraphPatchBuildOutput = steps.ConceptGraphPatchBuildOutput
 
 	MaterialKGBuildInput  = steps.MaterialKGBuildInput
 	MaterialKGBuildOutput = steps.MaterialKGBuildOutput
@@ -223,6 +226,7 @@ func (u Usecases) IngestChunks(ctx context.Context, in IngestChunksInput, opts .
 		Extract:   u.deps.Extract,
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
 	}, steps.IngestChunksInput(in), opts...)
 }
 
@@ -250,6 +254,7 @@ func (u Usecases) MaterialSetSummarize(ctx context.Context, in MaterialSetSummar
 		Vec:       u.deps.Vec,
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
 	}, steps.MaterialSetSummarizeInput(in))
 }
 
@@ -265,6 +270,7 @@ func (u Usecases) MaterialSignalBuild(ctx context.Context, in MaterialSignalBuil
 		MaterialSets: u.deps.MaterialSets,
 		AI:           u.deps.AI,
 		Bootstrap:    u.deps.Bootstrap,
+		Artifacts:    u.deps.Artifacts,
 	}, steps.MaterialSignalBuildInput(in))
 }
 
@@ -312,6 +318,7 @@ func (u Usecases) FileSignatureBuild(ctx context.Context, in FileSignatureBuildI
 		Vec:          u.deps.Vec,
 		Saga:         u.deps.Saga,
 		Bootstrap:    u.deps.Bootstrap,
+		Artifacts:    u.deps.Artifacts,
 	}, steps.FileSignatureBuildInput(in))
 }
 
@@ -348,6 +355,7 @@ func (u Usecases) ConceptGraphBuild(ctx context.Context, in ConceptGraphBuildInp
 		DB:        u.deps.DB,
 		Log:       u.deps.Log,
 		Files:     u.deps.Files,
+		FileSigs:  u.deps.FileSigs,
 		Chunks:    u.deps.Chunks,
 		Path:      u.deps.Path,
 		Concepts:  u.deps.Concepts,
@@ -358,7 +366,28 @@ func (u Usecases) ConceptGraphBuild(ctx context.Context, in ConceptGraphBuildInp
 		Vec:       u.deps.Vec,
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
 	}, steps.ConceptGraphBuildInput(in))
+}
+
+func (u Usecases) ConceptGraphPatchBuild(ctx context.Context, in ConceptGraphPatchBuildInput) (ConceptGraphPatchBuildOutput, error) {
+	return steps.ConceptGraphPatchBuild(ctx, steps.ConceptGraphBuildDeps{
+		DB:        u.deps.DB,
+		Log:       u.deps.Log,
+		Files:     u.deps.Files,
+		FileSigs:  u.deps.FileSigs,
+		Chunks:    u.deps.Chunks,
+		Path:      u.deps.Path,
+		Concepts:  u.deps.Concepts,
+		Evidence:  u.deps.Evidence,
+		Edges:     u.deps.Edges,
+		Graph:     u.deps.Graph,
+		AI:        u.deps.AI,
+		Vec:       u.deps.Vec,
+		Saga:      u.deps.Saga,
+		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
+	}, steps.ConceptGraphPatchBuildInput(in))
 }
 
 func (u Usecases) MaterialKGBuild(ctx context.Context, in MaterialKGBuildInput) (MaterialKGBuildOutput, error) {
@@ -386,6 +415,7 @@ func (u Usecases) ConceptClusterBuild(ctx context.Context, in ConceptClusterBuil
 		Vec:       u.deps.Vec,
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
 	}, steps.ConceptClusterBuildInput(in))
 }
 
@@ -402,6 +432,7 @@ func (u Usecases) ChainSignatureBuild(ctx context.Context, in ChainSignatureBuil
 		Vec:       u.deps.Vec,
 		Saga:      u.deps.Saga,
 		Bootstrap: u.deps.Bootstrap,
+		Artifacts: u.deps.Artifacts,
 	}, steps.ChainSignatureBuildInput(in))
 }
 

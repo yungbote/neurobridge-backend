@@ -51,6 +51,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Vec:          p.vec,
 		Saga:         p.saga,
 		Bootstrap:    p.bootstrap,
+		Artifacts:    p.artifacts,
 	}).FileSignatureBuild(jc.Ctx, learningmod.FileSignatureBuildInput{
 		OwnerUserID:   jc.Job.OwnerUserID,
 		MaterialSetID: setID,
@@ -73,6 +74,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"sections_upserted":   out.SectionsUpserted,
 		"intents_upserted":    out.IntentsUpserted,
 		"intents_skipped":     out.IntentsSkipped,
+		"cache_hit":           out.CacheHit,
 	})
 	return nil
 }

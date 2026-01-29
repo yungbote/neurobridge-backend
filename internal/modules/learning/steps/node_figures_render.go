@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -50,10 +51,11 @@ type NodeFiguresRenderInput struct {
 }
 
 type NodeFiguresRenderOutput struct {
-	PathID          uuid.UUID `json:"path_id"`
-	FiguresRendered int       `json:"figures_rendered"`
-	FiguresExisting int       `json:"figures_existing"`
-	FiguresFailed   int       `json:"figures_failed"`
+	PathID          uuid.UUID      `json:"path_id"`
+	FiguresRendered int            `json:"figures_rendered"`
+	FiguresExisting int            `json:"figures_existing"`
+	FiguresFailed   int            `json:"figures_failed"`
+	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
 const nodeFigureAssetPromptVersion = "figure_asset_v1@1"
@@ -75,6 +77,19 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("node_figures_render")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("node_figures_render: adaptive params", "adaptive", adaptiveStageMeta("node_figures_render", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("node_figures_render", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	// Feature gate: require image model + bucket configured; otherwise no-op.
 	if strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL")) == "" {
@@ -139,7 +154,18 @@ func NodeFiguresRender(ctx context.Context, deps NodeFiguresRenderDeps, in NodeF
 		return out, nil
 	}
 
-	maxFigures := envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1)
+	maxFiguresCeiling := envIntAllowZero("NODE_FIGURES_RENDER_LIMIT", -1)
+	maxFigures := maxFiguresCeiling
+	if maxFiguresCeiling >= 0 && adaptiveEnabled {
+		if signals.NodeCount == 0 {
+			signals.NodeCount = len(nodes)
+		}
+		maxFigures = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*1.5)), 0, maxFiguresCeiling)
+	}
+	adaptiveParams["NODE_FIGURES_RENDER_LIMIT"] = map[string]any{
+		"actual":  maxFigures,
+		"ceiling": maxFiguresCeiling,
+	}
 	if maxFigures == 0 {
 		deps.Log.Warn("NODE_FIGURES_RENDER_LIMIT=0; skipping node_figures_render")
 		return out, nil
@@ -305,7 +331,7 @@ func markFigureFailed(ctx context.Context, deps NodeFiguresRenderDeps, row *type
 	}
 	errMsg = strings.TrimSpace(errMsg)
 	if len(errMsg) > 900 {
-		errMsg = errMsg[:900]
+		errMsg = truncateUTF8(errMsg, 900)
 	}
 	now := time.Now().UTC()
 	update := &types.LearningNodeFigure{

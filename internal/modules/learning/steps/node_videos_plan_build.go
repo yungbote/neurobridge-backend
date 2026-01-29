@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -60,6 +61,7 @@ type NodeVideosPlanBuildOutput struct {
 	NodesSkipped   int       `json:"nodes_skipped"`
 	VideosPlanned  int       `json:"videos_planned"`
 	VideosExisting int       `json:"videos_existing"`
+	Adaptive       map[string]any `json:"adaptive,omitempty"`
 }
 
 const nodeVideoPlanPromptVersion = "video_plan_v2@1"
@@ -82,6 +84,19 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 	}
 	out.PathID = pathID
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("node_videos_plan_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("node_videos_plan_build: adaptive params", "adaptive", adaptiveStageMeta("node_videos_plan_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("node_videos_plan_build", adaptiveEnabled, signals, adaptiveParams)
+	}()
+
 	// Optional: apply intake material allowlist (noise filtering / multi-material alignment).
 	var allowFiles map[uuid.UUID]bool
 	if deps.Path != nil {
@@ -96,10 +111,6 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 	// Feature gate: require video model configured, otherwise skip (no-op).
 	if strings.TrimSpace(os.Getenv("OPENAI_VIDEO_MODEL")) == "" {
 		deps.Log.Warn("OPENAI_VIDEO_MODEL missing; skipping node_videos_plan_build")
-		return out, nil
-	}
-	if envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1) == 0 {
-		deps.Log.Warn("NODE_VIDEOS_RENDER_LIMIT=0; skipping node_videos_plan_build")
 		return out, nil
 	}
 
@@ -122,6 +133,23 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		return out, fmt.Errorf("node_videos_plan_build: no path nodes (run path_plan_build first)")
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Index < nodes[j].Index })
+
+	maxVideosCeiling := envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1)
+	maxVideos := maxVideosCeiling
+	if maxVideosCeiling >= 0 && adaptiveEnabled {
+		if signals.NodeCount == 0 {
+			signals.NodeCount = len(nodes)
+		}
+		maxVideos = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*0.5)), 0, maxVideosCeiling)
+	}
+	adaptiveParams["NODE_VIDEOS_RENDER_LIMIT"] = map[string]any{
+		"actual":  maxVideos,
+		"ceiling": maxVideosCeiling,
+	}
+	if maxVideos == 0 {
+		deps.Log.Warn("NODE_VIDEOS_RENDER_LIMIT=0; skipping node_videos_plan_build")
+		return out, nil
+	}
 
 	nodeIDs := make([]uuid.UUID, 0, len(nodes))
 	for _, n := range nodes {
@@ -254,6 +282,26 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 		return out, nil
 	}
 
+	if adaptiveEnabled && signals.NodeCount == 0 {
+		signals.NodeCount = len(nodes)
+	}
+	maxTotalSecCeiling := envIntAllowZero("NODE_VIDEO_MAX_TOTAL_SECONDS", 36)
+	maxTotalSec := maxTotalSecCeiling
+	maxClipsCeiling := envIntAllowZero("NODE_VIDEO_MAX_CLIPS_PER_VIDEO", 4)
+	maxClips := maxClipsCeiling
+	if adaptiveEnabled {
+		maxTotalSec = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*2.0)), 20, maxTotalSecCeiling)
+		maxClips = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*0.08)), 2, maxClipsCeiling)
+	}
+	adaptiveParams["NODE_VIDEO_MAX_TOTAL_SECONDS"] = map[string]any{
+		"actual":  maxTotalSec,
+		"ceiling": maxTotalSecCeiling,
+	}
+	adaptiveParams["NODE_VIDEO_MAX_CLIPS_PER_VIDEO"] = map[string]any{
+		"actual":  maxClips,
+		"ceiling": maxClipsCeiling,
+	}
+
 	// Batch query embeddings.
 	queryTexts := make([]string, 0, len(work))
 	for _, w := range work {
@@ -307,6 +355,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 
 			chunkIDs, _, _ := graphAssistedChunkIDs(gctx, deps.DB, deps.Vec, chunkRetrievePlan{
 				MaterialSetID: sourceSetID,
+				PathID:        pathID,
 				ChunksNS:      chunksNS,
 				QueryText:     w.QueryText,
 				QueryEmb:      w.QueryEmb,
@@ -315,6 +364,7 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 				SeedK:         semanticK,
 				LexicalK:      lexicalK,
 				FinalK:        finalK,
+				AdaptiveStage: "node_videos_plan_build",
 			})
 			chunkIDs = dedupeUUIDsPreserveOrder(chunkIDs)
 
@@ -362,8 +412,6 @@ Hard rules:
 `
 
 			maxClipSec := 12
-			maxTotalSec := envIntAllowZero("NODE_VIDEO_MAX_TOTAL_SECONDS", 36)
-			maxClips := envIntAllowZero("NODE_VIDEO_MAX_CLIPS_PER_VIDEO", 4)
 			if maxTotalSec <= 0 {
 				maxTotalSec = 36
 			}

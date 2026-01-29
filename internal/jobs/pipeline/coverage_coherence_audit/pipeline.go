@@ -48,9 +48,11 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	jc.Succeed("done", map[string]any{
-		"material_set_id": setID.String(),
-		"saga_id":         sagaID.String(),
-		"audit_written":   out.AuditWritten,
+		"material_set_id":  setID.String(),
+		"saga_id":          sagaID.String(),
+		"audit_written":    out.AuditWritten,
+		"acceptance":       out.Acceptance,
+		"quality_warnings": out.QualityWarnings,
 	})
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -91,6 +92,23 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 	}
 	out.PathID = pathID
 
+	adaptiveEnabled := adaptiveParamsEnabledForStage("material_kg_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if len(adaptiveParams) > 0 {
+			out.Trace["adaptive"] = adaptiveStageMeta("material_kg_build", adaptiveEnabled, signals, adaptiveParams)
+		} else {
+			out.Trace["adaptive"] = adaptiveStageMeta("material_kg_build", adaptiveEnabled, signals, map[string]any{})
+		}
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("material_kg_build: adaptive params", "adaptive", adaptiveStageMeta("material_kg_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+	}()
+
 	// Derived material sets share KG products with their source upload batch (no duplication).
 	setCtx, err := materialsetctx.Resolve(ctx, deps.DB, in.MaterialSetID)
 	if err != nil {
@@ -173,10 +191,38 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 	conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptSumm})
 
 	// Build compact excerpts for extraction.
-	perFile := envIntAllowZero("MATERIAL_KG_EXCERPTS_PER_FILE", 14)
+	perFileCeiling := envIntAllowZero("MATERIAL_KG_EXCERPTS_PER_FILE", 14)
+	perFile := perFileCeiling
+	if adaptiveEnabled {
+		perFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/10.0)), 4, perFileCeiling)
+	}
+	adaptiveParams["MATERIAL_KG_EXCERPTS_PER_FILE"] = map[string]any{
+		"actual":  perFile,
+		"ceiling": perFileCeiling,
+	}
 	excerptMaxChars := envIntAllowZero("MATERIAL_KG_EXCERPT_MAX_CHARS", 720)
+	excerptMaxCharsCeiling := excerptMaxChars
+	if excerptMaxChars <= 0 {
+		excerptMaxChars = 720
+		excerptMaxCharsCeiling = excerptMaxChars
+	}
 	excerptMaxLines := envIntAllowZero("MATERIAL_KG_EXCERPT_MAX_LINES", 0)
-	excerptMaxTotal := envIntAllowZero("MATERIAL_KG_EXCERPT_MAX_TOTAL_CHARS", 0)
+	excerptMaxLinesCeiling := excerptMaxLines
+	excerptMaxTotalCeiling := envIntAllowZero("MATERIAL_KG_EXCERPT_MAX_TOTAL_CHARS", 0)
+	excerptMaxTotal := excerptMaxTotalCeiling
+	if adaptiveEnabled {
+		excerptMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(excerptMaxChars, signals.ContentType), 200, excerptMaxCharsCeiling)
+		if excerptMaxLines > 0 {
+			excerptMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(excerptMaxLines, signals.ContentType), 8, excerptMaxLinesCeiling)
+		}
+		excerptMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 8000, excerptMaxTotalCeiling)
+	}
+	adaptiveParams["MATERIAL_KG_EXCERPT_MAX_CHARS"] = map[string]any{"actual": excerptMaxChars, "ceiling": excerptMaxCharsCeiling}
+	adaptiveParams["MATERIAL_KG_EXCERPT_MAX_LINES"] = map[string]any{"actual": excerptMaxLines, "ceiling": excerptMaxLinesCeiling}
+	adaptiveParams["MATERIAL_KG_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{
+		"actual":  excerptMaxTotal,
+		"ceiling": excerptMaxTotalCeiling,
+	}
 	excerpts, excerptChunkIDs := stratifiedChunkExcerptsWithLimitsAndIDs(chunks, perFile, excerptMaxChars, excerptMaxLines, excerptMaxTotal)
 	if strings.TrimSpace(excerpts) == "" {
 		return out, fmt.Errorf("material_kg_build: empty excerpts")
@@ -407,10 +453,13 @@ func MaterialKGBuild(ctx context.Context, deps MaterialKGBuildDeps, in MaterialK
 	// Cross-set entity resolution (user-level global entities).
 	var globalEntityRows []*types.GlobalEntity
 	if len(entityRows) > 0 {
-		if globals, stats, gerr := resolveGlobalEntities(ctx, deps, in.OwnerUserID, entityRows); gerr == nil {
+		if globals, stats, gerr := resolveGlobalEntities(ctx, deps, in.OwnerUserID, entityRows, signals.ContentType, adaptiveEnabled); gerr == nil {
 			globalEntityRows = globals
 			if len(stats) > 0 {
 				out.Trace["global_entities"] = stats
+				if v, ok := stats["global_entity_threshold"]; ok {
+					adaptiveParams["GLOBAL_ENTITY_SIM_THRESHOLD"] = map[string]any{"actual": floatFromAny(v, 0)}
+				}
 			}
 		} else if deps.Log != nil {
 			deps.Log.Warn("material_kg_build: global entity resolution failed (continuing)", "error", gerr, "user_id", in.OwnerUserID.String())
@@ -607,7 +656,7 @@ func syncMaterialKGToNeo4j(ctx context.Context, deps MaterialKGBuildDeps, materi
 	return graphstore.UpsertMaterialEntitiesClaimsGraph(ctx, deps.Graph, deps.Log, materialSetID, entities, claims, filteredChEnt, filteredChCl, filteredClEnt, filteredClCon)
 }
 
-func resolveGlobalEntities(ctx context.Context, deps MaterialKGBuildDeps, userID uuid.UUID, entities []*types.MaterialEntity) ([]*types.GlobalEntity, map[string]any, error) {
+func resolveGlobalEntities(ctx context.Context, deps MaterialKGBuildDeps, userID uuid.UUID, entities []*types.MaterialEntity, contentType string, adaptiveEnabled bool) ([]*types.GlobalEntity, map[string]any, error) {
 	stats := map[string]any{}
 	if deps.DB == nil || deps.AI == nil || userID == uuid.Nil || len(entities) == 0 {
 		return nil, stats, nil
@@ -745,6 +794,9 @@ func resolveGlobalEntities(ctx context.Context, deps MaterialKGBuildDeps, userID
 	baseThreshold := envFloatAllowZero("GLOBAL_ENTITY_SIM_THRESHOLD", 0.88)
 	if baseThreshold <= 0 {
 		baseThreshold = 0.88
+	}
+	if adaptiveEnabled {
+		baseThreshold = clamp01(adjustThresholdByContentType("GLOBAL_ENTITY_SIM_THRESHOLD", baseThreshold, contentType))
 	}
 	stats["global_entity_threshold"] = baseThreshold
 

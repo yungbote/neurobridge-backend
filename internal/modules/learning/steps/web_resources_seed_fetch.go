@@ -119,7 +119,7 @@ func normalizeFetchedNameAndMime(r webResourceItemV1, finalURL string, contentTy
 	// Avoid pathological lengths / weird extensions.
 	name = strings.TrimSpace(name)
 	if len(name) > 120 {
-		name = name[:120]
+		name = truncateUTF8(name, 120)
 	}
 	if filepath.Ext(name) == "" {
 		name += ext
@@ -139,7 +139,7 @@ func safeHostForName(rawURL string) string {
 	h = strings.TrimPrefix(h, "www.")
 	h = strings.ReplaceAll(h, ".", "_")
 	if len(h) > 40 {
-		h = h[:40]
+		h = truncateUTF8(h, 40)
 	}
 	return h
 }
@@ -166,7 +166,7 @@ func slugify(s string) string {
 	}
 	s = strings.Trim(s, "_")
 	if len(s) > 48 {
-		s = s[:48]
+		s = truncateUTF8(s, 48)
 	}
 	return s
 }

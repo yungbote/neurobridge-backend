@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 
@@ -18,19 +19,40 @@ type materialSetSignalContext struct {
 	CoverageJSON string
 	EdgesJSON    string
 	WeightsByKey map[string]float64
+	Meta         map[string]any
 }
 
-func loadMaterialSetSignalContext(ctx context.Context, db *gorm.DB, materialSetID uuid.UUID, topConcepts int) materialSetSignalContext {
-	out := materialSetSignalContext{WeightsByKey: map[string]float64{}}
+func loadMaterialSetSignalContext(ctx context.Context, db *gorm.DB, materialSetID uuid.UUID, pathID uuid.UUID, topConcepts int, adaptiveEnabled bool, signals AdaptiveSignals) materialSetSignalContext {
+	out := materialSetSignalContext{WeightsByKey: map[string]float64{}, Meta: map[string]any{}}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if db == nil || materialSetID == uuid.Nil {
 		return out
 	}
-	if topConcepts <= 0 {
-		topConcepts = 30
+	if adaptiveEnabled && signals.MaterialSetID == uuid.Nil {
+		signals = loadAdaptiveSignals(ctx, db, materialSetID, pathID)
 	}
+	ceiling := envIntAllowZero("MATERIAL_SIGNAL_CONTEXT_MAX_CONCEPTS", 120)
+	if ceiling < 0 {
+		ceiling = 0
+	}
+	if topConcepts <= 0 {
+		if adaptiveEnabled {
+			topConcepts = adaptiveFromRatio(signals.ConceptCount, 0.6, 20, ceiling)
+		} else {
+			topConcepts = ceiling
+		}
+	}
+	if adaptiveEnabled {
+		if signals.ConceptCount > 80 && topConcepts < 40 {
+			topConcepts = 40
+		}
+	}
+	out.Meta["adaptive_enabled"] = adaptiveEnabled
+	out.Meta["concept_count"] = signals.ConceptCount
+	out.Meta["context_max_concepts"] = topConcepts
+	out.Meta["context_max_concepts_ceiling"] = ceiling
 
 	var intent types.MaterialSetIntent
 	if err := db.WithContext(ctx).Model(&types.MaterialSetIntent{}).Where("material_set_id = ?", materialSetID).Take(&intent).Error; err == nil && intent.MaterialSetID != uuid.Nil {
@@ -98,7 +120,12 @@ func loadMaterialSetSignalContext(ctx context.Context, db *gorm.DB, materialSetI
 		}
 	}
 
-	compoundWeights := loadCompoundWeightsByKey(ctx, db, materialSetID, envIntAllowZero("MATERIAL_SIGNAL_COMPOUND_MAX_ROWS", 2000))
+	maxRowsCeiling := envIntAllowZero("MATERIAL_SIGNAL_COMPOUND_MAX_ROWS", 2000)
+	maxRows := maxRowsCeiling
+	if adaptiveEnabled {
+		maxRows = clampIntCeiling(int(math.Round(float64(signals.ConceptCount)*12.0)), 400, maxRowsCeiling)
+	}
+	compoundWeights := loadCompoundWeightsByKey(ctx, db, materialSetID, maxRows)
 	if len(compoundWeights) > 0 {
 		out.WeightsByKey = compoundWeights
 	} else {
@@ -108,6 +135,18 @@ func loadMaterialSetSignalContext(ctx context.Context, db *gorm.DB, materialSetI
 	var edges []*types.MaterialEdge
 	_ = db.WithContext(ctx).Model(&types.MaterialEdge{}).Where("material_set_id = ?", materialSetID).Find(&edges).Error
 	if len(edges) > 0 {
+		edgesCeiling := envIntAllowZero("MATERIAL_SIGNAL_CONTEXT_MAX_EDGES", 120)
+		if edgesCeiling < 0 {
+			edgesCeiling = 0
+		}
+		edgesMax := edgesCeiling
+		if adaptiveEnabled {
+			edgesMax = adaptiveFromRatio(signals.EdgeCount, 0.5, 20, edgesCeiling)
+		}
+		out.Meta["adaptive_enabled"] = adaptiveEnabled
+		out.Meta["edge_count"] = signals.EdgeCount
+		out.Meta["context_max_edges"] = edgesMax
+		out.Meta["context_max_edges_ceiling"] = edgesCeiling
 		sort.Slice(edges, func(i, j int) bool {
 			if edges[i] == nil {
 				return false
@@ -117,8 +156,8 @@ func loadMaterialSetSignalContext(ctx context.Context, db *gorm.DB, materialSetI
 			}
 			return edges[i].Strength > edges[j].Strength
 		})
-		if len(edges) > 40 {
-			edges = edges[:40]
+		if edgesMax > 0 && len(edges) > edgesMax {
+			edges = edges[:edgesMax]
 		}
 		payload := make([]map[string]any, 0, len(edges))
 		for _, e := range edges {

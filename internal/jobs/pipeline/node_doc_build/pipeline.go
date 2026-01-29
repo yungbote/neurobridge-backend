@@ -2,6 +2,7 @@ package node_doc_build
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -23,8 +24,14 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	pathID, _ := jc.PayloadUUID("path_id")
 	stageCfg := stageConfig(jc.Payload())
 	mediaPatch := false
+	nodeLimit := 0
+	nodeSelect := ""
+	markPending := false
 	if stageCfg != nil {
 		mediaPatch = boolFromAny(stageCfg["media_patch"])
+		nodeLimit = intFromAny(stageCfg["node_limit"], 0)
+		nodeSelect = strings.TrimSpace(fmt.Sprint(stageCfg["node_select_mode"]))
+		markPending = boolFromAny(stageCfg["mark_remaining_pending"])
 	}
 
 	jc.Progress("docs", 2, "Writing unit docs")
@@ -53,6 +60,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		SagaID:        sagaID,
 		PathID:        pathID,
 		MediaPatch:    mediaPatch,
+		NodeLimit:     nodeLimit,
+		NodeSelect:    nodeSelect,
+		MarkPending:   markPending,
+		Report: func(stage string, pct int, message string) {
+			jc.Progress(stage, pct, message)
+		},
 	})
 	if err != nil {
 		jc.Fail("docs", err)
@@ -94,4 +107,27 @@ func boolFromAny(v any) bool {
 		s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
 		return s == "true" || s == "1" || s == "yes" || s == "y"
 	}
+}
+
+func intFromAny(v any, def int) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int32:
+		return int(x)
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case float32:
+		return int(x)
+	case string:
+		if strings.TrimSpace(x) == "" {
+			return def
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(x)); err == nil {
+			return n
+		}
+	}
+	return def
 }

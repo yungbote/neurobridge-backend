@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -32,11 +34,12 @@ import (
 )
 
 type ConceptGraphBuildDeps struct {
-	DB     *gorm.DB
-	Log    *logger.Logger
-	Files  repos.MaterialFileRepo
-	Chunks repos.MaterialChunkRepo
-	Path   repos.PathRepo
+	DB       *gorm.DB
+	Log      *logger.Logger
+	Files    repos.MaterialFileRepo
+	FileSigs repos.MaterialFileSignatureRepo
+	Chunks   repos.MaterialChunkRepo
+	Path     repos.PathRepo
 
 	Concepts repos.ConceptRepo
 	Evidence repos.ConceptEvidenceRepo
@@ -48,6 +51,7 @@ type ConceptGraphBuildDeps struct {
 	Vec       pc.VectorStore
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
+	Artifacts repos.LearningArtifactRepo
 }
 
 type ConceptGraphBuildInput struct {
@@ -55,18 +59,21 @@ type ConceptGraphBuildInput struct {
 	MaterialSetID uuid.UUID
 	SagaID        uuid.UUID
 	PathID        uuid.UUID
+	Mode          string
+	Report        func(stage string, pct int, message string)
 }
 
 type ConceptGraphBuildOutput struct {
-	PathID          uuid.UUID `json:"path_id"`
-	ConceptsMade    int       `json:"concepts_made"`
-	EdgesMade       int       `json:"edges_made"`
-	PineconeBatches int       `json:"pinecone_batches"`
+	PathID          uuid.UUID      `json:"path_id"`
+	ConceptsMade    int            `json:"concepts_made"`
+	EdgesMade       int            `json:"edges_made"`
+	PineconeBatches int            `json:"pinecone_batches"`
+	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
 func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in ConceptGraphBuildInput) (ConceptGraphBuildOutput, error) {
 	out := ConceptGraphBuildOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
+	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.FileSigs == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
 		return out, fmt.Errorf("concept_graph_build: missing deps")
 	}
 	if in.OwnerUserID == uuid.Nil {
@@ -85,32 +92,35 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 	out.PathID = pathID
 
+	reporter := newProgressReporter("concept_graph", in.Report, 2, 2*time.Second)
+	reporter.Update(2, "Preparing concept graph")
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("concept_graph_build")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("concept_graph_build: adaptive params", "adaptive", adaptiveStageMeta("concept_graph_build", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("concept_graph_build", adaptiveEnabled, signals, adaptiveParams)
+	}()
+	mode := strings.TrimSpace(strings.ToLower(in.Mode))
+	fastMode := mode == "fast"
+	if mode == "" {
+		fastMode = envBool("CONCEPT_GRAPH_FAST_MODE", false)
+	}
+	if model := strings.TrimSpace(os.Getenv("CONCEPT_GRAPH_MODEL")); model != "" && deps.AI != nil {
+		deps.AI = openai.WithModel(deps.AI, model)
+	}
+
 	existing, err := deps.Concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
 	if err != nil {
 		return out, err
 	}
-	if len(existing) > 0 {
-		// Best-effort: ensure canonical (global) concepts exist and path concepts have canonical IDs,
-		// even for legacy paths that were generated before canonicalization existed.
-		_ = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
-			_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
-			rows, err := deps.Concepts.GetByScope(dbc, "path", &pathID)
-			if err != nil {
-				return err
-			}
-			_, _ = canonicalizePathConcepts(dbc, tx, deps.Concepts, rows, nil)
-			return nil
-		})
-
-		// Canonical graph already exists. Skip regeneration to preserve stability.
-		if deps.Graph != nil {
-			if err := syncPathConceptGraphToNeo4j(ctx, deps, pathID); err != nil {
-				deps.Log.Warn("neo4j concept graph sync failed (continuing)", "error", err, "path_id", pathID.String())
-			}
-		}
-		return out, nil
-	}
+	hasExisting := len(existing) > 0
 
 	// Optional: incorporate user intent/intake context (written by path_intake) to improve relevance and reduce noise.
 	intentMD := ""
@@ -135,6 +145,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if err != nil {
 		return out, err
 	}
+	reporter.Update(4, fmt.Sprintf("Loaded %d files", len(files)))
 	if len(allowFiles) > 0 {
 		filtered := filterMaterialFilesByAllowlist(files, allowFiles)
 		if len(filtered) > 0 {
@@ -156,6 +167,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if len(chunks) == 0 {
 		return out, fmt.Errorf("concept_graph_build: no chunks for material set")
 	}
+	reporter.Update(6, fmt.Sprintf("Loaded %d chunks", len(chunks)))
 
 	allowedChunkIDs := map[string]bool{}
 	for _, ch := range chunks {
@@ -184,13 +196,79 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// Optional enrichment: formula extraction before concept graph prompts.
-	extractFormulasAndPersist(ctx, deps, chunks, allowedChunkIDs)
-	crossDocSectionsJSON, _ := buildCrossDocSectionGraph(ctx, deps, files, chunks, embByChunk)
+	if params := extractFormulasAndPersist(ctx, deps, chunks, allowedChunkIDs, signals, adaptiveEnabled); len(params) > 0 {
+		for k, v := range params {
+			adaptiveParams[k] = v
+		}
+	}
+	reporter.Update(8, "Extracted formulas")
 
-	perFile := envIntAllowZero("CONCEPT_GRAPH_EXCERPTS_PER_FILE", 14)
+	type crossDocSectionResult struct {
+		JSON   string
+		Params map[string]any
+	}
+	crossDocCh := make(chan crossDocSectionResult, 1)
+	go func() {
+		jsonOut, _, params := buildCrossDocSectionGraph(ctx, deps, files, chunks, embByChunk, signals, adaptiveEnabled)
+		crossDocCh <- crossDocSectionResult{JSON: jsonOut, Params: params}
+	}()
+	var crossDocSectionsJSON string
+	crossDocLoaded := false
+	awaitCrossDocSections := func() string {
+		if crossDocLoaded {
+			return crossDocSectionsJSON
+		}
+		res := <-crossDocCh
+		crossDocSectionsJSON = res.JSON
+		for k, v := range res.Params {
+			adaptiveParams[k] = v
+		}
+		crossDocLoaded = true
+		return crossDocSectionsJSON
+	}
+
+	perFileCeiling := envIntAllowZero("CONCEPT_GRAPH_EXCERPTS_PER_FILE", 14)
+	if perFileCeiling < 0 {
+		perFileCeiling = 0
+	}
+	perFile := perFileCeiling
 	excerptMaxChars := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_CHARS", 700)
+	excerptMaxCharsCeiling := excerptMaxChars
+	if excerptMaxChars <= 0 {
+		excerptMaxChars = 700
+		excerptMaxCharsCeiling = excerptMaxChars
+	}
 	excerptMaxLines := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_LINES", 0)
-	excerptMaxTotal := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_TOTAL_CHARS", 0)
+	excerptMaxLinesCeiling := excerptMaxLines
+	excerptMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_EXCERPT_MAX_TOTAL_CHARS", 45000)
+	if excerptMaxTotalCeiling < 0 {
+		excerptMaxTotalCeiling = 0
+	}
+	excerptMaxTotal := excerptMaxTotalCeiling
+	if adaptiveEnabled && excerptMaxTotalCeiling != 0 {
+		perFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/10.0)), 2, perFileCeiling)
+		excerptMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(excerptMaxChars, signals.ContentType), 200, excerptMaxCharsCeiling)
+		if excerptMaxLines > 0 {
+			excerptMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(excerptMaxLines, signals.ContentType), 8, excerptMaxLinesCeiling)
+		}
+		excerptMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*250)), 8000, excerptMaxTotalCeiling)
+	} else if adaptiveEnabled {
+		perFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/10.0)), 2, perFileCeiling)
+		excerptMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(excerptMaxChars, signals.ContentType), 200, excerptMaxCharsCeiling)
+		if excerptMaxLines > 0 {
+			excerptMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(excerptMaxLines, signals.ContentType), 8, excerptMaxLinesCeiling)
+		}
+	}
+	adaptiveParams["CONCEPT_GRAPH_EXCERPTS_PER_FILE"] = map[string]any{
+		"actual":  perFile,
+		"ceiling": perFileCeiling,
+	}
+	adaptiveParams["CONCEPT_GRAPH_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{
+		"actual":  excerptMaxTotal,
+		"ceiling": excerptMaxTotalCeiling,
+	}
+	adaptiveParams["CONCEPT_GRAPH_EXCERPT_MAX_CHARS"] = map[string]any{"actual": excerptMaxChars, "ceiling": excerptMaxCharsCeiling}
+	adaptiveParams["CONCEPT_GRAPH_EXCERPT_MAX_LINES"] = map[string]any{"actual": excerptMaxLines, "ceiling": excerptMaxLinesCeiling}
 	excerpts, excerptChunkIDs := buildConceptGraphExcerpts(
 		chunks,
 		perFile,
@@ -201,39 +279,440 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if strings.TrimSpace(excerpts) == "" {
 		return out, fmt.Errorf("concept_graph_build: empty excerpts")
 	}
-	edgeExcerpts, _ := buildConceptGraphExcerpts(
-		chunks,
-		perFile,
-		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS", 700),
-		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_LINES", 0),
-		envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_TOTAL_CHARS", 0),
-	)
-	if strings.TrimSpace(edgeExcerpts) == "" {
+	reporter.Update(9, fmt.Sprintf("Built excerpts (%d chunks)", len(excerptChunkIDs)))
+	edgeMaxChars := envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS", 700)
+	edgeMaxCharsCeiling := edgeMaxChars
+	if edgeMaxChars <= 0 {
+		edgeMaxChars = 700
+		edgeMaxCharsCeiling = edgeMaxChars
+	}
+	edgeMaxLines := envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_LINES", 0)
+	edgeMaxLinesCeiling := edgeMaxLines
+	edgeMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_EDGE_EXCERPT_MAX_TOTAL_CHARS", excerptMaxTotalCeiling)
+	if edgeMaxTotalCeiling < 0 {
+		edgeMaxTotalCeiling = 0
+	}
+	edgeMaxTotal := edgeMaxTotalCeiling
+	if adaptiveEnabled {
+		edgeMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(edgeMaxChars, signals.ContentType), 200, edgeMaxCharsCeiling)
+		if edgeMaxLines > 0 {
+			edgeMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(edgeMaxLines, signals.ContentType), 8, edgeMaxLinesCeiling)
+		}
+		if edgeMaxTotalCeiling != 0 {
+			edgeMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 6000, edgeMaxTotalCeiling)
+		}
+	}
+	adaptiveParams["CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS"] = map[string]any{"actual": edgeMaxChars, "ceiling": edgeMaxCharsCeiling}
+	adaptiveParams["CONCEPT_GRAPH_EDGE_EXCERPT_MAX_LINES"] = map[string]any{"actual": edgeMaxLines, "ceiling": edgeMaxLinesCeiling}
+	adaptiveParams["CONCEPT_GRAPH_EDGE_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{"actual": edgeMaxTotal, "ceiling": edgeMaxTotalCeiling}
+	var edgeExcerpts string
+	if edgeMaxChars == excerptMaxChars && edgeMaxLines == excerptMaxLines && edgeMaxTotal == excerptMaxTotal {
 		edgeExcerpts = excerpts
+	} else {
+		edgeExcerpts, _ = buildConceptGraphExcerpts(
+			chunks,
+			perFile,
+			edgeMaxChars,
+			edgeMaxLines,
+			edgeMaxTotal,
+		)
+		if strings.TrimSpace(edgeExcerpts) == "" {
+			edgeExcerpts = excerpts
+		}
 	}
 
-	// ---- Prompt: Concept inventory ----
-	invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
-		Excerpts:             excerpts,
-		PathIntentMD:         intentMD,
-		CrossDocSectionsJSON: crossDocSectionsJSON,
-	})
-	if err != nil {
-		return out, err
-	}
-	invObj, err := deps.AI.GenerateJSON(ctx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
-	if err != nil {
-		return out, err
+	// ---- Optional: seed concepts from file signatures ----
+	sigByFile := map[uuid.UUID]*types.MaterialFileSignature{}
+	var (
+		setSeedKeys []string
+		setSeedMeta conceptSeedMeta
+		sigsForHash []*types.MaterialFileSignature
+	)
+	if deps.FileSigs != nil {
+		if sigs, err := deps.FileSigs.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs); err == nil && len(sigs) > 0 {
+			sigsForHash = sigs
+			for _, sig := range sigs {
+				if sig != nil && sig.MaterialFileID != uuid.Nil {
+					sigByFile[sig.MaterialFileID] = sig
+				}
+			}
+			keys, meta := buildConceptSeedFromSignatures(sigs, signals, signals.ContentType, adaptiveEnabled)
+			setSeedKeys = keys
+			setSeedMeta = meta
+			for k, v := range meta.Params {
+				adaptiveParams[k] = v
+			}
+		}
 	}
 
-	invCoverage := parseConceptCoverage(invObj)
-	conceptsOut, err := parseConceptInventory(invObj)
-	if err != nil {
+	var conceptInputHash string
+	if deps.Artifacts != nil && artifactCacheEnabled() {
+		allowFileIDs := make([]string, 0, len(allowFiles))
+		for id := range allowFiles {
+			if id != uuid.Nil {
+				allowFileIDs = append(allowFileIDs, id.String())
+			}
+		}
+		sort.Strings(allowFileIDs)
+		payload := map[string]any{
+			"files":       filesFingerprint(files),
+			"chunks":      chunksFingerprint(chunks),
+			"signatures":  signaturesFingerprint(sigsForHash),
+			"allow_files": allowFileIDs,
+			"intent_md":   intentMD,
+			"mode":        mode,
+			"env":         envSnapshot([]string{"CONCEPT_GRAPH_"}, []string{"OPENAI_MODEL"}),
+		}
+		if h, err := computeArtifactHash("concept_graph_build", in.MaterialSetID, pathID, payload); err == nil {
+			conceptInputHash = h
+		}
+	}
+
+	if hasExisting {
+		if conceptInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+			if _, hit, err := artifactCacheGet(ctx, deps.Artifacts, in.OwnerUserID, in.MaterialSetID, pathID, "concept_graph_build", conceptInputHash); err == nil && hit {
+				return out, nil
+			}
+		}
+		// Best-effort: ensure canonical (global) concepts exist and path concepts have canonical IDs,
+		// even for legacy paths that were generated before canonicalization existed.
+		_ = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			dbc := dbctx.Context{Ctx: ctx, Tx: tx}
+			_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
+			rows, err := deps.Concepts.GetByScope(dbc, "path", &pathID)
+			if err != nil {
+				return err
+			}
+			_, _ = canonicalizePathConcepts(dbc, tx, deps.Concepts, rows, nil)
+			return nil
+		})
+
+		// Canonical graph already exists. Skip regeneration to preserve stability.
+		if deps.Graph != nil {
+			if err := syncPathConceptGraphToNeo4j(ctx, deps, pathID); err != nil {
+				deps.Log.Warn("neo4j concept graph sync failed (continuing)", "error", err, "path_id", pathID.String())
+			}
+		}
+		return out, nil
+	}
+
+	// ---- Prompt: Concept inventory (parallel per-file) ----
+	chunksByFile := map[uuid.UUID][]*types.MaterialChunk{}
+	for _, ch := range chunks {
+		if ch == nil || ch.MaterialFileID == uuid.Nil {
+			continue
+		}
+		chunksByFile[ch.MaterialFileID] = append(chunksByFile[ch.MaterialFileID], ch)
+	}
+
+	fileCount := len(fileIDs)
+	invTargets := 0
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		if len(chunksByFile[f.ID]) == 0 {
+			continue
+		}
+		invTargets++
+	}
+	if invTargets < 1 {
+		invTargets = 1
+	}
+	const invStart = 10
+	const invEnd = 35
+	reporter.Update(invStart, fmt.Sprintf("Inventorying concepts (%d files)", invTargets))
+	invPerFileCeiling := envIntAllowZero("CONCEPT_GRAPH_FILE_EXCERPTS_PER_FILE", perFile)
+	if invPerFileCeiling <= 0 {
+		invPerFileCeiling = perFile
+	}
+	invPerFile := invPerFileCeiling
+	if adaptiveEnabled {
+		invPerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/25.0)), 2, invPerFileCeiling)
+	}
+	if fileCount > 1 {
+		invPerFile = clampIntCeiling(int(math.Ceil(float64(invPerFile)/float64(fileCount))), 1, invPerFileCeiling)
+	}
+	invMaxTotal := excerptMaxTotal
+	if invMaxTotal <= 0 {
+		if adaptiveEnabled {
+			invMaxTotal = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile*200)), 4000, 14000)
+		} else {
+			invMaxTotal = 12000
+		}
+	} else if fileCount > 1 {
+		invMaxTotal = int(math.Ceil(float64(invMaxTotal) / float64(fileCount)))
+	}
+	if invMaxTotal < 2000 {
+		invMaxTotal = 2000
+	}
+	invConc := envIntAllowZero("CONCEPT_GRAPH_FILE_INVENTORY_CONCURRENCY", 24)
+	if invConc < 1 {
+		invConc = 1
+	}
+	adaptiveParams["CONCEPT_GRAPH_FILE_EXCERPTS_PER_FILE"] = map[string]any{
+		"actual":  invPerFile,
+		"ceiling": invPerFileCeiling,
+	}
+	adaptiveParams["CONCEPT_GRAPH_FILE_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{
+		"actual": invMaxTotal,
+	}
+	adaptiveParams["CONCEPT_GRAPH_FILE_INVENTORY_CONCURRENCY"] = map[string]any{
+		"actual": invConc,
+	}
+
+	type fileInv struct {
+		Coverage conceptCoverage
+		Concepts []conceptInvItem
+	}
+	var (
+		allConcepts    []conceptInvItem
+		missingUnion   []string
+		confSum        float64
+		confCount      int
+		filesAttempted int
+		filesSucceeded int
+		filesFailed    int
+		invErrs        []error
+	)
+
+	var invMu sync.Mutex
+	gInv, gInvCtx := errgroup.WithContext(ctx)
+	gInv.SetLimit(invConc)
+	var invDone int32
+	for _, f := range files {
+		f := f
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		fchunks := chunksByFile[f.ID]
+		if len(fchunks) == 0 {
+			continue
+		}
+		filesAttempted++
+		gInv.Go(func() error {
+			defer func() {
+				done := int(atomic.AddInt32(&invDone, 1))
+				reporter.UpdateRange(done, invTargets, invStart, invEnd, fmt.Sprintf("Inventorying concepts %d/%d", done, invTargets))
+			}()
+			if gInvCtx.Err() != nil {
+				return nil
+			}
+			ex, _ := buildConceptGraphExcerpts(fchunks, invPerFile, excerptMaxChars, excerptMaxLines, invMaxTotal)
+			if strings.TrimSpace(ex) == "" {
+				return nil
+			}
+
+			seedJSON := ""
+			seedMetaFile := conceptSeedMeta{}
+			if sig := sigByFile[f.ID]; sig != nil {
+				fileSignals := signals
+				fileSignals.FileCount = 1
+				keys, meta := buildConceptSeedFromSignatures([]*types.MaterialFileSignature{sig}, fileSignals, signals.ContentType, adaptiveEnabled)
+				seedMetaFile = meta
+				if meta.Usable && len(keys) > 0 {
+					if b, err := json.Marshal(map[string]any{"seed_concept_keys": keys, "seed_quality": meta}); err == nil {
+						seedJSON = string(b)
+					}
+				}
+			}
+
+			buildInventory := func(seed string) (conceptCoverage, []conceptInvItem, error) {
+				invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
+					Excerpts:             ex,
+					PathIntentMD:         intentMD,
+					CrossDocSectionsJSON: "",
+					SeedConceptKeysJSON:  seed,
+				})
+				if err != nil {
+					return conceptCoverage{}, nil, err
+				}
+				timer := llmTimer(deps.Log, "concept_inventory", map[string]any{
+					"stage":         "concept_graph_build",
+					"scope":         "file",
+					"file_id":       f.ID.String(),
+					"path_id":       pathID.String(),
+					"excerpt_chars": len(ex),
+				})
+				invObj, err := deps.AI.GenerateJSON(gInvCtx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
+				timer(err)
+				if err != nil {
+					return conceptCoverage{}, nil, err
+				}
+				cov := parseConceptCoverage(invObj)
+				concepts, err := parseConceptInventory(invObj)
+				if err != nil {
+					return cov, nil, err
+				}
+				if len(concepts) == 0 {
+					return cov, nil, fmt.Errorf("concept_graph_build: file inventory returned 0 concepts")
+				}
+				return cov, concepts, nil
+			}
+
+			invCoverage, conceptsOut, err := buildInventory(seedJSON)
+			if err != nil {
+				if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+					return err
+				}
+				invMu.Lock()
+				invErrs = append(invErrs, err)
+				filesFailed++
+				invMu.Unlock()
+				return nil
+			}
+			if seedJSON != "" && seedMetaFile.Usable {
+				fileSignals := signals
+				fileSignals.FileCount = 1
+				seedWeak, _ := conceptInventoryWeak(invCoverage, conceptsOut, seedMetaFile, fileSignals, signals.ContentType, adaptiveEnabled)
+				if seedWeak {
+					invCoverage, conceptsOut, err = buildInventory("")
+					if err != nil {
+						if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+							return err
+						}
+						invMu.Lock()
+						invErrs = append(invErrs, err)
+						filesFailed++
+						invMu.Unlock()
+						return nil
+					}
+				}
+			}
+
+			conceptsOut, _ = normalizeConceptInventory(conceptsOut, allowedChunkIDs)
+			conceptsOut, _ = dedupeConceptInventoryByKey(conceptsOut)
+			if len(conceptsOut) == 0 {
+				invMu.Lock()
+				filesFailed++
+				invMu.Unlock()
+				return nil
+			}
+
+			invMu.Lock()
+			allConcepts = append(allConcepts, conceptsOut...)
+			if len(invCoverage.MissingTopics) > 0 {
+				missingUnion = append(missingUnion, invCoverage.MissingTopics...)
+			}
+			if invCoverage.Confidence > 0 {
+				confSum += invCoverage.Confidence
+				confCount++
+			}
+			filesSucceeded++
+			invMu.Unlock()
+			return nil
+		})
+	}
+	if err := gInv.Wait(); err != nil {
 		return out, err
 	}
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
+	if len(invErrs) > 0 && deps.Log != nil {
+		deps.Log.Warn("concept_graph_build: per-file inventory errors", "count", len(invErrs))
+	}
+
+	invCoverage := conceptCoverage{
+		Confidence:    0,
+		MissingTopics: dedupeStrings(missingUnion),
+	}
+	if confCount > 0 {
+		invCoverage.Confidence = confSum / float64(confCount)
+	}
+
+	conceptsOut := allConcepts
+
+	minSuccessRatio := envFloatAllowZero("CONCEPT_GRAPH_FILE_INVENTORY_MIN_SUCCESS_RATIO", 0.6)
+	if minSuccessRatio <= 0 {
+		minSuccessRatio = 0.6
+	}
+	if minSuccessRatio > 1 {
+		minSuccessRatio = 1
+	}
+	adaptiveParams["CONCEPT_GRAPH_FILE_INVENTORY_MIN_SUCCESS_RATIO"] = map[string]any{"actual": minSuccessRatio}
+
+	filesAttemptedSafe := maxInt(filesAttempted, 1)
+	successRatio := float64(filesSucceeded) / float64(filesAttemptedSafe)
+	weakInv, weakParams := conceptInventoryWeak(invCoverage, conceptsOut, setSeedMeta, signals, signals.ContentType, adaptiveEnabled)
+	for k, v := range weakParams {
+		adaptiveParams[k] = v
+	}
+	needsFallback := filesSucceeded == 0 || successRatio < minSuccessRatio || weakInv
+	if needsFallback {
+		reporter.Update(invEnd, "Running global concept inventory")
+		if deps.Log != nil {
+			deps.Log.Warn("concept_graph_build: per-file inventory weak; falling back to global inventory",
+				"path_id", pathID.String(),
+				"files_attempted", filesAttempted,
+				"files_succeeded", filesSucceeded,
+				"files_failed", filesFailed,
+				"success_ratio", successRatio,
+				"weak", weakInv,
+			)
+		}
+
+		crossDocSectionsJSON = awaitCrossDocSections()
+
+		seedJSON := ""
+		if setSeedMeta.Usable && len(setSeedKeys) > 0 {
+			if b, err := json.Marshal(map[string]any{"seed_concept_keys": setSeedKeys, "seed_quality": setSeedMeta}); err == nil {
+				seedJSON = string(b)
+			}
+		}
+		buildGlobalInventory := func(seed string) (conceptCoverage, []conceptInvItem, error) {
+			invPrompt, err := prompts.Build(prompts.PromptConceptInventory, prompts.Input{
+				Excerpts:             excerpts,
+				PathIntentMD:         intentMD,
+				CrossDocSectionsJSON: crossDocSectionsJSON,
+				SeedConceptKeysJSON:  seed,
+			})
+			if err != nil {
+				return conceptCoverage{}, nil, err
+			}
+			timer := llmTimer(deps.Log, "concept_inventory", map[string]any{
+				"stage":         "concept_graph_build",
+				"scope":         "global",
+				"path_id":       pathID.String(),
+				"excerpt_chars": len(excerpts),
+			})
+			invObj, err := deps.AI.GenerateJSON(ctx, invPrompt.System, invPrompt.User, invPrompt.SchemaName, invPrompt.Schema)
+			timer(err)
+			if err != nil {
+				return conceptCoverage{}, nil, err
+			}
+			cov := parseConceptCoverage(invObj)
+			concepts, err := parseConceptInventory(invObj)
+			if err != nil {
+				return cov, nil, err
+			}
+			if len(concepts) == 0 {
+				return cov, nil, fmt.Errorf("concept_graph_build: global inventory returned 0 concepts")
+			}
+			return cov, concepts, nil
+		}
+
+		globalCoverage, globalConcepts, err := buildGlobalInventory(seedJSON)
+		if err != nil {
+			return out, err
+		}
+		if seedJSON != "" && setSeedMeta.Usable {
+			seedWeak, _ := conceptInventoryWeak(globalCoverage, globalConcepts, setSeedMeta, signals, signals.ContentType, adaptiveEnabled)
+			if seedWeak {
+				globalCoverage, globalConcepts, err = buildGlobalInventory("")
+				if err != nil {
+					return out, err
+				}
+			}
+		}
+		conceptsOut = globalConcepts
+		invCoverage = globalCoverage
+	}
+
 	if len(conceptsOut) == 0 {
 		return out, fmt.Errorf("concept_graph_build: concept inventory returned 0 concepts")
 	}
+	reporter.Update(invEnd, fmt.Sprintf("Inventory complete (%d concepts)", len(conceptsOut)))
 
 	conceptsOut, normStats := normalizeConceptInventory(conceptsOut, allowedChunkIDs)
 	if normStats.Modified > 0 {
@@ -256,7 +735,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Coverage completion (iterative delta passes) ----
-	conceptsOut = completeConceptCoverage(ctx, deps, conceptCoverageInput{
+	coverageInput := conceptCoverageInput{
 		PathID:             pathID,
 		MaterialSetID:      in.MaterialSetID,
 		IntentMD:           intentMD,
@@ -268,107 +747,249 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		InitialCoverage:    invCoverage,
 		Concepts:           conceptsOut,
 		MaterialFileFilter: allowFiles,
-	})
+		AdaptiveEnabled:    adaptiveEnabled,
+		Signals:            signals,
+		Stage:              "concept_graph_build",
+	}
+	coverageInput.TargetedOnly = envBool("CONCEPT_GRAPH_COVERAGE_TARGETED_ONLY", true)
+	if fastMode {
+		fastPasses := envIntAllowZero("CONCEPT_GRAPH_FAST_COVERAGE_PASSES", 1)
+		fastPassesCeiling := fastPasses
+		if adaptiveEnabled {
+			fastPasses = adaptiveFromRatio(signals.PageCount, 1.0/80.0, 1, fastPassesCeiling)
+		}
+		fastPerFile := envIntAllowZero("CONCEPT_GRAPH_FAST_COVERAGE_EXCERPTS_PER_FILE", 3)
+		fastPerFileCeiling := fastPerFile
+		if adaptiveEnabled {
+			fastPerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/25.0)), 1, fastPerFileCeiling)
+		}
+		fastMaxChars := envIntAllowZero("CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_CHARS", 650)
+		fastMaxCharsCeiling := fastMaxChars
+		if fastMaxChars <= 0 {
+			fastMaxChars = 650
+			fastMaxCharsCeiling = fastMaxChars
+		}
+		if adaptiveEnabled {
+			fastMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(fastMaxChars, signals.ContentType), 200, fastMaxCharsCeiling)
+		}
+		fastMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_TOTAL_CHARS", 18000)
+		fastMaxTotal := fastMaxTotalCeiling
+		if adaptiveEnabled {
+			fastMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*150)), 6000, fastMaxTotalCeiling)
+		}
+		coverageInput.Passes = fastPasses
+		coverageInput.ExtraPerFile = fastPerFile
+		coverageInput.ExtraMaxChars = fastMaxChars
+		coverageInput.ExtraMaxTotal = fastMaxTotal
+		coverageInput.TargetedOnly = true
+		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_PASSES"] = map[string]any{"actual": coverageInput.Passes, "ceiling": fastPassesCeiling}
+		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPTS_PER_FILE"] = map[string]any{"actual": coverageInput.ExtraPerFile, "ceiling": fastPerFileCeiling}
+		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_CHARS"] = map[string]any{"actual": coverageInput.ExtraMaxChars, "ceiling": fastMaxCharsCeiling}
+		adaptiveParams["CONCEPT_GRAPH_FAST_COVERAGE_EXCERPT_MAX_TOTAL_CHARS"] = map[string]any{"actual": coverageInput.ExtraMaxTotal, "ceiling": fastMaxTotalCeiling}
+	}
+	const coverageStart = 35
+	const coverageEnd = 55
+	reporter.Update(coverageStart, "Expanding coverage")
+	coverageInput.Progress = func(pct int, msg string) {
+		reporter.Update(pct, msg)
+	}
+	coverageInput.ProgressStart = coverageStart
+	coverageInput.ProgressEnd = coverageEnd
+	coverageResult := completeConceptCoverage(ctx, deps, coverageInput)
+	conceptsOut = coverageResult.Concepts
+	for k, v := range coverageResult.AdaptiveParams {
+		adaptiveParams[k] = v
+	}
+	reporter.Update(coverageEnd, fmt.Sprintf("Coverage complete (%d concepts)", len(conceptsOut)))
 
-	// ---- Assumed knowledge (implicit prerequisites) ----
+	// ---- Assumed knowledge + concept alignment (parallel, deterministic) ----
 	conceptMetaByKey := map[string]map[string]any{}
-	if deps.AI != nil && strings.TrimSpace(excerpts) != "" && len(conceptsOut) > 0 {
-		conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptsOut})
-		assumedPrompt, err := prompts.Build(prompts.PromptAssumedKnowledge, prompts.Input{
-			ConceptsJSON: string(conceptsJSONBytes),
-			Excerpts:     excerpts,
-			PathIntentMD: intentMD,
-		})
-		if err == nil {
-			assumedObj, err := deps.AI.GenerateJSON(ctx, assumedPrompt.System, assumedPrompt.User, assumedPrompt.SchemaName, assumedPrompt.Schema)
-			if err == nil {
-				assumed := parseAssumedKnowledge(assumedObj)
-				if len(assumed.Assumed) > 0 {
-					byKey := map[string]conceptInvItem{}
-					for _, c := range conceptsOut {
-						if strings.TrimSpace(c.Key) != "" {
-							byKey[c.Key] = c
-						}
-					}
-					added := 0
-					for _, a := range assumed.Assumed {
-						key := normalizeConceptKey(a.Key)
-						if key == "" {
-							continue
-						}
-						name := strings.TrimSpace(a.Name)
-						if name == "" {
-							name = key
-						}
-						reqs := make([]string, 0, len(a.RequiredBy))
-						for _, rk := range a.RequiredBy {
-							nk := normalizeConceptKey(rk)
-							if nk != "" {
-								reqs = append(reqs, nk)
-							}
-						}
-						meta := conceptMetaByKey[key]
-						if meta == nil {
-							meta = map[string]any{}
-						}
-						meta["assumed"] = true
-						if len(reqs) > 0 {
-							meta["required_by"] = dedupeStrings(append(stringSliceFromAny(meta["required_by"]), reqs...))
-						}
-						if strings.TrimSpace(assumed.Notes) != "" && strings.TrimSpace(stringFromAny(meta["assumed_notes"])) == "" {
-							meta["assumed_notes"] = strings.TrimSpace(assumed.Notes)
-						}
-						conceptMetaByKey[key] = meta
+	type assumedResult struct {
+		Concepts []conceptInvItem
+		Meta     map[string]map[string]any
+		Added    int
+		Err      error
+	}
+	type alignResult struct {
+		Alignment conceptAlignment
+		Err       error
+	}
+	baseConcepts := make([]conceptInvItem, len(conceptsOut))
+	copy(baseConcepts, conceptsOut)
 
-						item, exists := byKey[key]
-						if exists {
-							if strings.TrimSpace(item.Name) == "" {
-								item.Name = name
-							}
-							if len(strings.TrimSpace(item.Summary)) < len(strings.TrimSpace(a.Summary)) {
-								item.Summary = strings.TrimSpace(a.Summary)
-							}
-							item.Aliases = dedupeStrings(append(item.Aliases, a.Aliases...))
-							item.Aliases = dedupeStrings(append(item.Aliases, a.Name, a.Key))
-							item.Citations = dedupeStrings(append(item.Citations, a.Citations...))
-							if a.Importance > item.Importance {
-								item.Importance = a.Importance
-							}
-							byKey[key] = item
-							continue
-						}
-						newItem := conceptInvItem{
-							Key:        key,
-							Name:       name,
-							ParentKey:  "",
-							Depth:      0,
-							Summary:    strings.TrimSpace(a.Summary),
-							KeyPoints:  nil,
-							Aliases:    dedupeStrings(append(a.Aliases, a.Name, a.Key)),
-							Importance: a.Importance,
-							Citations:  dedupeStrings(filterChunkIDStrings(a.Citations, allowedChunkIDs)),
-						}
-						byKey[key] = newItem
-						added++
-					}
-					if len(byKey) > 0 {
-						conceptsOut = make([]conceptInvItem, 0, len(byKey))
-						for _, v := range byKey {
-							conceptsOut = append(conceptsOut, v)
-						}
-					}
-					if deps.Log != nil && added > 0 {
-						deps.Log.Info("concept_graph_build: assumed knowledge added", "path_id", pathID.String(), "added", added)
+	assumedCh := make(chan assumedResult, 1)
+	alignCh := make(chan alignResult, 1)
+
+	assumedEnabled := deps.AI != nil && strings.TrimSpace(excerpts) != "" && len(baseConcepts) > 0
+	alignEnabled := deps.AI != nil && len(baseConcepts) > 0
+	reporter.Update(56, "Assumed knowledge + alignment")
+
+	if assumedEnabled {
+		go func() {
+			res := assumedResult{Concepts: baseConcepts, Meta: map[string]map[string]any{}}
+			conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": baseConcepts})
+			assumedPrompt, err := prompts.Build(prompts.PromptAssumedKnowledge, prompts.Input{
+				ConceptsJSON: string(conceptsJSONBytes),
+				Excerpts:     excerpts,
+				PathIntentMD: intentMD,
+			})
+			if err != nil {
+				res.Err = err
+				assumedCh <- res
+				return
+			}
+			timer := llmTimer(deps.Log, "assumed_knowledge", map[string]any{
+				"stage":         "concept_graph_build",
+				"path_id":       pathID.String(),
+				"concept_count": len(baseConcepts),
+				"excerpt_chars": len(excerpts),
+				"content_type":  signals.ContentType,
+			})
+			assumedObj, err := deps.AI.GenerateJSON(ctx, assumedPrompt.System, assumedPrompt.User, assumedPrompt.SchemaName, assumedPrompt.Schema)
+			timer(err)
+			if err != nil {
+				res.Err = err
+				assumedCh <- res
+				return
+			}
+			assumed := parseAssumedKnowledge(assumedObj)
+			if len(assumed.Assumed) == 0 {
+				assumedCh <- res
+				return
+			}
+			byKey := map[string]conceptInvItem{}
+			for _, c := range baseConcepts {
+				if strings.TrimSpace(c.Key) != "" {
+					byKey[c.Key] = c
+				}
+			}
+			added := 0
+			for _, a := range assumed.Assumed {
+				key := normalizeConceptKey(a.Key)
+				if key == "" {
+					continue
+				}
+				name := strings.TrimSpace(a.Name)
+				if name == "" {
+					name = key
+				}
+				reqs := make([]string, 0, len(a.RequiredBy))
+				for _, rk := range a.RequiredBy {
+					nk := normalizeConceptKey(rk)
+					if nk != "" {
+						reqs = append(reqs, nk)
 					}
 				}
-			} else if deps.Log != nil {
-				deps.Log.Warn("concept_graph_build: assumed knowledge failed (continuing)", "error", err.Error(), "path_id", pathID.String())
+				meta := res.Meta[key]
+				if meta == nil {
+					meta = map[string]any{}
+				}
+				meta["assumed"] = true
+				if len(reqs) > 0 {
+					meta["required_by"] = dedupeStrings(append(stringSliceFromAny(meta["required_by"]), reqs...))
+				}
+				if strings.TrimSpace(assumed.Notes) != "" && strings.TrimSpace(stringFromAny(meta["assumed_notes"])) == "" {
+					meta["assumed_notes"] = strings.TrimSpace(assumed.Notes)
+				}
+				res.Meta[key] = meta
+
+				item, exists := byKey[key]
+				if exists {
+					if strings.TrimSpace(item.Name) == "" {
+						item.Name = name
+					}
+					if len(strings.TrimSpace(item.Summary)) < len(strings.TrimSpace(a.Summary)) {
+						item.Summary = strings.TrimSpace(a.Summary)
+					}
+					item.Aliases = dedupeStrings(append(item.Aliases, a.Aliases...))
+					item.Aliases = dedupeStrings(append(item.Aliases, a.Name, a.Key))
+					item.Citations = dedupeStrings(append(item.Citations, a.Citations...))
+					if a.Importance > item.Importance {
+						item.Importance = a.Importance
+					}
+					byKey[key] = item
+					continue
+				}
+				newItem := conceptInvItem{
+					Key:        key,
+					Name:       name,
+					ParentKey:  "",
+					Depth:      0,
+					Summary:    strings.TrimSpace(a.Summary),
+					KeyPoints:  nil,
+					Aliases:    dedupeStrings(append(a.Aliases, a.Name, a.Key)),
+					Importance: a.Importance,
+					Citations:  dedupeStrings(filterChunkIDStrings(a.Citations, allowedChunkIDs)),
+				}
+				byKey[key] = newItem
+				added++
 			}
-		}
+			if len(byKey) > 0 {
+				res.Concepts = make([]conceptInvItem, 0, len(byKey))
+				for _, v := range byKey {
+					res.Concepts = append(res.Concepts, v)
+				}
+			}
+			res.Added = added
+			assumedCh <- res
+		}()
+	} else {
+		assumedCh <- assumedResult{Concepts: baseConcepts, Meta: map[string]map[string]any{}}
 	}
 
-	// ---- Concept alignment (aliases/splits across documents) ----
-	if deps.AI != nil && len(conceptsOut) > 0 {
+	if alignEnabled {
+		crossDocSectionsJSON = awaitCrossDocSections()
+		go func() {
+			res := alignResult{}
+			conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": baseConcepts})
+			alignPrompt, err := prompts.Build(prompts.PromptConceptAlignment, prompts.Input{
+				ConceptsJSON:         string(conceptsJSONBytes),
+				CrossDocSectionsJSON: crossDocSectionsJSON,
+			})
+			if err != nil {
+				res.Err = err
+				alignCh <- res
+				return
+			}
+			timer := llmTimer(deps.Log, "concept_alignment", map[string]any{
+				"stage":         "concept_graph_build",
+				"path_id":       pathID.String(),
+				"pass":          "initial",
+				"concept_count": len(baseConcepts),
+				"has_sections":  strings.TrimSpace(crossDocSectionsJSON) != "",
+			})
+			alignObj, err := deps.AI.GenerateJSON(ctx, alignPrompt.System, alignPrompt.User, alignPrompt.SchemaName, alignPrompt.Schema)
+			timer(err)
+			if err != nil {
+				res.Err = err
+				alignCh <- res
+				return
+			}
+			res.Alignment = parseConceptAlignment(alignObj)
+			alignCh <- res
+		}()
+	} else {
+		alignCh <- alignResult{}
+	}
+
+	assumedRes := <-assumedCh
+	conceptsOut = assumedRes.Concepts
+	conceptMetaByKey = assumedRes.Meta
+	assumedAdded := assumedRes.Added
+	if assumedRes.Err != nil && deps.Log != nil {
+		deps.Log.Warn("concept_graph_build: assumed knowledge failed (continuing)", "error", assumedRes.Err.Error(), "path_id", pathID.String())
+	}
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
+	if deps.Log != nil && assumedAdded > 0 {
+		deps.Log.Info("concept_graph_build: assumed knowledge added", "path_id", pathID.String(), "added", assumedAdded)
+	}
+	reporter.Update(60, fmt.Sprintf("Assumed knowledge done (+%d)", assumedAdded))
+
+	alignRes := <-alignCh
+	if assumedAdded > 0 && alignEnabled {
+		// Re-run alignment on the updated concept list to preserve prior behavior.
 		conceptsJSONBytes, _ := json.Marshal(map[string]any{"concepts": conceptsOut})
 		alignPrompt, err := prompts.Build(prompts.PromptConceptAlignment, prompts.Input{
 			ConceptsJSON:         string(conceptsJSONBytes),
@@ -385,7 +1006,16 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				deps.Log.Warn("concept_graph_build: concept alignment failed (continuing)", "error", err.Error(), "path_id", pathID.String())
 			}
 		}
+	} else if alignEnabled {
+		if alignRes.Err != nil {
+			if deps.Log != nil {
+				deps.Log.Warn("concept_graph_build: concept alignment failed (continuing)", "error", alignRes.Err.Error(), "path_id", pathID.String())
+			}
+		} else if len(alignRes.Alignment.Aliases) > 0 || len(alignRes.Alignment.Splits) > 0 {
+			conceptsOut = applyConceptAlignment(conceptsOut, alignRes.Alignment, allowedChunkIDs, conceptMetaByKey)
+		}
 	}
+	reporter.Update(65, "Concepts aligned")
 
 	// Re-normalize after enrichments.
 	conceptsOut, _ = normalizeConceptInventory(conceptsOut, allowedChunkIDs)
@@ -415,6 +1045,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Embed concept docs + generate edges in parallel (before tx) ----
+	reporter.Update(68, "Generating edges + embeddings")
 	conceptDocs := make([]string, 0, len(conceptsOut))
 	for _, c := range conceptsOut {
 		doc := strings.TrimSpace(c.Name + "\n" + c.Summary + "\n" + strings.Join(c.KeyPoints, "\n"))
@@ -429,11 +1060,11 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		embs     [][]float32
 	)
 
-	embedBatchSize := envIntAllowZero("CONCEPT_GRAPH_EMBED_BATCH_SIZE", 64)
+	embedBatchSize := envIntAllowZero("CONCEPT_GRAPH_EMBED_BATCH_SIZE", 128)
 	if embedBatchSize <= 0 {
 		embedBatchSize = 64
 	}
-	embedConc := envIntAllowZero("CONCEPT_GRAPH_EMBED_CONCURRENCY", 20)
+	embedConc := envIntAllowZero("CONCEPT_GRAPH_EMBED_CONCURRENCY", 64)
 	if embedConc < 1 {
 		embedConc = 1
 	}
@@ -451,7 +1082,14 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				end = len(docs)
 			}
 			eg.Go(func() error {
+				timer := llmTimer(deps.Log, "concept_embeddings", map[string]any{
+					"stage":       "concept_graph_build",
+					"path_id":     pathID.String(),
+					"batch_size":  end - start,
+					"batch_start": start,
+				})
 				v, err := deps.AI.Embed(egctx, docs[start:end])
+				timer(err)
 				if err != nil {
 					return err
 				}
@@ -477,7 +1115,14 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
+		timer := llmTimer(deps.Log, "concept_edges", map[string]any{
+			"stage":         "concept_graph_build",
+			"path_id":       pathID.String(),
+			"concept_count": len(conceptsOut),
+			"excerpt_chars": len(edgeExcerpts),
+		})
 		obj, err := deps.AI.GenerateJSON(gctx, edgesPrompt.System, edgesPrompt.User, edgesPrompt.SchemaName, edgesPrompt.Schema)
+		timer(err)
 		if err != nil {
 			return err
 		}
@@ -495,6 +1140,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	if err := g.Wait(); err != nil {
 		return out, err
 	}
+	reporter.Update(80, "Edges + embeddings ready")
 
 	edgesOut := parseConceptEdges(edgesObj)
 	if len(conceptMetaByKey) > 0 && len(conceptsOut) > 0 {
@@ -556,195 +1202,16 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 	}
 
 	// ---- Semantic canonical concept matching (cross-path key unification) ----
-	//
-	// We keep concept.key stable per-path, but unify canonical/global concept identity using:
-	//  1) explicit aliases (LLM-provided) normalized to keys, then
-	//  2) embedding similarity against global canonical concept vectors.
-	//
-	// This produces a mapping: path_concept_key -> canonical_global_concept_id
-	// used by canonicalizePathConcepts() to create global alias rows and backfill canonical_concept_id.
-	semanticMatchByKey := map[string]uuid.UUID{}
-	if deps.Vec != nil && deps.Concepts != nil && len(conceptsOut) > 0 {
-		minScore := envFloatAllowZero("CANONICAL_CONCEPT_SEMANTIC_MIN_SCORE", 0.885)
-		minGap := envFloatAllowZero("CANONICAL_CONCEPT_SEMANTIC_MIN_GAP", 0.02)
-		topK := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_TOP_K", 6)
-		if topK < 1 {
-			topK = 6
-		}
-		conc := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_CONCURRENCY", 12)
-		if conc < 1 {
-			conc = 1
-		}
-		timeoutMS := envIntAllowZero("CANONICAL_CONCEPT_SEMANTIC_TIMEOUT_MS", 2500)
-		if timeoutMS < 250 {
-			timeoutMS = 250
-		}
-
-		keys := make([]string, 0, len(conceptsOut))
-		aliasKeysByKey := map[string][]string{}
-		aliasKeys := make([]string, 0, len(conceptsOut)*2)
-		for _, c := range conceptsOut {
-			k := strings.TrimSpace(strings.ToLower(c.Key))
-			if k == "" {
-				continue
-			}
-			keys = append(keys, k)
-			for _, a := range c.Aliases {
-				ak := normalizeConceptKey(a)
-				if ak == "" || ak == k {
-					continue
-				}
-				aliasKeysByKey[k] = append(aliasKeysByKey[k], ak)
-				aliasKeys = append(aliasKeys, ak)
-			}
-		}
-		keys = dedupeStrings(keys)
-		queryKeys := dedupeStrings(append(keys, aliasKeys...))
-
-		globalRootByKey := map[string]uuid.UUID{}
-		if len(queryKeys) > 0 {
-			if rows, err := deps.Concepts.GetByScopeAndKeys(dbctx.Context{Ctx: ctx}, "global", nil, queryKeys); err == nil {
-				for _, g := range rows {
-					if g == nil || g.ID == uuid.Nil {
-						continue
-					}
-					k := strings.TrimSpace(strings.ToLower(g.Key))
-					if k == "" {
-						continue
-					}
-					root := g.ID
-					if g.CanonicalConceptID != nil && *g.CanonicalConceptID != uuid.Nil {
-						root = *g.CanonicalConceptID
-					}
-					if root != uuid.Nil {
-						globalRootByKey[k] = root
-					}
-				}
-			}
-		}
-
-		// Prefer alias-key matches before doing any vector search.
-		todoIdx := make([]int, 0, 8)
-		aliasMatched := 0
-		for i := range conceptsOut {
-			k := strings.TrimSpace(strings.ToLower(conceptsOut[i].Key))
-			if k == "" {
-				continue
-			}
-			if globalRootByKey[k] != uuid.Nil {
-				continue // exact global key already exists; canonicalizePathConcepts will handle redirect chains.
-			}
-			aks := dedupeStrings(aliasKeysByKey[k])
-			found := uuid.Nil
-			for _, ak := range aks {
-				if id := globalRootByKey[ak]; id != uuid.Nil {
-					found = id
-					break
-				}
-			}
-			if found != uuid.Nil {
-				semanticMatchByKey[k] = found
-				aliasMatched++
-				continue
-			}
-			todoIdx = append(todoIdx, i)
-		}
-
-		// Embedding-based semantic matching (global ANN search) for remaining missing keys.
-		semanticMatched := 0
-		if minScore > 0 && len(todoIdx) > 0 {
-			globalNS := index.ConceptsNamespace("global", nil)
-			filter := map[string]any{"type": "concept", "scope": "global", "canonical": true}
-
-			var mu sync.Mutex
-			eg, egctx := errgroup.WithContext(ctx)
-			eg.SetLimit(conc)
-
-			for _, idx := range todoIdx {
-				idx := idx
-				eg.Go(func() error {
-					if idx < 0 || idx >= len(conceptsOut) || idx >= len(embs) {
-						return nil
-					}
-					k := strings.TrimSpace(strings.ToLower(conceptsOut[idx].Key))
-					if k == "" {
-						return nil
-					}
-					if len(embs[idx]) == 0 {
-						return nil
-					}
-					qctx, cancel := context.WithTimeout(egctx, time.Duration(timeoutMS)*time.Millisecond)
-					matches, err := deps.Vec.QueryMatches(qctx, globalNS, embs[idx], topK, filter)
-					cancel()
-					if err != nil || len(matches) == 0 {
-						return nil
-					}
-					best := matches[0]
-					if best.Score < minScore {
-						return nil
-					}
-					if len(matches) > 1 && (best.Score-matches[1].Score) < minGap {
-						return nil
-					}
-					idStr := strings.TrimSpace(best.ID)
-					if strings.HasPrefix(idStr, "concept:") {
-						idStr = strings.TrimPrefix(idStr, "concept:")
-					}
-					cid, err := uuid.Parse(strings.TrimSpace(idStr))
-					if err != nil || cid == uuid.Nil {
-						return nil
-					}
-					mu.Lock()
-					semanticMatchByKey[k] = cid
-					semanticMatched++
-					mu.Unlock()
-					return nil
-				})
-			}
-			_ = eg.Wait()
-		}
-
-		// Resolve any matched global concept IDs that are themselves aliases/redirects (one-hop best-effort).
-		if len(semanticMatchByKey) > 0 {
-			ids := make([]uuid.UUID, 0, len(semanticMatchByKey))
-			seenIDs := map[uuid.UUID]bool{}
-			for _, id := range semanticMatchByKey {
-				if id != uuid.Nil && !seenIDs[id] {
-					seenIDs[id] = true
-					ids = append(ids, id)
-				}
-			}
-			if len(ids) > 0 {
-				if rows, err := deps.Concepts.GetByIDs(dbctx.Context{Ctx: ctx}, ids); err == nil {
-					redir := map[uuid.UUID]uuid.UUID{}
-					for _, r := range rows {
-						if r == nil || r.ID == uuid.Nil {
-							continue
-						}
-						if r.CanonicalConceptID != nil && *r.CanonicalConceptID != uuid.Nil {
-							redir[r.ID] = *r.CanonicalConceptID
-						}
-					}
-					if len(redir) > 0 {
-						for k, id := range semanticMatchByKey {
-							if to := redir[id]; to != uuid.Nil {
-								semanticMatchByKey[k] = to
-							}
-						}
-					}
-				}
-			}
-		}
-
-		if deps.Log != nil && (aliasMatched > 0 || semanticMatched > 0) {
-			deps.Log.Info(
-				"canonical concept semantic matches",
-				"alias_matches", aliasMatched,
-				"semantic_matches", semanticMatched,
-				"candidates", len(conceptsOut),
-			)
-		}
+	const semanticStart = 80
+	const semanticEnd = 88
+	semanticProgress := func(done, total int) {
+		reporter.UpdateRange(done, total, semanticStart, semanticEnd, fmt.Sprintf("Matching canonical concepts %d/%d", done, total))
 	}
+	semanticMatchByKey, semanticParams := semanticMatchCanonicalConcepts(ctx, deps, conceptsOut, embs, signals, signals.ContentType, adaptiveEnabled, semanticProgress)
+	for k, v := range semanticParams {
+		adaptiveParams[k] = v
+	}
+	reporter.Update(semanticEnd, fmt.Sprintf("Canonical match complete (%d matched)", len(semanticMatchByKey)))
 
 	// ---- Persist canonical state + append saga actions (single tx) ----
 	type conceptRow struct {
@@ -790,6 +1257,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		pineconeBatchSize = 64
 	}
 	skipped := false
+	reporter.Update(90, "Persisting concept graph")
 	txErr := deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 		// Ensure only one canonical graph write happens per path (race-safe + avoids unique index errors).
@@ -984,6 +1452,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 		return out, txErr
 	}
+	reporter.Update(92, "Concept graph persisted")
 
 	if skipped {
 		if deps.Graph != nil {
@@ -1020,9 +1489,18 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 
 	// ---- Upsert to Pinecone (best-effort; cache only) ----
 	if deps.Vec != nil {
-		pineconeConc := envIntAllowZero("CONCEPT_GRAPH_PINECONE_CONCURRENCY", 20)
+		pineconeConc := envIntAllowZero("CONCEPT_GRAPH_PINECONE_CONCURRENCY", 32)
 		if pineconeConc < 1 {
 			pineconeConc = 1
+		}
+		pineconeStart := 92
+		pineconeEnd := 96
+		totalBatches := 0
+		if pineconeBatchSize > 0 {
+			totalBatches = int(math.Ceil(float64(len(rows)) / float64(pineconeBatchSize)))
+		}
+		if totalBatches < 1 {
+			totalBatches = 1
 		}
 
 		g, gctx := errgroup.WithContext(ctx)
@@ -1060,7 +1538,8 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 					deps.Log.Warn("pinecone upsert failed (continuing)", "namespace", ns, "err", err.Error())
 					return nil
 				}
-				atomic.AddInt32(&batches, 1)
+				done := int(atomic.AddInt32(&batches, 1))
+				reporter.UpdateRange(done, totalBatches, pineconeStart, pineconeEnd, fmt.Sprintf("Indexing concepts %d/%d", done, totalBatches))
 				return nil
 			})
 		}
@@ -1107,6 +1586,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				deps.Log.Warn("pinecone global concept upsert failed (continuing)", "namespace", globalNS, "err", err.Error())
 			}
 		}
+		reporter.Update(pineconeEnd, fmt.Sprintf("Indexed concepts (%d batches)", out.PineconeBatches))
 	}
 
 	// ---- Upsert to Neo4j (best-effort; cache only) ----
@@ -1114,6 +1594,23 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 		if err := syncPathConceptGraphToNeo4j(ctx, deps, pathID); err != nil {
 			deps.Log.Warn("neo4j concept graph sync failed (continuing)", "error", err, "path_id", pathID.String())
 		}
+	}
+	reporter.Update(98, "Concept graph ready")
+
+	if conceptInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+		_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+			OwnerUserID:   in.OwnerUserID,
+			MaterialSetID: in.MaterialSetID,
+			PathID:        pathID,
+			ArtifactType:  "concept_graph_build",
+			InputHash:     conceptInputHash,
+			Version:       artifactHashVersion,
+			Metadata: marshalMeta(map[string]any{
+				"concepts_made":    out.ConceptsMade,
+				"edges_made":       out.EdgesMade,
+				"pinecone_batches": out.PineconeBatches,
+			}),
+		})
 	}
 
 	return out, nil
@@ -1536,6 +2033,155 @@ type conceptEdgeItem struct {
 	Strength  float64  `json:"strength"`
 	Rationale string   `json:"rationale"`
 	Citations []string `json:"citations"`
+}
+
+type conceptSeedMeta struct {
+	TotalFiles     int            `json:"total_files"`
+	FilesWithSeeds int            `json:"files_with_seeds"`
+	SeedCount      int            `json:"seed_count"`
+	AvgQuality     float64        `json:"avg_quality"`
+	LowQuality     int            `json:"low_quality_files"`
+	Usable         bool           `json:"usable"`
+	Reason         string         `json:"reason,omitempty"`
+	Params         map[string]any `json:"params,omitempty"`
+}
+
+func buildConceptSeedFromSignatures(sigs []*types.MaterialFileSignature, signals AdaptiveSignals, contentType string, adaptiveEnabled bool) ([]string, conceptSeedMeta) {
+	meta := conceptSeedMeta{TotalFiles: len(sigs)}
+	if len(sigs) == 0 {
+		meta.Reason = "no_signatures"
+		return nil, meta
+	}
+
+	minFiles := envIntAllowZero("CONCEPT_GRAPH_SEED_MIN_FILES", 1)
+	if minFiles < 1 {
+		minFiles = 1
+	}
+	minKeys := envIntAllowZero("CONCEPT_GRAPH_SEED_MIN_KEYS", 12)
+	if minKeys < 1 {
+		minKeys = 1
+	}
+	minQuality := envFloatAllowZero("CONCEPT_GRAPH_SEED_MIN_QUALITY", 0.45)
+	if adaptiveEnabled {
+		fc := maxInt(signals.FileCount, len(sigs))
+		minFiles = clampIntCeiling(int(math.Round(float64(fc)*0.5)), 1, minFiles)
+		minKeys = clampIntCeiling(int(math.Round(float64(fc)*3.0)), 6, minKeys)
+		minQuality = clamp01(adjustThresholdByContentType("CONCEPT_GRAPH_SEED_MIN_QUALITY", minQuality, contentType))
+	}
+	meta.Params = map[string]any{
+		"CONCEPT_GRAPH_SEED_MIN_FILES":   map[string]any{"actual": minFiles},
+		"CONCEPT_GRAPH_SEED_MIN_KEYS":    map[string]any{"actual": minKeys},
+		"CONCEPT_GRAPH_SEED_MIN_QUALITY": map[string]any{"actual": minQuality},
+	}
+
+	keys := make([]string, 0, 64)
+	qualitySum := 0.0
+	qualityCount := 0
+	lowQuality := 0
+
+	for _, sig := range sigs {
+		if sig == nil {
+			continue
+		}
+		rawKeys := jsonListFromRaw(sig.ConceptKeys)
+		clean := make([]string, 0, len(rawKeys))
+		for _, k := range rawKeys {
+			nk := normalizeConceptKey(k)
+			if nk != "" {
+				clean = append(clean, nk)
+			}
+		}
+		if len(clean) > 0 {
+			meta.FilesWithSeeds++
+		}
+		keys = append(keys, clean...)
+
+		score := signatureQualityScore(sig)
+		if score > 0 {
+			qualitySum += score
+			qualityCount++
+			if score < 0.4 {
+				lowQuality++
+			}
+		}
+	}
+
+	keys = dedupeStrings(keys)
+	meta.SeedCount = len(keys)
+	if qualityCount > 0 {
+		meta.AvgQuality = qualitySum / float64(qualityCount)
+	}
+	meta.LowQuality = lowQuality
+
+	switch {
+	case meta.FilesWithSeeds < minFiles:
+		meta.Reason = "too_few_files"
+	case meta.SeedCount < minKeys:
+		meta.Reason = "too_few_keys"
+	case meta.AvgQuality < minQuality:
+		meta.Reason = "low_quality"
+	default:
+		meta.Usable = true
+	}
+	return keys, meta
+}
+
+func signatureQualityScore(sig *types.MaterialFileSignature) float64 {
+	if sig == nil {
+		return 0
+	}
+	q := map[string]any{}
+	_ = json.Unmarshal(sig.Quality, &q)
+	textQuality := strings.ToLower(strings.TrimSpace(stringFromAny(q["text_quality"])))
+	coverage := floatFromAny(q["coverage"], 0.5)
+	if coverage < 0 {
+		coverage = 0
+	}
+	if coverage > 1 {
+		coverage = 1
+	}
+	textScore := 0.5
+	switch textQuality {
+	case "high":
+		textScore = 1.0
+	case "medium":
+		textScore = 0.7
+	case "low":
+		textScore = 0.3
+	}
+	score := (textScore + coverage) / 2.0
+	rawKeys := jsonListFromRaw(sig.ConceptKeys)
+	if len(rawKeys) < 6 {
+		score = score * 0.6
+	}
+	return clamp01(score)
+}
+
+func conceptInventoryWeak(cov conceptCoverage, concepts []conceptInvItem, seedMeta conceptSeedMeta, signals AdaptiveSignals, contentType string, adaptiveEnabled bool) (bool, map[string]any) {
+	minConcepts := envIntAllowZero("CONCEPT_GRAPH_SEED_MIN_CONCEPTS", 12)
+	if minConcepts < 1 {
+		minConcepts = 1
+	}
+	minCoverage := envFloatAllowZero("CONCEPT_GRAPH_SEED_MIN_COVERAGE_CONF", 0.35)
+	if adaptiveEnabled {
+		fc := maxInt(signals.FileCount, 1)
+		minConcepts = clampIntCeiling(int(math.Round(float64(fc)*3.0)), 6, minConcepts)
+		minCoverage = clamp01(adjustThresholdByContentType("CONCEPT_GRAPH_SEED_MIN_COVERAGE_CONF", minCoverage, contentType))
+	}
+	params := map[string]any{
+		"CONCEPT_GRAPH_SEED_MIN_CONCEPTS":      map[string]any{"actual": minConcepts},
+		"CONCEPT_GRAPH_SEED_MIN_COVERAGE_CONF": map[string]any{"actual": minCoverage},
+	}
+	if len(concepts) < minConcepts {
+		return true, params
+	}
+	if seedMeta.SeedCount > 0 && len(concepts) < (seedMeta.SeedCount/2) {
+		return true, params
+	}
+	if cov.Confidence > 0 && cov.Confidence < minCoverage {
+		return true, params
+	}
+	return false, params
 }
 
 func parseConceptInventory(obj map[string]any) ([]conceptInvItem, error) {

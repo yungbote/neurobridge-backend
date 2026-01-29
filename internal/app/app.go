@@ -4,13 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/db"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/steps"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 )
@@ -120,6 +126,11 @@ func (a *App) Start(runServer bool, runWorker bool) error {
 			return err
 		}
 	}
+
+	// (C) Background: seed teaching patterns once on startup (non-blocking).
+	if runServer {
+		go a.seedTeachingPatternsOnStartup(ctx)
+	}
 	return nil
 }
 
@@ -141,5 +152,51 @@ func (a *App) Close() {
 	a.Clients.Close()
 	if a.Log != nil {
 		a.Log.Sync()
+	}
+}
+
+func (a *App) seedTeachingPatternsOnStartup(ctx context.Context) {
+	if a == nil || a.DB == nil || a.Log == nil || a.Repos.TeachingPattern == nil || a.Clients.OpenaiClient == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("TEACHING_PATTERNS_SEED_ON_STARTUP")), "true") &&
+		strings.TrimSpace(os.Getenv("TEACHING_PATTERNS_SEED_ON_STARTUP")) != "" {
+		return
+	}
+	minCount := int64(10)
+	if v := strings.TrimSpace(os.Getenv("TEACHING_PATTERNS_SEED_MIN_COUNT")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			minCount = n
+		}
+	}
+	if n, err := a.Repos.TeachingPattern.Count(dbctx.Context{Ctx: ctx}); err == nil && n >= minCount {
+		return
+	}
+
+	// Prefer most recent user profile doc if available.
+	profileDoc := ""
+	var up types.UserProfileVector
+	_ = a.DB.WithContext(ctx).Order("updated_at desc").Limit(1).Find(&up).Error
+	if up.ID != uuid.Nil {
+		profileDoc = strings.TrimSpace(up.ProfileDoc)
+	}
+	if profileDoc == "" {
+		profileDoc = strings.TrimSpace(os.Getenv("TEACHING_PATTERNS_SEED_FALLBACK_PROFILE_DOC"))
+	}
+	if profileDoc == "" {
+		profileDoc = "Learner prefers clear, structured explanations with examples, concise summaries, and practice checks. Keep tone professional and encouraging. Use visuals when helpful."
+	}
+
+	seedCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	_, err := steps.SeedTeachingPatternsFromDoc(seedCtx, steps.TeachingPatternsSeedDeps{
+		DB:       a.DB,
+		Log:      a.Log,
+		Patterns: a.Repos.TeachingPattern,
+		AI:       a.Clients.OpenaiClient,
+		Vec:      a.Clients.PineconeVectorStore,
+	}, profileDoc, uuid.Nil)
+	if err != nil && a.Log != nil {
+		a.Log.Warn("teaching_patterns_seed startup failed (continuing)", "error", err)
 	}
 }

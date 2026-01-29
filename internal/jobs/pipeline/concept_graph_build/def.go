@@ -15,6 +15,7 @@ type Pipeline struct {
 	db        *gorm.DB
 	log       *logger.Logger
 	files     repos.MaterialFileRepo
+	fileSigs  repos.MaterialFileSignatureRepo
 	chunks    repos.MaterialChunkRepo
 	path      repos.PathRepo
 	concepts  repos.ConceptRepo
@@ -25,12 +26,14 @@ type Pipeline struct {
 	vec       pinecone.VectorStore
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
+	artifacts repos.LearningArtifactRepo
 }
 
 func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
 	files repos.MaterialFileRepo,
+	fileSigs repos.MaterialFileSignatureRepo,
 	chunks repos.MaterialChunkRepo,
 	path repos.PathRepo,
 	concepts repos.ConceptRepo,
@@ -41,11 +44,13 @@ func New(
 	vec pinecone.VectorStore,
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
+	artifacts repos.LearningArtifactRepo,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
 		log:       baseLog.With("job", "concept_graph_build"),
 		files:     files,
+		fileSigs:  fileSigs,
 		chunks:    chunks,
 		path:      path,
 		concepts:  concepts,
@@ -56,6 +61,7 @@ func New(
 		vec:       vec,
 		saga:      saga,
 		bootstrap: bootstrap,
+		artifacts: artifacts,
 	}
 }
 

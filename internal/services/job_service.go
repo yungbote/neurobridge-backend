@@ -25,6 +25,7 @@ import (
 type JobService interface {
 	Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType string, entityType string, entityID *uuid.UUID, payload map[string]any) (*types.JobRun, error)
 	Dispatch(dbc dbctx.Context, jobID uuid.UUID) error
+	SignalResume(dbc dbctx.Context, jobID uuid.UUID) error
 	EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error)
 	EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueProgressionCompactIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
@@ -180,6 +181,27 @@ func (s *jobService) Dispatch(dbc dbctx.Context, jobID uuid.UUID) error {
 		}
 	}
 	return fmt.Errorf("start temporal workflow: %w", err)
+}
+
+func (s *jobService) SignalResume(dbc dbctx.Context, jobID uuid.UUID) error {
+	if s == nil || s.temporal == nil || jobID == uuid.Nil {
+		return nil
+	}
+	ctx := dbc.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Keep literal to avoid import cycle with jobrun.
+	err := s.temporal.SignalWorkflow(ctx, jobID.String(), "", "job_resume", nil)
+	if err != nil {
+		if _, ok := err.(*serviceerror.NotFound); ok {
+			return nil
+		}
+		if temporal.IsCanceledError(err) || temporal.IsTimeoutError(err) {
+			return nil
+		}
+	}
+	return err
 }
 
 func (s *jobService) EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error) {
@@ -541,7 +563,7 @@ func (s *jobService) CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*
 		shouldNotify = true
 
 		// Best-effort: if this is a learning_build root job, cancel any child stage jobs.
-		if strings.EqualFold(strings.TrimSpace(job.JobType), "learning_build") {
+		if isLearningBuildJobType(job.JobType) {
 			childIDs := extractLearningBuildChildJobIDs(job.Result)
 			for _, cid := range childIDs {
 				if cid == uuid.Nil {
@@ -576,7 +598,7 @@ func (s *jobService) CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*
 	// Best-effort: cancel the Temporal workflow(s) backing this job run.
 	if s.temporal != nil && jobID != uuid.Nil {
 		_ = s.temporal.CancelWorkflow(dbc.Ctx, jobID.String(), "")
-		if updated != nil && strings.EqualFold(strings.TrimSpace(updated.JobType), "learning_build") {
+		if updated != nil && isLearningBuildJobType(updated.JobType) {
 			for _, cid := range extractLearningBuildChildJobIDs(updated.Result) {
 				if cid == uuid.Nil {
 					continue
@@ -621,7 +643,7 @@ func (s *jobService) RestartForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (
 
 		now := time.Now().UTC()
 		nextResult := job.Result
-		if strings.EqualFold(strings.TrimSpace(job.JobType), "learning_build") {
+		if isLearningBuildJobType(job.JobType) {
 			nextResult = resetLearningBuildStateForRestart(nextResult)
 		}
 
@@ -714,6 +736,15 @@ func extractLearningBuildChildJobIDs(result datatypes.JSON) []uuid.UUID {
 		out = append(out, id)
 	}
 	return out
+}
+
+func isLearningBuildJobType(jobType string) bool {
+	switch strings.ToLower(strings.TrimSpace(jobType)) {
+	case "learning_build", "learning_build_progressive":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *jobService) startTemporalJobWorkflow(ctx context.Context, jobID uuid.UUID, reusePolicy enums.WorkflowIdReusePolicy) error {

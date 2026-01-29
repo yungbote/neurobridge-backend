@@ -43,9 +43,7 @@ stages:
               commit_type: change
               paths_confirmed: false
   - name: user_profile_refresh
-    depends_on: [path_intake_pre]
-  - name: teaching_patterns_seed
-    depends_on: [user_profile_refresh]
+    depends_on: [file_signature_build]
   - name: progression_compact
     depends_on: [user_profile_refresh]
   - name: variant_stats_refresh
@@ -153,21 +151,25 @@ stages:
   - name: path_structure_dispatch
     depends_on: [path_grouping_refine_waitpoint]
   - name: embed_chunks
-    depends_on: [path_structure_dispatch]
+    depends_on: [ingest_chunks]
   - name: concept_graph_build
     depends_on: [path_structure_dispatch]
+    config:
+      mode: fast
+  - name: concept_graph_patch_build
+    depends_on: [concept_graph_build]
   - name: material_signal_build
-    depends_on: [concept_graph_build]
+    depends_on: [concept_graph_patch_build]
   - name: path_structure_refine
-    depends_on: [concept_graph_build]
+    depends_on: [concept_graph_patch_build]
   - name: material_kg_build
-    depends_on: [concept_graph_build, embed_chunks]
+    depends_on: [concept_graph_patch_build, embed_chunks]
   - name: concept_cluster_build
-    depends_on: [concept_graph_build]
+    depends_on: [concept_graph_patch_build]
   - name: chain_signature_build
     depends_on: [concept_cluster_build]
   - name: path_plan_build
-    depends_on: [concept_graph_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
+    depends_on: [concept_graph_patch_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
   - name: path_cover_render
     depends_on: [path_plan_build]
   - name: node_figures_plan_build
@@ -186,7 +188,7 @@ stages:
     config:
       media_patch: true
   - name: realize_activities
-    depends_on: [path_plan_build, embed_chunks, user_profile_refresh, concept_graph_build, material_kg_build]
+    depends_on: [path_plan_build, embed_chunks, user_profile_refresh, concept_graph_patch_build, material_kg_build]
   - name: coverage_coherence_audit
     depends_on: [realize_activities]
   - name: priors_refresh

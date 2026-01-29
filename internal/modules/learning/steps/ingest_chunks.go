@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
@@ -28,6 +29,7 @@ type IngestChunksDeps struct {
 	Extract   ingestion.ContentExtractionService
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
+	Artifacts repos.LearningArtifactRepo
 }
 
 type IngestChunksInput struct {
@@ -51,6 +53,7 @@ type IngestChunksOutput struct {
 	FilesTotal          int       `json:"files_total"`
 	FilesProcessed      int       `json:"files_processed"`
 	FilesAlreadyChunked int       `json:"files_already_chunked"`
+	CacheHit            bool      `json:"cache_hit,omitempty"`
 }
 
 func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInput, opts ...IngestChunksOptions) (IngestChunksOutput, error) {
@@ -111,6 +114,57 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 	for _, ch := range existing {
 		if ch != nil && ch.MaterialFileID != uuid.Nil {
 			hasChunks[ch.MaterialFileID] = true
+		}
+	}
+	allChunked := true
+	for _, f := range files {
+		if f == nil || f.ID == uuid.Nil {
+			continue
+		}
+		if !hasChunks[f.ID] {
+			allChunked = false
+			break
+		}
+	}
+
+	var ingestInputHash string
+	if deps.Artifacts != nil && artifactCacheEnabled() {
+		payload := map[string]any{
+			"files": filesFingerprint(files),
+			"env":   envSnapshot([]string{"INGEST_CHUNKS_", "OPENAI_VISION_"}, []string{"OPENAI_VISION_MODEL"}),
+		}
+		if h, err := computeArtifactHash("ingest_chunks", in.MaterialSetID, uuid.Nil, payload); err == nil {
+			ingestInputHash = h
+		}
+		if allChunked {
+			maxFiles := maxFileUpdatedAt(files)
+			maxChunks := maxChunkUpdatedAt(existing)
+			chunksFresh := maxChunks.IsZero() || !maxChunks.Before(maxFiles)
+			if chunksFresh && ingestInputHash != "" {
+				if _, hit, err := artifactCacheGet(ctx, deps.Artifacts, in.OwnerUserID, in.MaterialSetID, uuid.Nil, "ingest_chunks", ingestInputHash); err == nil && hit {
+					out.FilesAlreadyChunked = len(files)
+					out.CacheHit = true
+					return out, nil
+				}
+				if artifactCacheSeedExisting() {
+					_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+						OwnerUserID:   in.OwnerUserID,
+						MaterialSetID: in.MaterialSetID,
+						PathID:        uuid.Nil,
+						ArtifactType:  "ingest_chunks",
+						InputHash:     ingestInputHash,
+						Version:       artifactHashVersion,
+						Metadata: marshalMeta(map[string]any{
+							"files_total":  len(files),
+							"chunks_total": len(existing),
+							"seeded":       true,
+						}),
+					})
+					out.FilesAlreadyChunked = len(files)
+					out.CacheHit = true
+					return out, nil
+				}
+			}
 		}
 	}
 
@@ -273,6 +327,21 @@ func IngestChunks(ctx context.Context, deps IngestChunksDeps, in IngestChunksInp
 	}
 	if missing > 0 {
 		return out, fmt.Errorf("ingest_chunks: chunks missing for %d files", missing)
+	}
+
+	if ingestInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+		_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+			OwnerUserID:   in.OwnerUserID,
+			MaterialSetID: in.MaterialSetID,
+			PathID:        uuid.Nil,
+			ArtifactType:  "ingest_chunks",
+			InputHash:     ingestInputHash,
+			Version:       artifactHashVersion,
+			Metadata: marshalMeta(map[string]any{
+				"files_total":  len(files),
+				"chunks_total": len(after),
+			}),
+		})
 	}
 
 	return out, nil

@@ -483,18 +483,23 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			_ = p.uli.UpsertPathID(dbc, jc.Job.OwnerUserID, derivedSetID, derivedPathID)
 		}
 
-		has, _ := p.jobRuns.HasRunnableForEntity(dbc, jc.Job.OwnerUserID, "path", derivedPathID, "learning_build")
+		jobType := strings.TrimSpace(fmt.Sprint(jc.Payload()["build_job_type"]))
+		if jobType == "" {
+			jobType = "learning_build"
+		}
+		has, _ := p.jobRuns.HasRunnableForEntity(dbc, jc.Job.OwnerUserID, "path", derivedPathID, jobType)
 		var splitJobID uuid.UUID
 		if !has {
 			payload := map[string]any{
 				"material_set_id": derivedSetID.String(),
 				"path_id":         derivedPathID.String(),
+				"build_job_type":  jobType,
 			}
 			if threadID, ok := jc.PayloadUUID("thread_id"); ok && threadID != uuid.Nil {
 				payload["thread_id"] = threadID.String()
 			}
 			entityID := derivedPathID
-			j, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: p.db}, jc.Job.OwnerUserID, "learning_build", "path", &entityID, payload)
+			j, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: p.db}, jc.Job.OwnerUserID, jobType, "path", &entityID, payload)
 			if err != nil {
 				jc.Fail("enqueue_split_path", err)
 				return nil

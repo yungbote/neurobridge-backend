@@ -235,7 +235,7 @@ func TestSoftSplitSanityCheck_AddsStructureClarify(t *testing.T) {
 		"clarifying_questions": []any{},
 	}
 
-	softSplitSanityCheck(context.Background(), intake, []*types.MaterialFile{f1, f2}, nil, nil, false)
+	softSplitSanityCheck(context.Background(), intake, []*types.MaterialFile{f1, f2}, nil, nil, false, false, AdaptiveSignals{}, nil)
 
 	if !boolFromAny(intake["needs_clarification"]) {
 		t.Fatalf("expected needs_clarification true")

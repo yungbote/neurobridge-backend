@@ -107,8 +107,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 	build := jRows[0]
 
-	if build.OwnerUserID != userID ||
-		!strings.EqualFold(strings.TrimSpace(build.JobType), "learning_build") {
+	if build.OwnerUserID != userID || !isLearningBuildJobType(build.JobType) {
 		jc.Succeed("done", map[string]any{"mode": "not_learning_build"})
 		return nil
 	}
@@ -303,7 +302,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			return nil
 		}
 		if p.jobs != nil {
+			if child.ID != uuid.Nil {
+				_ = p.jobs.Dispatch(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, child.ID)
+				_ = p.jobs.SignalResume(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, child.ID)
+			}
 			_ = p.jobs.Dispatch(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, build.ID)
+			_ = p.jobs.SignalResume(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, build.ID)
 		}
 		jc.Succeed("done", map[string]any{"case": cr.Case, "decision": decision.Kind})
 		return nil
@@ -505,6 +509,15 @@ func (p *Pipeline) appendAssistantMessage(
 	}
 
 	return nil
+}
+
+func isLearningBuildJobType(jobType string) bool {
+	switch strings.ToLower(strings.TrimSpace(jobType)) {
+	case "learning_build", "learning_build_progressive":
+		return true
+	default:
+		return false
+	}
 }
 
 // resumeJobs transitions child and parent jobs from waiting_user to queued.

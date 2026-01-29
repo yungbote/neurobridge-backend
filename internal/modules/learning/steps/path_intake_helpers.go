@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -20,23 +21,35 @@ func mapFromAny(v any) map[string]any {
 	return m
 }
 
-func buildIntakeMaterialExcerpts(files []*types.MaterialFile, chunks []*types.MaterialChunk) string {
+func buildIntakeMaterialExcerpts(files []*types.MaterialFile, chunks []*types.MaterialChunk, signals AdaptiveSignals, adaptiveEnabled bool) (string, map[string]any) {
 	if len(files) == 0 || len(chunks) == 0 {
-		return ""
+		return "", map[string]any{}
 	}
 
 	// Defaults tuned for "high signal, low token": a couple of snippets per file.
-	perFile := envIntAllowZero("PATH_INTAKE_EXCERPTS_PER_FILE", 2)
+	perFileCeiling := envIntAllowZero("PATH_INTAKE_EXCERPTS_PER_FILE", 2)
+	perFile := perFileCeiling
 	if perFile <= 0 {
-		return ""
+		return "", map[string]any{}
 	}
 	maxChars := envIntAllowZero("PATH_INTAKE_EXCERPT_MAX_CHARS", 520)
+	maxCharsCeiling := maxChars
 	if maxChars <= 0 {
 		maxChars = 520
+		maxCharsCeiling = maxChars
 	}
-	maxTotal := envIntAllowZero("PATH_INTAKE_EXCERPT_MAX_TOTAL_CHARS", 12_000)
+	maxTotalCeiling := envIntAllowZero("PATH_INTAKE_EXCERPT_MAX_TOTAL_CHARS", 12_000)
+	maxTotal := maxTotalCeiling
 	if maxTotal <= 0 {
 		maxTotal = 12_000
+	}
+	if adaptiveEnabled {
+		perFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/20.0)), 1, perFileCeiling)
+		if maxCharsCeiling <= 0 {
+			maxCharsCeiling = maxChars
+		}
+		maxChars = clampIntCeiling(adjustExcerptCharsByContentType(maxChars, signals.ContentType), 200, maxCharsCeiling)
+		maxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*150)), 6000, maxTotalCeiling)
 	}
 
 	byFile := map[uuid.UUID][]*types.MaterialChunk{}
@@ -54,7 +67,7 @@ func buildIntakeMaterialExcerpts(files []*types.MaterialFile, chunks []*types.Ma
 		byFile[ch.MaterialFileID] = append(byFile[ch.MaterialFileID], ch)
 	}
 	if len(byFile) == 0 {
-		return ""
+		return "", map[string]any{}
 	}
 
 	var b strings.Builder
@@ -105,7 +118,11 @@ func buildIntakeMaterialExcerpts(files []*types.MaterialFile, chunks []*types.Ma
 			break
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), map[string]any{
+		"PATH_INTAKE_EXCERPTS_PER_FILE":       map[string]any{"actual": perFile, "ceiling": perFileCeiling},
+		"PATH_INTAKE_EXCERPT_MAX_CHARS":       map[string]any{"actual": maxChars, "ceiling": maxCharsCeiling},
+		"PATH_INTAKE_EXCERPT_MAX_TOTAL_CHARS": map[string]any{"actual": maxTotal, "ceiling": maxTotalCeiling},
+	}
 }
 
 func summaryLevel(summary *types.MaterialSetSummary) string {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,10 +54,11 @@ type NodeVideosRenderInput struct {
 }
 
 type NodeVideosRenderOutput struct {
-	PathID         uuid.UUID `json:"path_id"`
-	VideosRendered int       `json:"videos_rendered"`
-	VideosExisting int       `json:"videos_existing"`
-	VideosFailed   int       `json:"videos_failed"`
+	PathID         uuid.UUID      `json:"path_id"`
+	VideosRendered int            `json:"videos_rendered"`
+	VideosExisting int            `json:"videos_existing"`
+	VideosFailed   int            `json:"videos_failed"`
+	Adaptive       map[string]any `json:"adaptive,omitempty"`
 }
 
 const nodeVideoAssetPromptVersion = "video_asset_v2@1"
@@ -78,6 +80,19 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, err
 	}
 	out.PathID = pathID
+
+	adaptiveEnabled := adaptiveParamsEnabledForStage("node_videos_render")
+	signals := AdaptiveSignals{}
+	if adaptiveEnabled {
+		signals = loadAdaptiveSignals(ctx, deps.DB, in.MaterialSetID, pathID)
+	}
+	adaptiveParams := map[string]any{}
+	defer func() {
+		if deps.Log != nil && adaptiveEnabled && len(adaptiveParams) > 0 {
+			deps.Log.Info("node_videos_render: adaptive params", "adaptive", adaptiveStageMeta("node_videos_render", adaptiveEnabled, signals, adaptiveParams))
+		}
+		out.Adaptive = adaptiveStageMeta("node_videos_render", adaptiveEnabled, signals, adaptiveParams)
+	}()
 
 	// Feature gate: require video model + bucket configured; otherwise no-op.
 	if strings.TrimSpace(os.Getenv("OPENAI_VIDEO_MODEL")) == "" {
@@ -142,7 +157,18 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 		return out, nil
 	}
 
-	maxVideos := envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1)
+	maxVideosCeiling := envIntAllowZero("NODE_VIDEOS_RENDER_LIMIT", -1)
+	maxVideos := maxVideosCeiling
+	if maxVideosCeiling >= 0 && adaptiveEnabled {
+		if signals.NodeCount == 0 {
+			signals.NodeCount = len(nodes)
+		}
+		maxVideos = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*0.5)), 0, maxVideosCeiling)
+	}
+	adaptiveParams["NODE_VIDEOS_RENDER_LIMIT"] = map[string]any{
+		"actual":  maxVideos,
+		"ceiling": maxVideosCeiling,
+	}
 	if maxVideos == 0 {
 		deps.Log.Warn("NODE_VIDEOS_RENDER_LIMIT=0; skipping node_videos_render")
 		return out, nil
@@ -154,6 +180,22 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 	maxConc := envInt("NODE_VIDEOS_RENDER_CONCURRENCY", 1)
 	if maxConc < 1 {
 		maxConc = 1
+	}
+
+	maxClipsCeiling := envIntAllowZero("NODE_VIDEO_MAX_CLIPS_PER_VIDEO", 4)
+	maxClips := maxClipsCeiling
+	if adaptiveEnabled {
+		if signals.NodeCount == 0 {
+			signals.NodeCount = len(nodes)
+		}
+		maxClips = clampIntCeiling(int(math.Round(float64(signals.NodeCount)*0.08)), 2, maxClipsCeiling)
+	}
+	if maxClips <= 0 {
+		maxClips = 4
+	}
+	adaptiveParams["NODE_VIDEO_MAX_CLIPS_PER_VIDEO"] = map[string]any{
+		"actual":  maxClips,
+		"ceiling": maxClipsCeiling,
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -193,10 +235,6 @@ func NodeVideosRender(ctx context.Context, deps NodeVideosRenderDeps, in NodeVid
 				clips = []content.VideoClipV1{{ClipIndex: 1, DurationSec: dur, Prompt: prompt}}
 			}
 
-			maxClips := envIntAllowZero("NODE_VIDEO_MAX_CLIPS_PER_VIDEO", 4)
-			if maxClips <= 0 {
-				maxClips = 4
-			}
 			if len(clips) > maxClips {
 				return markVideoFailed(gctx, deps, row, fmt.Sprintf("too_many_clips: %d > %d", len(clips), maxClips), int(time.Since(start).Milliseconds()))
 			}
@@ -420,7 +458,7 @@ func markVideoFailed(ctx context.Context, deps NodeVideosRenderDeps, row *types.
 	}
 	errMsg = strings.TrimSpace(errMsg)
 	if len(errMsg) > 900 {
-		errMsg = errMsg[:900]
+		errMsg = truncateUTF8(errMsg, 900)
 	}
 	now := time.Now().UTC()
 	update := &types.LearningNodeVideo{
@@ -468,7 +506,7 @@ func runFFmpeg(ctx context.Context, args ...string) error {
 		msg = err.Error()
 	}
 	if len(msg) > 900 {
-		msg = msg[:900]
+		msg = truncateUTF8(msg, 900)
 	}
 	return fmt.Errorf("ffmpeg: %s", msg)
 }
@@ -692,7 +730,7 @@ func probeVideoDurationSec(ctx context.Context, path string) (float64, error) {
 			msg = err.Error()
 		}
 		if len(msg) > 900 {
-			msg = msg[:900]
+			msg = truncateUTF8(msg, 900)
 		}
 		return 0, fmt.Errorf("ffprobe: %s", msg)
 	}

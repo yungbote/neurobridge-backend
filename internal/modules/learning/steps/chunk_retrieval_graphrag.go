@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 type chunkRetrievePlan struct {
 	MaterialSetID uuid.UUID
+	PathID        uuid.UUID
 	ChunksNS      string
 
 	QueryText string
@@ -32,6 +34,8 @@ type chunkRetrievePlan struct {
 	FinalK   int
 
 	ChunkEmbs []chunkEmbedding // local fallback embeddings
+
+	AdaptiveStage string
 }
 
 func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore, plan chunkRetrievePlan) ([]uuid.UUID, map[string]any, error) {
@@ -212,7 +216,7 @@ func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore,
 		return out, trace, nil
 	}
 
-	applyChunkSignalWeights(ctx, db, scores, trace)
+	applyChunkSignalWeights(ctx, db, plan.MaterialSetID, plan.PathID, plan.AdaptiveStage, scores, trace)
 
 	type scoredID struct {
 		ID    uuid.UUID
@@ -237,15 +241,47 @@ func graphAssistedChunkIDs(ctx context.Context, db *gorm.DB, vec pc.VectorStore,
 	return out, trace, nil
 }
 
-func applyChunkSignalWeights(ctx context.Context, db *gorm.DB, scores map[uuid.UUID]float64, trace map[string]any) {
+func applyChunkSignalWeights(ctx context.Context, db *gorm.DB, materialSetID uuid.UUID, pathID uuid.UUID, adaptiveStage string, scores map[uuid.UUID]float64, trace map[string]any) {
 	if db == nil || len(scores) == 0 || !envBool("MATERIAL_SIGNAL_RETRIEVAL_ENABLED", true) {
 		return
 	}
+	adaptiveEnabled := adaptiveParamsEnabledForStage(strings.TrimSpace(adaptiveStage))
 	weight := envFloatAllowZero("MATERIAL_SIGNAL_RETRIEVAL_WEIGHT", 0.35)
 	if weight <= 0 {
 		return
 	}
-	maxIDs := envIntAllowZero("MATERIAL_SIGNAL_RETRIEVAL_MAX_IDS", 600)
+	maxIDsCeiling := envIntAllowZero("MATERIAL_SIGNAL_RETRIEVAL_MAX_IDS", 600)
+	maxIDs := maxIDsCeiling
+	if adaptiveEnabled && materialSetID != uuid.Nil {
+		signals := loadAdaptiveSignals(ctx, db, materialSetID, pathID)
+		if signals.ContentType != "" {
+			weight = adjustThresholdByContentType("MATERIAL_SIGNAL_RETRIEVAL_WEIGHT", weight, signals.ContentType)
+			if weight < 0.05 {
+				weight = 0.05
+			}
+			if weight > 0.8 {
+				weight = 0.8
+			}
+			if trace != nil {
+				trace["retrieval_weight"] = weight
+			}
+		}
+		conceptCount := signals.ConceptCount
+		if conceptCount == 0 {
+			var count int64
+			_ = db.WithContext(ctx).
+				Model(&types.MaterialSetConceptCoverage{}).
+				Where("material_set_id = ?", materialSetID).
+				Count(&count).Error
+			conceptCount = int(count)
+		}
+		if conceptCount > 0 {
+			maxIDs = clampIntCeiling(int(math.Round(float64(conceptCount)*6.0)), 200, maxIDsCeiling)
+		}
+		if trace != nil {
+			trace["retrieval_max_ids"] = maxIDs
+		}
+	}
 	if maxIDs <= 0 {
 		maxIDs = 600
 	}

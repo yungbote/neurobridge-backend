@@ -628,7 +628,7 @@ func sanitizeNodeDocCitations(doc content.NodeDocV1, allowedChunkIDs map[string]
 
 			quote := strings.TrimSpace(stringFromAny(m["quote"]))
 			if len(quote) > 240 {
-				quote = quote[:240]
+				quote = truncateUTF8(quote, 240)
 				stats.QuotesTruncated++
 				changed = true
 			}
@@ -674,7 +674,7 @@ func sanitizeNodeDocCitations(doc content.NodeDocV1, allowedChunkIDs map[string]
 					if ch := chunkByID[parsed]; ch != nil {
 						quote = strings.TrimSpace(ch.Text)
 						if len(quote) > 240 {
-							quote = quote[:240]
+							quote = truncateUTF8(quote, 240)
 						}
 					}
 				}
