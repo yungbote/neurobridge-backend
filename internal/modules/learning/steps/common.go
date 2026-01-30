@@ -435,6 +435,37 @@ func truncateUTF8(s string, max int) string {
 	return string(r[:max])
 }
 
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if maxBytes <= 0 || s == "" {
+		return s
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	b := []byte(s)
+	if len(b) <= maxBytes {
+		return s
+	}
+	i := 0
+	for i < len(b) {
+		if i >= maxBytes {
+			break
+		}
+		_, size := utf8.DecodeRune(b[i:])
+		if size <= 0 {
+			break
+		}
+		if i+size > maxBytes {
+			break
+		}
+		i += size
+	}
+	if i <= 0 {
+		return ""
+	}
+	return string(b[:i])
+}
+
 func stratifiedChunkExcerpts(chunks []*types.MaterialChunk, perFile int, maxChars int) string {
 	useAll := perFile <= 0
 	if maxChars <= 0 {

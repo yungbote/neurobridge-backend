@@ -116,10 +116,10 @@ type NodeDocBuildOutput struct {
 	DocsExisting int       `json:"docs_existing"`
 
 	// Aggregate quality/shape metrics for the docs written in this run.
-	DiagramsWritten int `json:"diagrams_written"`
-	FiguresWritten  int `json:"figures_written"`
-	VideosWritten   int `json:"videos_written"`
-	TablesWritten   int `json:"tables_written"`
+	DiagramsWritten int            `json:"diagrams_written"`
+	FiguresWritten  int            `json:"figures_written"`
+	VideosWritten   int            `json:"videos_written"`
+	TablesWritten   int            `json:"tables_written"`
 	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
@@ -2205,6 +2205,11 @@ Return ONLY JSON matching schema.`,
 				// This prevents hard failures on small structural omissions without weakening validation.
 				if !strictNarrative {
 					if patched, changed := ensureNodeDocMeetsMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
+						doc = patched
+					}
+				}
+				if strictNarrative {
+					if patched, changed := ensureNodeDocConceptualMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
 						doc = patched
 					}
 				}

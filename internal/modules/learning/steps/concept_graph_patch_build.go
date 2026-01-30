@@ -185,13 +185,48 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 	}
 	sort.Slice(chunkEmbs, func(i, j int) bool { return chunkEmbs[i].ID.String() < chunkEmbs[j].ID.String() })
 
+	docSignals := patchDocSignals{}
+	breadthScale := 1.0
+	complexityScale := 1.0
+	totalScale := 1.0
+	if adaptiveEnabled {
+		docSignals = computePatchDocSignals(chunks)
+		breadthScale = patchBreadthScale(signals, docSignals)
+		complexityScale = patchComplexityScale(docSignals)
+		totalScale = clampFloatCeiling(breadthScale*complexityScale, 1.0, 2.5)
+		adaptiveParams["CONCEPT_GRAPH_PATCH_DOC_SIGNALS"] = map[string]any{
+			"sample_chunks":      docSignals.SampleChunks,
+			"sample_chars":       docSignals.SampleChars,
+			"unique_sections":    docSignals.UniqueSections,
+			"section_depth_max":  docSignals.SectionDepthMax,
+			"section_depth_avg":  docSignals.SectionDepthAvg,
+			"lexical_diversity":  roundTo(docSignals.LexicalDiversity, 4),
+			"code_line_ratio":    roundTo(docSignals.CodeLineRatio, 4),
+			"symbol_density":     roundTo(docSignals.SymbolDensity, 4),
+			"token_count":        docSignals.TokenCount,
+			"unique_token_count": docSignals.UniqueTokenCount,
+		}
+		adaptiveParams["CONCEPT_GRAPH_PATCH_SCALE"] = map[string]any{
+			"breadth":     roundTo(breadthScale, 3),
+			"complexity":  roundTo(complexityScale, 3),
+			"combined":    roundTo(totalScale, 3),
+			"page_count":  signals.PageCount,
+			"chunk_count": signals.ChunkCount,
+		}
+	}
+
 	patchPerFileCeiling := envIntAllowZero("CONCEPT_GRAPH_PATCH_EXCERPTS_PER_FILE", 4)
 	if patchPerFileCeiling < 0 {
 		patchPerFileCeiling = 0
 	}
+	if adaptiveEnabled {
+		patchPerFileCeiling = scaleCeiling(patchPerFileCeiling, breadthScale, 2.5)
+	}
 	patchPerFile := patchPerFileCeiling
 	if adaptiveEnabled {
-		patchPerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/20.0)), 2, patchPerFileCeiling)
+		desired := int(math.Round(signals.AvgPagesPerFile / 20.0))
+		desired = scaleInt(desired, breadthScale, 2)
+		patchPerFile = clampIntCeiling(desired, 2, patchPerFileCeiling)
 	}
 	adaptiveParams["CONCEPT_GRAPH_PATCH_EXCERPTS_PER_FILE"] = map[string]any{
 		"actual":  patchPerFile,
@@ -203,6 +238,9 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 		patchMaxChars = 650
 		patchMaxCharsCeiling = patchMaxChars
 	}
+	if adaptiveEnabled {
+		patchMaxCharsCeiling = scaleCeiling(patchMaxCharsCeiling, complexityScale, 1.6)
+	}
 	patchMaxLines := envIntAllowZero("CONCEPT_GRAPH_PATCH_EXCERPT_MAX_LINES", 0)
 	patchMaxLinesCeiling := patchMaxLines
 	patchMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_PATCH_EXCERPT_MAX_TOTAL_CHARS", 12000)
@@ -212,13 +250,16 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 	if patchMaxTotalCeiling == 0 && !adaptiveEnabled {
 		patchMaxTotalCeiling = 12000
 	}
+	if adaptiveEnabled {
+		patchMaxTotalCeiling = scaleCeiling(patchMaxTotalCeiling, totalScale, 2.5)
+	}
 	patchMaxTotal := patchMaxTotalCeiling
 	if adaptiveEnabled {
-		patchMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(patchMaxChars, signals.ContentType), 200, patchMaxCharsCeiling)
+		patchMaxChars = clampIntCeiling(scaleInt(adjustExcerptCharsByContentType(patchMaxChars, signals.ContentType), complexityScale, 200), 200, patchMaxCharsCeiling)
 		if patchMaxLines > 0 {
 			patchMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(patchMaxLines, signals.ContentType), 8, patchMaxLinesCeiling)
 		}
-		patchMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 6000, patchMaxTotalCeiling)
+		patchMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200*totalScale)), 6000, patchMaxTotalCeiling)
 	}
 	adaptiveParams["CONCEPT_GRAPH_PATCH_EXCERPT_MAX_CHARS"] = map[string]any{"actual": patchMaxChars, "ceiling": patchMaxCharsCeiling}
 	adaptiveParams["CONCEPT_GRAPH_PATCH_EXCERPT_MAX_LINES"] = map[string]any{"actual": patchMaxLines, "ceiling": patchMaxLinesCeiling}
@@ -246,13 +287,16 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 	if edgeMaxTotalCeiling == 0 {
 		edgeMaxTotalCeiling = patchMaxTotalCeiling
 	}
+	if adaptiveEnabled {
+		edgeMaxTotalCeiling = scaleCeiling(edgeMaxTotalCeiling, totalScale, 2.5)
+	}
 	edgeMaxTotal := edgeMaxTotalCeiling
 	if adaptiveEnabled {
-		edgeMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(edgeMaxChars, signals.ContentType), 200, edgeMaxCharsCeiling)
+		edgeMaxChars = clampIntCeiling(scaleInt(adjustExcerptCharsByContentType(edgeMaxChars, signals.ContentType), complexityScale, 200), 200, edgeMaxCharsCeiling)
 		if edgeMaxLines > 0 {
 			edgeMaxLines = clampIntCeiling(adjustExcerptLinesByContentType(edgeMaxLines, signals.ContentType), 8, edgeMaxLinesCeiling)
 		}
-		edgeMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 6000, edgeMaxTotalCeiling)
+		edgeMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200*totalScale)), 6000, edgeMaxTotalCeiling)
 	}
 	adaptiveParams["CONCEPT_GRAPH_EDGE_EXCERPT_MAX_CHARS"] = map[string]any{"actual": edgeMaxChars, "ceiling": edgeMaxCharsCeiling}
 	adaptiveParams["CONCEPT_GRAPH_EDGE_EXCERPT_MAX_LINES"] = map[string]any{"actual": edgeMaxLines, "ceiling": edgeMaxLinesCeiling}
@@ -423,8 +467,14 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 	patchCoverageMaxCharsCeiling := envIntAllowZero("CONCEPT_GRAPH_PATCH_COVERAGE_EXCERPT_MAX_CHARS", 650)
 	patchCoverageMaxTotalCeiling := envIntAllowZero("CONCEPT_GRAPH_PATCH_COVERAGE_EXCERPT_MAX_TOTAL_CHARS", 20000)
 	if adaptiveEnabled {
+		patchCoveragePassesCeiling = scaleCeiling(patchCoveragePassesCeiling, totalScale, 2.5)
+		patchCoveragePerFileCeiling = scaleCeiling(patchCoveragePerFileCeiling, breadthScale, 2.5)
+		patchCoverageMaxCharsCeiling = scaleCeiling(patchCoverageMaxCharsCeiling, complexityScale, 1.6)
+		patchCoverageMaxTotalCeiling = scaleCeiling(patchCoverageMaxTotalCeiling, totalScale, 2.5)
 		coverageInput.Passes = adaptiveFromRatio(signals.PageCount, 1.0/50.0, 1, patchCoveragePassesCeiling)
-		coverageInput.ExtraPerFile = clampIntCeiling(int(math.Round(signals.AvgPagesPerFile/20.0)), 2, patchCoveragePerFileCeiling)
+		desiredPerFile := int(math.Round(signals.AvgPagesPerFile / 20.0))
+		desiredPerFile = scaleInt(desiredPerFile, breadthScale, 2)
+		coverageInput.ExtraPerFile = clampIntCeiling(desiredPerFile, 2, patchCoveragePerFileCeiling)
 		maxChars := coverageInput.ExtraMaxChars
 		if maxChars <= 0 {
 			maxChars = patchCoverageMaxCharsCeiling
@@ -433,8 +483,8 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 			maxChars = 650
 			patchCoverageMaxCharsCeiling = maxChars
 		}
-		coverageInput.ExtraMaxChars = clampIntCeiling(adjustExcerptCharsByContentType(maxChars, signals.ContentType), 200, patchCoverageMaxCharsCeiling)
-		coverageInput.ExtraMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200)), 6000, patchCoverageMaxTotalCeiling)
+		coverageInput.ExtraMaxChars = clampIntCeiling(scaleInt(adjustExcerptCharsByContentType(maxChars, signals.ContentType), complexityScale, 200), 200, patchCoverageMaxCharsCeiling)
+		coverageInput.ExtraMaxTotal = clampIntCeiling(int(math.Round(float64(signals.PageCount)*200*totalScale)), 6000, patchCoverageMaxTotalCeiling)
 	}
 	adaptiveParams["CONCEPT_GRAPH_PATCH_PASSES"] = map[string]any{"actual": coverageInput.Passes, "ceiling": patchCoveragePassesCeiling}
 	adaptiveParams["CONCEPT_GRAPH_PATCH_COVERAGE_EXCERPTS_PER_FILE"] = map[string]any{"actual": coverageInput.ExtraPerFile, "ceiling": patchCoveragePerFileCeiling}
