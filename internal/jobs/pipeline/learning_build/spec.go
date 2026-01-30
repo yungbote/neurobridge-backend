@@ -42,6 +42,7 @@ var fallbackStageOrder = []string{
 	"concept_cluster_build",
 	"chain_signature_build",
 	"path_plan_build",
+	"psu_build",
 	"path_cover_render",
 	"node_figures_plan_build",
 	"node_figures_render",
@@ -86,13 +87,14 @@ var fallbackStageDeps = map[string][]string{
 	"path_structure_refine":     {"concept_graph_patch_build"},
 	"material_kg_build":         {"concept_graph_patch_build", "embed_chunks"},
 	"concept_cluster_build":     {"concept_graph_patch_build"},
-	"chain_signature_build": {"concept_cluster_build"},
+	"chain_signature_build":     {"concept_cluster_build"},
 
-	"user_profile_refresh":   {"path_intake_pre"},
-	"progression_compact":    {"user_profile_refresh"},
-	"variant_stats_refresh":  {"user_profile_refresh"},
+	"user_profile_refresh":  {"path_intake_pre"},
+	"progression_compact":   {"user_profile_refresh"},
+	"variant_stats_refresh": {"user_profile_refresh"},
 
 	"path_plan_build":   {"concept_graph_patch_build", "material_signal_build", "material_set_summarize", "user_profile_refresh", "path_intake_pre"},
+	"psu_build":         {"path_plan_build"},
 	"path_cover_render": {"path_plan_build"},
 
 	"node_figures_plan_build": {"path_plan_build", "embed_chunks", "material_kg_build"},
@@ -100,10 +102,10 @@ var fallbackStageDeps = map[string][]string{
 	"node_videos_plan_build":  {"path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_videos_render":      {"node_videos_plan_build"},
 
-	"node_doc_build":       {"path_plan_build", "embed_chunks", "material_kg_build"},
+	"node_doc_build":       {"psu_build", "path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_doc_media_patch": {"node_doc_build", "node_figures_render", "node_videos_render", "material_kg_build"},
 
-	"realize_activities":       {"path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_patch_build", "material_kg_build"},
+	"realize_activities":       {"psu_build", "path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_patch_build", "material_kg_build"},
 	"coverage_coherence_audit": {"realize_activities"},
 	"priors_refresh":           {"realize_activities", "variant_stats_refresh", "chain_signature_build"},
 	"completed_unit_refresh":   {"realize_activities", "progression_compact", "chain_signature_build"},

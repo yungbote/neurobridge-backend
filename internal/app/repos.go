@@ -32,8 +32,12 @@ type Repos struct {
 	UserEventCursor          repos.UserEventCursorRepo
 	UserProgressionEvent     repos.UserProgressionEventRepo
 	UserConceptState         repos.UserConceptStateRepo
+	UserConceptModel         repos.UserConceptModelRepo
+	UserMisconception        repos.UserMisconceptionInstanceRepo
 	UserStylePreference      repos.UserStylePreferenceRepo
 	Concept                  repos.ConceptRepo
+	ConceptRepresentation    repos.ConceptRepresentationRepo
+	ConceptMappingOverride   repos.ConceptMappingOverrideRepo
 	ConceptCluster           repos.ConceptClusterRepo
 	ConceptClusterMember     repos.ConceptClusterMemberRepo
 	ConceptEdge              repos.ConceptEdgeRepo
@@ -49,6 +53,7 @@ type Repos struct {
 	Path                     repos.PathRepo
 	PathNode                 repos.PathNodeRepo
 	PathNodeActivity         repos.PathNodeActivityRepo
+	PathStructuralUnit       repos.PathStructuralUnitRepo
 	DecisionTrace            repos.DecisionTraceRepo
 	TeachingPattern          repos.TeachingPatternRepo
 	UserCompletedUnit        repos.UserCompletedUnitRepo
@@ -106,8 +111,12 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		UserEventCursor:          repos.NewUserEventCursorRepo(db, log),
 		UserProgressionEvent:     repos.NewUserProgressionEventRepo(db, log),
 		UserConceptState:         repos.NewUserConceptStateRepo(db, log),
+		UserConceptModel:         repos.NewUserConceptModelRepo(db, log),
+		UserMisconception:        repos.NewUserMisconceptionInstanceRepo(db, log),
 		UserStylePreference:      repos.NewUserStylePreferenceRepo(db, log),
 		Concept:                  repos.NewConceptRepo(db, log),
+		ConceptRepresentation:    repos.NewConceptRepresentationRepo(db, log),
+		ConceptMappingOverride:   repos.NewConceptMappingOverrideRepo(db, log),
 		ConceptCluster:           repos.NewConceptClusterRepo(db, log),
 		ConceptClusterMember:     repos.NewConceptClusterMemberRepo(db, log),
 		ConceptEdge:              repos.NewConceptEdgeRepo(db, log),
@@ -123,6 +132,7 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		Path:                     repos.NewPathRepo(db, log),
 		PathNode:                 repos.NewPathNodeRepo(db, log),
 		PathNodeActivity:         repos.NewPathNodeActivityRepo(db, log),
+		PathStructuralUnit:       repos.NewPathStructuralUnitRepo(db, log),
 		DecisionTrace:            repos.NewDecisionTraceRepo(db, log),
 		TeachingPattern:          repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:        repos.NewUserCompletedUnitRepo(db, log),

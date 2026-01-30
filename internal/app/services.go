@@ -43,8 +43,12 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_refine"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_promote"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/realize_activities"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/saga_cleanup"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_backfill"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_extract"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/teaching_patterns_seed"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_profile_refresh"
@@ -212,8 +216,25 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ChatEntity,
 		repos.ChatEdge,
 		repos.ChatClaim,
+		repos.JobRun,
+		jobService,
 	)
 	if err := jobRegistry.Register(chatMaintain); err != nil {
+		return Services{}, err
+	}
+
+	structureExtract := structure_extract.New(
+		db,
+		log,
+		clients.StructureExtractAI,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.ChatThreadState,
+		repos.Concept,
+		repos.UserConceptModel,
+		repos.UserMisconception,
+	)
+	if err := jobRegistry.Register(structureExtract); err != nil {
 		return Services{}, err
 	}
 
@@ -340,12 +361,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
 		return Services{}, err
 	}
 
-	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(conceptGraphPatch); err != nil {
 		return Services{}, err
 	}
@@ -455,8 +476,51 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, repos.UserConceptState, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
+	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptRepresentation, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, repos.UserConceptState, repos.UserConceptModel, repos.UserMisconception, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
+		return Services{}, err
+	}
+
+	psuBuild := psu_build.New(
+		db,
+		log,
+		repos.PathNode,
+		repos.Concept,
+		repos.PathStructuralUnit,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(psuBuild); err != nil {
+		return Services{}, err
+	}
+
+	psuPromote := psu_promote.New(
+		db,
+		log,
+		repos.UserEvent,
+		repos.PathStructuralUnit,
+		repos.Concept,
+		repos.ConceptEdge,
+		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
+		clients.StructureExtractAI,
+	)
+	if err := jobRegistry.Register(psuPromote); err != nil {
+		return Services{}, err
+	}
+
+	structureBackfill := structure_backfill.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.Concept,
+		repos.PathStructuralUnit,
+		bootstrapSvc,
+		repos.UserConceptState,
+		repos.UserConceptModel,
+	)
+	if err := jobRegistry.Register(structureBackfill); err != nil {
 		return Services{}, err
 	}
 
@@ -605,6 +669,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.TeachingPattern,
 		repos.Concept,
 		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -647,6 +713,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ActivityCitation,
 		repos.Concept,
 		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
 		repos.MaterialFile,
 		repos.MaterialChunk,
 		repos.UserProfileVector,
@@ -741,17 +809,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			MaterialSets: repos.MaterialSet,
 			Summaries:    repos.MaterialSetSummary,
 
-			Concepts: repos.Concept,
-			Evidence: repos.ConceptEvidence,
-			Edges:    repos.ConceptEdge,
+			Concepts:         repos.Concept,
+			ConceptReps:      repos.ConceptRepresentation,
+			MappingOverrides: repos.ConceptMappingOverride,
+			Evidence:         repos.ConceptEvidence,
+			Edges:            repos.ConceptEdge,
 
 			Clusters: repos.ConceptCluster,
 			Members:  repos.ConceptClusterMember,
 
-			ChainSignatures: repos.ChainSignature,
+			ChainSignatures:     repos.ChainSignature,
+			PathStructuralUnits: repos.PathStructuralUnit,
 
 			StylePrefs:       repos.UserStylePreference,
 			ConceptState:     repos.UserConceptState,
+			ConceptModel:     repos.UserConceptModel,
+			MisconRepo:       repos.UserMisconception,
 			ProgEvents:       repos.UserProgressionEvent,
 			UserProfile:      repos.UserProfileVector,
 			UserPrefs:        repos.UserPersonalizationPrefs,
@@ -811,17 +884,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			MaterialSets: repos.MaterialSet,
 			Summaries:    repos.MaterialSetSummary,
 
-			Concepts: repos.Concept,
-			Evidence: repos.ConceptEvidence,
-			Edges:    repos.ConceptEdge,
+			Concepts:         repos.Concept,
+			ConceptReps:      repos.ConceptRepresentation,
+			MappingOverrides: repos.ConceptMappingOverride,
+			Evidence:         repos.ConceptEvidence,
+			Edges:            repos.ConceptEdge,
 
 			Clusters: repos.ConceptCluster,
 			Members:  repos.ConceptClusterMember,
 
-			ChainSignatures: repos.ChainSignature,
+			ChainSignatures:     repos.ChainSignature,
+			PathStructuralUnits: repos.PathStructuralUnit,
 
 			StylePrefs:       repos.UserStylePreference,
 			ConceptState:     repos.UserConceptState,
+			ConceptModel:     repos.UserConceptModel,
+			MisconRepo:       repos.UserMisconception,
 			ProgEvents:       repos.UserProgressionEvent,
 			UserProfile:      repos.UserProfileVector,
 			UserPrefs:        repos.UserPersonalizationPrefs,
@@ -864,9 +942,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.Concept,
 		repos.ActivityConcept,
 		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
 		repos.UserStylePreference,
 		clients.Neo4j,
 		repos.JobRun,
+		jobService,
 	)
 	if err := jobRegistry.Register(userModel); err != nil {
 		return Services{}, err

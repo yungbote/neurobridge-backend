@@ -79,6 +79,9 @@ func (s *eventService) Ingest(dbc dbctx.Context, inputs []EventInput) (int, erro
 
 		clientID := strings.TrimSpace(in.ClientEventID)
 		if clientID == "" {
+			if s.log != nil {
+				s.log.Warn("event ingest: missing client_event_id; generating fallback", "type", typ)
+			}
 			clientID = uuid.New().String()
 		}
 

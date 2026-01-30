@@ -31,10 +31,13 @@ type PathPlanBuildDeps struct {
 	Path         repos.PathRepo
 	PathNodes    repos.PathNodeRepo
 	Concepts     repos.ConceptRepo
+	ConceptReps  repos.ConceptRepresentationRepo
 	Edges        repos.ConceptEdgeRepo
 	Summaries    repos.MaterialSetSummaryRepo
 	UserProfile  repos.UserProfileVectorRepo
 	ConceptState repos.UserConceptStateRepo
+	ConceptModel repos.UserConceptModelRepo
+	MisconRepo   repos.UserMisconceptionInstanceRepo
 	Graph        *neo4jdb.Client
 	AI           openai.Client
 	Bootstrap    services.LearningBuildBootstrapService
@@ -48,8 +51,8 @@ type PathPlanBuildInput struct {
 }
 
 type PathPlanBuildOutput struct {
-	PathID uuid.UUID `json:"path_id"`
-	Nodes  int       `json:"nodes"`
+	PathID   uuid.UUID      `json:"path_id"`
+	Nodes    int            `json:"nodes"`
 	Adaptive map[string]any `json:"adaptive,omitempty"`
 }
 
@@ -102,6 +105,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	var (
 		up          *types.UserProfileVector
 		summaryText string
+		summaryRow  *types.MaterialSetSummary
 		concepts    []*types.Concept
 		pathRow     *types.Path
 	)
@@ -114,6 +118,7 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	})
 	g.Go(func() error {
 		if rows, err := deps.Summaries.GetByMaterialSetIDs(dbctx.Context{Ctx: gctx}, []uuid.UUID{in.MaterialSetID}); err == nil && len(rows) > 0 && rows[0] != nil {
+			summaryRow = rows[0]
 			summaryText = strings.TrimSpace(rows[0].SummaryMD)
 		}
 		return nil
@@ -198,6 +203,8 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	}
 	canonicalIDs = dedupeUUIDs(canonicalIDs)
 	stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+	modelByConceptID := map[uuid.UUID]*types.UserConceptModel{}
+	misconByConceptID := map[uuid.UUID][]*types.UserMisconceptionInstance{}
 	if deps.ConceptState != nil && len(canonicalIDs) > 0 {
 		if rows, err := deps.ConceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, canonicalIDs); err == nil {
 			for _, st := range rows {
@@ -208,8 +215,29 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 			}
 		}
 	}
+	if deps.ConceptModel != nil && len(canonicalIDs) > 0 {
+		if rows, err := deps.ConceptModel.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, canonicalIDs); err == nil {
+			for _, r := range rows {
+				if r == nil || r.CanonicalConceptID == uuid.Nil {
+					continue
+				}
+				modelByConceptID[r.CanonicalConceptID] = r
+			}
+		}
+	}
+	if deps.MisconRepo != nil && len(canonicalIDs) > 0 {
+		if rows, err := deps.MisconRepo.ListActiveByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, canonicalIDs); err == nil {
+			for _, r := range rows {
+				if r == nil || r.CanonicalConceptID == uuid.Nil {
+					continue
+				}
+				misconByConceptID[r.CanonicalConceptID] = append(misconByConceptID[r.CanonicalConceptID], r)
+			}
+		}
+	}
+	blockedConceptKeys := activeMisconceptionConceptKeys(concepts, misconByConceptID)
 	if len(allConceptKeys) > 0 {
-		userKnowledgeJSON = BuildUserKnowledgeContextV1(allConceptKeys, canonicalIDByKey, stateByConceptID, time.Now().UTC()).JSON()
+		userKnowledgeJSON = BuildUserKnowledgeContextV2(allConceptKeys, canonicalIDByKey, stateByConceptID, modelByConceptID, misconByConceptID, time.Now().UTC(), &KnowledgeContextOptions{ActiveOnly: true}).JSON()
 	}
 	if strings.TrimSpace(userKnowledgeJSON) == "" {
 		userKnowledgeJSON = "(none)"
@@ -320,9 +348,20 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 	}
 	structDraft := structObj
 	didRefine := false
+	missingBlocked := []string{}
+	if len(blockedConceptKeys) > 0 {
+		nodesDraft := parsePathStructureNodes(structDraft)
+		missingBlocked = missingConceptKeysFromStructure(nodesDraft, blockedConceptKeys)
+		if len(missingBlocked) > 0 {
+			structDraft = ensureCoverageKeys(structDraft, missingBlocked)
+			if deps.Log != nil {
+				deps.Log.Info("path_plan_build: forcing coverage for misconception keys", "missing", missingBlocked)
+			}
+		}
+	}
 
 	// Optional refinement pass for higher-quality structure.
-	if shouldRefinePathStructure(structObj) {
+	if shouldRefinePathStructure(structObj) || len(missingBlocked) > 0 {
 		if refined, ok := refinePathStructure(ctx, deps, string(charterJSON), string(conceptsJSON), string(edgesJSON), userKnowledgeJSON, structDraft); ok {
 			structObj = refined
 			didRefine = true
@@ -404,6 +443,9 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 		lastLesson = lessonOrder[len(lessonOrder)-1]
 	}
 	moduleLessonOrder := lessonsByModule(nodesOut, moduleIndices)
+
+	repContexts := buildRepresentationContexts(nodesOut)
+	baseFacets := buildBaseRepresentationFacets(summaryRow, patternHierarchy)
 
 	now := time.Now().UTC()
 
@@ -562,6 +604,63 @@ func PathPlanBuild(ctx context.Context, deps PathPlanBuildDeps, in PathPlanBuild
 				return err
 			}
 			nodesInserted = len(nodeRows)
+		}
+
+		if deps.ConceptReps != nil && len(concepts) > 0 {
+			pathConceptIDs := make([]uuid.UUID, 0, len(concepts))
+			for _, c := range concepts {
+				if c != nil && c.ID != uuid.Nil {
+					pathConceptIDs = append(pathConceptIDs, c.ID)
+				}
+			}
+			existingReps := map[uuid.UUID]*types.ConceptRepresentation{}
+			if len(pathConceptIDs) > 0 {
+				if rows, err := deps.ConceptReps.ListByPathConceptIDs(dbc, pathConceptIDs); err == nil {
+					for _, r := range rows {
+						if r != nil && r.PathConceptID != uuid.Nil {
+							existingReps[r.PathConceptID] = r
+						}
+					}
+				}
+			}
+			for _, c := range concepts {
+				if c == nil || c.ID == uuid.Nil {
+					continue
+				}
+				cid := c.ID
+				if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+					cid = *c.CanonicalConceptID
+				}
+				if cid == uuid.Nil {
+					continue
+				}
+				key := normalizeConceptKey(c.Key)
+				ctx := repContexts[key]
+				facets := mergeRepresentationFacets(baseFacets, ctx)
+				aliases := conceptAliasesFromMetadata(c.Metadata)
+				rep := existingReps[c.ID]
+				mappingConf := 1.0
+				mappingMethod := "exact_key"
+				if rep != nil {
+					if rep.MappingConfidence > 0 {
+						mappingConf = rep.MappingConfidence
+					}
+					if strings.TrimSpace(rep.MappingMethod) != "" {
+						mappingMethod = rep.MappingMethod
+					}
+				}
+				row := &types.ConceptRepresentation{
+					PathConceptID:         c.ID,
+					CanonicalConceptID:    cid,
+					PathID:                &pathID,
+					RepresentationFacets:  datatypes.JSON(mustJSON(facets)),
+					RepresentationSummary: strings.TrimSpace(c.Summary),
+					RepresentationAliases: datatypes.JSON(mustJSON(aliases)),
+					MappingConfidence:     mappingConf,
+					MappingMethod:         mappingMethod,
+				}
+				_ = deps.ConceptReps.Upsert(dbc, row)
+			}
 		}
 
 		return nil
@@ -840,4 +939,207 @@ func conceptIDs(concepts []*types.Concept) []uuid.UUID {
 		}
 	}
 	return out
+}
+
+type representationContext struct {
+	NodeKinds     map[string]bool
+	DocTemplates  map[string]bool
+	ActivityKinds map[string]bool
+}
+
+func buildRepresentationContexts(nodes []pathStructureNode) map[string]*representationContext {
+	out := map[string]*representationContext{}
+	for _, n := range nodes {
+		if n.Index <= 0 {
+			continue
+		}
+		kind := strings.TrimSpace(strings.ToLower(n.NodeKind))
+		doc := strings.TrimSpace(strings.ToLower(n.DocTemplate))
+		for _, ck := range n.ConceptKeys {
+			key := normalizeConceptKey(ck)
+			if key == "" {
+				continue
+			}
+			ctx := out[key]
+			if ctx == nil {
+				ctx = &representationContext{
+					NodeKinds:     map[string]bool{},
+					DocTemplates:  map[string]bool{},
+					ActivityKinds: map[string]bool{},
+				}
+				out[key] = ctx
+			}
+			if kind != "" {
+				ctx.NodeKinds[kind] = true
+			}
+			if doc != "" {
+				ctx.DocTemplates[doc] = true
+			}
+			for _, slot := range n.ActivitySlots {
+				kindRaw := strings.TrimSpace(strings.ToLower(stringFromAny(slot["kind"])))
+				if kindRaw != "" {
+					ctx.ActivityKinds[kindRaw] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+func buildBaseRepresentationFacets(summary *types.MaterialSetSummary, hierarchy teachingPatternHierarchy) map[string]any {
+	facets := map[string]any{}
+	if summary != nil {
+		if strings.TrimSpace(summary.Subject) != "" {
+			facets["subject"] = strings.TrimSpace(summary.Subject)
+		}
+		if strings.TrimSpace(summary.Level) != "" {
+			facets["level"] = strings.TrimSpace(summary.Level)
+		}
+		if len(summary.Tags) > 0 && string(summary.Tags) != "null" {
+			var tags []string
+			if json.Unmarshal(summary.Tags, &tags) == nil && len(tags) > 0 {
+				facets["tags"] = dedupeStrings(tags)
+			}
+		}
+	}
+	if hierarchy.SchemaVersion > 0 {
+		if strings.TrimSpace(hierarchy.Path.Pedagogy) != "" {
+			facets["pedagogy"] = hierarchy.Path.Pedagogy
+		}
+		if strings.TrimSpace(hierarchy.Path.Sequencing) != "" {
+			facets["sequencing"] = hierarchy.Path.Sequencing
+		}
+		if strings.TrimSpace(hierarchy.Path.Mastery) != "" {
+			facets["mastery"] = hierarchy.Path.Mastery
+		}
+		if strings.TrimSpace(hierarchy.Path.Reinforcement) != "" {
+			facets["reinforcement"] = hierarchy.Path.Reinforcement
+		}
+	}
+	return facets
+}
+
+func mergeRepresentationFacets(base map[string]any, ctx *representationContext) map[string]any {
+	out := map[string]any{}
+	for k, v := range base {
+		out[k] = v
+	}
+	if ctx == nil {
+		return out
+	}
+	if len(ctx.NodeKinds) > 0 {
+		out["node_kinds"] = sortedStringKeys(ctx.NodeKinds)
+	}
+	if len(ctx.DocTemplates) > 0 {
+		out["doc_templates"] = sortedStringKeys(ctx.DocTemplates)
+	}
+	if len(ctx.ActivityKinds) > 0 {
+		out["activity_kinds"] = sortedStringKeys(ctx.ActivityKinds)
+	}
+	return out
+}
+
+func sortedStringKeys(in map[string]bool) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for k := range in {
+		if strings.TrimSpace(k) != "" {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func conceptAliasesFromMetadata(raw datatypes.JSON) []string {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	var meta map[string]any
+	if json.Unmarshal(raw, &meta) != nil {
+		return nil
+	}
+	return dedupeStrings(stringSliceFromAny(meta["aliases"]))
+}
+
+func activeMisconceptionConceptKeys(concepts []*types.Concept, misconByConceptID map[uuid.UUID][]*types.UserMisconceptionInstance) []string {
+	out := []string{}
+	if len(concepts) == 0 || len(misconByConceptID) == 0 {
+		return out
+	}
+	for _, c := range concepts {
+		if c == nil || c.ID == uuid.Nil {
+			continue
+		}
+		cid := c.ID
+		if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+			cid = *c.CanonicalConceptID
+		}
+		if cid == uuid.Nil {
+			continue
+		}
+		if len(misconByConceptID[cid]) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(strings.ToLower(c.Key))
+		if key == "" {
+			continue
+		}
+		out = append(out, key)
+	}
+	return dedupeStrings(out)
+}
+
+func missingConceptKeysFromStructure(nodes []pathStructureNode, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, n := range nodes {
+		for _, k := range n.ConceptKeys {
+			key := strings.TrimSpace(strings.ToLower(k))
+			if key != "" {
+				seen[key] = true
+			}
+		}
+	}
+	out := []string{}
+	for _, k := range required {
+		key := strings.TrimSpace(strings.ToLower(k))
+		if key == "" || seen[key] {
+			continue
+		}
+		out = append(out, key)
+	}
+	return dedupeStrings(out)
+}
+
+func ensureCoverageKeys(obj map[string]any, keys []string) map[string]any {
+	if obj == nil || len(keys) == 0 {
+		return obj
+	}
+	cc, _ := obj["coverage_check"].(map[string]any)
+	if cc == nil {
+		cc = map[string]any{}
+	}
+	existing := dedupeStrings(stringSliceFromAny(cc["uncovered_concept_keys"]))
+	existingSet := map[string]bool{}
+	for _, k := range existing {
+		if k != "" {
+			existingSet[k] = true
+		}
+	}
+	for _, k := range keys {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || existingSet[k] {
+			continue
+		}
+		existing = append(existing, k)
+		existingSet[k] = true
+	}
+	cc["uncovered_concept_keys"] = existing
+	obj["coverage_check"] = cc
+	return obj
 }

@@ -7,6 +7,7 @@ import (
 
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	chatmod "github.com/yungbote/neurobridge-backend/internal/modules/chat"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -41,6 +42,22 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}); err != nil {
 		jc.Fail("maintain", err)
 		return nil
+	}
+
+	// Kick off structural understanding extraction for new user messages (async, best-effort).
+	if p.jobs != nil && p.jobRuns != nil && p.state != nil && p.messages != nil {
+		dbc := dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}
+		state, _ := p.state.GetOrCreate(dbc, threadID)
+		if state != nil {
+			if maxSeq, err := p.messages.GetMaxSeq(dbc, threadID); err == nil && maxSeq > state.LastStructureSeq {
+				has, _ := p.jobRuns.HasRunnableForEntity(dbc, jc.Job.OwnerUserID, "chat_thread", threadID, "structure_extract")
+				if !has {
+					payload := map[string]any{"thread_id": threadID.String()}
+					entityID := threadID
+					_, _ = p.jobs.Enqueue(dbc, jc.Job.OwnerUserID, "structure_extract", "chat_thread", &entityID, payload)
+				}
+			}
+		}
 	}
 
 	jc.Succeed("done", map[string]any{

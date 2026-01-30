@@ -15,6 +15,7 @@ type ChatThreadState struct {
 	LastSummarizedSeq int64 `gorm:"column:last_summarized_seq;not null;default:0" json:"last_summarized_seq"`
 	LastGraphSeq      int64 `gorm:"column:last_graph_seq;not null;default:0" json:"last_graph_seq"`
 	LastMemorySeq     int64 `gorm:"column:last_memory_seq;not null;default:0" json:"last_memory_seq"`
+	LastStructureSeq  int64 `gorm:"column:last_structure_seq;not null;default:0" json:"last_structure_seq"`
 
 	OpenAIConversationID *string `gorm:"column:openai_conversation_id;type:text" json:"openai_conversation_id,omitempty"`
 

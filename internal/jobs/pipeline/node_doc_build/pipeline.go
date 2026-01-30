@@ -50,6 +50,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		TeachingPatterns: p.patterns,
 		Concepts:         p.concepts,
 		ConceptState:     p.mastery,
+		ConceptModel:     p.model,
+		MisconRepo:       p.miscon,
 		AI:               p.ai,
 		Vec:              p.vec,
 		Bucket:           p.bucket,

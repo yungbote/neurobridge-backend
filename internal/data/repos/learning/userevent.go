@@ -17,6 +17,7 @@ type UserEventRepo interface {
 	CreateIgnoreDuplicates(dbc dbctx.Context, events []*types.UserEvent) (int, error)
 
 	ListAfterCursor(dbc dbctx.Context, userID uuid.UUID, afterCreatedAt *time.Time, afterID *uuid.UUID, limit int) ([]*types.UserEvent, error)
+	ListDistinctPathIDsByUser(dbc dbctx.Context, userID uuid.UUID, since *time.Time, limit int) ([]uuid.UUID, error)
 
 	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.UserEvent, error)
 	GetByUserID(dbc dbctx.Context, userID uuid.UUID) ([]*types.UserEvent, error)
@@ -131,6 +132,42 @@ func (r *userEventRepo) GetByUserID(dbc dbctx.Context, userID uuid.UUID) ([]*typ
 		Order("created_at DESC").
 		Find(&out).Error; err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+func (r *userEventRepo) ListDistinctPathIDsByUser(dbc dbctx.Context, userID uuid.UUID, since *time.Time, limit int) ([]uuid.UUID, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	out := []uuid.UUID{}
+	if userID == uuid.Nil {
+		return out, nil
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	q := t.WithContext(dbc.Ctx).
+		Model(&types.UserEvent{}).
+		Select("distinct path_id").
+		Where("user_id = ? AND path_id IS NOT NULL", userID)
+	if since != nil && !since.IsZero() {
+		q = q.Where("created_at >= ?", *since)
+	}
+	rows := []struct {
+		PathID uuid.UUID `gorm:"column:path_id"`
+	}{}
+	if err := q.Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		if r.PathID != uuid.Nil {
+			out = append(out, r.PathID)
+		}
 	}
 	return out, nil
 }

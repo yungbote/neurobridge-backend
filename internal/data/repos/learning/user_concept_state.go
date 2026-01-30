@@ -16,6 +16,7 @@ type UserConceptStateRepo interface {
 	Upsert(dbc dbctx.Context, row *types.UserConceptState) error
 	Get(dbc dbctx.Context, userID uuid.UUID, conceptID uuid.UUID) (*types.UserConceptState, error)
 	ListByUserAndConceptIDs(dbc dbctx.Context, userID uuid.UUID, conceptIDs []uuid.UUID) ([]*types.UserConceptState, error)
+	ListByUserID(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserConceptState, error)
 }
 
 type userConceptStateRepo struct {
@@ -100,6 +101,31 @@ func (r *userConceptStateRepo) ListByUserAndConceptIDs(dbc dbctx.Context, userID
 	}
 	if err := transaction.WithContext(dbc.Ctx).
 		Where("user_id = ? AND concept_id IN ?", userID, conceptIDs).
+		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *userConceptStateRepo) ListByUserID(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.UserConceptState, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	out := []*types.UserConceptState{}
+	if userID == uuid.Nil {
+		return out, nil
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
+	if err := t.WithContext(dbc.Ctx).
+		Where("user_id = ?", userID).
+		Order("updated_at DESC").
+		Limit(limit).
 		Find(&out).Error; err != nil {
 		return nil, err
 	}

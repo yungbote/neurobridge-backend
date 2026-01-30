@@ -65,6 +65,9 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.DecisionTrace{},
 		// Chain identity + Prios + Completion
 		&types.ChainSignature{},
+		&types.PathStructuralUnit{},
+		&types.ConceptRepresentation{},
+		&types.ConceptMappingOverride{},
 		&types.ChainPrior{},
 		&types.UserCompletedUnit{},
 		// Activities (+ variants + grounding)
@@ -101,6 +104,8 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.UserEvent{},
 		&types.UserEventCursor{},
 		&types.UserConceptState{},
+		&types.UserConceptModel{},
+		&types.UserMisconceptionInstance{},
 		&types.UserStylePreference{},
 		&types.UserProgressionEvent{},
 		&types.UserProfileVector{},

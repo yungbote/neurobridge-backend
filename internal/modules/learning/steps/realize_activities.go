@@ -43,6 +43,8 @@ type RealizeActivitiesDeps struct {
 
 	Concepts     repos.ConceptRepo
 	ConceptState repos.UserConceptStateRepo
+	ConceptModel repos.UserConceptModelRepo
+	MisconRepo   repos.UserMisconceptionInstanceRepo
 	Files        repos.MaterialFileRepo
 	Chunks       repos.MaterialChunkRepo
 
@@ -65,10 +67,10 @@ type RealizeActivitiesInput struct {
 }
 
 type RealizeActivitiesOutput struct {
-	PathID             uuid.UUID `json:"path_id"`
-	ActivitiesMade     int       `json:"activities_made"`
-	VariantsMade       int       `json:"variants_made"`
-	ActivitiesExisting int       `json:"activities_existing"`
+	PathID             uuid.UUID      `json:"path_id"`
+	ActivitiesMade     int            `json:"activities_made"`
+	VariantsMade       int            `json:"variants_made"`
+	ActivitiesExisting int            `json:"activities_existing"`
 	Adaptive           map[string]any `json:"adaptive,omitempty"`
 }
 
@@ -415,6 +417,8 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 
 	// ---- User knowledge context (cross-path mastery transfer) ----
 	stateByConceptID := map[uuid.UUID]*types.UserConceptState{}
+	modelByConceptID := map[uuid.UUID]*types.UserConceptModel{}
+	misconByConceptID := map[uuid.UUID][]*types.UserMisconceptionInstance{}
 	if deps.ConceptState != nil && len(canonicalIDByKey) > 0 {
 		needed := map[uuid.UUID]bool{}
 		for _, w := range work {
@@ -445,6 +449,26 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 				}
 			} else if deps.Log != nil {
 				deps.Log.Warn("realize_activities: failed to load user concept states (continuing)", "error", err, "user_id", in.OwnerUserID.String())
+			}
+		}
+		if deps.ConceptModel != nil && len(ids) > 0 {
+			if rows, err := deps.ConceptModel.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, r := range rows {
+					if r == nil || r.CanonicalConceptID == uuid.Nil {
+						continue
+					}
+					modelByConceptID[r.CanonicalConceptID] = r
+				}
+			}
+		}
+		if deps.MisconRepo != nil && len(ids) > 0 {
+			if rows, err := deps.MisconRepo.ListActiveByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, r := range rows {
+					if r == nil || r.CanonicalConceptID == uuid.Nil {
+						continue
+					}
+					misconByConceptID[r.CanonicalConceptID] = append(misconByConceptID[r.CanonicalConceptID], r)
+				}
 			}
 		}
 	}
@@ -503,7 +527,22 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 			teachingJSON, _ := teachingPatternsJSON(gctx, deps.Vec, deps.Patterns, qEmb[0], 4)
 			userKnowledgeJSON := "(none)"
 			if len(w.PrimaryKeys) > 0 && len(canonicalIDByKey) > 0 {
-				uj := BuildUserKnowledgeContextV1(w.PrimaryKeys, canonicalIDByKey, stateByConceptID, knowledgeNow).JSON()
+				forceKeys := map[string]bool{}
+				for _, key := range w.PrimaryKeys {
+					k := strings.TrimSpace(strings.ToLower(key))
+					if k != "" {
+						forceKeys[k] = true
+					}
+				}
+				uj := BuildUserKnowledgeContextV2(
+					w.PrimaryKeys,
+					canonicalIDByKey,
+					stateByConceptID,
+					modelByConceptID,
+					misconByConceptID,
+					knowledgeNow,
+					&KnowledgeContextOptions{ActiveOnly: true, ForceActiveKeys: forceKeys},
+				).JSON()
 				if strings.TrimSpace(uj) != "" {
 					userKnowledgeJSON = uj
 				}

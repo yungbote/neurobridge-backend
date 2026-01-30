@@ -34,6 +34,8 @@ type InlineDeps struct {
 	Summaries    repos.MaterialSetSummaryRepo
 
 	Concepts repos.ConceptRepo
+	ConceptReps    repos.ConceptRepresentationRepo
+	MappingOverrides repos.ConceptMappingOverrideRepo
 	Evidence repos.ConceptEvidenceRepo
 	Edges    repos.ConceptEdgeRepo
 
@@ -41,9 +43,12 @@ type InlineDeps struct {
 	Members  repos.ConceptClusterMemberRepo
 
 	ChainSignatures repos.ChainSignatureRepo
+	PathStructuralUnits repos.PathStructuralUnitRepo
 
 	StylePrefs       repos.UserStylePreferenceRepo
 	ConceptState     repos.UserConceptStateRepo
+	ConceptModel     repos.UserConceptModelRepo
+	MisconRepo       repos.UserMisconceptionInstanceRepo
 	ProgEvents       repos.UserProgressionEventRepo
 	UserProfile      repos.UserProfileVectorRepo
 	UserPrefs        repos.UserPersonalizationPrefsRepo

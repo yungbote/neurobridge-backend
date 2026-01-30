@@ -24,6 +24,8 @@ type Pipeline struct {
 	activityCites    repos.ActivityCitationRepo
 	concepts         repos.ConceptRepo
 	mastery          repos.UserConceptStateRepo
+	model            repos.UserConceptModelRepo
+	miscon           repos.UserMisconceptionInstanceRepo
 	files            repos.MaterialFileRepo
 	chunks           repos.MaterialChunkRepo
 	profile          repos.UserProfileVectorRepo
@@ -48,6 +50,8 @@ func New(
 	activityCites repos.ActivityCitationRepo,
 	concepts repos.ConceptRepo,
 	mastery repos.UserConceptStateRepo,
+	model repos.UserConceptModelRepo,
+	miscon repos.UserMisconceptionInstanceRepo,
 	files repos.MaterialFileRepo,
 	chunks repos.MaterialChunkRepo,
 	profile repos.UserProfileVectorRepo,
@@ -71,6 +75,8 @@ func New(
 		activityCites:    activityCites,
 		concepts:         concepts,
 		mastery:          mastery,
+		model:            model,
+		miscon:           miscon,
 		files:            files,
 		chunks:           chunks,
 		profile:          profile,

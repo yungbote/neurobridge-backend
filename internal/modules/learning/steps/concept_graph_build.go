@@ -41,9 +41,11 @@ type ConceptGraphBuildDeps struct {
 	Chunks   repos.MaterialChunkRepo
 	Path     repos.PathRepo
 
-	Concepts repos.ConceptRepo
-	Evidence repos.ConceptEvidenceRepo
-	Edges    repos.ConceptEdgeRepo
+	Concepts  repos.ConceptRepo
+	Reps      repos.ConceptRepresentationRepo
+	Overrides repos.ConceptMappingOverrideRepo
+	Evidence  repos.ConceptEvidenceRepo
+	Edges     repos.ConceptEdgeRepo
 
 	Graph *neo4jdb.Client
 
@@ -73,7 +75,7 @@ type ConceptGraphBuildOutput struct {
 
 func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in ConceptGraphBuildInput) (ConceptGraphBuildOutput, error) {
 	out := ConceptGraphBuildOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.FileSigs == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
+	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.FileSigs == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Reps == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
 		return out, fmt.Errorf("concept_graph_build: missing deps")
 	}
 	if in.OwnerUserID == uuid.Nil {
@@ -383,7 +385,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			if err != nil {
 				return err
 			}
-			_, _ = canonicalizePathConcepts(dbc, tx, deps.Concepts, rows, nil)
+			_, _ = canonicalizePathConcepts(dbc, tx, deps.Concepts, deps.Reps, deps.Overrides, rows, nil)
 			return nil
 		})
 
@@ -1784,7 +1786,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 				// Serialize canonicalization per path to avoid conflict churn under retries.
 				_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
-				_, err := canonicalizePathConcepts(dbc, tx, deps.Concepts, pathConcepts, semanticMatchByKey)
+				_, err := canonicalizePathConcepts(dbc, tx, deps.Concepts, deps.Reps, deps.Overrides, pathConcepts, semanticMatchByKey)
 				return err
 			}); err != nil {
 				deps.Log.Warn("concept_graph_build: canonicalization failed (continuing)", "error", err, "path_id", pathID.String())

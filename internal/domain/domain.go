@@ -106,12 +106,16 @@ type LearningProfile = personalization.LearningProfile
 type TopicMastery = personalization.TopicMastery
 type TopicStylePreference = personalization.TopicStylePreference
 type UserConceptState = personalization.UserConceptState
+type UserConceptModel = personalization.UserConceptModel
+type UserMisconceptionInstance = personalization.UserMisconceptionInstance
 type UserStylePreference = personalization.UserStylePreference
 type UserEvent = personalization.UserEvent
 type UserEventCursor = personalization.UserEventCursor
 type UserProgressionEvent = personalization.UserProgressionEvent
 
 type Concept = core.Concept
+type ConceptRepresentation = core.ConceptRepresentation
+type ConceptMappingOverride = core.ConceptMappingOverride
 type Activity = core.Activity
 type ActivityVariant = core.ActivityVariant
 type ActivityConcept = joins.ActivityConcept
@@ -119,6 +123,7 @@ type ActivityCitation = joins.ActivityCitation
 
 type Path = core.Path
 type PathNode = core.PathNode
+type PathStructuralUnit = core.PathStructuralUnit
 type PathNodeActivity = joins.PathNodeActivity
 
 type ConceptEvidence = products.ConceptEvidence

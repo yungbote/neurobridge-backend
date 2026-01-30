@@ -19,6 +19,8 @@ type Pipeline struct {
 	chunks    repos.MaterialChunkRepo
 	path      repos.PathRepo
 	concepts  repos.ConceptRepo
+	reps      repos.ConceptRepresentationRepo
+	overrides repos.ConceptMappingOverrideRepo
 	evidence  repos.ConceptEvidenceRepo
 	edges     repos.ConceptEdgeRepo
 	graph     *neo4jdb.Client
@@ -37,6 +39,8 @@ func New(
 	chunks repos.MaterialChunkRepo,
 	path repos.PathRepo,
 	concepts repos.ConceptRepo,
+	reps repos.ConceptRepresentationRepo,
+	overrides repos.ConceptMappingOverrideRepo,
 	evidence repos.ConceptEvidenceRepo,
 	edges repos.ConceptEdgeRepo,
 	graph *neo4jdb.Client,
@@ -54,6 +58,8 @@ func New(
 		chunks:    chunks,
 		path:      path,
 		concepts:  concepts,
+		reps:      reps,
+		overrides: overrides,
 		evidence:  evidence,
 		edges:     edges,
 		graph:     graph,

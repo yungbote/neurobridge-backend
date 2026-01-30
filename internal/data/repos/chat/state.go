@@ -73,6 +73,7 @@ func (r *chatThreadStateRepo) GetOrCreate(dbc dbctx.Context, threadID uuid.UUID)
 		LastSummarizedSeq: 0,
 		LastGraphSeq:      0,
 		LastMemorySeq:     0,
+		LastStructureSeq:  0,
 		UpdatedAt:         now,
 	}
 
@@ -110,6 +111,9 @@ func (r *chatThreadStateRepo) UpdateFields(dbc dbctx.Context, threadID uuid.UUID
 	}
 	if v, ok := updates["last_memory_seq"]; ok {
 		updates["last_memory_seq"] = gorm.Expr("GREATEST(last_memory_seq, ?)", v)
+	}
+	if v, ok := updates["last_structure_seq"]; ok {
+		updates["last_structure_seq"] = gorm.Expr("GREATEST(last_structure_seq, ?)", v)
 	}
 
 	updates["updated_at"] = time.Now().UTC()

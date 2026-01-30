@@ -170,6 +170,8 @@ stages:
     depends_on: [concept_cluster_build]
   - name: path_plan_build
     depends_on: [concept_graph_patch_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
+  - name: psu_build
+    depends_on: [path_plan_build]
   - name: path_cover_render
     depends_on: [path_plan_build]
   - name: node_figures_plan_build
@@ -181,14 +183,14 @@ stages:
   - name: node_videos_render
     depends_on: [node_videos_plan_build]
   - name: node_doc_build
-    depends_on: [path_plan_build, embed_chunks, material_kg_build]
+    depends_on: [psu_build, path_plan_build, embed_chunks, material_kg_build]
   - name: node_doc_media_patch
     job_type: node_doc_build
     depends_on: [node_doc_build, node_figures_render, node_videos_render, material_kg_build]
     config:
       media_patch: true
   - name: realize_activities
-    depends_on: [path_plan_build, embed_chunks, user_profile_refresh, concept_graph_patch_build, material_kg_build]
+    depends_on: [psu_build, path_plan_build, embed_chunks, user_profile_refresh, concept_graph_patch_build, material_kg_build]
   - name: coverage_coherence_audit
     depends_on: [realize_activities]
   - name: priors_refresh

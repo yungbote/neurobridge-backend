@@ -33,12 +33,16 @@ type LearningProfileRepo = learning.LearningProfileRepo
 type TopicMasteryRepo = learning.TopicMasteryRepo
 type TopicStylePreferenceRepo = learning.TopicStylePreferenceRepo
 type UserConceptStateRepo = learning.UserConceptStateRepo
+type UserConceptModelRepo = learning.UserConceptModelRepo
+type UserMisconceptionInstanceRepo = learning.UserMisconceptionInstanceRepo
 type UserStylePreferenceRepo = learning.UserStylePreferenceRepo
 type UserEventRepo = learning.UserEventRepo
 type UserEventCursorRepo = learning.UserEventCursorRepo
 type UserProgressionEventRepo = learning.UserProgressionEventRepo
 
 type ConceptRepo = learning.ConceptRepo
+type ConceptRepresentationRepo = learning.ConceptRepresentationRepo
+type ConceptMappingOverrideRepo = learning.ConceptMappingOverrideRepo
 type ActivityRepo = learning.ActivityRepo
 type ActivityVariantRepo = learning.ActivityVariantRepo
 type ActivityConceptRepo = learning.ActivityConceptRepo
@@ -47,6 +51,7 @@ type ActivityCitationRepo = learning.ActivityCitationRepo
 type PathRepo = learning.PathRepo
 type PathNodeRepo = learning.PathNodeRepo
 type PathNodeActivityRepo = learning.PathNodeActivityRepo
+type PathStructuralUnitRepo = learning.PathStructuralUnitRepo
 
 type ConceptClusterRepo = learning.ConceptClusterRepo
 type ConceptClusterMemberRepo = learning.ConceptClusterMemberRepo
@@ -151,6 +156,12 @@ func NewTopicStylePreferenceRepo(db *gorm.DB, baseLog *logger.Logger) TopicStyle
 func NewUserConceptStateRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptStateRepo {
 	return learning.NewUserConceptStateRepo(db, baseLog)
 }
+func NewUserConceptModelRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptModelRepo {
+	return learning.NewUserConceptModelRepo(db, baseLog)
+}
+func NewUserMisconceptionInstanceRepo(db *gorm.DB, baseLog *logger.Logger) UserMisconceptionInstanceRepo {
+	return learning.NewUserMisconceptionInstanceRepo(db, baseLog)
+}
 func NewUserStylePreferenceRepo(db *gorm.DB, baseLog *logger.Logger) UserStylePreferenceRepo {
 	return learning.NewUserStylePreferenceRepo(db, baseLog)
 }
@@ -166,6 +177,12 @@ func NewUserProgressionEventRepo(db *gorm.DB, baseLog *logger.Logger) UserProgre
 
 func NewConceptRepo(db *gorm.DB, baseLog *logger.Logger) ConceptRepo {
 	return learning.NewConceptRepo(db, baseLog)
+}
+func NewConceptRepresentationRepo(db *gorm.DB, baseLog *logger.Logger) ConceptRepresentationRepo {
+	return learning.NewConceptRepresentationRepo(db, baseLog)
+}
+func NewConceptMappingOverrideRepo(db *gorm.DB, baseLog *logger.Logger) ConceptMappingOverrideRepo {
+	return learning.NewConceptMappingOverrideRepo(db, baseLog)
 }
 func NewActivityRepo(db *gorm.DB, baseLog *logger.Logger) ActivityRepo {
 	return learning.NewActivityRepo(db, baseLog)
@@ -188,6 +205,9 @@ func NewPathNodeRepo(db *gorm.DB, baseLog *logger.Logger) PathNodeRepo {
 }
 func NewPathNodeActivityRepo(db *gorm.DB, baseLog *logger.Logger) PathNodeActivityRepo {
 	return learning.NewPathNodeActivityRepo(db, baseLog)
+}
+func NewPathStructuralUnitRepo(db *gorm.DB, baseLog *logger.Logger) PathStructuralUnitRepo {
+	return learning.NewPathStructuralUnitRepo(db, baseLog)
 }
 
 func NewChainSignatureRepo(db *gorm.DB, baseLog *logger.Logger) ChainSignatureRepo {

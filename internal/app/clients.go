@@ -29,8 +29,9 @@ type Clients struct {
 	Neo4j *neo4jdb.Client
 
 	// OpenAI
-	OpenaiClient  openai.Client
-	OpenaiCaption openai.Caption
+	OpenaiClient        openai.Client
+	OpenaiCaption       openai.Caption
+	StructureExtractAI  openai.Client
 
 	// Pinecone
 	PineconeClient      pinecone.Client
@@ -96,6 +97,18 @@ func wireClients(log *logger.Logger) (Clients, error) {
 		return Clients{}, fmt.Errorf("init openai client: %w", err)
 	}
 	out.OpenaiClient = oa
+
+	structureModel := strings.TrimSpace(os.Getenv("STRUCTURE_EXTRACT_MODEL"))
+	if structureModel != "" && strings.TrimSpace(structureModel) != strings.TrimSpace(os.Getenv("OPENAI_MODEL")) {
+		if sc, err := openai.NewClientWithModel(log, structureModel); err == nil {
+			out.StructureExtractAI = sc
+		} else {
+			log.Warn("init structure extract client failed; falling back to default", "error", err)
+			out.StructureExtractAI = oa
+		}
+	} else {
+		out.StructureExtractAI = oa
+	}
 
 	cap, err := openai.NewCaption(log, oa)
 	if err != nil {
@@ -237,6 +250,7 @@ func (c *Clients) Close() {
 	c.PineconeVectorStore = nil
 	c.OpenaiClient = nil
 	c.OpenaiCaption = nil
+	c.StructureExtractAI = nil
 
 	c.LMTools = nil
 }

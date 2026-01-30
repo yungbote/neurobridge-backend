@@ -16,10 +16,13 @@ type Pipeline struct {
 	path      repos.PathRepo
 	nodes     repos.PathNodeRepo
 	concepts  repos.ConceptRepo
+	reps      repos.ConceptRepresentationRepo
 	edges     repos.ConceptEdgeRepo
 	summaries repos.MaterialSetSummaryRepo
 	profile   repos.UserProfileVectorRepo
 	mastery   repos.UserConceptStateRepo
+	model     repos.UserConceptModelRepo
+	miscon    repos.UserMisconceptionInstanceRepo
 	graph     *neo4jdb.Client
 	ai        openai.Client
 	bootstrap services.LearningBuildBootstrapService
@@ -31,10 +34,13 @@ func New(
 	path repos.PathRepo,
 	nodes repos.PathNodeRepo,
 	concepts repos.ConceptRepo,
+	reps repos.ConceptRepresentationRepo,
 	edges repos.ConceptEdgeRepo,
 	summaries repos.MaterialSetSummaryRepo,
 	profile repos.UserProfileVectorRepo,
 	mastery repos.UserConceptStateRepo,
+	model repos.UserConceptModelRepo,
+	miscon repos.UserMisconceptionInstanceRepo,
 	graph *neo4jdb.Client,
 	ai openai.Client,
 	bootstrap services.LearningBuildBootstrapService,
@@ -45,10 +51,13 @@ func New(
 		path:      path,
 		nodes:     nodes,
 		concepts:  concepts,
+		reps:      reps,
 		edges:     edges,
 		summaries: summaries,
 		profile:   profile,
 		mastery:   mastery,
+		model:     model,
+		miscon:    miscon,
 		graph:     graph,
 		ai:        ai,
 		bootstrap: bootstrap,

@@ -3,6 +3,7 @@ package user_model_update
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +48,11 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 	const pageSize = 500
 	processed := 0
+	incorrectSignals := 0
+	hintSignals := 0
+	retrySignals := 0
+	exposureSignals := 0
+	structuralUpdates := 0
 	start := time.Now()
 
 	ctx.Progress("scan", 1, "Scanning user events")
@@ -91,6 +97,13 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 					_ = json.Unmarshal(ev.Data, &d)
 				} else {
 					d = map[string]any{}
+				}
+				// Attach client_event_id for idempotent structural support pointers.
+				if ev.ClientEventID != "" {
+					d["client_event_id"] = ev.ClientEventID
+				}
+				if ev.ID != uuid.Nil {
+					d["event_id"] = ev.ID.String()
 				}
 				items = append(items, evItem{ev: ev, data: d})
 
@@ -220,7 +233,29 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 			}
 
+			modelByConcept := map[uuid.UUID]*types.UserConceptModel{}
+			if p.conceptModel != nil && len(touchedCanonical) > 0 {
+				ids := make([]uuid.UUID, 0, len(touchedCanonical))
+				for id := range touchedCanonical {
+					if id != uuid.Nil {
+						ids = append(ids, id)
+					}
+				}
+				sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+				if rows, err := p.conceptModel.ListByUserAndConceptIDs(tdbc, userID, ids); err == nil {
+					for _, r := range rows {
+						if r == nil || r.UserID == uuid.Nil || r.CanonicalConceptID == uuid.Nil {
+							continue
+						}
+						modelByConcept[r.CanonicalConceptID] = r
+					}
+				}
+			}
+
 			dirty := map[uuid.UUID]bool{}
+			dirtyModel := map[uuid.UUID]bool{}
+			misconRows := []*types.UserMisconceptionInstance{}
+			questionAttempts := map[string]int{}
 
 			// Apply events in order.
 			for _, it := range items {
@@ -240,6 +275,10 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 				switch typ {
 				case types.EventQuestionAnswered:
+					qid := strings.TrimSpace(fmt.Sprint(it.data["question_id"]))
+					if qid != "" {
+						questionAttempts[qid]++
+					}
 					cids := extractUUIDsFromAny(it.data["concept_ids"])
 					if ev.ConceptID != nil && *ev.ConceptID != uuid.Nil && len(cids) == 0 {
 						cids = []uuid.UUID{*ev.ConceptID}
@@ -254,6 +293,30 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						stateByConcept[cc] = st
 						dirty[cc] = true
 						updatedConceptIDs[cc] = true
+
+						// Structural signal: incorrect answers -> misconception candidate
+						if !boolFromAny(it.data["is_correct"], false) && p.conceptModel != nil {
+							model := ensureConceptModel(modelByConcept[cc], userID, cc)
+							if updated, mis := applyIncorrectAnswerToModel(model, seenAt, it.data); updated {
+								modelByConcept[cc] = model
+								dirtyModel[cc] = true
+								incorrectSignals++
+								structuralUpdates++
+								if mis != nil {
+									misconRows = append(misconRows, mis)
+								}
+							}
+						}
+						// Structural signal: retries on the same question -> procedural uncertainty
+						if p.conceptModel != nil && qid != "" && questionAttempts[qid] >= 2 {
+							model := ensureConceptModel(modelByConcept[cc], userID, cc)
+							if updated := applyRetryToModel(model, seenAt, it.data, questionAttempts[qid]); updated {
+								modelByConcept[cc] = model
+								dirtyModel[cc] = true
+								retrySignals++
+								structuralUpdates++
+							}
+						}
 					}
 
 				case types.EventHintUsed:
@@ -271,6 +334,17 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						stateByConcept[cc] = st
 						dirty[cc] = true
 						updatedConceptIDs[cc] = true
+
+						// Structural signal: hints -> uncertainty region (procedural gap)
+						if p.conceptModel != nil {
+							model := ensureConceptModel(modelByConcept[cc], userID, cc)
+							if updated := applyHintToModel(model, seenAt, it.data); updated {
+								modelByConcept[cc] = model
+								dirtyModel[cc] = true
+								hintSignals++
+								structuralUpdates++
+							}
+						}
 					}
 
 				case types.EventActivityCompleted:
@@ -303,6 +377,15 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						stateByConcept[cc] = st
 						dirty[cc] = true
 						updatedConceptIDs[cc] = true
+						if p.conceptModel != nil {
+							model := ensureConceptModel(modelByConcept[cc], userID, cc)
+							if updated := applyExposureToModel(model, seenAt, it.data); updated {
+								modelByConcept[cc] = model
+								dirtyModel[cc] = true
+								exposureSignals++
+								structuralUpdates++
+							}
+						}
 					}
 
 				case "style_feedback":
@@ -351,6 +434,31 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				for _, id := range ids {
 					if st := stateByConcept[id]; st != nil {
 						_ = p.conceptState.Upsert(tdbc, st)
+					}
+				}
+			}
+
+			// Persist updated structural models.
+			if p.conceptModel != nil && len(dirtyModel) > 0 {
+				ids := make([]uuid.UUID, 0, len(dirtyModel))
+				for id := range dirtyModel {
+					if id != uuid.Nil {
+						ids = append(ids, id)
+					}
+				}
+				sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+				for _, id := range ids {
+					if row := modelByConcept[id]; row != nil {
+						_ = p.conceptModel.Upsert(tdbc, row)
+					}
+				}
+			}
+
+			// Persist misconception instances.
+			if p.misconRepo != nil && len(misconRows) > 0 {
+				for _, row := range misconRows {
+					if row != nil {
+						_ = p.misconRepo.Upsert(tdbc, row)
 					}
 				}
 			}
@@ -405,7 +513,27 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 		}
 	}
 
-	ctx.Succeed("done", map[string]any{"processed": processed})
+	// Optional: enqueue PSU promotion when structural signals changed.
+	if p.jobSvc != nil && len(updatedConceptIDs) > 0 {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("PSU_PROMOTION_AUTO")), "true") {
+			repoCtx := dbctx.Context{Ctx: ctx.Ctx}
+			entityID := userID
+			_, _ = p.jobSvc.Enqueue(repoCtx, userID, "psu_promote", "user", &entityID, map[string]any{
+				"user_id": userID.String(),
+				"trigger": "user_model_update",
+			})
+		}
+	}
+
+	ctx.Succeed("done", map[string]any{
+		"processed":          processed,
+		"concepts_updated":   len(updatedConceptIDs),
+		"structural_updates": structuralUpdates,
+		"incorrect_signals":  incorrectSignals,
+		"hint_signals":       hintSignals,
+		"retry_signals":      retrySignals,
+		"exposure_signals":   exposureSignals,
+	})
 	return nil
 }
 

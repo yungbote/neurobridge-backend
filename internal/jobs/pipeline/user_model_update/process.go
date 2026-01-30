@@ -341,3 +341,255 @@ func clamp01(x float64) float64 {
 	}
 	return x
 }
+
+// ---- structural model helpers ----
+
+type supportPointer struct {
+	SourceType string  `json:"source_type"`
+	SourceID   string  `json:"source_id"`
+	OccurredAt string  `json:"occurred_at,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+type uncertaintySignal struct {
+	Kind       string  `json:"kind"`
+	Confidence float64 `json:"confidence"`
+	LastSeenAt string  `json:"last_seen_at,omitempty"`
+	Count      int     `json:"count,omitempty"`
+}
+
+func ensureConceptModel(prev *types.UserConceptModel, userID uuid.UUID, conceptID uuid.UUID) *types.UserConceptModel {
+	if prev != nil {
+		return prev
+	}
+	return &types.UserConceptModel{
+		ID:                 uuid.New(),
+		UserID:             userID,
+		CanonicalConceptID: conceptID,
+		ModelVersion:       1,
+	}
+}
+
+func loadSupportPointers(raw []byte) []supportPointer {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	var out []supportPointer
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func addSupportPointer(list []supportPointer, ptr supportPointer, max int) ([]supportPointer, bool) {
+	if ptr.SourceType == "" || ptr.SourceID == "" {
+		return list, false
+	}
+	for _, it := range list {
+		if it.SourceType == ptr.SourceType && it.SourceID == ptr.SourceID {
+			return list, false
+		}
+	}
+	list = append(list, ptr)
+	if max > 0 && len(list) > max {
+		list = list[len(list)-max:]
+	}
+	return list, true
+}
+
+func loadUncertainty(raw []byte) []uncertaintySignal {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	var out []uncertaintySignal
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func upsertUncertainty(list []uncertaintySignal, kind string, conf float64, seenAt time.Time) []uncertaintySignal {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		return list
+	}
+	now := seenAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for i := range list {
+		if list[i].Kind == kind {
+			if conf > list[i].Confidence {
+				list[i].Confidence = conf
+			}
+			list[i].Count += 1
+			list[i].LastSeenAt = now.Format(time.RFC3339Nano)
+			return list
+		}
+	}
+	list = append(list, uncertaintySignal{
+		Kind:       kind,
+		Confidence: conf,
+		Count:      1,
+		LastSeenAt: now.Format(time.RFC3339Nano),
+	})
+	return list
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func applyIncorrectAnswerToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any) (bool, *types.UserMisconceptionInstance) {
+	if model == nil {
+		return false, nil
+	}
+	qid := strings.TrimSpace(fmt.Sprint(data["question_id"]))
+	desc := "incorrect_answer"
+	if qid != "" {
+		desc = "incorrect_answer question_id=" + qid
+	}
+	conf := clamp01(floatFromAny(data["grader_confidence"], floatFromAny(data["confidence"], 0.6)))
+	if conf == 0 {
+		conf = 0.6
+	}
+	sourceID := strings.TrimSpace(fmt.Sprint(data["client_event_id"]))
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(fmt.Sprint(data["event_id"]))
+	}
+
+	ptr := supportPointer{
+		SourceType: "user_event",
+		SourceID:   sourceID,
+		OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
+		Confidence: conf,
+	}
+	support := loadSupportPointers([]byte(model.Support))
+	support, added := addSupportPointer(support, ptr, 20)
+	if added {
+		model.Support = datatypes.JSON(mustJSON(support))
+		t := seenAt.UTC()
+		model.LastStructuralAt = &t
+	}
+
+	pattern := "incorrect_answer"
+	mis := &types.UserMisconceptionInstance{
+		UserID:             model.UserID,
+		CanonicalConceptID: model.CanonicalConceptID,
+		PatternID:          &pattern,
+		Description:        desc,
+		Status:             "active",
+		Confidence:         conf,
+	}
+	if !seenAt.IsZero() {
+		t := seenAt.UTC()
+		mis.FirstSeenAt = &t
+		mis.LastSeenAt = &t
+	}
+	mis.Support = datatypes.JSON(mustJSON(ptr))
+	return added, mis
+}
+
+func applyHintToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any) bool {
+	if model == nil {
+		return false
+	}
+	sourceID := strings.TrimSpace(fmt.Sprint(data["client_event_id"]))
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(fmt.Sprint(data["event_id"]))
+	}
+	ptr := supportPointer{
+		SourceType: "user_event",
+		SourceID:   sourceID,
+		OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
+		Confidence: 0.5,
+	}
+	support := loadSupportPointers([]byte(model.Support))
+	support, added := addSupportPointer(support, ptr, 20)
+	unc := loadUncertainty([]byte(model.Uncertainty))
+	unc = upsertUncertainty(unc, "procedural_gap", 0.5, seenAt)
+	if added {
+		model.Support = datatypes.JSON(mustJSON(support))
+		model.Uncertainty = datatypes.JSON(mustJSON(unc))
+		t := seenAt.UTC()
+		model.LastStructuralAt = &t
+		return true
+	}
+	// Even if support already existed, update uncertainty if empty.
+	model.Uncertainty = datatypes.JSON(mustJSON(unc))
+	return true
+}
+
+func applyExposureToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any) bool {
+	if model == nil {
+		return false
+	}
+	dwellMS := intFromAny(data["dwell_ms"], 0)
+	maxPct := floatFromAny(data["max_percent"], floatFromAny(data["percent"], 0))
+	if maxPct > 1.0 {
+		maxPct = maxPct / 100.0
+	}
+	if dwellMS < 2500 && maxPct < 0.45 {
+		return false
+	}
+	conf := 0.2
+	if dwellMS >= 8000 || maxPct >= 0.85 {
+		conf = 0.35
+	} else if dwellMS >= 4000 || maxPct >= 0.60 {
+		conf = 0.25
+	}
+	sourceID := strings.TrimSpace(fmt.Sprint(data["client_event_id"]))
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(fmt.Sprint(data["event_id"]))
+	}
+	ptr := supportPointer{
+		SourceType: "exposure",
+		SourceID:   sourceID,
+		OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
+		Confidence: conf,
+	}
+	support := loadSupportPointers([]byte(model.Support))
+	support, added := addSupportPointer(support, ptr, 20)
+	if added {
+		model.Support = datatypes.JSON(mustJSON(support))
+		t := seenAt.UTC()
+		model.LastStructuralAt = &t
+		return true
+	}
+	return false
+}
+
+func applyRetryToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any, attempt int) bool {
+	if model == nil || attempt < 2 {
+		return false
+	}
+	isCorrect := boolFromAny(data["is_correct"], false)
+	conf := 0.5
+	if !isCorrect {
+		conf = 0.65
+	}
+	sourceID := strings.TrimSpace(fmt.Sprint(data["client_event_id"]))
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(fmt.Sprint(data["event_id"]))
+	}
+	ptr := supportPointer{
+		SourceType: "retry",
+		SourceID:   sourceID,
+		OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
+		Confidence: conf,
+	}
+	support := loadSupportPointers([]byte(model.Support))
+	support, added := addSupportPointer(support, ptr, 20)
+	unc := loadUncertainty([]byte(model.Uncertainty))
+	unc = upsertUncertainty(unc, "procedural_gap", conf, seenAt)
+	if added {
+		model.Support = datatypes.JSON(mustJSON(support))
+		model.Uncertainty = datatypes.JSON(mustJSON(unc))
+		t := seenAt.UTC()
+		model.LastStructuralAt = &t
+		return true
+	}
+	model.Uncertainty = datatypes.JSON(mustJSON(unc))
+	return false
+}

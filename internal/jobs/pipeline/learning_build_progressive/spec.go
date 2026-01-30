@@ -37,6 +37,7 @@ var fallbackStageOrder = []string{
 	"material_signal_build",
 	"path_structure_refine",
 	"path_plan_build",
+	"psu_build",
 	"path_cover_render",
 	"node_doc_build",
 }
@@ -71,12 +72,13 @@ var fallbackStageDeps = map[string][]string{
 	"material_signal_build":     {"concept_graph_patch_build"},
 	"path_structure_refine":     {"concept_graph_patch_build"},
 
-	"user_profile_refresh":   {"path_intake_pre"},
+	"user_profile_refresh": {"path_intake_pre"},
 
 	"path_plan_build":   {"concept_graph_patch_build", "material_signal_build", "material_set_summarize", "user_profile_refresh", "path_intake_pre"},
+	"psu_build":         {"path_plan_build"},
 	"path_cover_render": {"path_plan_build"},
 
-	"node_doc_build": {"path_plan_build", "embed_chunks"},
+	"node_doc_build": {"psu_build", "path_plan_build", "embed_chunks"},
 }
 
 type yamlPipelineSpec struct {

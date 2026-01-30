@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Pipeline struct {
@@ -28,6 +29,9 @@ type Pipeline struct {
 	entities repos.ChatEntityRepo
 	edges    repos.ChatEdgeRepo
 	claims   repos.ChatClaimRepo
+
+	jobRuns repos.JobRunRepo
+	jobs    services.JobService
 }
 
 func New(
@@ -45,6 +49,8 @@ func New(
 	entities repos.ChatEntityRepo,
 	edges repos.ChatEdgeRepo,
 	claims repos.ChatClaimRepo,
+	jobRuns repos.JobRunRepo,
+	jobs services.JobService,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
@@ -61,6 +67,8 @@ func New(
 		entities:  entities,
 		edges:     edges,
 		claims:    claims,
+		jobRuns:   jobRuns,
+		jobs:      jobs,
 	}
 }
 

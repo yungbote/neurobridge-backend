@@ -233,14 +233,17 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 		PathNodes:          p.inline.PathNodes,
 		PathNodeActivities: p.inline.PathNodeActivities,
 
-		Concepts: p.inline.Concepts,
-		Evidence: p.inline.Evidence,
-		Edges:    p.inline.Edges,
+		Concepts:         p.inline.Concepts,
+		ConceptReps:      p.inline.ConceptReps,
+		MappingOverrides: p.inline.MappingOverrides,
+		Evidence:         p.inline.Evidence,
+		Edges:            p.inline.Edges,
 
 		Clusters: p.inline.Clusters,
 		Members:  p.inline.Members,
 
-		ChainSignatures: p.inline.ChainSignatures,
+		ChainSignatures:     p.inline.ChainSignatures,
+		PathStructuralUnits: p.inline.PathStructuralUnits,
 
 		StylePrefs:  p.inline.StylePrefs,
 		ProgEvents:  p.inline.UserProgressionEvents,
@@ -271,6 +274,8 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 		CompletedUnits: p.inline.CompletedUnits,
 		ConceptState:   p.inline.ConceptState,
+		ConceptModel:   p.inline.ConceptModel,
+		MisconRepo:     p.inline.MisconRepo,
 
 		Threads:  p.threads,
 		Messages: p.messages,
@@ -383,6 +388,13 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			stageErr = nil
 		case "path_plan_build":
 			_, stageErr = uc.PathPlanBuild(jc.Ctx, learningmod.PathPlanBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "psu_build":
+			_, stageErr = uc.PathStructuralUnitBuild(jc.Ctx, learningmod.PathStructuralUnitBuildInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				PathID:        pathID,
+			})
 		case "path_cover_render":
 			_, err := uc.PathCoverRender(jc.Ctx, learningmod.PathCoverRenderInput{PathID: pathID})
 			if err != nil && p.log != nil {

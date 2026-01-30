@@ -22,6 +22,7 @@ type ConceptKnowledgeV1 struct {
 	NextReviewAt       string   `json:"next_review_at,omitempty"`
 	Status             string   `json:"status"` // known|learning|weak|unseen
 	MisconceptionHints []string `json:"misconception_hints,omitempty"`
+	Active             bool     `json:"active,omitempty"`
 }
 
 type UserKnowledgeContextV1 struct {
@@ -35,7 +36,34 @@ type UserKnowledgeContextV1 struct {
 	SeenOrAssessedRatio  float64              `json:"seen_or_assessed_ratio,omitempty"`
 }
 
+type UserKnowledgeContextV2 struct {
+	Version              int                  `json:"version"`
+	KnownConceptKeys     []string             `json:"known_concept_keys,omitempty"`
+	WeakConceptKeys      []string             `json:"weak_concept_keys,omitempty"`
+	DueReviewConceptKeys []string             `json:"due_review_concept_keys,omitempty"`
+	UnseenConceptKeys    []string             `json:"unseen_concept_keys,omitempty"`
+	Concepts             []ConceptKnowledgeV1 `json:"concepts,omitempty"`
+	KnownRatio           float64              `json:"known_ratio,omitempty"`
+	SeenOrAssessedRatio  float64              `json:"seen_or_assessed_ratio,omitempty"`
+
+	TopFrames            []string `json:"top_frames,omitempty"`
+	ActiveMisconceptions []string `json:"active_misconceptions,omitempty"`
+	UncertaintyRegions   []string `json:"uncertainty_regions,omitempty"`
+	LastStrongEvidenceAt string   `json:"last_strong_evidence_at,omitempty"`
+	ProbeTargets         []string `json:"probe_targets,omitempty"`
+}
+
+type KnowledgeContextOptions struct {
+	ActiveOnly      bool
+	ForceActiveKeys map[string]bool
+}
+
 func (c UserKnowledgeContextV1) JSON() string {
+	b, _ := json.Marshal(c)
+	return string(b)
+}
+
+func (c UserKnowledgeContextV2) JSON() string {
 	b, _ := json.Marshal(c)
 	return string(b)
 }
@@ -154,6 +182,257 @@ func BuildUserKnowledgeContextV1(
 	}
 
 	return out
+}
+
+type frameSignal struct {
+	Frame      string  `json:"frame"`
+	Confidence float64 `json:"confidence"`
+}
+
+type uncertaintySignal struct {
+	Kind       string  `json:"kind"`
+	Confidence float64 `json:"confidence"`
+}
+
+// BuildUserKnowledgeContextV2 augments V1 with minimal structural signals.
+func BuildUserKnowledgeContextV2(
+	conceptKeys []string,
+	canonicalIDByKey map[string]uuid.UUID,
+	stateByConceptID map[uuid.UUID]*types.UserConceptState,
+	modelByConceptID map[uuid.UUID]*types.UserConceptModel,
+	misconByConceptID map[uuid.UUID][]*types.UserMisconceptionInstance,
+	now time.Time,
+	opts *KnowledgeContextOptions,
+) UserKnowledgeContextV2 {
+	v1 := BuildUserKnowledgeContextV1(conceptKeys, canonicalIDByKey, stateByConceptID, now)
+	out := UserKnowledgeContextV2{
+		Version:              2,
+		KnownConceptKeys:     v1.KnownConceptKeys,
+		WeakConceptKeys:      v1.WeakConceptKeys,
+		DueReviewConceptKeys: v1.DueReviewConceptKeys,
+		UnseenConceptKeys:    v1.UnseenConceptKeys,
+		Concepts:             v1.Concepts,
+		KnownRatio:           v1.KnownRatio,
+		SeenOrAssessedRatio:  v1.SeenOrAssessedRatio,
+	}
+
+	type scored struct {
+		Text  string
+		Score float64
+	}
+
+	var (
+		frameCandidates []scored
+		uncCandidates   []scored
+		misCandidates   []scored
+		lastEvidence    time.Time
+	)
+	activeOnly := false
+	forceActive := map[string]bool{}
+	if opts != nil {
+		activeOnly = opts.ActiveOnly
+		if opts.ForceActiveKeys != nil {
+			for forceKey := range opts.ForceActiveKeys {
+				forceActive[strings.TrimSpace(strings.ToLower(forceKey))] = true
+			}
+		}
+	}
+	recencyDays := envIntAllowZero("ACTIVE_CONCEPT_RECENCY_DAYS", 90)
+	if recencyDays < 7 {
+		recencyDays = 7
+	}
+	confMin := envFloatAllowZero("ACTIVE_CONCEPT_CONFIDENCE_MIN", 0.25)
+	if confMin < 0 {
+		confMin = 0
+	}
+
+	for _, k := range conceptKeys {
+		kNorm := strings.TrimSpace(strings.ToLower(k))
+		if kNorm == "" {
+			continue
+		}
+		cid := uuid.Nil
+		if canonicalIDByKey != nil {
+			cid = canonicalIDByKey[kNorm]
+		}
+		if cid == uuid.Nil {
+			continue
+		}
+		if modelByConceptID != nil {
+			if m := modelByConceptID[cid]; m != nil {
+				if m.LastStructuralAt != nil && !m.LastStructuralAt.IsZero() {
+					if m.LastStructuralAt.After(lastEvidence) {
+						lastEvidence = *m.LastStructuralAt
+					}
+				}
+				if len(m.ActiveFrames) > 0 {
+					var frames []frameSignal
+					_ = json.Unmarshal(m.ActiveFrames, &frames)
+					for _, f := range frames {
+						if strings.TrimSpace(f.Frame) == "" {
+							continue
+						}
+						frameCandidates = append(frameCandidates, scored{
+							Text:  kNorm + ": " + strings.TrimSpace(f.Frame),
+							Score: f.Confidence,
+						})
+					}
+				}
+				if len(m.Uncertainty) > 0 {
+					var unc []uncertaintySignal
+					_ = json.Unmarshal(m.Uncertainty, &unc)
+					for _, u := range unc {
+						if strings.TrimSpace(u.Kind) == "" {
+							continue
+						}
+						uncCandidates = append(uncCandidates, scored{
+							Text:  kNorm + ": " + strings.TrimSpace(u.Kind),
+							Score: u.Confidence,
+						})
+					}
+				}
+			}
+		}
+		if misconByConceptID != nil {
+			if rows := misconByConceptID[cid]; len(rows) > 0 {
+				for _, r := range rows {
+					if r == nil || strings.TrimSpace(r.Description) == "" {
+						continue
+					}
+					misCandidates = append(misCandidates, scored{
+						Text:  kNorm + ": " + strings.TrimSpace(r.Description),
+						Score: clamp01(r.Confidence),
+					})
+				}
+			}
+		}
+	}
+
+	filtered := make([]ConceptKnowledgeV1, 0, len(out.Concepts))
+	for _, entry := range out.Concepts {
+		cid := uuid.Nil
+		if entry.CanonicalConceptID != "" {
+			_ = cid.Scan(entry.CanonicalConceptID)
+		}
+		var model *types.UserConceptModel
+		if cid != uuid.Nil && modelByConceptID != nil {
+			model = modelByConceptID[cid]
+		}
+		active := false
+		if forceActive[strings.TrimSpace(strings.ToLower(entry.Key))] {
+			active = true
+		}
+		if !active {
+			active = isConceptActive(entry, model, recencyDays, confMin, now)
+		}
+		entry.Active = active
+		if activeOnly && !active {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	out.Concepts = filtered
+	if activeOnly {
+		known := []string{}
+		weak := []string{}
+		unseen := []string{}
+		due := []string{}
+		seenOrAssessed := 0
+		for _, entry := range out.Concepts {
+			switch entry.Status {
+			case "known":
+				known = append(known, entry.Key)
+			case "weak":
+				weak = append(weak, entry.Key)
+			case "unseen":
+				unseen = append(unseen, entry.Key)
+			default:
+				// learning
+			}
+			if entry.NextReviewAt != "" {
+				if t, err := time.Parse(time.RFC3339Nano, entry.NextReviewAt); err == nil {
+					if !t.After(now) {
+						due = append(due, entry.Key)
+					}
+				}
+			}
+			if entry.Attempts > 0 || entry.LastSeenAt != "" {
+				seenOrAssessed++
+			}
+		}
+		out.KnownConceptKeys = known
+		out.WeakConceptKeys = weak
+		out.UnseenConceptKeys = unseen
+		out.DueReviewConceptKeys = due
+		if len(out.Concepts) > 0 {
+			out.KnownRatio = float64(len(known)) / float64(len(out.Concepts))
+			out.SeenOrAssessedRatio = float64(seenOrAssessed) / float64(len(out.Concepts))
+		}
+	}
+
+	sort.Slice(frameCandidates, func(i, j int) bool { return frameCandidates[i].Score > frameCandidates[j].Score })
+	sort.Slice(uncCandidates, func(i, j int) bool { return uncCandidates[i].Score > uncCandidates[j].Score })
+	sort.Slice(misCandidates, func(i, j int) bool { return misCandidates[i].Score > misCandidates[j].Score })
+
+	maxPick := func(list []scored, n int) []string {
+		out := []string{}
+		for i := 0; i < len(list) && i < n; i++ {
+			if strings.TrimSpace(list[i].Text) != "" {
+				out = append(out, list[i].Text)
+			}
+		}
+		return out
+	}
+
+	out.TopFrames = maxPick(frameCandidates, 3)
+	out.ActiveMisconceptions = maxPick(misCandidates, 3)
+	out.UncertaintyRegions = maxPick(uncCandidates, 3)
+	if !lastEvidence.IsZero() {
+		out.LastStrongEvidenceAt = lastEvidence.UTC().Format(time.RFC3339Nano)
+	}
+	if len(out.ActiveMisconceptions) > 0 {
+		out.ProbeTargets = out.ActiveMisconceptions
+	} else if len(out.UncertaintyRegions) > 0 {
+		out.ProbeTargets = out.UncertaintyRegions
+	}
+
+	return out
+}
+
+func isConceptActive(entry ConceptKnowledgeV1, model *types.UserConceptModel, recencyDays int, confMin float64, now time.Time) bool {
+	if strings.TrimSpace(entry.Key) == "" {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	seenAt := time.Time{}
+	if entry.LastSeenAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, entry.LastSeenAt); err == nil {
+			seenAt = t
+		}
+	}
+	if model != nil && model.LastStructuralAt != nil && !model.LastStructuralAt.IsZero() {
+		if seenAt.IsZero() || model.LastStructuralAt.After(seenAt) {
+			seenAt = *model.LastStructuralAt
+		}
+	}
+	if !seenAt.IsZero() {
+		age := now.Sub(seenAt)
+		if age >= 0 && age <= time.Duration(recencyDays)*24*time.Hour {
+			return true
+		}
+	}
+	if entry.Confidence >= confMin {
+		return true
+	}
+	if entry.Attempts > 0 || entry.Correct > 0 {
+		return true
+	}
+	if model != nil && len(model.Support) > 0 && string(model.Support) != "null" {
+		return true
+	}
+	return false
 }
 
 func misconceptionHintsFromState(st *types.UserConceptState, max int) []string {

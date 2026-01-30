@@ -246,6 +246,22 @@ func NewClient(log *logger.Logger) (Client, error) {
 	}, nil
 }
 
+// NewClientWithModel returns a client configured with the provided model override.
+// It uses the same env configuration as NewClient, but replaces the model if non-empty.
+func NewClientWithModel(log *logger.Logger, modelOverride string) (Client, error) {
+	c, err := NewClient(log)
+	if err != nil {
+		return nil, err
+	}
+	if modelOverride == "" {
+		return c, nil
+	}
+	if cc, ok := c.(*client); ok {
+		cc.model = strings.TrimSpace(modelOverride)
+	}
+	return c, nil
+}
+
 func (c *client) cloneWithModel(model string) *client {
 	if c == nil || strings.TrimSpace(model) == "" {
 		return c

@@ -88,6 +88,8 @@ type NodeDocBuildDeps struct {
 	TeachingPatterns repos.TeachingPatternRepo
 	Concepts         repos.ConceptRepo
 	ConceptState     repos.UserConceptStateRepo
+	ConceptModel     repos.UserConceptModelRepo
+	MisconRepo       repos.UserMisconceptionInstanceRepo
 	Edges            repos.ConceptEdgeRepo
 
 	AI  openai.Client
@@ -780,10 +782,47 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 				deps.Log.Warn("node_doc_build: failed to load user concept states (continuing)", "error", err, "user_id", in.OwnerUserID.String())
 			}
 		}
+		modelByConceptID := map[uuid.UUID]*types.UserConceptModel{}
+		if deps.ConceptModel != nil && len(ids) > 0 {
+			if rows, err := deps.ConceptModel.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, r := range rows {
+					if r == nil || r.CanonicalConceptID == uuid.Nil {
+						continue
+					}
+					modelByConceptID[r.CanonicalConceptID] = r
+				}
+			}
+		}
+		misconByConceptID := map[uuid.UUID][]*types.UserMisconceptionInstance{}
+		if deps.MisconRepo != nil && len(ids) > 0 {
+			if rows, err := deps.MisconRepo.ListActiveByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, in.OwnerUserID, ids); err == nil {
+				for _, r := range rows {
+					if r == nil || r.CanonicalConceptID == uuid.Nil {
+						continue
+					}
+					misconByConceptID[r.CanonicalConceptID] = append(misconByConceptID[r.CanonicalConceptID], r)
+				}
+			}
+		}
 
 		now := time.Now().UTC()
 		for i := range work {
-			uj := BuildUserKnowledgeContextV1(work[i].ConceptKeys, canonicalIDByKey, stateByConceptID, now).JSON()
+			forceKeys := map[string]bool{}
+			for _, key := range work[i].ConceptKeys {
+				k := strings.TrimSpace(strings.ToLower(key))
+				if k != "" {
+					forceKeys[k] = true
+				}
+			}
+			uj := BuildUserKnowledgeContextV2(
+				work[i].ConceptKeys,
+				canonicalIDByKey,
+				stateByConceptID,
+				modelByConceptID,
+				misconByConceptID,
+				now,
+				&KnowledgeContextOptions{ActiveOnly: true, ForceActiveKeys: forceKeys},
+			).JSON()
 			if strings.TrimSpace(uj) == "" {
 				uj = "(none)"
 			}

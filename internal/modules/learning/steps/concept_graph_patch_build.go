@@ -36,7 +36,7 @@ type ConceptGraphPatchBuildOutput = ConceptGraphBuildOutput
 
 func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in ConceptGraphPatchBuildInput) (ConceptGraphPatchBuildOutput, error) {
 	out := ConceptGraphPatchBuildOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
+	if deps.DB == nil || deps.Log == nil || deps.Files == nil || deps.Chunks == nil || deps.Path == nil || deps.Concepts == nil || deps.Reps == nil || deps.Evidence == nil || deps.Edges == nil || deps.AI == nil || deps.Bootstrap == nil || deps.Saga == nil {
 		return out, fmt.Errorf("concept_graph_patch_build: missing deps")
 	}
 	if in.OwnerUserID == uuid.Nil {
@@ -754,7 +754,7 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 			_ = deps.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 				dbc := dbctx.Context{Ctx: ctx, Tx: tx}
 				_ = advisoryXactLock(tx, "concept_canonicalize", pathID)
-				_, err := canonicalizePathConcepts(dbc, tx, deps.Concepts, pathConcepts, semanticMatchByKey)
+				_, err := canonicalizePathConcepts(dbc, tx, deps.Concepts, deps.Reps, deps.Overrides, pathConcepts, semanticMatchByKey)
 				return err
 			})
 		}

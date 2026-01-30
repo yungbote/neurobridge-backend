@@ -40,14 +40,17 @@ type UsecasesDeps struct {
 	PathNodes          repos.PathNodeRepo
 	PathNodeActivities repos.PathNodeActivityRepo
 
-	Concepts repos.ConceptRepo
-	Evidence repos.ConceptEvidenceRepo
-	Edges    repos.ConceptEdgeRepo
+	Concepts         repos.ConceptRepo
+	Evidence         repos.ConceptEvidenceRepo
+	Edges            repos.ConceptEdgeRepo
+	ConceptReps      repos.ConceptRepresentationRepo
+	MappingOverrides repos.ConceptMappingOverrideRepo
 
 	Clusters repos.ConceptClusterRepo
 	Members  repos.ConceptClusterMemberRepo
 
-	ChainSignatures repos.ChainSignatureRepo
+	ChainSignatures     repos.ChainSignatureRepo
+	PathStructuralUnits repos.PathStructuralUnitRepo
 
 	StylePrefs  repos.UserStylePreferenceRepo
 	ProgEvents  repos.UserProgressionEventRepo
@@ -80,12 +83,15 @@ type UsecasesDeps struct {
 	CohortPriors   repos.CohortPriorRepo
 	CompletedUnits repos.UserCompletedUnitRepo
 	ConceptState   repos.UserConceptStateRepo
+	ConceptModel   repos.UserConceptModelRepo
+	MisconRepo     repos.UserMisconceptionInstanceRepo
 
 	Sagas repos.SagaRunRepo
 
-	Threads  repos.ChatThreadRepo
-	Messages repos.ChatMessageRepo
-	Notify   services.ChatNotifier
+	Threads     repos.ChatThreadRepo
+	Messages    repos.ChatMessageRepo
+	ThreadState repos.ChatThreadStateRepo
+	Notify      services.ChatNotifier
 
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
@@ -199,6 +205,18 @@ type (
 
 	SagaCleanupInput  = steps.SagaCleanupInput
 	SagaCleanupOutput = steps.SagaCleanupOutput
+
+	PathStructuralUnitBuildInput  = steps.PathStructuralUnitBuildInput
+	PathStructuralUnitBuildOutput = steps.PathStructuralUnitBuildOutput
+
+	StructureExtractInput  = steps.StructureExtractInput
+	StructureExtractOutput = steps.StructureExtractOutput
+
+	PSUPromotionInput  = steps.PSUPromotionInput
+	PSUPromotionOutput = steps.PSUPromotionOutput
+
+	StructureBackfillInput  = steps.StructureBackfillInput
+	StructureBackfillOutput = steps.StructureBackfillOutput
 )
 
 func (u Usecases) WebResourcesSeed(ctx context.Context, in WebResourcesSeedInput) (WebResourcesSeedOutput, error) {
@@ -359,6 +377,8 @@ func (u Usecases) ConceptGraphBuild(ctx context.Context, in ConceptGraphBuildInp
 		Chunks:    u.deps.Chunks,
 		Path:      u.deps.Path,
 		Concepts:  u.deps.Concepts,
+		Reps:      u.deps.ConceptReps,
+		Overrides: u.deps.MappingOverrides,
 		Evidence:  u.deps.Evidence,
 		Edges:     u.deps.Edges,
 		Graph:     u.deps.Graph,
@@ -379,6 +399,8 @@ func (u Usecases) ConceptGraphPatchBuild(ctx context.Context, in ConceptGraphPat
 		Chunks:    u.deps.Chunks,
 		Path:      u.deps.Path,
 		Concepts:  u.deps.Concepts,
+		Reps:      u.deps.ConceptReps,
+		Overrides: u.deps.MappingOverrides,
 		Evidence:  u.deps.Evidence,
 		Edges:     u.deps.Edges,
 		Graph:     u.deps.Graph,
@@ -443,10 +465,13 @@ func (u Usecases) PathPlanBuild(ctx context.Context, in PathPlanBuildInput) (Pat
 		Path:         u.deps.Path,
 		PathNodes:    u.deps.PathNodes,
 		Concepts:     u.deps.Concepts,
+		ConceptReps:  u.deps.ConceptReps,
 		Edges:        u.deps.Edges,
 		Summaries:    u.deps.Summaries,
 		UserProfile:  u.deps.UserProfile,
 		ConceptState: u.deps.ConceptState,
+		ConceptModel: u.deps.ConceptModel,
+		MisconRepo:   u.deps.MisconRepo,
 		Graph:        u.deps.Graph,
 		AI:           u.deps.AI,
 		Bootstrap:    u.deps.Bootstrap,
@@ -566,6 +591,8 @@ func (u Usecases) NodeDocBuild(ctx context.Context, in NodeDocBuildInput) (NodeD
 		TeachingPatterns: u.deps.TeachingPatterns,
 		Concepts:         u.deps.Concepts,
 		ConceptState:     u.deps.ConceptState,
+		ConceptModel:     u.deps.ConceptModel,
+		MisconRepo:       u.deps.MisconRepo,
 		Edges:            u.deps.Edges,
 		AI:               u.deps.AI,
 		Vec:              u.deps.Vec,
@@ -607,6 +634,8 @@ func (u Usecases) RealizeActivities(ctx context.Context, in RealizeActivitiesInp
 		ActivityCitations:  u.deps.ActivityCitations,
 		Concepts:           u.deps.Concepts,
 		ConceptState:       u.deps.ConceptState,
+		ConceptModel:       u.deps.ConceptModel,
+		MisconRepo:         u.deps.MisconRepo,
 		Files:              u.deps.Files,
 		Chunks:             u.deps.Chunks,
 		UserProfile:        u.deps.UserProfile,
@@ -696,4 +725,58 @@ func (u Usecases) SagaCleanup(ctx context.Context, in SagaCleanupInput) (SagaCle
 		SagaSvc: u.deps.Saga,
 		Bucket:  u.deps.Bucket,
 	}, steps.SagaCleanupInput(in))
+}
+
+func (u Usecases) PathStructuralUnitBuild(ctx context.Context, in PathStructuralUnitBuildInput) (PathStructuralUnitBuildOutput, error) {
+	return steps.PathStructuralUnitBuild(ctx, steps.PathStructuralUnitBuildDeps{
+		DB:        u.deps.DB,
+		Log:       u.deps.Log,
+		PathNodes: u.deps.PathNodes,
+		Concepts:  u.deps.Concepts,
+		PSUs:      u.deps.PathStructuralUnits,
+		Bootstrap: u.deps.Bootstrap,
+	}, steps.PathStructuralUnitBuildInput(in))
+}
+
+func (u Usecases) PSUPromotion(ctx context.Context, in PSUPromotionInput) (PSUPromotionOutput, error) {
+	return steps.PSUPromotion(ctx, steps.PSUPromotionDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Events:       u.deps.UserEvents,
+		PSUs:         u.deps.PathStructuralUnits,
+		Concepts:     u.deps.Concepts,
+		Edges:        u.deps.Edges,
+		ConceptState: u.deps.ConceptState,
+		ConceptModel: u.deps.ConceptModel,
+		MisconRepo:   u.deps.MisconRepo,
+		AI:           u.deps.AI,
+	}, steps.PSUPromotionInput(in))
+}
+
+func (u Usecases) StructureExtract(ctx context.Context, in StructureExtractInput) (StructureExtractOutput, error) {
+	return steps.StructureExtract(ctx, steps.StructureExtractDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Threads:      u.deps.Threads,
+		Messages:     u.deps.Messages,
+		State:        u.deps.ThreadState,
+		Concepts:     u.deps.Concepts,
+		ConceptModel: u.deps.ConceptModel,
+		MisconRepo:   u.deps.MisconRepo,
+		AI:           u.deps.AI,
+	}, steps.StructureExtractInput(in))
+}
+
+func (u Usecases) StructureBackfill(ctx context.Context, in StructureBackfillInput) (StructureBackfillOutput, error) {
+	return steps.StructureBackfill(ctx, steps.StructureBackfillDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Path:         u.deps.Path,
+		PathNodes:    u.deps.PathNodes,
+		Concepts:     u.deps.Concepts,
+		PSUs:         u.deps.PathStructuralUnits,
+		Bootstrap:    u.deps.Bootstrap,
+		ConceptState: u.deps.ConceptState,
+		ConceptModel: u.deps.ConceptModel,
+	}, steps.StructureBackfillInput(in))
 }

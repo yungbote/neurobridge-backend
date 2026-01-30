@@ -14,8 +14,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildDeps, concepts []conceptInvItem, embs [][]float32, signals AdaptiveSignals, contentType string, adaptiveEnabled bool, progress func(done, total int)) (map[string]uuid.UUID, map[string]any) {
-	out := map[string]uuid.UUID{}
+type canonicalMatch struct {
+	ID     uuid.UUID
+	Score  float64
+	Method string // exact_key | alias | semantic
+}
+
+func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildDeps, concepts []conceptInvItem, embs [][]float32, signals AdaptiveSignals, contentType string, adaptiveEnabled bool, progress func(done, total int)) (map[string]canonicalMatch, map[string]any) {
+	out := map[string]canonicalMatch{}
 	params := map[string]any{}
 	if deps.Vec == nil || deps.Concepts == nil || len(concepts) == 0 || len(embs) != len(concepts) {
 		return out, params
@@ -115,6 +121,7 @@ func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildD
 			continue
 		}
 		if globalRootByKey[k] != uuid.Nil {
+			out[k] = canonicalMatch{ID: globalRootByKey[k], Score: 1.0, Method: "exact_key"}
 			continue // exact global key already exists
 		}
 		aks := dedupeStrings(aliasKeysByKey[k])
@@ -126,7 +133,7 @@ func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildD
 			}
 		}
 		if found != uuid.Nil {
-			out[k] = found
+			out[k] = canonicalMatch{ID: found, Score: 0.9, Method: "alias"}
 			aliasMatched++
 			continue
 		}
@@ -187,7 +194,7 @@ func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildD
 					return nil
 				}
 				mu.Lock()
-				out[k] = cid
+				out[k] = canonicalMatch{ID: cid, Score: best.Score, Method: "semantic"}
 				semanticMatched++
 				mu.Unlock()
 				return nil
@@ -199,10 +206,10 @@ func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildD
 	if len(out) > 0 {
 		ids := make([]uuid.UUID, 0, len(out))
 		seenIDs := map[uuid.UUID]bool{}
-		for _, id := range out {
-			if id != uuid.Nil && !seenIDs[id] {
-				seenIDs[id] = true
-				ids = append(ids, id)
+		for _, m := range out {
+			if m.ID != uuid.Nil && !seenIDs[m.ID] {
+				seenIDs[m.ID] = true
+				ids = append(ids, m.ID)
 			}
 		}
 		if len(ids) > 0 {
@@ -217,9 +224,10 @@ func semanticMatchCanonicalConcepts(ctx context.Context, deps ConceptGraphBuildD
 					}
 				}
 				if len(redir) > 0 {
-					for k, id := range out {
-						if to := redir[id]; to != uuid.Nil {
-							out[k] = to
+					for k, m := range out {
+						if to := redir[m.ID]; to != uuid.Nil {
+							m.ID = to
+							out[k] = m
 						}
 					}
 				}

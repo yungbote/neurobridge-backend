@@ -62,6 +62,8 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		ActivityCitations:  p.activityCites,
 		Concepts:           p.concepts,
 		ConceptState:       p.mastery,
+		ConceptModel:       p.model,
+		MisconRepo:         p.miscon,
 		Files:              p.files,
 		Chunks:             p.chunks,
 		UserProfile:        p.profile,

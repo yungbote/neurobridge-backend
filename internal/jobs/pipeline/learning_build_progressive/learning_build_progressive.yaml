@@ -160,10 +160,12 @@ stages:
     depends_on: [concept_graph_patch_build]
   - name: path_plan_build
     depends_on: [concept_graph_patch_build, material_signal_build, material_set_summarize, user_profile_refresh, path_intake_pre]
+  - name: psu_build
+    depends_on: [path_plan_build]
   - name: path_cover_render
     depends_on: [path_plan_build]
   - name: node_doc_build
-    depends_on: [path_plan_build, embed_chunks]
+    depends_on: [psu_build, path_plan_build, embed_chunks]
     config:
       node_limit: 2
       node_select_mode: outline_and_lesson
