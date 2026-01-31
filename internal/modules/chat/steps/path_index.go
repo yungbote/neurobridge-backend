@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -190,7 +191,7 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 	ns := chatIndex.ChatUserNamespace(in.UserID)
 
 	// Best-effort cleanup: remove previous path-scoped docs of these types (projection rebuild).
-	docTypes := []string{DocTypePathOverview, DocTypePathNode, DocTypePathConcepts, DocTypePathMaterials, DocTypePathUnitDoc}
+	docTypes := []string{DocTypePathOverview, DocTypePathNode, DocTypePathConcepts, DocTypePathMaterials, DocTypePathUnitDoc, DocTypePathUnitBlock}
 	var priorVectorIDs []string
 	_ = deps.DB.WithContext(ctx).
 		Model(&types.ChatDoc{}).
@@ -274,6 +275,57 @@ func IndexPathDocsForChat(ctx context.Context, deps PathIndexDeps, in PathIndexI
 		}
 		docs = append(docs, d)
 		embedInputs = append(embedInputs, d.ContextualText)
+
+		// Block-level unit doc chunks (high-precision retrieval).
+		if nd := nodeDocByNodeID[n.ID]; nd != nil && len(nd.DocJSON) > 0 && string(nd.DocJSON) != "null" {
+			var docObj map[string]any
+			if json.Unmarshal(nd.DocJSON, &docObj) == nil && docObj != nil {
+				if rawBlocks, _ := docObj["blocks"].([]any); len(rawBlocks) > 0 {
+					for bi, raw := range rawBlocks {
+						block, ok := raw.(map[string]any)
+						if !ok {
+							continue
+						}
+						blockID := stringFromAnyCtx(block["id"])
+						if blockID == "" {
+							blockID = strconv.Itoa(bi)
+						}
+						text, contextual, _, _ := buildBlockDocBody(n, blockID, block)
+						if strings.TrimSpace(text) == "" {
+							continue
+						}
+						blockDocID := deterministicUUID(fmt.Sprintf(
+							"chat_doc|v%d|%s|path:%s|node:%s|block:%s",
+							ChatPathDocVersion,
+							DocTypePathUnitBlock,
+							in.PathID.String(),
+							n.ID.String(),
+							blockID,
+						))
+						bd := &types.ChatDoc{
+							ID:             blockDocID,
+							UserID:         in.UserID,
+							DocType:        DocTypePathUnitBlock,
+							Scope:          ScopePath,
+							ScopeID:        &in.PathID,
+							ThreadID:       nil,
+							PathID:         &in.PathID,
+							JobID:          nil,
+							SourceID:       &n.ID,
+							SourceSeq:      nil,
+							ChunkIndex:     bi,
+							Text:           text,
+							ContextualText: contextual,
+							VectorID:       blockDocID.String(),
+							CreatedAt:      now,
+							UpdatedAt:      now,
+						}
+						docs = append(docs, bd)
+						embedInputs = append(embedInputs, bd.ContextualText)
+					}
+				}
+			}
+		}
 
 		// Optional: unit doc chunks for deep Q&A.
 		if nd := nodeDocByNodeID[n.ID]; nd != nil {
@@ -627,7 +679,7 @@ func intakeMaterialAllowlistFromPath(p *types.Path) map[uuid.UUID]bool {
 	if filter == nil {
 		return nil
 	}
-	include := stringSliceFromAny(filter["include_file_ids"])
+	include := stringSliceFromAnyIdx(filter["include_file_ids"])
 	if len(include) == 0 {
 		return nil
 	}
@@ -644,11 +696,11 @@ func intakeMaterialAllowlistFromPath(p *types.Path) map[uuid.UUID]bool {
 	return out
 }
 
-func stringFromAny(v any) string {
+func stringFromAnyIdx(v any) string {
 	return strings.TrimSpace(fmt.Sprint(v))
 }
 
-func stringSliceFromAny(v any) []string {
+func stringSliceFromAnyIdx(v any) []string {
 	if v == nil {
 		return nil
 	}
@@ -664,7 +716,7 @@ func stringSliceFromAny(v any) []string {
 	}
 	arr, ok := v.([]any)
 	if !ok {
-		s := strings.TrimSpace(stringFromAny(v))
+		s := strings.TrimSpace(stringFromAnyIdx(v))
 		if s == "" {
 			return nil
 		}
@@ -672,7 +724,7 @@ func stringSliceFromAny(v any) []string {
 	}
 	out := make([]string, 0, len(arr))
 	for _, x := range arr {
-		s := strings.TrimSpace(stringFromAny(x))
+		s := strings.TrimSpace(stringFromAnyIdx(x))
 		if s != "" {
 			out = append(out, s)
 		}

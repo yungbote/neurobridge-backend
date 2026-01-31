@@ -10,6 +10,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chain_signature_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_maintain"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_path_index"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_path_node_index"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_purge"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_rebuild"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_respond"
@@ -190,13 +191,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ChatThread,
 		repos.ChatMessage,
 		repos.ChatThreadState,
-	repos.ChatSummaryNode,
-	repos.ChatDoc,
-	repos.ChatTurn,
-	repos.Path,
-	repos.JobRun,
-	jobService,
-	chatNotifier,
+		repos.ChatSummaryNode,
+		repos.ChatDoc,
+		repos.ChatTurn,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.Concept,
+		repos.ConceptEdge,
+		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
+		repos.JobRun,
+		jobService,
+		chatNotifier,
 	)
 	if err := jobRegistry.Register(chatRespond); err != nil {
 		return Services{}, err
@@ -276,6 +284,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.MaterialSetSummary,
 	)
 	if err := jobRegistry.Register(chatPathIndex); err != nil {
+		return Services{}, err
+	}
+
+	chatPathNodeIndex := chat_path_node_index.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		repos.ChatDoc,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+	)
+	if err := jobRegistry.Register(chatPathNodeIndex); err != nil {
 		return Services{}, err
 	}
 
@@ -684,6 +706,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocPatch := node_doc_patch.New(
 		db,
 		log,
+		jobService,
 		repos.Path,
 		repos.PathNode,
 		repos.LearningNodeDoc,
@@ -973,6 +996,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ChatMessage,
 		repos.ChatTurn,
 		chatNotifier,
+		repos.UserSessionState,
 	)
 
 	return Services{

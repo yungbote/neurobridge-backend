@@ -21,6 +21,7 @@ const (
 	DocTypePathConcepts  = "path_concepts"
 	DocTypePathMaterials = "path_materials"
 	DocTypePathUnitDoc   = "path_unit_doc"
+	DocTypePathUnitBlock = "path_unit_block"
 )
 
 const (

@@ -64,14 +64,14 @@ func retrieveMaterialChunkContext(
 	query string,
 	qEmb []float32,
 	tokenBudget int,
-) (string, map[string]any) {
+) (string, map[string]any, []EvidenceSource) {
 	trace := map[string]any{}
 	if deps.DB == nil || userID == uuid.Nil || pathID == uuid.Nil || tokenBudget <= 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return "", nil
+		return "", nil, nil
 	}
 
 	// Resolve material_set_id for this path (authoritative linkage).
@@ -82,7 +82,7 @@ func retrieveMaterialChunkContext(
 		Limit(1).
 		Find(&idx).Error
 	if idx.ID == uuid.Nil || idx.MaterialSetID == uuid.Nil {
-		return "", nil
+		return "", nil, nil
 	}
 	trace["material_set_hash"] = shortHash(idx.MaterialSetID.String())
 
@@ -149,7 +149,7 @@ func retrieveMaterialChunkContext(
 	trace["candidates"] = len(candidates)
 
 	if len(candidates) == 0 {
-		return "", trace
+		return "", trace, nil
 	}
 
 	// Filter low-signal and prompt-injection-ish chunks.
@@ -171,7 +171,7 @@ func retrieveMaterialChunkContext(
 	candidates = filtered
 	trace["kept"] = len(candidates)
 	if len(candidates) == 0 {
-		return "", trace
+		return "", trace, nil
 	}
 
 	// Graph-assisted expansion (best-effort): expand via ConceptEvidence/ConceptEdge and material entities/claims.
@@ -252,7 +252,7 @@ func retrieveMaterialChunkContext(
 		candidates = filtered
 		trace["kept_after_graph"] = len(candidates)
 		if len(candidates) == 0 {
-			return "", trace
+			return "", trace, nil
 		}
 	}
 
@@ -262,7 +262,7 @@ func retrieveMaterialChunkContext(
 	selected := selectMaterialHitsForQuery(query, candidates, tokenBudget)
 	trace["selected"] = len(selected)
 	if len(selected) == 0 {
-		return "", trace
+		return "", trace, nil
 	}
 
 	// Include stable identifiers for explainability/provenance graphs.
@@ -282,7 +282,40 @@ func retrieveMaterialChunkContext(
 	trace["selected_chunk_ids"] = selectedChunkIDs
 	trace["selected_chunks"] = selectedChunks
 
-	return renderMaterialHitContext(selected), trace
+	return renderMaterialHitContext(selected), trace, materialEvidenceFromHits(selected)
+}
+
+func materialEvidenceFromHits(hits []materialChunkHit) []EvidenceSource {
+	if len(hits) == 0 {
+		return nil
+	}
+	out := make([]EvidenceSource, 0, len(hits))
+	for _, h := range hits {
+		if h.Chunk == nil || h.File == nil || h.Chunk.ID == uuid.Nil {
+			continue
+		}
+		name := strings.TrimSpace(h.File.OriginalName)
+		if name == "" {
+			name = "Untitled file"
+		}
+		loc := chunkLocation(h.Chunk)
+		meta := map[string]any{
+			"file_name": name,
+			"file_id":   h.File.ID.String(),
+			"chunk_id":  h.Chunk.ID.String(),
+		}
+		if loc != "" {
+			meta["locator"] = loc
+		}
+		out = append(out, EvidenceSource{
+			ID:    "material:" + h.Chunk.ID.String(),
+			Type:  "material_chunk",
+			Title: name,
+			Text:  strings.TrimSpace(h.Chunk.Text),
+			Meta:  meta,
+		})
+	}
+	return out
 }
 
 func denseChunkCandidates(ctx context.Context, db *gorm.DB, vec pc.VectorStore, sourceMaterialSetID uuid.UUID, allowFiles map[uuid.UUID]bool, qEmb []float32, limit int) ([]materialChunkHit, map[string]any) {

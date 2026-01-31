@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,169 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 )
+
+func encodeMetadata(meta map[string]any) datatypes.JSON {
+	if meta == nil || len(meta) == 0 {
+		return datatypes.JSON([]byte(`{}`))
+	}
+	b, err := json.Marshal(meta)
+	if err != nil || len(b) == 0 {
+		return datatypes.JSON([]byte(`{}`))
+	}
+	return datatypes.JSON(b)
+}
+
+func floatFromAny(v any) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			if f, err := strconv.ParseFloat(s, 64); err == nil {
+				return f
+			}
+		}
+	}
+	return 0
+}
+
+func stringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case []byte:
+		return strings.TrimSpace(string(t))
+	default:
+		return strings.TrimSpace(fmt.Sprint(t))
+	}
+}
+
+func sanitizeVisibleBlocks(raw any, maxItems int) []map[string]any {
+	if raw == nil || maxItems <= 0 {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	type row struct {
+		id    string
+		ratio float64
+	}
+	rows := make([]row, 0, len(arr))
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := stringFromAny(m["id"])
+		if id == "" {
+			continue
+		}
+		ratio := floatFromAny(m["ratio"])
+		rows = append(rows, row{id: id, ratio: ratio})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ratio > rows[j].ratio })
+	if len(rows) > maxItems {
+		rows = rows[:maxItems]
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, map[string]any{
+			"id":    r.id,
+			"ratio": r.ratio,
+		})
+	}
+	return out
+}
+
+func sanitizeCurrentBlock(raw any) map[string]any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	id := stringFromAny(m["id"])
+	if id == "" {
+		return nil
+	}
+	conf := floatFromAny(m["confidence"])
+	return map[string]any{
+		"id":         id,
+		"confidence": conf,
+	}
+}
+
+func buildSessionSnapshot(state *types.UserSessionState) map[string]any {
+	if state == nil || state.UserID == uuid.Nil {
+		return nil
+	}
+	out := map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if state.ActivePathID != nil && *state.ActivePathID != uuid.Nil {
+		out["active_path_id"] = state.ActivePathID.String()
+	}
+	if state.ActivePathNodeID != nil && *state.ActivePathNodeID != uuid.Nil {
+		out["active_path_node_id"] = state.ActivePathNodeID.String()
+	}
+	if state.ActiveDocBlockID != nil && strings.TrimSpace(*state.ActiveDocBlockID) != "" {
+		out["active_doc_block_id"] = strings.TrimSpace(*state.ActiveDocBlockID)
+	}
+	if state.ActiveView != nil && strings.TrimSpace(*state.ActiveView) != "" {
+		out["active_view"] = strings.TrimSpace(*state.ActiveView)
+	}
+	if state.ActiveRoute != nil && strings.TrimSpace(*state.ActiveRoute) != "" {
+		out["active_route"] = strings.TrimSpace(*state.ActiveRoute)
+	}
+	if state.ScrollPercent != nil {
+		out["scroll_percent"] = *state.ScrollPercent
+	}
+	if !state.LastSeenAt.IsZero() {
+		out["last_seen_at"] = state.LastSeenAt.UTC().Format(time.RFC3339)
+	}
+
+	if len(state.Metadata) > 0 && string(state.Metadata) != "null" {
+		var meta map[string]any
+		if err := json.Unmarshal(state.Metadata, &meta); err == nil && meta != nil {
+			if vb := sanitizeVisibleBlocks(meta["visible_blocks"], 8); len(vb) > 0 {
+				out["visible_blocks"] = vb
+			}
+			if cb := sanitizeCurrentBlock(meta["current_block"]); cb != nil {
+				out["current_block"] = cb
+			}
+			if vbc := floatFromAny(meta["visible_block_count"]); vbc > 0 {
+				out["visible_block_count"] = vbc
+			}
+			if vp, ok := meta["viewport"].(map[string]any); ok && len(vp) > 0 {
+				out["viewport"] = vp
+			}
+			if dock, ok := meta["chat_dock_open"]; ok {
+				out["chat_dock_open"] = dock
+			}
+		}
+	}
+
+	if len(out) <= 1 { // captured_at only
+		return nil
+	}
+	return out
+}
 
 type ChatService interface {
 	CreateThread(dbc dbctx.Context, title string, pathID *uuid.UUID, jobID *uuid.UUID) (*types.ChatThread, error)
@@ -61,6 +225,8 @@ type chatService struct {
 	messages repos.ChatMessageRepo
 	turns    repos.ChatTurnRepo
 	notify   ChatNotifier
+
+	sessionStates repos.UserSessionStateRepo
 }
 
 func NewChatService(
@@ -73,6 +239,7 @@ func NewChatService(
 	messageRepo repos.ChatMessageRepo,
 	turnRepo repos.ChatTurnRepo,
 	notify ChatNotifier,
+	sessionStateRepo repos.UserSessionStateRepo,
 ) ChatService {
 	return &chatService{
 		db:       db,
@@ -84,6 +251,7 @@ func NewChatService(
 		messages: messageRepo,
 		turns:    turnRepo,
 		notify:   notify,
+		sessionStates: sessionStateRepo,
 	}
 }
 
@@ -491,6 +659,16 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		}
 
 		now := time.Now().UTC()
+		sessionMeta := map[string]any{}
+		if s.sessionStates != nil && rd.SessionID != uuid.Nil {
+			if st, err := s.sessionStates.GetBySessionID(inner, rd.SessionID); err == nil && st != nil && st.UserID == rd.UserID {
+				if snap := buildSessionSnapshot(st); snap != nil {
+					sessionMeta["session_ctx"] = snap
+					sessionMeta["session_ctx_version"] = 1
+				}
+			}
+		}
+		metaJSON := encodeMetadata(sessionMeta)
 
 		// ──────────────────────────────────────────────────────────────────────────────
 		// WAITPOINT INTEGRATION: If this thread is attached to a paused learning_build,
@@ -521,7 +699,7 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 						Role:           "user",
 						Status:         "sent",
 						Content:        content,
-						Metadata:       datatypes.JSON([]byte(`{}`)),
+						Metadata:       metaJSON,
 						IdempotencyKey: idempotencyKey,
 						CreatedAt:      now,
 						UpdatedAt:      now,
@@ -573,7 +751,7 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 			Role:           "user",
 			Status:         "sent",
 			Content:        content,
-			Metadata:       datatypes.JSON([]byte(`{}`)),
+			Metadata:       metaJSON,
 			IdempotencyKey: idempotencyKey,
 			CreatedAt:      now,
 			UpdatedAt:      now,

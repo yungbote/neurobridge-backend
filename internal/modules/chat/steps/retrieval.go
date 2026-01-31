@@ -41,7 +41,7 @@ type retrievalCandidate struct {
 	DropReason    string
 }
 
-func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.ChatThread, query string) (HybridRetrieveOutput, error) {
+func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.ChatThread, query string, scopes retrievalPlan) (HybridRetrieveOutput, error) {
 	out := HybridRetrieveOutput{Mode: "normal", Trace: map[string]any{}}
 	if deps.AI == nil || deps.Docs == nil {
 		return out, fmt.Errorf("hybridRetrieve: missing deps")
@@ -81,6 +81,7 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 		DocTypePathConcepts,
 		DocTypePathMaterials,
 		DocTypePathUnitDoc,
+		DocTypePathUnitBlock,
 	}
 	maxCandidatesPerScope := 40
 
@@ -265,16 +266,18 @@ func hybridRetrieve(ctx context.Context, deps ContextPlanDeps, thread *types.Cha
 		return nil
 	}
 
-	// Expansion order: thread -> path -> user.
-	if err := addScope(ScopeThread, &thread.ID); err != nil {
-		return out, err
+	// Expansion order: thread -> path -> user (subject to scope plan).
+	if scopes.ScopeThread {
+		if err := addScope(ScopeThread, &thread.ID); err != nil {
+			return out, err
+		}
 	}
-	if thread.PathID != nil && *thread.PathID != uuid.Nil {
+	if scopes.ScopePath && thread.PathID != nil && *thread.PathID != uuid.Nil {
 		if err := addScope(ScopePath, thread.PathID); err != nil {
 			return out, err
 		}
 	}
-	if len(candidates) < 30 {
+	if scopes.ScopeUser && len(candidates) < 30 {
 		if err := addScope(ScopeUser, nil); err != nil {
 			return out, err
 		}
@@ -658,6 +661,9 @@ func docMetadata(d *types.ChatDoc) map[string]any {
 	}
 	if d.JobID != nil && *d.JobID != uuid.Nil {
 		md["job_id"] = d.JobID.String()
+	}
+	if d.SourceID != nil && *d.SourceID != uuid.Nil {
+		md["source_id"] = d.SourceID.String()
 	}
 	return md
 }

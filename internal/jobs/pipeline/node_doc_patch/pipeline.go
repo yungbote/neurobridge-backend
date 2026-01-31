@@ -8,6 +8,7 @@ import (
 
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -65,6 +66,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	if err != nil {
 		jc.Fail("patch", err)
 		return nil
+	}
+
+	if p.jobs != nil {
+		if node, nerr := p.nodes.GetByID(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, nodeID); nerr == nil && node != nil && node.PathID != uuid.Nil {
+			entityID := node.PathID
+			payload := map[string]any{
+				"path_id":      node.PathID.String(),
+				"path_node_id": nodeID.String(),
+			}
+			if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "chat_path_node_index", "path_node", &entityID, payload); err != nil {
+				p.log.Warn("Failed to enqueue chat_path_node_index", "error", err, "path_id", node.PathID.String(), "path_node_id", nodeID.String())
+			}
+		}
 	}
 
 	jc.Succeed("done", map[string]any{

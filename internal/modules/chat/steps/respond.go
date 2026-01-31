@@ -34,6 +34,13 @@ type RespondDeps struct {
 	Docs      repos.ChatDocRepo
 	Turns     repos.ChatTurnRepo
 	Path      repos.PathRepo
+	PathNodes repos.PathNodeRepo
+	NodeDocs  repos.LearningNodeDocRepo
+	Concepts  repos.ConceptRepo
+	Edges     repos.ConceptEdgeRepo
+	Mastery   repos.UserConceptStateRepo
+	Models    repos.UserConceptModelRepo
+	Miscon    repos.UserMisconceptionInstanceRepo
 
 	JobRuns repos.JobRunRepo
 	Jobs    services.JobService
@@ -156,11 +163,15 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	var (
-		instructions   string
-		userPayload    string
-		trace          map[string]any
-		aiClient       openai.Client
+		instructions    string
+		userPayload     string
+		trace           map[string]any
+		aiClient        openai.Client
 		useConversation bool
+		evidenceSources []EvidenceSource
+		selectedEvidence []EvidenceSource
+		evidenceText    string
+		evidenceBudget  int
 	)
 	trace = map[string]any{}
 	aiClient = deps.AI
@@ -238,11 +249,20 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 			Docs:      deps.Docs,
 			Messages:  deps.Messages,
 			Summaries: deps.Summaries,
+			Path:      deps.Path,
+			PathNodes: deps.PathNodes,
+			NodeDocs:  deps.NodeDocs,
+			Concepts:  deps.Concepts,
+			Edges:     deps.Edges,
+			Mastery:   deps.Mastery,
+			Models:    deps.Models,
+			Miscon:    deps.Miscon,
 		}, ContextPlanInput{
 			UserID:   in.UserID,
 			Thread:   thread,
 			State:    state,
 			UserText: userText,
+			UserMsg:  &userMsg,
 		})
 		if err != nil {
 			return out, err
@@ -254,6 +274,80 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 			trace = map[string]any{}
 		}
 		trace["route"] = "product"
+		evidenceSources = plan.EvidenceSources
+		evidenceBudget = plan.EvidenceTokenBudget
+		if len(evidenceSources) > 0 {
+			selected, etrace := selectEvidenceSources(ctx, deps.AI, userText, evidenceSources)
+			if len(etrace) > 0 {
+				trace["evidence_select"] = etrace
+			}
+			if len(selected) == 0 {
+				selected = evidenceSources
+				trace["evidence_select_fallback"] = true
+			}
+			selectedEvidence = selected
+			if wantsVerbatimQuote(userText) && wantsMaterialQuotes(userText) {
+				matSources := filterQuoteSources(evidenceSources, "materials")
+				if len(matSources) > 0 {
+					seen := map[string]bool{}
+					merged := make([]EvidenceSource, 0, len(selectedEvidence)+len(matSources))
+					for _, s := range selectedEvidence {
+						if strings.TrimSpace(s.ID) != "" {
+							seen[s.ID] = true
+						}
+						merged = append(merged, s)
+					}
+					for _, s := range matSources {
+						if strings.TrimSpace(s.ID) == "" || seen[s.ID] {
+							continue
+						}
+						merged = append(merged, s)
+					}
+					selectedEvidence = merged
+					trace["evidence_select_materials_forced"] = true
+				}
+			}
+			evidenceText = renderEvidenceSources(selectedEvidence, plan.EvidenceTokenBudget)
+			if strings.TrimSpace(evidenceText) != "" {
+				instructions = strings.TrimSpace(instructions) + "\n\n## Evidence Sources (use for factual claims)\n" + evidenceText + "\n\nWhen stating facts or quoting, add citation markers like [[source:ID]]."
+				trace["evidence_sources"] = len(selected)
+			}
+		}
+	}
+
+	// Guard: if user asks for verbatim slide/file quotes but we have no source excerpts, reply deterministically.
+	if wantsMaterialQuotes(userText) && len(filterQuoteSources(selectedEvidence, "materials")) == 0 {
+		reply := strings.TrimSpace(strings.Join([]string{
+			"I don’t have any slide text indexed for this path, so I can’t provide citations or verbatim quotes from the file.",
+			"If you want slide‑level quotes, re‑ingest the file (or upload a PDF) so the slide text can be extracted and indexed.",
+			"I can still list the source file(s) or summarize based on the path materials summary if that’s helpful.",
+		}, "\n"))
+		now := time.Now().UTC()
+		meta := map[string]any{"material_quote_missing": true}
+		metaJSON, _ := json.Marshal(meta)
+		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
+			"content":    reply,
+			"status":     MessageStatusDone,
+			"metadata":   datatypes.JSON(metaJSON),
+			"updated_at": now,
+		})
+		if deps.Notify != nil {
+			var asst types.ChatMessage
+			_ = deps.DB.WithContext(ctx).Model(&types.ChatMessage{}).Where("id = ?", in.AssistantMessageID).First(&asst).Error
+			if asst.ID != uuid.Nil {
+				deps.Notify.MessageDone(in.UserID, in.ThreadID, &asst, map[string]any{
+					"turn_id": in.TurnID.String(),
+					"attempt": in.Attempt,
+				})
+			}
+		}
+		doneAt := time.Now().UTC()
+		_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
+			"status":       "done",
+			"completed_at": &doneAt,
+		})
+		out.AssistantText = reply
+		return out, nil
 	}
 
 	// Persist the retrieval/route trace early for debuggability (even if streaming fails later).
@@ -361,10 +455,93 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	text = strings.TrimSpace(text)
 	out.AssistantText = text
 
+	// Post-process citations and verify quotes against evidence.
+	citations := []EvidenceCitation{}
+	quoteVerified := true
+	if len(selectedEvidence) > 0 && strings.TrimSpace(evidenceText) != "" {
+		ids, cleaned := parseCitationMarkers(text)
+		if len(ids) > 0 {
+			citations = buildCitations(ids, selectedEvidence)
+			if len(citations) > 0 {
+				text = applyCitationReplacements(cleaned, citations, selectedEvidence)
+			} else {
+				text = stripCitationMarkers(cleaned)
+			}
+		} else {
+			text = cleaned
+		}
+
+		quoteIntent := wantsVerbatimQuote(userText)
+		quotePreference := "any"
+		if wantsMaterialQuotes(userText) {
+			quotePreference = "materials"
+		}
+		quoteSources := selectedEvidence
+		quoteEvidenceText := evidenceText
+		if quoteIntent {
+			quoteSources = filterQuoteSources(selectedEvidence, quotePreference)
+			quoteEvidenceText = renderEvidenceSources(quoteSources, evidenceBudget)
+			if strings.TrimSpace(quoteEvidenceText) == "" {
+				quoteEvidenceText = "No verbatim evidence available."
+			}
+		}
+
+		quotes := extractQuotedStrings(text)
+		forceRepair := false
+		if quoteIntent && len(quoteSources) == 0 && len(quotes) > 0 {
+			forceRepair = true
+		}
+
+		if !forceRepair {
+			if ok, _ := verifyQuotesInEvidence(quotes, quoteSources); !ok {
+				quoteVerified = false
+				forceRepair = true
+			}
+		} else {
+			quoteVerified = false
+		}
+		if forceRepair {
+			if fixed, ferr := repairQuotedAnswer(ctx, aiClient, text, quoteEvidenceText); ferr == nil && strings.TrimSpace(fixed) != "" {
+				ids2, cleaned2 := parseCitationMarkers(fixed)
+				if len(ids2) > 0 {
+					citations = buildCitations(ids2, selectedEvidence)
+					if len(citations) > 0 {
+						text = applyCitationReplacements(cleaned2, citations, selectedEvidence)
+					} else {
+						text = stripCitationMarkers(cleaned2)
+					}
+				} else {
+					text = cleaned2
+				}
+				quotes2 := extractQuotedStrings(text)
+				if ok2, _ := verifyQuotesInEvidence(quotes2, quoteSources); ok2 {
+					quoteVerified = true
+				}
+			}
+		}
+		out.AssistantText = text
+	}
+
 	// Persist final message content + status.
+	meta := map[string]any{}
+	if len(citations) > 0 {
+		meta["citations"] = citations
+	}
+	if len(selectedEvidence) > 0 {
+		ids := make([]string, 0, len(selectedEvidence))
+		for _, s := range selectedEvidence {
+			if strings.TrimSpace(s.ID) != "" {
+				ids = append(ids, s.ID)
+			}
+		}
+		meta["evidence_ids"] = ids
+	}
+	meta["quote_verified"] = quoteVerified
+	metaJSON, _ := json.Marshal(meta)
 	if err := deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
 		"content":    text,
 		"status":     MessageStatusDone,
+		"metadata":   datatypes.JSON(metaJSON),
 		"updated_at": time.Now().UTC(),
 	}); err != nil {
 		return out, err

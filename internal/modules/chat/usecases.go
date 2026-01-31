@@ -39,12 +39,16 @@ type UsecasesDeps struct {
 	Notify  services.ChatNotifier
 
 	// Optional: path docs projection used for hybrid retrieval in chat threads.
-	Path       repos.PathRepo
-	PathNodes  repos.PathNodeRepo
-	NodeActs   repos.PathNodeActivityRepo
-	Activities repos.ActivityRepo
-	Concepts   repos.ConceptRepo
-	NodeDocs   repos.LearningNodeDocRepo
+	Path         repos.PathRepo
+	PathNodes    repos.PathNodeRepo
+	NodeActs     repos.PathNodeActivityRepo
+	Activities   repos.ActivityRepo
+	Concepts     repos.ConceptRepo
+	NodeDocs     repos.LearningNodeDocRepo
+	ConceptEdges repos.ConceptEdgeRepo
+	ConceptState repos.UserConceptStateRepo
+	ConceptModel repos.UserConceptModelRepo
+	MisconRepo   repos.UserMisconceptionInstanceRepo
 
 	UserLibraryIndex     repos.UserLibraryIndexRepo
 	MaterialFiles        repos.MaterialFileRepo
@@ -71,6 +75,9 @@ type (
 	PathIndexInput  = steps.PathIndexInput
 	PathIndexOutput = steps.PathIndexOutput
 
+	PathNodeIndexInput  = steps.PathNodeIndexInput
+	PathNodeIndexOutput = steps.PathNodeIndexOutput
+
 	RebuildInput = steps.RebuildInput
 )
 
@@ -87,6 +94,13 @@ func (u Usecases) Respond(ctx context.Context, in RespondInput) (RespondOutput, 
 		Docs:      u.deps.Docs,
 		Turns:     u.deps.Turns,
 		Path:      u.deps.Path,
+		PathNodes: u.deps.PathNodes,
+		NodeDocs:  u.deps.NodeDocs,
+		Concepts:  u.deps.Concepts,
+		Edges:     u.deps.ConceptEdges,
+		Mastery:   u.deps.ConceptState,
+		Models:    u.deps.ConceptModel,
+		Miscon:    u.deps.MisconRepo,
 		JobRuns:   u.deps.JobRuns,
 		Jobs:      u.deps.Jobs,
 		Notify:    u.deps.Notify,
@@ -129,6 +143,25 @@ func (u Usecases) IndexPathDocsForChat(ctx context.Context, in PathIndexInput) (
 		MaterialFiles:        u.deps.MaterialFiles,
 		MaterialSetSummaries: u.deps.MaterialSetSummaries,
 	}, steps.PathIndexInput(in))
+}
+
+func (u Usecases) IndexPathNodeBlocksForChat(ctx context.Context, in PathNodeIndexInput) (PathNodeIndexOutput, error) {
+	return steps.IndexPathNodeBlocksForChat(ctx, steps.PathIndexDeps{
+		DB:                   u.deps.DB,
+		Log:                  u.deps.Log,
+		AI:                   u.deps.AI,
+		Vec:                  u.deps.Vec,
+		Docs:                 u.deps.Docs,
+		Path:                 u.deps.Path,
+		PathNodes:            u.deps.PathNodes,
+		NodeActs:             u.deps.NodeActs,
+		Activities:           u.deps.Activities,
+		Concepts:             u.deps.Concepts,
+		NodeDocs:             u.deps.NodeDocs,
+		UserLibraryIndex:     u.deps.UserLibraryIndex,
+		MaterialFiles:        u.deps.MaterialFiles,
+		MaterialSetSummaries: u.deps.MaterialSetSummaries,
+	}, steps.PathNodeIndexInput(in))
 }
 
 func (u Usecases) RebuildThreadProjections(ctx context.Context, in RebuildInput) error {

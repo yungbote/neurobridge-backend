@@ -24,6 +24,13 @@ type Pipeline struct {
 	docs      repos.ChatDocRepo
 	turns     repos.ChatTurnRepo
 	path      repos.PathRepo
+	pathNodes repos.PathNodeRepo
+	nodeDocs  repos.LearningNodeDocRepo
+	concepts  repos.ConceptRepo
+	edges     repos.ConceptEdgeRepo
+	mastery   repos.UserConceptStateRepo
+	models    repos.UserConceptModelRepo
+	miscon    repos.UserMisconceptionInstanceRepo
 
 	jobRuns repos.JobRunRepo
 	jobs    services.JobService
@@ -42,6 +49,13 @@ func New(
 	docs repos.ChatDocRepo,
 	turns repos.ChatTurnRepo,
 	path repos.PathRepo,
+	pathNodes repos.PathNodeRepo,
+	nodeDocs repos.LearningNodeDocRepo,
+	concepts repos.ConceptRepo,
+	edges repos.ConceptEdgeRepo,
+	mastery repos.UserConceptStateRepo,
+	models repos.UserConceptModelRepo,
+	miscon repos.UserMisconceptionInstanceRepo,
 	jobRuns repos.JobRunRepo,
 	jobs services.JobService,
 	notify services.ChatNotifier,
@@ -58,6 +72,13 @@ func New(
 		docs:      docs,
 		turns:     turns,
 		path:      path,
+		pathNodes: pathNodes,
+		nodeDocs:  nodeDocs,
+		concepts:  concepts,
+		edges:     edges,
+		mastery:   mastery,
+		models:    models,
+		miscon:    miscon,
 		jobRuns:   jobRuns,
 		jobs:      jobs,
 		notify:    notify,

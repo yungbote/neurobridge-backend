@@ -316,7 +316,7 @@ func (s *sessionStateService) Patch(dbc dbctx.Context, patch SessionStatePatch) 
 			if patch.Metadata.Value == nil {
 				updates["metadata"] = nil
 			} else {
-				merged, err := mergeJSONObjects(prev.Metadata, *patch.Metadata.Value)
+				merged, err := mergeJSONObjects(json.RawMessage(prev.Metadata), *patch.Metadata.Value)
 				if err != nil {
 					return nil, err
 				}

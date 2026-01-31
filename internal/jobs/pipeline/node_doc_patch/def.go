@@ -8,11 +8,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Pipeline struct {
 	db        *gorm.DB
 	log       *logger.Logger
+	jobs      services.JobService
 	path      repos.PathRepo
 	nodes     repos.PathNodeRepo
 	docs      repos.LearningNodeDocRepo
@@ -31,6 +33,7 @@ type Pipeline struct {
 func New(
 	db *gorm.DB,
 	baseLog *logger.Logger,
+	jobs services.JobService,
 	path repos.PathRepo,
 	nodes repos.PathNodeRepo,
 	docs repos.LearningNodeDocRepo,
@@ -48,6 +51,7 @@ func New(
 	return &Pipeline{
 		db:        db,
 		log:       baseLog.With("job", "node_doc_patch"),
+		jobs:      jobs,
 		path:      path,
 		nodes:     nodes,
 		docs:      docs,
