@@ -129,6 +129,46 @@ func (o *OptionalJSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func mergeJSONObjects(base, patch json.RawMessage) (json.RawMessage, error) {
+	if len(patch) == 0 {
+		if len(base) == 0 {
+			return nil, nil
+		}
+		out := make(json.RawMessage, len(base))
+		copy(out, base)
+		return out, nil
+	}
+
+	var patchObj map[string]any
+	if err := json.Unmarshal(patch, &patchObj); err != nil {
+		return nil, err
+	}
+	if patchObj == nil {
+		patchObj = map[string]any{}
+	}
+
+	var baseObj map[string]any
+	if len(base) > 0 {
+		if err := json.Unmarshal(base, &baseObj); err != nil {
+			return nil, err
+		}
+	}
+	if baseObj == nil {
+		baseObj = map[string]any{}
+	}
+
+	for k, v := range patchObj {
+		baseObj[k] = v
+	}
+
+	merged, err := json.Marshal(baseObj)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.RawMessage(merged), nil
+}
+
 type SessionStatePatch struct {
 	ActivePathID       OptionalUUID    `json:"active_path_id"`
 	ActivePathNodeID   OptionalUUID    `json:"active_path_node_id"`
@@ -276,7 +316,15 @@ func (s *sessionStateService) Patch(dbc dbctx.Context, patch SessionStatePatch) 
 			if patch.Metadata.Value == nil {
 				updates["metadata"] = nil
 			} else {
-				updates["metadata"] = datatypes.JSON(*patch.Metadata.Value)
+				merged, err := mergeJSONObjects(prev.Metadata, *patch.Metadata.Value)
+				if err != nil {
+					return nil, err
+				}
+				if len(merged) == 0 {
+					updates["metadata"] = nil
+				} else {
+					updates["metadata"] = datatypes.JSON(merged)
+				}
 			}
 		}
 
