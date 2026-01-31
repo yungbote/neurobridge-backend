@@ -23,6 +23,7 @@ type Pipeline struct {
 	summaries repos.ChatSummaryNodeRepo
 	docs      repos.ChatDocRepo
 	turns     repos.ChatTurnRepo
+	path      repos.PathRepo
 
 	jobRuns repos.JobRunRepo
 	jobs    services.JobService
@@ -40,6 +41,7 @@ func New(
 	summaries repos.ChatSummaryNodeRepo,
 	docs repos.ChatDocRepo,
 	turns repos.ChatTurnRepo,
+	path repos.PathRepo,
 	jobRuns repos.JobRunRepo,
 	jobs services.JobService,
 	notify services.ChatNotifier,
@@ -55,6 +57,7 @@ func New(
 		summaries: summaries,
 		docs:      docs,
 		turns:     turns,
+		path:      path,
 		jobRuns:   jobRuns,
 		jobs:      jobs,
 		notify:    notify,

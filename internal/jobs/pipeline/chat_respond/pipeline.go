@@ -46,6 +46,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Summaries: p.summaries,
 		Docs:      p.docs,
 		Turns:     p.turns,
+		Path:      p.path,
 		JobRuns:   p.jobRuns,
 		Jobs:      p.jobs,
 		Notify:    p.notify,

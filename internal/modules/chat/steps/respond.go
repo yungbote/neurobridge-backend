@@ -33,6 +33,7 @@ type RespondDeps struct {
 	Summaries repos.ChatSummaryNodeRepo
 	Docs      repos.ChatDocRepo
 	Turns     repos.ChatTurnRepo
+	Path      repos.PathRepo
 
 	JobRuns repos.JobRunRepo
 	Jobs    services.JobService
@@ -139,26 +140,125 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 		}
 	}
 
-	plan, err := BuildContextPlan(ctx, ContextPlanDeps{
-		DB:        deps.DB,
-		AI:        deps.AI,
-		Vec:       deps.Vec,
-		Docs:      deps.Docs,
-		Messages:  deps.Messages,
-		Summaries: deps.Summaries,
-	}, ContextPlanInput{
-		UserID:   in.UserID,
-		Thread:   thread,
-		State:    state,
-		UserText: userText,
-	})
-	if err != nil {
-		return out, err
+	// Gather recent messages for routing / fast response context.
+	recent := ""
+	if deps.Messages != nil {
+		if history, err := deps.Messages.ListRecent(dbc, in.ThreadID, 12); err == nil && len(history) > 0 {
+			recent = formatRecent(history, 6)
+		}
 	}
 
-	// Persist the retrieval decision trace early for debuggability (even if streaming fails later).
-	if len(plan.Trace) > 0 {
-		if b, err := json.Marshal(plan.Trace); err == nil {
+	route := chatRouteDecision{Route: "product"}
+	if !threadHasActiveWaitpoint(ctx, deps, thread, in.UserID) {
+		if r, err := routeChatMessage(ctx, deps, thread, userText, recent); err == nil {
+			route = r
+		}
+	}
+
+	var (
+		instructions   string
+		userPayload    string
+		trace          map[string]any
+		aiClient       openai.Client
+		useConversation bool
+	)
+	trace = map[string]any{}
+	aiClient = deps.AI
+	useConversation = strings.TrimSpace(conversationID) != ""
+
+	switch strings.ToLower(strings.TrimSpace(route.Route)) {
+	case "smalltalk":
+		instructions, userPayload = promptFastChat(recent, userText)
+		if fastModel := resolveChatFastModel(); fastModel != "" {
+			aiClient = openai.WithModel(deps.AI, fastModel)
+			trace["model"] = fastModel
+		}
+		trace["route"] = "smalltalk"
+		trace["context_messages"] = 6
+		useConversation = false
+	case "tool":
+		toolRes, err := executeChatToolCalls(ctx, deps, thread, route.ToolCalls)
+		if err != nil {
+			return out, err
+		}
+		// Persist tool metadata into assistant message and finish without streaming.
+		meta := map[string]any{
+			"kind":       "tool_call",
+			"tool_calls": route.ToolCalls,
+		}
+		for k, v := range toolRes.Metadata {
+			meta[k] = v
+		}
+		metaJSON, _ := json.Marshal(meta)
+		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
+			"content":    toolRes.Text,
+			"status":     MessageStatusDone,
+			"metadata":   datatypes.JSON(metaJSON),
+			"updated_at": time.Now().UTC(),
+		})
+		if deps.Notify != nil {
+			var asst types.ChatMessage
+			_ = deps.DB.WithContext(ctx).Model(&types.ChatMessage{}).Where("id = ?", in.AssistantMessageID).First(&asst).Error
+			if asst.ID != uuid.Nil {
+				deps.Notify.MessageDone(in.UserID, in.ThreadID, &asst, map[string]any{
+					"turn_id": in.TurnID.String(),
+					"attempt": in.Attempt,
+				})
+			}
+		}
+		trace["route"] = "tool"
+		trace["tool_meta"] = toolRes.Metadata
+		if b, err := json.Marshal(trace); err == nil {
+			_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
+				"retrieval_trace": datatypes.JSON(b),
+			})
+		}
+		doneAt := time.Now().UTC()
+		_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
+			"status":       "done",
+			"completed_at": &doneAt,
+		})
+		out.AssistantText = strings.TrimSpace(toolRes.Text)
+		if deps.Jobs != nil && deps.JobRuns != nil {
+			has, _ := deps.JobRuns.HasRunnableForEntity(dbc, in.UserID, "chat_thread", in.ThreadID, "chat_maintain")
+			if !has {
+				payload := map[string]any{
+					"thread_id": in.ThreadID.String(),
+				}
+				entityID := in.ThreadID
+				_, _ = deps.Jobs.Enqueue(dbc, in.UserID, "chat_maintain", "chat_thread", &entityID, payload)
+			}
+		}
+		return out, nil
+	default:
+		plan, err := BuildContextPlan(ctx, ContextPlanDeps{
+			DB:        deps.DB,
+			AI:        deps.AI,
+			Vec:       deps.Vec,
+			Docs:      deps.Docs,
+			Messages:  deps.Messages,
+			Summaries: deps.Summaries,
+		}, ContextPlanInput{
+			UserID:   in.UserID,
+			Thread:   thread,
+			State:    state,
+			UserText: userText,
+		})
+		if err != nil {
+			return out, err
+		}
+		instructions = plan.Instructions
+		userPayload = plan.UserPayload
+		trace = plan.Trace
+		if trace == nil {
+			trace = map[string]any{}
+		}
+		trace["route"] = "product"
+	}
+
+	// Persist the retrieval/route trace early for debuggability (even if streaming fails later).
+	if len(trace) > 0 {
+		if b, err := json.Marshal(trace); err == nil {
 			_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
 				"retrieval_trace": datatypes.JSON(b),
 			})
@@ -229,10 +329,10 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	var text string
-	if strings.TrimSpace(conversationID) != "" {
-		text, err = deps.AI.StreamTextInConversation(ctx, conversationID, plan.Instructions, plan.UserPayload, onDelta)
+	if useConversation && strings.TrimSpace(conversationID) != "" {
+		text, err = aiClient.StreamTextInConversation(ctx, conversationID, instructions, userPayload, onDelta)
 	} else {
-		text, err = deps.AI.StreamText(ctx, plan.Instructions, plan.UserPayload, onDelta)
+		text, err = aiClient.StreamText(ctx, instructions, userPayload, onDelta)
 	}
 	if err != nil {
 		flushNotify()

@@ -190,12 +190,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ChatThread,
 		repos.ChatMessage,
 		repos.ChatThreadState,
-		repos.ChatSummaryNode,
-		repos.ChatDoc,
-		repos.ChatTurn,
-		repos.JobRun,
-		jobService,
-		chatNotifier,
+	repos.ChatSummaryNode,
+	repos.ChatDoc,
+	repos.ChatTurn,
+	repos.Path,
+	repos.JobRun,
+	jobService,
+	chatNotifier,
 	)
 	if err := jobRegistry.Register(chatRespond); err != nil {
 		return Services{}, err
