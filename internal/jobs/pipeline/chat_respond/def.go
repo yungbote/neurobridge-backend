@@ -31,6 +31,7 @@ type Pipeline struct {
 	mastery   repos.UserConceptStateRepo
 	models    repos.UserConceptModelRepo
 	miscon    repos.UserMisconceptionInstanceRepo
+	sessions  repos.UserSessionStateRepo
 
 	jobRuns repos.JobRunRepo
 	jobs    services.JobService
@@ -56,6 +57,7 @@ func New(
 	mastery repos.UserConceptStateRepo,
 	models repos.UserConceptModelRepo,
 	miscon repos.UserMisconceptionInstanceRepo,
+	sessions repos.UserSessionStateRepo,
 	jobRuns repos.JobRunRepo,
 	jobs services.JobService,
 	notify services.ChatNotifier,
@@ -79,6 +81,7 @@ func New(
 		mastery:   mastery,
 		models:    models,
 		miscon:    miscon,
+		sessions:  sessions,
 		jobRuns:   jobRuns,
 		jobs:      jobs,
 		notify:    notify,

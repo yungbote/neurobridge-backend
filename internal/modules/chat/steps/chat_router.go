@@ -53,14 +53,15 @@ func routeChatMessage(ctx context.Context, deps RespondDeps, thread *types.ChatT
     }
 
     system := strings.TrimSpace(strings.Join([]string{
-        "You route user messages for a learning product.",
-        "Choose one route:",
+        "ROLE: Routing classifier for a learning product chat.",
+        "TASK: Choose a single route and optional tool call.",
+        "OUTPUT: Return ONLY JSON matching the schema.",
+        "DECISION: If unsure, choose product.",
+        "ROUTES:",
         "- tool: user explicitly asks to trigger a pipeline (build, reindex, rebuild)",
         "- product: questions about learning content, paths, materials, progress, or the app",
         "- smalltalk: off-topic or casual chat unrelated to learning",
-        "If unsure, choose product.",
         "If route=tool, include at most 1 tool call from the allowed list.",
-        "Return ONLY JSON matching the schema.",
     }, "\n"))
 
     user := strings.TrimSpace(strings.Join([]string{

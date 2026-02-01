@@ -367,7 +367,9 @@ func NodeFiguresPlanBuild(ctx context.Context, deps NodeFiguresPlanBuildDeps, in
 			system := `
 MODE: FIGURE_PLANNER
 
-You decide whether a raster "figure" (image) would meaningfully help this node.
+ROLE: Figure planner for lesson nodes.
+TASK: Decide whether a raster figure would meaningfully help this node.
+OUTPUT: Return ONLY valid JSON matching the schema (no extra keys).
 Figures can be photos, illustrations, or diagrams; choose the style that best conveys the concept.
 Labels/equations are OK when they help; include them explicitly in the prompt if needed.
 

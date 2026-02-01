@@ -406,7 +406,12 @@ func proposeCompoundLabel(ctx context.Context, ai openai.Client, keys []string) 
 	if ai == nil || len(keys) == 0 {
 		return compoundLabel{}, false
 	}
-	system := "You name an umbrella concept that unifies the provided member concepts. Return JSON only."
+	system := strings.TrimSpace(strings.Join([]string{
+		"ROLE: Concept naming assistant.",
+		"TASK: Propose a concise umbrella concept that unifies the provided member concepts.",
+		"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+		"RULES: Use stable, domain-appropriate terminology; avoid overly broad labels.",
+	}, "\n"))
 	user := "MEMBER_CONCEPTS:\n" + strings.Join(keys, ", ")
 	schema := map[string]any{
 		"type": "object",

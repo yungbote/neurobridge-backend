@@ -242,15 +242,15 @@ func NewChatService(
 	sessionStateRepo repos.UserSessionStateRepo,
 ) ChatService {
 	return &chatService{
-		db:       db,
-		log:      baseLog.With("service", "ChatService"),
-		paths:    pathRepo,
-		jobRuns:  jobRunRepo,
-		jobs:     jobService,
-		threads:  threadRepo,
-		messages: messageRepo,
-		turns:    turnRepo,
-		notify:   notify,
+		db:            db,
+		log:           baseLog.With("service", "ChatService"),
+		paths:         pathRepo,
+		jobRuns:       jobRunRepo,
+		jobs:          jobService,
+		threads:       threadRepo,
+		messages:      messageRepo,
+		turns:         turnRepo,
+		notify:        notify,
 		sessionStates: sessionStateRepo,
 	}
 }
@@ -660,9 +660,15 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 
 		now := time.Now().UTC()
 		sessionMeta := map[string]any{}
+		if rd.SessionID != uuid.Nil {
+			sessionMeta["session_id"] = rd.SessionID.String()
+		}
 		if s.sessionStates != nil && rd.SessionID != uuid.Nil {
 			if st, err := s.sessionStates.GetBySessionID(inner, rd.SessionID); err == nil && st != nil && st.UserID == rd.UserID {
 				if snap := buildSessionSnapshot(st); snap != nil {
+					if rd.SessionID != uuid.Nil {
+						snap["session_id"] = rd.SessionID.String()
+					}
 					sessionMeta["session_ctx"] = snap
 					sessionMeta["session_ctx_version"] = 1
 				}

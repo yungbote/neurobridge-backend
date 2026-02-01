@@ -396,7 +396,9 @@ func NodeVideosPlanBuild(ctx context.Context, deps NodeVideosPlanBuildDeps, in N
 			system := `
 MODE: VIDEO_PLANNER
 
-You decide whether a short supplementary video would meaningfully help this node.
+ROLE: Video planner for lesson nodes.
+TASK: Decide whether a short supplementary video would meaningfully help this node.
+OUTPUT: Return ONLY valid JSON matching the schema (no extra keys).
 Videos should add value beyond diagrams by showing motion, dynamics, spatial intuition, or a realistic setup/demo.
 
 Continuity rules (critical for multi-clip stitching):

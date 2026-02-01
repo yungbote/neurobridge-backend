@@ -904,10 +904,10 @@ func polishNodeDocMeta(ctx context.Context, deps NodeDocBuildDeps, doc content.N
 
 	system := strings.TrimSpace(`
 MODE: NODE_DOC_POLISH
-
-You polish a learner-facing lesson doc to remove meta/templating language.
-Rules:
-- Output ONLY valid JSON that matches the schema.
+ROLE: Lesson doc polisher.
+TASK: Remove meta/templating language while preserving meaning.
+OUTPUT: Return ONLY valid JSON that matches the schema (no extra keys).
+RULES:
 - Do NOT change ids, order, block types, citations, URLs, code, diagram.source, or table rows/columns.
 - Only rewrite learner-facing text fields to be polished and content-focused.
 - Preserve meaning and citations; do not add or remove blocks.`)

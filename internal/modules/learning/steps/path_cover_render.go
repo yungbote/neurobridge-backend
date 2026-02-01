@@ -155,8 +155,10 @@ func buildPathCoverPrompt(title, desc string, topics []string) string {
 		desc = "A curated learning journey."
 	}
 	var b strings.Builder
-	b.WriteString("Create a clean, human-designed avatar illustration for a learning path.\n")
-	b.WriteString("Goal: premium, design-forward, polished (not 'AI-looking').\n")
+	b.WriteString("ROLE: Visual designer.\n")
+	b.WriteString("TASK: Create a clean, human-designed avatar illustration for a learning path.\n")
+	b.WriteString("OUTPUT: One square 1:1 illustration, no text.\n")
+	b.WriteString("QUALITY: premium, design-forward, polished (not 'AI-looking').\n")
 	b.WriteString("Title: " + strings.TrimSpace(title) + "\n")
 	b.WriteString("Description: " + strings.TrimSpace(desc) + "\n")
 	if len(topics) > 0 {

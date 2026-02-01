@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yungbote/neurobridge-backend/internal/platform/promptstyle"
 )
 
 type Options struct {
@@ -175,6 +177,7 @@ func (c *Client) GenerateText(ctx context.Context, system string, user string) (
 	if strings.TrimSpace(c.model) == "" {
 		return "", errors.New("missing NB_INFERENCE_MODEL")
 	}
+	system = promptstyle.ApplySystem(system, "text")
 
 	req := textGenerateRequest{
 		Model: c.model,
@@ -207,6 +210,7 @@ func (c *Client) GenerateJSON(ctx context.Context, system string, user string, s
 	if schema == nil {
 		return nil, errors.New("schema required")
 	}
+	system = promptstyle.ApplySystem(system, "json")
 
 	req := textGenerateRequest{
 		Model: c.model,
@@ -243,6 +247,7 @@ func (c *Client) StreamText(ctx context.Context, system string, user string, onD
 	if strings.TrimSpace(c.model) == "" {
 		return "", errors.New("missing NB_INFERENCE_MODEL")
 	}
+	system = promptstyle.ApplySystem(system, "text")
 
 	timeout := c.streamTimeout
 	if timeout < 0 {

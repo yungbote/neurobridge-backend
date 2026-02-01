@@ -54,6 +54,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		ConceptState: p.mastery,
 		ConceptModel: p.models,
 		MisconRepo:   p.miscon,
+		Sessions:     p.sessions,
 		JobRuns:      p.jobRuns,
 		Jobs:         p.jobs,
 		Notify:       p.notify,

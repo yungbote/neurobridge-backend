@@ -723,9 +723,10 @@ func refinePathStructure(
 	uncovered := parsePathStructureUncovered(draft)
 
 	system := strings.TrimSpace(`
-You refine an existing learning path structure to make it feel premium and coherent.
-Improve sequencing, grouping, and coverage. Keep titles crisp and non-generic.
-Return JSON only that matches the schema.`)
+ROLE: Path structure refiner.
+TASK: Improve sequencing, grouping, and coverage of an existing path structure.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Keep titles crisp and non-generic; preserve coherence; avoid unnecessary changes.`)
 
 	var user strings.Builder
 	user.WriteString("PATH_CHARTER_JSON:\n")

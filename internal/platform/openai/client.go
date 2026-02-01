@@ -20,6 +20,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/httpx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/platform/promptstyle"
 )
 
 // ImageInput is the normalized multimodal image input used by Client.
@@ -1106,6 +1107,7 @@ func (c *client) GenerateJSON(ctx context.Context, system string, user string, s
 	if schema == nil {
 		return nil, errors.New("schema required")
 	}
+	system = promptstyle.ApplySystem(system, "json")
 
 	req := responsesRequest{
 		Model: c.model,
@@ -1147,6 +1149,7 @@ func (c *client) GenerateJSON(ctx context.Context, system string, user string, s
 }
 
 func (c *client) GenerateText(ctx context.Context, system string, user string) (string, error) {
+	system = promptstyle.ApplySystem(system, "text")
 	req := responsesRequest{
 		Model: c.model,
 		Input: []struct {
@@ -1175,6 +1178,7 @@ func (c *client) GenerateText(ctx context.Context, system string, user string) (
 }
 
 func (c *client) GenerateTextWithImages(ctx context.Context, system string, user string, images []ImageInput) (string, error) {
+	system = promptstyle.ApplySystem(system, "text")
 	content := make([]map[string]any, 0, 1+len(images))
 	content = append(content, map[string]any{
 		"type": "input_text",
@@ -1229,6 +1233,7 @@ func (c *client) GenerateTextWithImages(ctx context.Context, system string, user
 // StreamText streams output_text deltas from the Responses API (no conversation state).
 // It is best-effort: any non-empty delta is forwarded to onDelta and accumulated into the returned text.
 func (c *client) StreamText(ctx context.Context, system string, user string, onDelta func(delta string)) (string, error) {
+	system = promptstyle.ApplySystem(system, "text")
 	reqBody := responsesRequest{
 		Model: c.model,
 		Input: []struct {
@@ -1347,6 +1352,7 @@ func (c *client) GenerateTextInConversation(ctx context.Context, conversationID 
 	if conversationID == "" {
 		return "", fmt.Errorf("conversation_id required")
 	}
+	instructions = promptstyle.ApplySystem(instructions, "text")
 
 	req := responsesRequest{
 		Model:        c.model,
@@ -1383,6 +1389,7 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 	if conversationID == "" {
 		return "", fmt.Errorf("conversation_id required")
 	}
+	instructions = promptstyle.ApplySystem(instructions, "text")
 
 	reqBody := responsesRequest{
 		Model:        c.model,

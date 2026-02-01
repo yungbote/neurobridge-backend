@@ -40,10 +40,12 @@ func PathIntakeStructureConfig() waitpoint.Config {
 			}
 			excerpt := buildMessageExcerpt(ic.Messages, 24)
 			system := strings.TrimSpace(strings.Join([]string{
-				"You are a classifier for a learning-product chat.",
-				"The user is responding to a proposed grouping of uploaded files into learning paths.",
+				"ROLE: Waitpoint classifier for path grouping intake.",
+				"TASK: Classify the user's latest message about the proposed grouping.",
+				"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+				"CONTEXT: The user is responding to a proposed grouping of uploaded files into learning paths.",
 				"",
-				"You must classify the user's latest message into exactly one case:",
+				"Classify the message into exactly one case:",
 				"- no_commit: the user has not committed to any decision yet (still discussing, asking questions, or unrelated info)",
 				"- ambiguous_commit: the user seems to commit but it's unclear whether they want to confirm or change the grouping",
 				"- committed: the user clearly confirms the grouping or clearly requests a different grouping",
@@ -57,7 +59,6 @@ func PathIntakeStructureConfig() waitpoint.Config {
 				"- If the user gives a short confirmation like 'ok', 'sure', 'yes' without clear context, classify as ambiguous_commit",
 				"- If the user says 'change grouping' but doesn't describe how, classify as ambiguous_commit",
 				"",
-				"Output MUST match the JSON schema exactly.",
 			}, "\n"))
 
 			user := strings.TrimSpace(strings.Join([]string{

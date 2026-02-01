@@ -93,7 +93,7 @@ func (c *caption) DescribeImage(ctx context.Context, req CaptionRequest) (*Capti
 		return nil, fmt.Errorf("image required (ImageURL or ImageBytes)")
 	}
 
-	system := "You are a meticulous visual analyst. Your job is to turn diagrams/images into faithful, factual text notes."
+	system := "ROLE: Visual analyst.\nTASK: Turn diagrams/images into faithful, factual text notes.\nOUTPUT: Return the required JSON shape only.\nRULES: Ground strictly in the image; avoid speculation."
 	user := buildCaptionPrompt(task, req.Prompt)
 
 	raw, err := c.client.GenerateTextWithImages(ctx, system, user, []ImageInput{
@@ -110,7 +110,7 @@ func (c *caption) DescribeImage(ctx context.Context, req CaptionRequest) (*Capti
 
 	repaired, err2 := c.client.GenerateText(
 		ctx,
-		"You are a JSON repair tool. Output ONLY valid JSON matching the required shape.",
+		"ROLE: JSON repair tool.\nTASK: Repair the text into valid JSON.\nOUTPUT: Return ONLY valid JSON matching the required shape.",
 		fmt.Sprintf(
 			"Fix the following into valid JSON with keys:\n"+
 				"task (string), summary (string), key_takeaways (array of strings), entities (array), relationships (array), text_in_image (array), warnings (array optional).\n\nRAW:\n%s",

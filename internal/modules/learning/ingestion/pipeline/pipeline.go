@@ -390,7 +390,7 @@ func (s *service) captionAssetToConceptSegments(
 	}
 	timeout := openAIVisionTimeout()
 
-	prompt := "Extract the underlying concepts this diagram teaches. List 3–12 concepts and key relationships. Focus on the instructional concepts, not visual description. If formulas or symbols appear, include them."
+	prompt := "TASK: Extract the underlying concepts this diagram teaches.\nOUTPUT: List 3–12 concepts and key relationships.\nRULES: Focus on instructional concepts (not mere visual description). If formulas or symbols appear, include them."
 
 	var (
 		res *openai.CaptionResult
@@ -524,7 +524,7 @@ func (s *service) captionBytesToConceptSegments(ctx context.Context, assetKey st
 		imageMime = "image/jpeg"
 	}
 
-	prompt := "Extract the underlying concepts this diagram teaches. List 3–12 concepts and key relationships. Focus on the instructional concepts, not visual description. If formulas or symbols appear, include them."
+	prompt := "TASK: Extract the underlying concepts this diagram teaches.\nOUTPUT: List 3–12 concepts and key relationships.\nRULES: Focus on instructional concepts (not mere visual description). If formulas or symbols appear, include them."
 
 	callCtx, cancel := context.WithTimeout(ctx, openAIVisionTimeout())
 	res, err := s.ex.Caption.DescribeImage(callCtx, openai.CaptionRequest{

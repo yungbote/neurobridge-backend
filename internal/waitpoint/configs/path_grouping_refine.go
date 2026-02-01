@@ -28,17 +28,18 @@ func PathGroupingRefineConfig() waitpoint.Config {
 
 			excerpt := buildMessageExcerpt(ic.Messages, 20)
 			system := strings.TrimSpace(strings.Join([]string{
-				"You are a classifier for a learning-product chat.",
-				"The user is choosing between two grouping options for uploaded files.",
+				"ROLE: Waitpoint classifier for grouping refinement.",
+				"TASK: Determine which grouping option the user chose (if any).",
+				"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+				"CONTEXT: The user is choosing between two grouping options for uploaded files.",
 				"",
-				"Classify the user's message into exactly one case:",
+				"Classify the message into exactly one case:",
 				"- no_commit: user is asking questions or not choosing yet",
 				"- ambiguous_commit: user seems to choose but it's unclear which option",
 				"- committed: user clearly chose an option",
 				"",
 				"When committed, select the option id from OPTIONS_JSON (field: id).",
 				"If the user replies with a number (e.g., 1 or 2), map it to the option with matching choice field.",
-				"Output MUST match the JSON schema exactly.",
 			}, "\n"))
 
 			user := strings.TrimSpace(strings.Join([]string{

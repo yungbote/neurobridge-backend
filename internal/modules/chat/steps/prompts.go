@@ -3,8 +3,10 @@ package steps
 import "fmt"
 
 func promptContextualizeChunk(threadTitle string, role string, chunkText string, recent string) (system string, user string) {
-	system = `You produce contextual retrieval text to improve search for a future query.
-Return ONLY JSON matching the schema. Keep it concise, factual, and retrieval-friendly.`
+	system = `ROLE: Retrieval contextualizer.
+TASK: Rewrite a chat chunk so it stands alone for future search.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Be concise, factual, and retrieval-friendly. Do not invent details.`
 	user = "Thread title: " + threadTitle + "\n" +
 		"Role: " + role + "\n" +
 		"Recent context:\n" + recent + "\n\n" +
@@ -30,8 +32,10 @@ func schemaContextualizeChunk() map[string]any {
 }
 
 func promptContextualizeQuery(threadSummary string, recent string, query string) (system string, user string) {
-	system = `Rewrite the user query into a standalone retrieval query that can be embedded and used for search.
-Return ONLY JSON matching the schema. Be concise and preserve identifiers.`
+	system = `ROLE: Retrieval query rewriter.
+TASK: Rewrite the user query into a standalone query for search.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Be concise; preserve identifiers; do not add new facts.`
 	user = "Thread summary:\n" + threadSummary + "\n\nRecent messages:\n" + recent + "\n\nUser query:\n" + query + "\n\nTask: rewrite the query so it stands alone and includes any needed context."
 	return system, user
 }
@@ -48,9 +52,10 @@ func schemaContextualizeQuery() map[string]any {
 }
 
 func promptRerank(query string, items string) (system string, user string) {
-	system = `You are a ranking model. Score each item for relevance to the query.
-Return ONLY JSON matching the schema. Use scores 0-100 (higher is more relevant).
-Be strict: only give high scores if it directly helps answer the query.`
+	system = `ROLE: Reranker.
+TASK: Score each item for relevance to the query.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Use 0-100; be strict; high scores only for direct relevance.`
 	user = "Query:\n" + query + "\n\nItems:\n" + items
 	return system, user
 }
@@ -78,9 +83,10 @@ func schemaRerank() map[string]any {
 }
 
 func promptMemoryExtract(threadTitle string, window string) (system string, user string) {
-	system = `Extract durable memory items. Only store things that are stable and useful later.
-Return ONLY JSON matching the schema. Prefer fewer, higher-quality items.
-Do NOT store transient chit-chat. Include evidence seqs.`
+	system = `ROLE: Memory extractor.
+TASK: Extract durable memory items for long-term use.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Prefer fewer, higher-quality items; avoid transient chat; include evidence seqs.`
 	user = "Thread title: " + threadTitle + "\n\nWindow:\n" + window
 	return system, user
 }
@@ -119,8 +125,10 @@ func schemaMemoryExtract() map[string]any {
 }
 
 func promptSummarizeNode(level int, childSummaries string) (system string, user string) {
-	system = `You build a hierarchical summary node for long conversations.
-Return ONLY JSON matching the schema. Use markdown bullets, preserve identifiers, decisions, TODOs, and open questions.`
+	system = `ROLE: Conversation summarizer.
+TASK: Build a hierarchical summary node for long conversations.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Use markdown bullets; preserve identifiers, decisions, TODOs, and open questions.`
 	user = fmt.Sprintf("Level: %d\n\nChild summaries:\n%s", level, childSummaries)
 	return system, user
 }
@@ -137,10 +145,10 @@ func schemaSummarizeNode() map[string]any {
 }
 
 func promptGraphExtract(threadTitle string, window string) (system string, user string) {
-	system = `Extract a knowledge graph: entities, relations, and claims grounded in the text.
-Return ONLY JSON matching the schema. Entities should be canonical and deduplicated.
-Relations should be directed and typed. Claims should be short and verifiable.
-Include evidence seqs for relations and claims.`
+	system = `ROLE: Knowledge graph extractor.
+TASK: Extract entities, relations, and claims grounded in the text.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Canonicalize entities; dedupe; relations are directed + typed; claims are short and verifiable; include evidence seqs.`
 	user = "Thread title: " + threadTitle + "\n\nWindow:\n" + window
 	return system, user
 }

@@ -150,17 +150,15 @@ func BuildCurriculumSpecV1(ctx context.Context, ai openai.Client, prompt string)
 	defaultTarget := InferCoverageTargetFromPrompt(goal)
 
 	system := strings.TrimSpace(`
-You are an expert curriculum architect.
-
-Task: Convert a learning goal into a competency map that a curriculum generator can reliably satisfy.
-Return ONLY JSON matching the schema.
-
-Rules:
+ROLE: Curriculum architect.
+TASK: Convert a learning goal into a competency map a generator can satisfy.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES:
 - Keep keys stable snake_case.
 - The competency map must be comprehensive for the requested coverage_target.
-- If coverage_target is "mastery", include all major prerequisite concepts, core concepts, practice/project skills, and professional workflows relevant to the goal.
+- If coverage_target is "mastery", include all major prerequisites, core concepts, practice/project skills, and professional workflows.
 - Prefer fewer, clearer competencies over many micro-topics; this is a coverage checklist, not a lesson plan.
-- Avoid paywalled or proprietary assumptions in the competencies.
+- Avoid paywalled or proprietary assumptions.
 `)
 
 	user := fmt.Sprintf(`LEARNING_GOAL:

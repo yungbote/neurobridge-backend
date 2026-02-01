@@ -202,6 +202,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.UserConceptState,
 		repos.UserConceptModel,
 		repos.UserMisconception,
+		repos.UserSessionState,
 		repos.JobRun,
 		jobService,
 		chatNotifier,

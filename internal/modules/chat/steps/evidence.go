@@ -235,11 +235,13 @@ func selectEvidenceSources(ctx context.Context, ai openai.Client, query string, 
 	}
 
 	system := strings.TrimSpace(strings.Join([]string{
-		"You select the minimum evidence sources needed to answer a user question.",
-		"Return only JSON matching the schema.",
-		"Select the smallest set that fully supports the answer.",
-		"If unsure, prefer unit blocks and materials.",
-		"Summary sources are paraphrases; avoid them when verbatim quotes are requested.",
+		"ROLE: Evidence selector for chat responses.",
+		"TASK: Choose the minimal set of sources needed to answer accurately.",
+		"OUTPUT: Return ONLY JSON matching the schema; no extra keys.",
+		"RULES:",
+		"- Select the smallest set that fully supports the answer.",
+		"- Prefer unit blocks and material chunks when unsure.",
+		"- Summary sources are paraphrases; avoid them for verbatim quotes.",
 	}, "\n"))
 
 	user := strings.TrimSpace(strings.Join([]string{
@@ -497,9 +499,12 @@ func repairQuotedAnswer(ctx context.Context, ai openai.Client, answer string, ev
 		return answer, nil
 	}
 	system := strings.TrimSpace(strings.Join([]string{
-		"You correct answers so that quoted text matches the evidence exactly.",
-		"If exact wording is unavailable, remove the quote and say you don't have the exact wording.",
-		"Return only the corrected answer with citation markers ([[source:ID]]).",
+		"ROLE: Quote repairer for chat responses.",
+		"TASK: Ensure all quoted text matches evidence exactly.",
+		"OUTPUT: Return only the corrected answer with citation markers ([[source:ID]]).",
+		"RULES:",
+		"- If exact wording is unavailable, remove the quote and say you don't have the exact wording.",
+		"- Do not add new facts beyond the evidence.",
 	}, "\n"))
 
 	user := strings.TrimSpace(strings.Join([]string{

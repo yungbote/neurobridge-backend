@@ -570,9 +570,10 @@ func formatStructureWindow(msgs []*types.ChatMessage) string {
 }
 
 func structureExtractPrompt(window string, candidates []structureCandidate, version int) (string, string) {
-	sys := `You extract structured signals about a user's understanding from a chat message.
-Use ONLY the provided candidate concepts (canonical_concept_id). If none apply, return empty arrays.
-Keep misconception descriptions concise (max 12 words). Do not invent IDs.`
+	sys := `ROLE: Structural understanding extractor.
+TASK: Extract structured signals about a user's understanding from a chat message.
+OUTPUT: Return ONLY JSON matching the schema (no extra keys).
+RULES: Use ONLY the provided candidate concepts (canonical_concept_id). If none apply, return empty arrays. Keep misconception descriptions concise (max 12 words). Do not invent IDs.`
 	var b strings.Builder
 	b.WriteString("Conversation window:\n")
 	if strings.TrimSpace(window) == "" {

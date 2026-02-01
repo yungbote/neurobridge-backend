@@ -833,12 +833,10 @@ func (deps WebResourcesSeedDeps) fetchAndPersistPlanV1(ctx context.Context, in W
 func buildWebResourcePlan(ctx context.Context, deps WebResourcesSeedDeps, prompt string) (webResourcePlanV1, error) {
 	out := webResourcePlanV1{}
 	system := strings.TrimSpace(`
-You are an expert curriculum researcher.
-
-Task: propose a set of high-quality, FREE, publicly accessible web resources for learning.
-Return ONLY JSON matching the provided schema.
-
-Rules:
+ROLE: Curriculum researcher.
+TASK: Propose high-quality, free, publicly accessible web resources for learning.
+OUTPUT: Return ONLY JSON matching the provided schema (no extra keys).
+RULES:
 - Use ONLY https URLs.
 - Prefer authoritative sources (official docs/specs, reputable references, university notes).
 - Prefer open/free resources; avoid paywalled content.
@@ -936,22 +934,20 @@ func buildWebResourcePlanV2(ctx context.Context, deps WebResourcesSeedDeps, spec
 	sectionsJSON, _ := json.Marshal(map[string]any{"sections": sectionItems})
 
 	system := strings.TrimSpace(`
-You are an expert curriculum researcher.
-
-Task: propose a set of high-quality, FREE, publicly accessible web resources for learning.
-Return ONLY JSON matching the provided schema.
-
-Rules:
+ROLE: Curriculum researcher.
+TASK: Propose high-quality, free, publicly accessible web resources for the curriculum.
+OUTPUT: Return ONLY JSON matching the provided schema (no extra keys).
+RULES:
 - Use ONLY https URLs.
 - Prefer authoritative sources (official docs/specs, reputable references, university notes).
 - Prefer open/free resources; avoid paywalled content.
 - Avoid duplicates (same URL or near-identical mirrors).
-- The plan MUST cover the curriculum sections; missing_section_keys should only be non-empty if it is truly impossible.
-- If the domain appears to be a programming language, ensure you include at least:
+- The plan MUST cover the curriculum sections; missing_section_keys should only be non-empty if truly unavoidable.
+- If the domain appears to be a programming language, include at least:
   - a beginner-friendly tutorial/guide
   - a reference (language + standard library)
-  - a exercises/practice source
-  - and at least one advanced/edge-cases resource.
+  - an exercises/practice source
+  - at least one advanced/edge-cases resource.
 `)
 
 	target := strings.TrimSpace(spec.CoverageTarget)

@@ -15,6 +15,7 @@ import (
 type UserSessionStateRepo interface {
 	Ensure(dbc dbctx.Context, userID, sessionID uuid.UUID) error
 	GetBySessionID(dbc dbctx.Context, sessionID uuid.UUID) (*types.UserSessionState, error)
+	GetLatestByUserID(dbc dbctx.Context, userID uuid.UUID) (*types.UserSessionState, error)
 	UpdateFields(dbc dbctx.Context, sessionID uuid.UUID, updates map[string]any) error
 }
 
@@ -64,6 +65,28 @@ func (r *userSessionStateRepo) GetBySessionID(dbc dbctx.Context, sessionID uuid.
 	var row types.UserSessionState
 	if err := t.WithContext(dbc.Ctx).
 		Where("session_id = ?", sessionID).
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return nil, err
+	}
+	if row.SessionID == uuid.Nil {
+		return nil, nil
+	}
+	return &row, nil
+}
+
+func (r *userSessionStateRepo) GetLatestByUserID(dbc dbctx.Context, userID uuid.UUID) (*types.UserSessionState, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	if userID == uuid.Nil {
+		return nil, nil
+	}
+	var row types.UserSessionState
+	if err := t.WithContext(dbc.Ctx).
+		Where("user_id = ?", userID).
+		Order("last_seen_at desc").
 		Limit(1).
 		Find(&row).Error; err != nil {
 		return nil, err

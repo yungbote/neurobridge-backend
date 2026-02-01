@@ -281,9 +281,10 @@ func (u Usecases) generateDrillV1(ctx context.Context, userID uuid.UUID, node *t
 	}
 
 	system := `
-You generate supplemental drills for studying, grounded ONLY in the provided excerpts.
-Hard rules:
-- Return ONLY valid JSON matching the schema.
+ROLE: Drill generator.
+TASK: Generate supplemental drills grounded ONLY in the provided excerpts.
+OUTPUT: Return ONLY valid JSON matching the schema (no extra keys).
+RULES:
 - No learner-facing meta (no "Plan", no check-ins, no preference questions).
 - Every item must include non-empty citations that reference ONLY provided chunk_ids.
 `

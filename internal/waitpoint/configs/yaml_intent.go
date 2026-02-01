@@ -44,9 +44,10 @@ func YAMLIntentConfig() waitpoint.Config {
 			}
 
 			system := strings.TrimSpace(strings.Join([]string{
-				"You are a classifier for a waitpoint in a learning pipeline.",
-				"Classify the user's latest message into exactly one intent from the provided list.",
-				"Assume the user is responding to the waitpoint prompt right now.",
+				"ROLE: Waitpoint intent classifier.",
+				"TASK: Classify the user's latest message into exactly one intent from the list.",
+				"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+				"ASSUME: The user is responding to the waitpoint prompt right now.",
 				"Always set selected_mode to the intent id that best matches the user's message, even for no_commit.",
 				"If the user gives a short affirmation like 'yes', 'ok', 'sure', or 'confirm',",
 				"treat it as a committed choice for the default confirm intent when one exists.",
@@ -57,7 +58,6 @@ func YAMLIntentConfig() waitpoint.Config {
 				"If the user has not committed to any decision, output case=no_commit.",
 				"If the user seems to commit but it's unclear which intent, output case=ambiguous_commit.",
 				"If the user clearly matches an intent, output case=committed and set selected_mode to the intent id.",
-				"Output must match the JSON schema exactly.",
 			}, "\n"))
 
 			prompt := strings.TrimSpace(stringFromAny(cfg["prompt"]))

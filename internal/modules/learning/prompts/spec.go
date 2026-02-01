@@ -19,6 +19,37 @@ type Spec struct {
 	Validators []Validator
 }
 
+func styleLearningSystem(name PromptName, system string) string {
+	base := strings.TrimSpace(system)
+	if base == "" {
+		return system
+	}
+	if strings.Contains(base, "ROLE:") || strings.Contains(base, "TASK:") {
+		return system
+	}
+	first := ""
+	for _, line := range strings.Split(base, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			first = trimmed
+			break
+		}
+	}
+	role := "Learning content system"
+	task := first
+	if task == "" {
+		task = "Produce the required JSON output for this prompt."
+	}
+
+	header := []string{
+		"ROLE: " + role + ".",
+		"TASK: " + task,
+		"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+		"RULES: Use provided inputs as grounding; do not invent unsupported facts.",
+	}
+	return strings.TrimSpace(strings.Join(header, "\n")) + "\n\n" + base
+}
+
 // MakeTemplate compiles a Spec into a Template (runtime type)
 func MakeTemplate(s Spec) (Template, error) {
 	if strings.TrimSpace(string(s.Name)) == "" {
@@ -33,7 +64,8 @@ func MakeTemplate(s Spec) (Template, error) {
 	if s.Schema == nil {
 		return Template{}, fmt.Errorf("missing schema func for %s", s.Name)
 	}
-	sysT, err := template.New("system").Option("missingkey=zero").Parse(s.System)
+	styledSystem := styleLearningSystem(s.Name, s.System)
+	sysT, err := template.New("system").Option("missingkey=zero").Parse(styledSystem)
 	if err != nil {
 		return Template{}, fmt.Errorf("%s system template parse: %w", s.Name, err)
 	}

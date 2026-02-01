@@ -1197,9 +1197,10 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 			system := strings.TrimSpace(`
 MODE: NODE_DOC_OUTLINE
 
-You create a research-grade lesson outline with a clear narrative arc.
+ROLE: Lesson outline generator.
+TASK: Create a research-grade lesson outline with a clear narrative arc.
+OUTPUT: Return ONLY valid JSON that matches the schema (no extra keys).
 Rules:
-- Output ONLY valid JSON that matches the schema.
 - First section MUST be "Roadmap".
 - 4–8 sections total, ordered from intuition -> core idea -> worked example -> practice/pitfalls -> wrap-up.
 - Provide bridge_in and bridge_out sentences that connect sections naturally.
@@ -1765,7 +1766,9 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 			system := fmt.Sprintf(`
 	MODE: STATIC_UNIT_DOC
 
-	You write course-quality unit lessons for self-study: clear narrative, vivid intuition, a mental model, worked examples, and retrieval practice.
+	ROLE: Lesson writer for self-study units.
+	TASK: Write a course-quality unit lesson with clear narrative, vivid intuition, a mental model, worked examples, and retrieval practice.
+	OUTPUT: Return ONLY valid JSON that matches the schema (no extra keys).
 	The quality bar is elite: engaging and teacherly — not terse "lecture notes".
 	This is NOT an interactive chat: do not ask the learner any questions or solicit preferences.
 	Do not include any onboarding sections ("Entry Check", "Your goal/level", "Format preferences", etc).

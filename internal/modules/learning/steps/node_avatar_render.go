@@ -134,8 +134,10 @@ func buildNodeAvatarPrompt(pathTitle, title, goal string, topics []string) strin
 		pathTitle = "Learning Path"
 	}
 	var b strings.Builder
-	b.WriteString("Create a clean, human-designed avatar illustration for a learning unit.\n")
-	b.WriteString("Goal: premium, design-forward, polished (not 'AI-looking').\n")
+	b.WriteString("ROLE: Visual designer.\n")
+	b.WriteString("TASK: Create a clean, human-designed avatar illustration for a learning unit.\n")
+	b.WriteString("OUTPUT: One square 1:1 illustration, no text.\n")
+	b.WriteString("QUALITY: premium, design-forward, polished (not 'AI-looking').\n")
 	b.WriteString("Path: " + strings.TrimSpace(pathTitle) + "\n")
 	b.WriteString("Unit: " + strings.TrimSpace(title) + "\n")
 	if strings.TrimSpace(goal) != "" {

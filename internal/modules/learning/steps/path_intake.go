@@ -522,8 +522,10 @@ func generateIntake(
 	conceptKeys = dedupeStrings(conceptKeys)
 
 	system := strings.TrimSpace(strings.Join([]string{
-		"You are an expert learning designer and curriculum planner.",
-		"Given a set of uploaded study materials and any user-provided context, infer what each file is trying to teach and the combined learning goal.",
+		"ROLE: Learning designer and curriculum planner.",
+		"TASK: Infer what each file teaches and the combined learning goal; group files into coherent paths.",
+		"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+		"CONSTRAINTS: Use provided inputs only; be conservative when evidence is weak.",
 		"If FILES_JSON includes sig_topics/sig_domain_tags/sig_concept_keys, prefer those over ai_topics when available.",
 		"",
 		"CRITICAL - Path grouping:",
@@ -1406,8 +1408,10 @@ func scorePairSimilarity(ctx context.Context, files []*types.MaterialFile, fileS
 	}
 
 	system := strings.TrimSpace(strings.Join([]string{
-		"You score whether two learning materials can be taught together in one coherent path.",
-		"Return JSON only.",
+		"ROLE: Pairwise coherence scorer.",
+		"TASK: Score whether two materials can be taught together in one coherent path.",
+		"OUTPUT: Return ONLY JSON matching the schema (no extra keys).",
+		"RULES: Use 0..1; higher means more teachable together.",
 	}, "\n"))
 	user := strings.TrimSpace(strings.Join([]string{
 		"FILES:",

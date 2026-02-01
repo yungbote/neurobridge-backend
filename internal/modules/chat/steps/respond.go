@@ -41,6 +41,7 @@ type RespondDeps struct {
 	Mastery   repos.UserConceptStateRepo
 	Models    repos.UserConceptModelRepo
 	Miscon    repos.UserMisconceptionInstanceRepo
+	Sessions  repos.UserSessionStateRepo
 
 	JobRuns repos.JobRunRepo
 	Jobs    services.JobService
@@ -163,15 +164,15 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 
 	var (
-		instructions    string
-		userPayload     string
-		trace           map[string]any
-		aiClient        openai.Client
-		useConversation bool
-		evidenceSources []EvidenceSource
+		instructions     string
+		userPayload      string
+		trace            map[string]any
+		aiClient         openai.Client
+		useConversation  bool
+		evidenceSources  []EvidenceSource
 		selectedEvidence []EvidenceSource
-		evidenceText    string
-		evidenceBudget  int
+		evidenceText     string
+		evidenceBudget   int
 	)
 	trace = map[string]any{}
 	aiClient = deps.AI
@@ -257,6 +258,7 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 			Mastery:   deps.Mastery,
 			Models:    deps.Models,
 			Miscon:    deps.Miscon,
+			Sessions:  deps.Sessions,
 		}, ContextPlanInput{
 			UserID:   in.UserID,
 			Thread:   thread,

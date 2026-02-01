@@ -14,6 +14,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/inference/config"
 	"github.com/yungbote/neurobridge-backend/internal/inference/engine"
+	"github.com/yungbote/neurobridge-backend/internal/platform/promptstyle"
 )
 
 type Engine struct {
@@ -345,10 +346,12 @@ func (e *Engine) ScoreTextPairs(ctx context.Context, model string, pairs []engin
 		return []float32{}, nil
 	}
 	system := strings.TrimSpace(strings.Join([]string{
-		"You score semantic coherence between two texts.",
-		"Return a score from 0 to 1 where 1 means they can be taught together in a single coherent path.",
-		"Output JSON only, matching the provided schema.",
+		"ROLE: Pairwise coherence scorer.",
+		"TASK: Score semantic coherence between two texts.",
+		"OUTPUT: Return ONLY JSON matching the provided schema (no extra keys).",
+		"RULES: Use 0..1 where 1 means they can be taught together in a single coherent path.",
 	}, "\n"))
+	system = promptstyle.ApplySystem(system, "json")
 
 	userPairs := make([]map[string]string, 0, len(pairs))
 	for _, p := range pairs {

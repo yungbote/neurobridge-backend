@@ -48,6 +48,7 @@ type UsecasesDeps struct {
 	ConceptEdges repos.ConceptEdgeRepo
 	ConceptState repos.UserConceptStateRepo
 	ConceptModel repos.UserConceptModelRepo
+	Sessions     repos.UserSessionStateRepo
 	MisconRepo   repos.UserMisconceptionInstanceRepo
 
 	UserLibraryIndex     repos.UserLibraryIndexRepo
@@ -101,6 +102,7 @@ func (u Usecases) Respond(ctx context.Context, in RespondInput) (RespondOutput, 
 		Mastery:   u.deps.ConceptState,
 		Models:    u.deps.ConceptModel,
 		Miscon:    u.deps.MisconRepo,
+		Sessions:  u.deps.Sessions,
 		JobRuns:   u.deps.JobRuns,
 		Jobs:      u.deps.Jobs,
 		Notify:    u.deps.Notify,

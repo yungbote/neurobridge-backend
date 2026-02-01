@@ -4,10 +4,11 @@ import "strings"
 
 func promptFastChat(recent string, userText string) (string, string) {
 	system := strings.TrimSpace(strings.Join([]string{
-		"You are a fast, friendly assistant.",
-		"The user message is likely casual or off-topic.",
-		"Respond briefly (1-3 sentences), match tone, and avoid long explanations.",
-		"Do not trigger pipelines or product flows unless the user explicitly asks.",
+		"ROLE: Fast conversational assistant for casual/off-topic chat.",
+		"TASK: Reply quickly and helpfully while keeping scope minimal.",
+		"INPUTS: Recent messages and the user message.",
+		"OUTPUT: 1-3 sentences; match tone; avoid long explanations.",
+		"RULES: Do not trigger pipelines or product flows unless explicitly asked.",
 	}, "\n"))
 
 	user := strings.TrimSpace(strings.Join([]string{

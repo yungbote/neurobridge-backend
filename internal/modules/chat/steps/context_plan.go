@@ -248,11 +248,11 @@ type retrievalPlan struct {
 }
 
 type contextPlanHints struct {
-	UnitCurrent         string
-	IncludeVisible      bool
-	IncludeLessonIndex  bool
-	RetrievalScopes     retrievalPlan
-	MaterialsQuery      string
+	UnitCurrent        string
+	IncludeVisible     bool
+	IncludeLessonIndex bool
+	RetrievalScopes    retrievalPlan
+	MaterialsQuery     string
 }
 
 func resolveContextRouteModel() string {
@@ -290,12 +290,20 @@ func summarizeSessionForRouting(sessionCtx *sessionContextSnapshot) string {
 	if curID == "" {
 		curID = sessionCtx.ActiveDocBlockID
 	}
+	freshAt := sessionFreshAt(sessionCtx)
+	ageSec := sessionCtx.AgeSeconds
+	if ageSec == 0 && !freshAt.IsZero() {
+		ageSec = time.Since(freshAt).Seconds()
+	}
 	return strings.TrimSpace(strings.Join([]string{
+		"session_id: " + defaultString(sessionCtx.SessionID, "(none)"),
 		"active_path_id: " + defaultString(sessionCtx.ActivePathID, "(none)"),
 		"active_path_node_id: " + defaultString(sessionCtx.ActivePathNodeID, "(none)"),
 		"active_doc_block_id: " + defaultString(curID, "(none)"),
 		"active_view: " + defaultString(sessionCtx.ActiveView, "(none)"),
 		fmt.Sprintf("scroll_percent: %.0f", sessionCtx.ScrollPercent),
+		fmt.Sprintf("age_seconds: %.0f", ageSec),
+		fmt.Sprintf("stale: %t", sessionCtx.Stale),
 		fmt.Sprintf("visible_block_count: %d", len(sessionCtx.VisibleBlocks)),
 		"visible_block_ids: " + strings.Join(visibleIDs, ", "),
 	}, "\n"))
@@ -334,9 +342,11 @@ func routeContextPlanLLM(ctx context.Context, deps ContextPlanDeps, in ContextPl
 	}
 
 	system := strings.TrimSpace(strings.Join([]string{
-		"You are a routing classifier for chat context in a learning product.",
-		"Decide which context lanes are needed to answer the user accurately.",
-		"Also decide unit detail needs and retrieval scopes when relevant.",
+		"ROLE: Context routing classifier for a learning product chat.",
+		"TASK: Select the minimal context lanes and retrieval scopes needed to answer accurately.",
+		"OUTPUT: Return JSON only, matching the schema (no extra keys).",
+		"CONSTRAINTS: Prefer minimal context; enable retrieval only when needed.",
+		"DETAILS: Also decide unit detail needs and retrieval scopes when relevant.",
 		"unit.current_block: none | summary | full",
 		"unit.include_visible: whether visible blocks should be included",
 		"unit.include_lesson_index: include block counts and ordered titles",
@@ -352,7 +362,6 @@ func routeContextPlanLLM(ctx context.Context, deps ContextPlanDeps, in ContextPl
 		"- retrieve: retrieval over chat/path docs",
 		"- materials: source materials excerpts",
 		"- graph: chat memory/graph context",
-		"Return JSON only, matching the schema.",
 		"Keep confidence calibrated: use >=0.7 only when you are sure.",
 		"If unsure, enable viewport+unit and leave retrieval false.",
 	}, "\n"))
@@ -393,8 +402,8 @@ func routeContextPlanLLM(ctx context.Context, deps ContextPlanDeps, in ContextPl
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"current_block":       map[string]any{"type": "string", "enum": []any{"none", "summary", "full"}},
-					"include_visible":     map[string]any{"type": "boolean"},
+					"current_block":        map[string]any{"type": "string", "enum": []any{"none", "summary", "full"}},
+					"include_visible":      map[string]any{"type": "boolean"},
 					"include_lesson_index": map[string]any{"type": "boolean"},
 				},
 				"required": []any{"current_block", "include_visible", "include_lesson_index"},
@@ -403,9 +412,9 @@ func routeContextPlanLLM(ctx context.Context, deps ContextPlanDeps, in ContextPl
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"scope_thread":  map[string]any{"type": "boolean"},
-					"scope_path":    map[string]any{"type": "boolean"},
-					"scope_user":    map[string]any{"type": "boolean"},
+					"scope_thread":    map[string]any{"type": "boolean"},
+					"scope_path":      map[string]any{"type": "boolean"},
+					"scope_user":      map[string]any{"type": "boolean"},
 					"materials_query": map[string]any{"type": "string"},
 				},
 				"required": []any{"scope_thread", "scope_path", "scope_user", "materials_query"},
@@ -498,6 +507,7 @@ type ContextPlanDeps struct {
 	Mastery   repos.UserConceptStateRepo
 	Models    repos.UserConceptModelRepo
 	Miscon    repos.UserMisconceptionInstanceRepo
+	Sessions  repos.UserSessionStateRepo
 }
 
 type ContextPlanInput struct {
@@ -509,12 +519,12 @@ type ContextPlanInput struct {
 }
 
 type ContextPlanOutput struct {
-	Instructions  string
-	UserPayload   string
-	UsedDocs      []*types.ChatDoc
-	RetrievalMode string
-	Trace         map[string]any
-	EvidenceSources []EvidenceSource
+	Instructions        string
+	UserPayload         string
+	UsedDocs            []*types.ChatDoc
+	RetrievalMode       string
+	Trace               map[string]any
+	EvidenceSources     []EvidenceSource
 	EvidenceTokenBudget int
 }
 
@@ -525,6 +535,7 @@ type sessionBlockRef struct {
 }
 
 type sessionContextSnapshot struct {
+	SessionID        string
 	ActivePathID     string
 	ActivePathNodeID string
 	ActiveDocBlockID string
@@ -535,16 +546,18 @@ type sessionContextSnapshot struct {
 	LastSeenAt       time.Time
 	VisibleBlocks    []sessionBlockRef
 	CurrentBlock     *sessionBlockRef
+	AgeSeconds       float64
+	Stale            bool
 }
 
 type unitContextOptions struct {
-	FullCurrent         bool
-	IncludeCurrent      bool
+	FullCurrent           bool
+	IncludeCurrent        bool
 	CurrentBlockMaxTokens int
-	IncludeVisible      bool
-	IncludeLessonIndex  bool
-	Query               string
-	TokenBudget         int
+	IncludeVisible        bool
+	IncludeLessonIndex    bool
+	Query                 string
+	TokenBudget           int
 }
 
 func stringFromAnyCtx(v any) string {
@@ -621,6 +634,7 @@ func parseSessionContext(msg *types.ChatMessage) *sessionContextSnapshot {
 		return nil
 	}
 	ctx := &sessionContextSnapshot{}
+	ctx.SessionID = stringFromAnyCtx(raw["session_id"])
 	ctx.ActivePathID = stringFromAnyCtx(raw["active_path_id"])
 	ctx.ActivePathNodeID = stringFromAnyCtx(raw["active_path_node_id"])
 	ctx.ActiveDocBlockID = stringFromAnyCtx(raw["active_doc_block_id"])
@@ -668,6 +682,104 @@ func parseSessionContext(msg *types.ChatMessage) *sessionContextSnapshot {
 		}
 	}
 
+	return ctx
+}
+
+func extractSessionIDFromMessage(msg *types.ChatMessage) string {
+	if msg == nil || len(msg.Metadata) == 0 || string(msg.Metadata) == "null" {
+		return ""
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil || meta == nil {
+		return ""
+	}
+	if sid := stringFromAnyCtx(meta["session_id"]); sid != "" {
+		return sid
+	}
+	if raw, ok := meta["session_ctx"].(map[string]any); ok && raw != nil {
+		if sid := stringFromAnyCtx(raw["session_id"]); sid != "" {
+			return sid
+		}
+	}
+	return ""
+}
+
+func sessionFreshAt(ctx *sessionContextSnapshot) time.Time {
+	if ctx == nil {
+		return time.Time{}
+	}
+	if !ctx.LastSeenAt.IsZero() {
+		return ctx.LastSeenAt
+	}
+	if !ctx.CapturedAt.IsZero() {
+		return ctx.CapturedAt
+	}
+	return time.Time{}
+}
+
+func sessionSnapshotFromState(state *types.UserSessionState) *sessionContextSnapshot {
+	if state == nil || state.SessionID == uuid.Nil {
+		return nil
+	}
+	ctx := &sessionContextSnapshot{
+		SessionID: state.SessionID.String(),
+	}
+	if state.ActivePathID != nil && *state.ActivePathID != uuid.Nil {
+		ctx.ActivePathID = state.ActivePathID.String()
+	}
+	if state.ActivePathNodeID != nil && *state.ActivePathNodeID != uuid.Nil {
+		ctx.ActivePathNodeID = state.ActivePathNodeID.String()
+	}
+	if state.ActiveDocBlockID != nil && strings.TrimSpace(*state.ActiveDocBlockID) != "" {
+		ctx.ActiveDocBlockID = strings.TrimSpace(*state.ActiveDocBlockID)
+	}
+	if state.ActiveView != nil && strings.TrimSpace(*state.ActiveView) != "" {
+		ctx.ActiveView = strings.TrimSpace(*state.ActiveView)
+	}
+	if state.ActiveRoute != nil && strings.TrimSpace(*state.ActiveRoute) != "" {
+		ctx.ActiveRoute = strings.TrimSpace(*state.ActiveRoute)
+	}
+	if state.ScrollPercent != nil {
+		ctx.ScrollPercent = *state.ScrollPercent
+	}
+	if !state.LastSeenAt.IsZero() {
+		ctx.LastSeenAt = state.LastSeenAt.UTC()
+	}
+
+	if len(state.Metadata) > 0 && string(state.Metadata) != "null" {
+		var meta map[string]any
+		if err := json.Unmarshal(state.Metadata, &meta); err == nil && meta != nil {
+			if vb, ok := meta["visible_blocks"].([]any); ok {
+				items := make([]sessionBlockRef, 0, len(vb))
+				for _, it := range vb {
+					row, ok := it.(map[string]any)
+					if !ok {
+						continue
+					}
+					id := stringFromAnyCtx(row["id"])
+					if id == "" {
+						continue
+					}
+					items = append(items, sessionBlockRef{
+						ID:    id,
+						Ratio: floatFromAnyCtx(row["ratio"]),
+					})
+				}
+				if len(items) > 0 {
+					ctx.VisibleBlocks = items
+				}
+			}
+			if cb, ok := meta["current_block"].(map[string]any); ok {
+				id := stringFromAnyCtx(cb["id"])
+				if id != "" {
+					ctx.CurrentBlock = &sessionBlockRef{
+						ID:         id,
+						Confidence: floatFromAnyCtx(cb["confidence"]),
+					}
+				}
+			}
+		}
+	}
 	return ctx
 }
 
@@ -1158,10 +1270,21 @@ func buildLessonIndexText(blockOrder []string, blockByID map[string]map[string]a
 
 func buildUnitContext(ctx context.Context, deps ContextPlanDeps, thread *types.ChatThread, sessionCtx *sessionContextSnapshot, opts unitContextOptions) (string, map[string]any, []EvidenceSource) {
 	trace := map[string]any{}
-	if sessionCtx == nil || thread == nil || thread.PathID == nil || *thread.PathID == uuid.Nil {
+	if sessionCtx == nil || thread == nil {
 		return "", nil, nil
 	}
-	if sessionCtx.ActivePathID != "" && sessionCtx.ActivePathID != thread.PathID.String() {
+	pathID := uuid.Nil
+	if thread.PathID != nil && *thread.PathID != uuid.Nil {
+		pathID = *thread.PathID
+	} else if sessionCtx.ActivePathID != "" {
+		if pid, err := uuid.Parse(sessionCtx.ActivePathID); err == nil {
+			pathID = pid
+		}
+	}
+	if pathID == uuid.Nil {
+		return "", nil, nil
+	}
+	if sessionCtx.ActivePathID != "" && sessionCtx.ActivePathID != pathID.String() {
 		return "", nil, nil
 	}
 	if sessionCtx.ActivePathNodeID == "" || deps.PathNodes == nil || deps.NodeDocs == nil {
@@ -1178,7 +1301,7 @@ func buildUnitContext(ctx context.Context, deps ContextPlanDeps, thread *types.C
 		return "", nil, nil
 	}
 	node := nodes[0]
-	if node.PathID == uuid.Nil || node.PathID != *thread.PathID {
+	if node.PathID == uuid.Nil || node.PathID != pathID {
 		return "", nil, nil
 	}
 
@@ -1635,17 +1758,50 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 	// Session-derived unit context (path-scoped only).
 	var unitCtxText string
 	var sessionCtx *sessionContextSnapshot
-	sessionFresh := false
-	if in.UserMsg != nil && in.Thread != nil && in.Thread.PathID != nil && *in.Thread.PathID != uuid.Nil {
+	sessionStale := false
+	sessionSource := "message"
+	if in.UserMsg != nil {
 		sessionCtx = parseSessionContext(in.UserMsg)
-		if sessionCtx != nil {
-			freshAt := sessionCtx.LastSeenAt
-			if freshAt.IsZero() {
-				freshAt = sessionCtx.CapturedAt
+	}
+	sessionID := ""
+	if sessionCtx != nil {
+		sessionID = sessionCtx.SessionID
+	}
+	if sessionID == "" {
+		sessionID = extractSessionIDFromMessage(in.UserMsg)
+	}
+	if deps.Sessions != nil && (sessionID != "" || in.UserID != uuid.Nil) {
+		var state *types.UserSessionState
+		if sessionID != "" {
+			if sid, err := uuid.Parse(sessionID); err == nil && sid != uuid.Nil {
+				if st, err := deps.Sessions.GetBySessionID(dbc, sid); err == nil && st != nil {
+					state = st
+				}
 			}
-			if !freshAt.IsZero() && time.Since(freshAt) <= 20*time.Second {
-				sessionFresh = true
+		}
+		if state == nil && in.UserID != uuid.Nil {
+			if st, err := deps.Sessions.GetLatestByUserID(dbc, in.UserID); err == nil && st != nil {
+				state = st
 			}
+		}
+		if state != nil {
+			stateSnap := sessionSnapshotFromState(state)
+			if stateSnap != nil {
+				// Prefer the freshest snapshot (message vs server state).
+				if sessionCtx == nil || sessionFreshAt(stateSnap).After(sessionFreshAt(sessionCtx)) {
+					sessionCtx = stateSnap
+					sessionSource = "server"
+				}
+			}
+		}
+	}
+	if sessionCtx != nil {
+		freshAt := sessionFreshAt(sessionCtx)
+		if !freshAt.IsZero() {
+			age := time.Since(freshAt)
+			sessionCtx.AgeSeconds = age.Seconds()
+			sessionStale = age > 90*time.Second
+			sessionCtx.Stale = sessionStale
 		}
 	}
 
@@ -1695,6 +1851,13 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 		}
 	}
 	out.Trace["context_route"] = routeTrace
+	if sessionCtx != nil {
+		out.Trace["session_ctx"] = map[string]any{
+			"source":      sessionSource,
+			"age_seconds": math.Round(sessionCtx.AgeSeconds),
+			"stale":       sessionStale,
+		}
+	}
 
 	includeUnitCtx := route.Enabled("viewport") || route.Enabled("unit")
 	includePathCtx := route.Enabled("path") || route.Enabled("unit") || route.Enabled("concept") || route.Enabled("user")
@@ -1730,11 +1893,11 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 		}
 		routeTrace["materials_query_forced"] = true
 	}
-	if sessionFresh && !includeUnitCtx {
+	if sessionCtx != nil && !includeUnitCtx {
 		includeUnitCtx = true
 	}
 
-	if includeUnitCtx && sessionFresh && sessionCtx != nil {
+	if includeUnitCtx && sessionCtx != nil {
 		fullCurrent := wantsCurrentBlockText(in.UserText)
 		includeCurrent := true
 		currentMaxTokens := 0
@@ -1761,16 +1924,25 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 			currentMaxTokens = 0
 		}
 		opts := unitContextOptions{
-			FullCurrent:          fullCurrent,
-			IncludeCurrent:       includeCurrent,
+			FullCurrent:           fullCurrent,
+			IncludeCurrent:        includeCurrent,
 			CurrentBlockMaxTokens: currentMaxTokens,
-			IncludeVisible:       includeVisible,
-			IncludeLessonIndex:   includeLessonIndex,
-			Query:                in.UserText,
-			TokenBudget:          b.UnitTokens,
+			IncludeVisible:        includeVisible,
+			IncludeLessonIndex:    includeLessonIndex,
+			Query:                 in.UserText,
+			TokenBudget:           b.UnitTokens,
 		}
 		if text, trace, evidence := buildUnitContext(ctx, deps, in.Thread, sessionCtx, opts); text != "" {
-			unitCtxText = text
+			if sessionStale {
+				staleNote := strings.TrimSpace(fmt.Sprintf(
+					"SESSION_CONTEXT_STALE: last_seen_at=%s age_seconds=%.0f. Answer using this last-known viewport and ask the user to confirm if they've moved.",
+					defaultString(sessionFreshAt(sessionCtx).UTC().Format(time.RFC3339), "(unknown)"),
+					sessionCtx.AgeSeconds,
+				))
+				unitCtxText = strings.TrimSpace(staleNote + "\n" + text)
+			} else {
+				unitCtxText = text
+			}
 			out.Trace["unit_context"] = trace
 			addEvidence(evidence)
 		}
