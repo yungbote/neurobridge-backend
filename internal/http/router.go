@@ -17,6 +17,7 @@ type RouterConfig struct {
 	ChatHandler     *httpH.ChatHandler
 	LibraryHandler  *httpH.LibraryHandler
 	PathHandler     *httpH.PathHandler
+	RuntimeHandler  *httpH.RuntimeStateHandler
 	ActivityHandler *httpH.ActivityHandler
 	EventHandler    *httpH.EventHandler
 	JobHandler      *httpH.JobHandler
@@ -136,6 +137,11 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.GET("/path-nodes/:id/drills", cfg.PathHandler.ListPathNodeDrills)
 			protected.POST("/path-nodes/:id/drills/:kind", cfg.PathHandler.GeneratePathNodeDrill)
 			protected.POST("/path-nodes/:id/quick-checks/:block_id/attempt", cfg.PathHandler.AttemptPathNodeQuickCheck)
+		}
+
+		// Runtime state
+		if cfg.RuntimeHandler != nil {
+			protected.GET("/paths/:id/runtime", cfg.RuntimeHandler.GetPathRuntime)
 		}
 
 		if cfg.ActivityHandler != nil {

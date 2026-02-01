@@ -28,6 +28,7 @@ type JobService interface {
 	SignalResume(dbc dbctx.Context, jobID uuid.UUID) error
 	EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error)
 	EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueueRuntimeUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueProgressionCompactIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueVariantStatsRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueCompletedUnitRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
@@ -256,6 +257,35 @@ func (s *jobService) EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUser
 		"trigger": trigger,
 	}
 	job, err := s.Enqueue(repoCtx, ownerUserID, "user_model_update", "user", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueueRuntimeUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityID := ownerUserID
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "runtime_update", "user", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger": trigger,
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "runtime_update", "user", &entityID, payload)
 	if err != nil {
 		return nil, false, err
 	}

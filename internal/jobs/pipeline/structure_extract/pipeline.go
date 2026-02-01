@@ -7,6 +7,7 @@ import (
 
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
+	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -46,5 +47,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"processed": out.Processed,
 		"max_seq":   out.MaxSeq,
 	})
+	if out.Processed > 0 && p.jobs != nil {
+		dbc := dbctx.Context{Ctx: jc.Ctx}
+		_, _, _ = p.jobs.EnqueueRuntimeUpdateIfNeeded(dbc, jc.Job.OwnerUserID, "structure_extract")
+	}
 	return nil
 }

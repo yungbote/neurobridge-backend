@@ -21,6 +21,7 @@ type Handlers struct {
 	Auth     *httpH.AuthHandler
 	User     *httpH.UserHandler
 	Session  *httpH.SessionStateHandler
+	Runtime  *httpH.RuntimeStateHandler
 	Realtime *httpH.RealtimeHandler
 	Material *httpH.MaterialHandler
 	Chat     *httpH.ChatHandler
@@ -63,6 +64,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 		Auth:     httpH.NewAuthHandler(services.Auth),
 		User:     httpH.NewUserHandler(services.User, sseHub),
 		Session:  httpH.NewSessionStateHandler(services.SessionState),
+		Runtime:  httpH.NewRuntimeStateHandler(repos.PathRun, repos.NodeRun, repos.ActivityRun),
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
 		Material: httpH.NewMaterialHandler(
 			log,
@@ -127,6 +129,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		LibraryHandler:  handlers.Library,
 		PathHandler:     handlers.Path,
 		ActivityHandler: handlers.Activity,
+		RuntimeHandler:  handlers.Runtime,
 		EventHandler:    handlers.Event,
 		JobHandler:      handlers.Job,
 	})

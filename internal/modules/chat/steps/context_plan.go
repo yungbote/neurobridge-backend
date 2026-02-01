@@ -532,6 +532,7 @@ type sessionBlockRef struct {
 	ID         string
 	Ratio      float64
 	Confidence float64
+	TopDelta   float64
 }
 
 type sessionContextSnapshot struct {
@@ -665,8 +666,9 @@ func parseSessionContext(msg *types.ChatMessage) *sessionContextSnapshot {
 				continue
 			}
 			items = append(items, sessionBlockRef{
-				ID:    id,
-				Ratio: floatFromAnyCtx(row["ratio"]),
+				ID:       id,
+				Ratio:    floatFromAnyCtx(row["ratio"]),
+				TopDelta: floatFromAnyCtx(row["top_delta"]),
 			})
 		}
 		ctx.VisibleBlocks = items
@@ -761,8 +763,9 @@ func sessionSnapshotFromState(state *types.UserSessionState) *sessionContextSnap
 						continue
 					}
 					items = append(items, sessionBlockRef{
-						ID:    id,
-						Ratio: floatFromAnyCtx(row["ratio"]),
+						ID:       id,
+						Ratio:    floatFromAnyCtx(row["ratio"]),
+						TopDelta: floatFromAnyCtx(row["top_delta"]),
 					})
 				}
 				if len(items) > 0 {
@@ -1207,6 +1210,63 @@ func wantsMaterialQuotes(userText string) bool {
 	)
 }
 
+func wantsTopSection(userText string) bool {
+	s := strings.ToLower(strings.TrimSpace(userText))
+	if s == "" {
+		return false
+	}
+	return containsAny(
+		s,
+		"top of the screen",
+		"top of my screen",
+		"top of the page",
+		"top of my page",
+		"section at the top",
+		"at the top",
+		"top section",
+	)
+}
+
+func pickTopVisibleBlock(blocks []sessionBlockRef) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	hasTopDelta := false
+	var bestNeg *sessionBlockRef
+	var bestPos *sessionBlockRef
+	for i := range blocks {
+		b := blocks[i]
+		if b.TopDelta != 0 {
+			hasTopDelta = true
+		}
+		if b.TopDelta <= 0 {
+			if bestNeg == nil || b.TopDelta > bestNeg.TopDelta {
+				bestNeg = &b
+			}
+		} else {
+			if bestPos == nil || b.TopDelta < bestPos.TopDelta {
+				bestPos = &b
+			}
+		}
+	}
+	if !hasTopDelta {
+		best := blocks[0]
+		for i := 1; i < len(blocks); i++ {
+			if blocks[i].Ratio > best.Ratio {
+				best = blocks[i]
+			}
+		}
+		return best.ID
+	}
+	if bestNeg != nil && bestNeg.ID != "" {
+		return bestNeg.ID
+	}
+	if bestPos != nil {
+		return bestPos.ID
+	}
+	return ""
+}
+
 func buildLessonIndexText(blockOrder []string, blockByID map[string]map[string]any, maxTokens int) string {
 	if len(blockOrder) == 0 || len(blockByID) == 0 {
 		return ""
@@ -1461,6 +1521,12 @@ func buildUnitContext(ctx context.Context, deps ContextPlanDeps, thread *types.C
 	}
 
 	if opts.IncludeVisible && len(sessionCtx.VisibleBlocks) > 0 {
+		if wantsTopSection(opts.Query) {
+			if topID := pickTopVisibleBlock(sessionCtx.VisibleBlocks); topID != "" {
+				trace["top_block_id"] = topID
+				addSnippet(topID, "top")
+			}
+		}
 		visible := append([]sessionBlockRef{}, sessionCtx.VisibleBlocks...)
 		sort.SliceStable(visible, func(i, j int) bool {
 			return visible[i].Ratio > visible[j].Ratio

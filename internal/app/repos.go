@@ -54,6 +54,10 @@ type Repos struct {
 	PathNode                 repos.PathNodeRepo
 	PathNodeActivity         repos.PathNodeActivityRepo
 	PathStructuralUnit       repos.PathStructuralUnitRepo
+	PathRun                  repos.PathRunRepo
+	NodeRun                  repos.NodeRunRepo
+	ActivityRun              repos.ActivityRunRepo
+	PathRunTransition        repos.PathRunTransitionRepo
 	DecisionTrace            repos.DecisionTraceRepo
 	TeachingPattern          repos.TeachingPatternRepo
 	UserCompletedUnit        repos.UserCompletedUnitRepo
@@ -133,6 +137,10 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		PathNode:                 repos.NewPathNodeRepo(db, log),
 		PathNodeActivity:         repos.NewPathNodeActivityRepo(db, log),
 		PathStructuralUnit:       repos.NewPathStructuralUnitRepo(db, log),
+		PathRun:                  repos.NewPathRunRepo(db, log),
+		NodeRun:                  repos.NewNodeRunRepo(db, log),
+		ActivityRun:              repos.NewActivityRunRepo(db, log),
+		PathRunTransition:        repos.NewPathRunTransitionRepo(db, log),
 		DecisionTrace:            repos.NewDecisionTraceRepo(db, log),
 		TeachingPattern:          repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:        repos.NewUserCompletedUnitRepo(db, log),

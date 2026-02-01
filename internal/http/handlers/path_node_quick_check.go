@@ -210,5 +210,6 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 	}
 	if h.jobSvc != nil {
 		_, _, _ = h.jobSvc.EnqueueUserModelUpdateIfNeeded(dbc, userID, typ)
+		_, _, _ = h.jobSvc.EnqueueRuntimeUpdateIfNeeded(dbc, userID, typ)
 	}
 }

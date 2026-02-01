@@ -52,6 +52,10 @@ type PathRepo = learning.PathRepo
 type PathNodeRepo = learning.PathNodeRepo
 type PathNodeActivityRepo = learning.PathNodeActivityRepo
 type PathStructuralUnitRepo = learning.PathStructuralUnitRepo
+type PathRunRepo = learning.PathRunRepo
+type NodeRunRepo = learning.NodeRunRepo
+type ActivityRunRepo = learning.ActivityRunRepo
+type PathRunTransitionRepo = learning.PathRunTransitionRepo
 
 type ConceptClusterRepo = learning.ConceptClusterRepo
 type ConceptClusterMemberRepo = learning.ConceptClusterMemberRepo
@@ -208,6 +212,18 @@ func NewPathNodeActivityRepo(db *gorm.DB, baseLog *logger.Logger) PathNodeActivi
 }
 func NewPathStructuralUnitRepo(db *gorm.DB, baseLog *logger.Logger) PathStructuralUnitRepo {
 	return learning.NewPathStructuralUnitRepo(db, baseLog)
+}
+func NewPathRunRepo(db *gorm.DB, baseLog *logger.Logger) PathRunRepo {
+	return learning.NewPathRunRepo(db, baseLog)
+}
+func NewNodeRunRepo(db *gorm.DB, baseLog *logger.Logger) NodeRunRepo {
+	return learning.NewNodeRunRepo(db, baseLog)
+}
+func NewActivityRunRepo(db *gorm.DB, baseLog *logger.Logger) ActivityRunRepo {
+	return learning.NewActivityRunRepo(db, baseLog)
+}
+func NewPathRunTransitionRepo(db *gorm.DB, baseLog *logger.Logger) PathRunTransitionRepo {
+	return learning.NewPathRunTransitionRepo(db, baseLog)
 }
 
 func NewChainSignatureRepo(db *gorm.DB, baseLog *logger.Logger) ChainSignatureRepo {

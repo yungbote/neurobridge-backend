@@ -6,6 +6,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Pipeline struct {
@@ -18,6 +19,7 @@ type Pipeline struct {
 	concepts repos.ConceptRepo
 	model    repos.UserConceptModelRepo
 	miscon   repos.UserMisconceptionInstanceRepo
+	jobs     services.JobService
 }
 
 func New(
@@ -30,6 +32,7 @@ func New(
 	concepts repos.ConceptRepo,
 	model repos.UserConceptModelRepo,
 	miscon repos.UserMisconceptionInstanceRepo,
+	jobs services.JobService,
 ) *Pipeline {
 	return &Pipeline{
 		db:       db,
@@ -41,6 +44,7 @@ func New(
 		concepts: concepts,
 		model:    model,
 		miscon:   miscon,
+		jobs:     jobs,
 	}
 }
 

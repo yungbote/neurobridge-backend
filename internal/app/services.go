@@ -47,6 +47,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_promote"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/realize_activities"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/runtime_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/saga_cleanup"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_backfill"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_extract"
@@ -243,6 +244,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.Concept,
 		repos.UserConceptModel,
 		repos.UserMisconception,
+		jobService,
 	)
 	if err := jobRegistry.Register(structureExtract); err != nil {
 		return Services{}, err
@@ -762,6 +764,24 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	progressionCompact := progression_compact.New(db, log, repos.UserEvent, repos.UserEventCursor, repos.UserProgressionEvent, bootstrapSvc)
 	if err := jobRegistry.Register(progressionCompact); err != nil {
+		return Services{}, err
+	}
+
+	runtimeUpdate := runtime_update.New(
+		db,
+		log,
+		repos.UserEvent,
+		repos.UserEventCursor,
+		repos.Path,
+		repos.PathNode,
+		repos.PathNodeActivity,
+		repos.PathRun,
+		repos.NodeRun,
+		repos.ActivityRun,
+		repos.PathRunTransition,
+		repos.UserSessionState,
+	)
+	if err := jobRegistry.Register(runtimeUpdate); err != nil {
 		return Services{}, err
 	}
 

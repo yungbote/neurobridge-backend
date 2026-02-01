@@ -114,6 +114,11 @@ func (h *EventHandler) Ingest(c *gin.Context) {
 		if ok {
 			enqueuedJobs["user_model_update"]++
 		}
+		_, ok, _ = h.jobs.EnqueueRuntimeUpdateIfNeeded(dbc, rd.UserID, trigger)
+		enqueued = enqueued || ok
+		if ok {
+			enqueuedJobs["runtime_update"]++
+		}
 
 		// Enqueue additional derived-state refresh jobs (best-effort).
 		//

@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/joins"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/personalization"
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/products"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
 )
@@ -125,6 +126,11 @@ type Path = core.Path
 type PathNode = core.PathNode
 type PathStructuralUnit = core.PathStructuralUnit
 type PathNodeActivity = joins.PathNodeActivity
+
+type PathRun = runtime.PathRun
+type NodeRun = runtime.NodeRun
+type ActivityRun = runtime.ActivityRun
+type PathRunTransition = runtime.PathRunTransition
 
 type ConceptEvidence = products.ConceptEvidence
 type ConceptEdge = products.ConceptEdge

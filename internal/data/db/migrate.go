@@ -95,6 +95,10 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.Path{},
 		&types.PathNode{},
 		&types.PathNodeActivity{},
+		&types.PathRun{},
+		&types.NodeRun{},
+		&types.ActivityRun{},
+		&types.PathRunTransition{},
 		// Assets (polymorphic ownership)
 		&types.Asset{},
 

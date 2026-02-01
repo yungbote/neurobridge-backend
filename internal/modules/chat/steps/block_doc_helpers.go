@@ -7,6 +7,57 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 )
 
+func extractTextItems(val any) []string {
+	switch t := val.(type) {
+	case nil:
+		return nil
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, v := range t {
+			if s := strings.TrimSpace(v); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			switch v := it.(type) {
+			case string:
+				if s := strings.TrimSpace(v); s != "" {
+					out = append(out, s)
+				}
+			case map[string]any:
+				for _, key := range []string{"md", "text", "value", "item", "label", "title"} {
+					if s := strings.TrimSpace(stringFromAnyCtx(v[key])); s != "" {
+						out = append(out, s)
+						break
+					}
+				}
+			default:
+				if s := strings.TrimSpace(fmt.Sprint(v)); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	default:
+		if s := strings.TrimSpace(fmt.Sprint(t)); s != "" {
+			return []string{s}
+		}
+	}
+	return nil
+}
+
+func extractListItems(block map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		if items := extractTextItems(block[key]); len(items) > 0 {
+			return items
+		}
+	}
+	return nil
+}
+
 func blockTextForContext(block map[string]any) (string, string) {
 	if block == nil {
 		return "", ""
@@ -32,19 +83,17 @@ func blockTextForContext(block map[string]any) (string, string) {
 	case "quick_check":
 		return blockType, strings.TrimSpace(stringFromAnyCtx(block["prompt_md"]) + " " + stringFromAnyCtx(block["answer_md"]))
 	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
-		items, _ := block["items_md"].([]any)
-		parts := make([]string, 0, len(items))
-		for _, it := range items {
-			parts = append(parts, stringFromAnyCtx(it))
+		items := extractListItems(block, "items_md", "items", "items_text", "items_md_list")
+		if len(items) == 0 {
+			return blockType, ""
 		}
-		return blockType, strings.TrimSpace(stringFromAnyCtx(block["title"]) + " " + strings.Join(parts, " "))
+		return blockType, strings.TrimSpace(stringFromAnyCtx(block["title"]) + " " + strings.Join(items, " "))
 	case "steps":
-		items, _ := block["steps_md"].([]any)
-		parts := make([]string, 0, len(items))
-		for _, it := range items {
-			parts = append(parts, stringFromAnyCtx(it))
+		items := extractListItems(block, "steps_md", "steps", "steps_text")
+		if len(items) == 0 {
+			return blockType, ""
 		}
-		return blockType, strings.TrimSpace(stringFromAnyCtx(block["title"]) + " " + strings.Join(parts, " "))
+		return blockType, strings.TrimSpace(stringFromAnyCtx(block["title"]) + " " + strings.Join(items, " "))
 	case "glossary":
 		var b strings.Builder
 		b.WriteString(strings.TrimSpace(stringFromAnyCtx(block["title"])))
