@@ -18,6 +18,7 @@
           "include_worked_example": { "type": "boolean" },
           "include_media_block": { "type": "boolean" },
           "quick_checks": { "type": "integer" },
+          "flashcards": { "type": "integer" },
           "bridge_in": { "type": "string" },
           "bridge_out": { "type": "string" }
         },
@@ -28,6 +29,7 @@
           "include_worked_example",
           "include_media_block",
           "quick_checks",
+          "flashcards",
           "bridge_in",
           "bridge_out"
         ],

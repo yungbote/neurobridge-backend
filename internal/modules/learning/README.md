@@ -5,7 +5,7 @@ This module owns learning-specific **use-cases** and LLM-backed pipelines:
 - materials → chunks/embeddings
 - intent intake → concept graph → path planning
 - node docs (lessons) + media planning/rendering
-- practice generation (activities, drills, quick checks)
+- practice generation (activities, drills, quick checks, flashcards)
 - graph-assisted retrieval (GraphRAG) and optional Neo4j projections
 
 ## Entry points
@@ -44,6 +44,10 @@ Quick checks:
 - Persisted as `type="quick_check"` blocks inside `NodeDocV1`.
 - Attempt endpoint: `POST /api/path-nodes/:id/quick-checks/:block_id/attempt` (deterministic grading for MCQ/true-false).
 - Implementation: `neurobridge-backend/internal/modules/learning/quick_check.go`
+
+Flashcards:
+- Persisted as `type="flashcard"` blocks inside `NodeDocV1`.
+- Front/back recall prompts with citations (no grading endpoint yet).
 
 Drills:
 - Generated via `POST /api/path-nodes/:id/drills/:kind` and stored as drill instances.

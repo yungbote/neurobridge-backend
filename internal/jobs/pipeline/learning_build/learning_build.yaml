@@ -189,8 +189,10 @@ stages:
     depends_on: [node_doc_build, node_figures_render, node_videos_render, material_kg_build]
     config:
       media_patch: true
+  - name: runtime_plan_build
+    depends_on: [node_doc_media_patch]
   - name: realize_activities
-    depends_on: [psu_build, path_plan_build, embed_chunks, user_profile_refresh, concept_graph_patch_build, material_kg_build]
+    depends_on: [runtime_plan_build, psu_build, path_plan_build, embed_chunks, user_profile_refresh, concept_graph_patch_build, material_kg_build]
   - name: coverage_coherence_audit
     depends_on: [realize_activities]
   - name: priors_refresh

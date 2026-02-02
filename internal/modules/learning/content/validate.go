@@ -101,6 +101,11 @@ func NodeDocMetrics(doc NodeDocV1) map[string]any {
 					wordCount += WordCount(stripMD(joined))
 				}
 			}
+		case "flashcard":
+			front := stringFromAny(b["front_md"])
+			back := stringFromAny(b["back_md"])
+			concat = append(concat, front, back)
+			wordCount += WordCount(stripMD(front + " " + back))
 		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
 			items := stringSliceFromAny(b["items_md"])
 			joined := strings.Join(items, "\n")
@@ -160,6 +165,7 @@ type NodeDocRequirements struct {
 	MinParagraphs   int
 	MinCallouts     int
 	MinQuickChecks  int
+	MinFlashcards   int
 	MinDiagrams     int
 	MinTables       int
 	MinWhyItMatters int
@@ -181,6 +187,7 @@ func DefaultNodeDocRequirements() NodeDocRequirements {
 		MinParagraphs:   8,
 		MinCallouts:     2,
 		MinQuickChecks:  3,
+		MinFlashcards:   0,
 		MinDiagrams:     0,
 		MinTables:       0,
 		MinWhyItMatters: 1,
@@ -229,6 +236,10 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 	qcCount := bc["quick_check"]
 	if req.MinQuickChecks > 0 && qcCount < req.MinQuickChecks {
 		errs = append(errs, fmt.Sprintf("need >=%d quick_check blocks (got %d)", req.MinQuickChecks, qcCount))
+	}
+	fcCount := bc["flashcard"]
+	if req.MinFlashcards > 0 && fcCount < req.MinFlashcards {
+		errs = append(errs, fmt.Sprintf("need >=%d flashcard blocks (got %d)", req.MinFlashcards, fcCount))
 	}
 	if req.MinDiagrams > 0 && bc["diagram"] < req.MinDiagrams {
 		errs = append(errs, fmt.Sprintf("need >=%d diagram blocks (got %d)", req.MinDiagrams, bc["diagram"]))
@@ -391,6 +402,14 @@ func ValidateNodeDocV1(doc NodeDocV1, allowedChunkIDs map[string]bool, req NodeD
 				} else if len(optIDs) > 0 && !optIDs[answerID] {
 					errs = append(errs, fmt.Sprintf("block[%d] quick_check.answer_id %q not in options", i, answerID))
 				}
+			}
+			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
+		case "flashcard":
+			if strings.TrimSpace(stringFromAny(b["front_md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] flashcard.front_md missing", i))
+			}
+			if strings.TrimSpace(stringFromAny(b["back_md"])) == "" {
+				errs = append(errs, fmt.Sprintf("block[%d] flashcard.back_md missing", i))
 			}
 			errs = append(errs, validateCitations(i, b["citations"], allowedChunkIDs)...)
 		case "divider":

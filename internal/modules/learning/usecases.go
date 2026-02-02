@@ -157,6 +157,9 @@ type (
 	PathPlanBuildInput  = steps.PathPlanBuildInput
 	PathPlanBuildOutput = steps.PathPlanBuildOutput
 
+	RuntimePlanBuildInput  = steps.RuntimePlanBuildInput
+	RuntimePlanBuildOutput = steps.RuntimePlanBuildOutput
+
 	PathCoverRenderInput  = steps.PathCoverRenderInput
 	PathCoverRenderOutput = steps.PathCoverRenderOutput
 
@@ -181,9 +184,10 @@ type (
 	NodeDocBuildInput  = steps.NodeDocBuildInput
 	NodeDocBuildOutput = steps.NodeDocBuildOutput
 
-	NodeDocPatchSelection = steps.NodeDocPatchSelection
-	NodeDocPatchInput     = steps.NodeDocPatchInput
-	NodeDocPatchOutput    = steps.NodeDocPatchOutput
+	NodeDocPatchSelection     = steps.NodeDocPatchSelection
+	NodeDocPatchInput         = steps.NodeDocPatchInput
+	NodeDocPatchOutput        = steps.NodeDocPatchOutput
+	NodeDocPatchPreviewOutput = steps.NodeDocPatchPreviewOutput
 
 	RealizeActivitiesInput  = steps.RealizeActivitiesInput
 	RealizeActivitiesOutput = steps.RealizeActivitiesOutput
@@ -478,6 +482,21 @@ func (u Usecases) PathPlanBuild(ctx context.Context, in PathPlanBuildInput) (Pat
 	}, steps.PathPlanBuildInput(in))
 }
 
+func (u Usecases) RuntimePlanBuild(ctx context.Context, in RuntimePlanBuildInput) (RuntimePlanBuildOutput, error) {
+	return steps.RuntimePlanBuild(ctx, steps.RuntimePlanBuildDeps{
+		DB:          u.deps.DB,
+		Log:         u.deps.Log,
+		Path:        u.deps.Path,
+		PathNodes:   u.deps.PathNodes,
+		NodeDocs:    u.deps.NodeDocs,
+		Summaries:   u.deps.Summaries,
+		UserProfile: u.deps.UserProfile,
+		ProgEvents:  u.deps.ProgEvents,
+		AI:          u.deps.AI,
+		Bootstrap:   u.deps.Bootstrap,
+	}, steps.RuntimePlanBuildInput(in))
+}
+
 func (u Usecases) PathCoverRender(ctx context.Context, in PathCoverRenderInput) (PathCoverRenderOutput, error) {
 	return steps.PathCoverRender(ctx, steps.PathCoverRenderDeps{
 		Log:       u.deps.Log,
@@ -603,6 +622,26 @@ func (u Usecases) NodeDocBuild(ctx context.Context, in NodeDocBuildInput) (NodeD
 
 func (u Usecases) NodeDocPatch(ctx context.Context, in NodeDocPatchInput) (NodeDocPatchOutput, error) {
 	return steps.NodeDocPatch(ctx, steps.NodeDocPatchDeps{
+		DB:        u.deps.DB,
+		Log:       u.deps.Log,
+		Path:      u.deps.Path,
+		PathNodes: u.deps.PathNodes,
+		NodeDocs:  u.deps.NodeDocs,
+		Figures:   u.deps.Figures,
+		Videos:    u.deps.Videos,
+		Revisions: u.deps.Revisions,
+		Files:     u.deps.Files,
+		Chunks:    u.deps.Chunks,
+		ULI:       u.deps.ULI,
+		Assets:    u.deps.Assets,
+		AI:        u.deps.AI,
+		Vec:       u.deps.Vec,
+		Bucket:    u.deps.Bucket,
+	}, steps.NodeDocPatchInput(in))
+}
+
+func (u Usecases) NodeDocPatchPreview(ctx context.Context, in NodeDocPatchInput) (NodeDocPatchPreviewOutput, error) {
+	return steps.NodeDocPatchPreview(ctx, steps.NodeDocPatchDeps{
 		DB:        u.deps.DB,
 		Log:       u.deps.Log,
 		Path:      u.deps.Path,

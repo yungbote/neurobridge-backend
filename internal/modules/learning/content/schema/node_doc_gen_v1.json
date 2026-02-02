@@ -25,6 +25,7 @@
               "table",
               "equation",
               "quick_check",
+              "flashcard",
               "divider",
               "objectives",
               "prerequisites",
@@ -937,6 +938,43 @@
 	      }
 	    },
 
+	    "flashcards": {
+	      "type": "array",
+	      "items": {
+	        "type": "object",
+	        "properties": {
+	          "id": { "type": "string" },
+	          "front_md": { "type": "string" },
+	          "back_md": { "type": "string" },
+	          "concept_keys": { "type": "array", "items": { "type": "string" } },
+	          "citations": {
+	            "type": "array",
+	            "items": {
+	              "type": "object",
+	              "properties": {
+	                "chunk_id": { "type": "string" },
+	                "quote": { "type": "string" },
+	                "loc": {
+	                  "type": "object",
+	                  "properties": {
+	                    "page": { "type": "integer" },
+	                    "start": { "type": "integer" },
+	                    "end": { "type": "integer" }
+	                  },
+	                  "required": ["page", "start", "end"],
+	                  "additionalProperties": false
+	                }
+	              },
+	              "required": ["chunk_id", "quote", "loc"],
+	              "additionalProperties": false
+	            }
+	          }
+	        },
+        "required": ["id", "front_md", "back_md", "concept_keys", "citations"],
+        "additionalProperties": false
+      }
+    },
+
     "dividers": {
       "type": "array",
       "items": {
@@ -979,6 +1017,7 @@
     "why_it_matters",
     "connections",
     "quick_checks",
+    "flashcards",
     "dividers"
   ],
   "additionalProperties": false

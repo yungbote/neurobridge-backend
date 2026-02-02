@@ -162,6 +162,14 @@ func blockPatchSchema(blockType string) (map[string]any, error) {
 		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "quick_check"}
 		base["required"] = append(base["required"].([]any), "prompt_md", "answer_md", "citations")
 		return base, nil
+	case "flashcard":
+		base["properties"].(map[string]any)["front_md"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["back_md"] = map[string]any{"type": "string"}
+		base["properties"].(map[string]any)["concept_keys"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+		base["properties"].(map[string]any)["citations"] = citationSchema
+		base["properties"].(map[string]any)["type"] = map[string]any{"type": "string", "const": "flashcard"}
+		base["required"] = append(base["required"].([]any), "front_md", "back_md", "citations")
+		return base, nil
 	case "figure":
 		base["properties"].(map[string]any)["caption"] = map[string]any{"type": "string"}
 		base["properties"].(map[string]any)["citations"] = citationSchema
@@ -439,6 +447,57 @@ func instructionText(s string) string {
 	return strings.TrimSpace(s)
 }
 
+func extractTextItems(val any) []string {
+	switch t := val.(type) {
+	case nil:
+		return nil
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, v := range t {
+			if s := strings.TrimSpace(v); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			switch v := it.(type) {
+			case string:
+				if s := strings.TrimSpace(v); s != "" {
+					out = append(out, s)
+				}
+			case map[string]any:
+				for _, key := range []string{"md", "text", "value", "item", "label", "title"} {
+					if s := strings.TrimSpace(stringFromAny(v[key])); s != "" {
+						out = append(out, s)
+						break
+					}
+				}
+			default:
+				if s := strings.TrimSpace(fmt.Sprint(v)); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	default:
+		if s := strings.TrimSpace(fmt.Sprint(t)); s != "" {
+			return []string{s}
+		}
+	}
+	return nil
+}
+
+func extractListItems(block map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		if items := extractTextItems(block[key]); len(items) > 0 {
+			return items
+		}
+	}
+	return nil
+}
+
 func blockTextForQuery(blockType string, block map[string]any) string {
 	switch blockType {
 	case "heading":
@@ -460,9 +519,11 @@ func blockTextForQuery(blockType string, block map[string]any) string {
 	case "quick_check":
 		return strings.TrimSpace(stringFromAny(block["prompt_md"]) + " " + stringFromAny(block["answer_md"]))
 	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
-		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(stringSliceFromAny(block["items_md"]), " "))
+		items := extractListItems(block, "items_md", "items", "items_text", "items_md_list")
+		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(items, " "))
 	case "steps":
-		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(stringSliceFromAny(block["steps_md"]), " "))
+		items := extractListItems(block, "steps_md", "steps", "steps_text")
+		return strings.TrimSpace(stringFromAny(block["title"]) + " " + strings.Join(items, " "))
 	case "glossary":
 		var b strings.Builder
 		b.WriteString(strings.TrimSpace(stringFromAny(block["title"])))

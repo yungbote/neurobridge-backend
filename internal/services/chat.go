@@ -677,6 +677,68 @@ func (s *chatService) SendMessage(dbc dbctx.Context, threadID uuid.UUID, content
 		metaJSON := encodeMetadata(sessionMeta)
 
 		// ──────────────────────────────────────────────────────────────────────────────
+		// THREAD WAITPOINT: If this thread has a pending waitpoint (e.g., node_doc_edit),
+		// route the message through chat_waitpoint_interpret.
+		// ──────────────────────────────────────────────────────────────────────────────
+		if s.jobRuns != nil {
+			if pendingID, pendingKind := pendingWaitpointFromMetadata(th.Metadata); pendingID != uuid.Nil {
+				waitRows, err := s.jobRuns.GetByIDs(inner, []uuid.UUID{pendingID})
+				if err == nil && len(waitRows) > 0 && waitRows[0] != nil {
+					waitJob := waitRows[0]
+					if waitJob.OwnerUserID == rd.UserID && strings.EqualFold(strings.TrimSpace(waitJob.Status), "waiting_user") {
+						seqUser := th.NextSeq + 1
+						userMsg = &types.ChatMessage{
+							ID:             uuid.New(),
+							ThreadID:       threadID,
+							UserID:         rd.UserID,
+							Seq:            seqUser,
+							Role:           "user",
+							Status:         "sent",
+							Content:        content,
+							Metadata:       metaJSON,
+							IdempotencyKey: idempotencyKey,
+							CreatedAt:      now,
+							UpdatedAt:      now,
+						}
+						if _, err := s.messages.Create(inner, []*types.ChatMessage{userMsg}); err != nil {
+							return err
+						}
+						createdNew = true
+
+						if err := s.threads.UpdateFields(inner, threadID, map[string]interface{}{
+							"next_seq":        seqUser,
+							"last_message_at": now,
+							"last_viewed_at":  now,
+							"updated_at":      now,
+						}); err != nil {
+							return err
+						}
+
+						payload := map[string]any{
+							"thread_id":        threadID.String(),
+							"user_message_id":  userMsg.ID.String(),
+							"waitpoint_job_id": waitJob.ID.String(),
+						}
+						if pendingKind != "" {
+							payload["waitpoint_kind"] = pendingKind
+						}
+						entityID := threadID
+						enqueued, err := s.jobs.Enqueue(inner, rd.UserID, "chat_waitpoint_interpret", "chat_thread", &entityID, payload)
+						if err != nil {
+							return err
+						}
+						job = enqueued
+						if job != nil && job.ID != uuid.Nil {
+							dispatchJobIDs = append(dispatchJobIDs, job.ID)
+						}
+						asstMsg = nil
+						return nil
+					}
+				}
+			}
+		}
+
+		// ──────────────────────────────────────────────────────────────────────────────
 		// WAITPOINT INTEGRATION: If this thread is attached to a paused learning_build,
 		// route the message through waitpoint_interpret instead of using old resume logic.
 		// The interpreter classifies the message and decides whether to:
@@ -905,6 +967,26 @@ func pausedStageFromJobStage(stage string) string {
 		return strings.TrimSpace(strings.TrimPrefix(s, "waiting_user_"))
 	}
 	return ""
+}
+
+func pendingWaitpointFromMetadata(raw datatypes.JSON) (uuid.UUID, string) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return uuid.Nil, ""
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
+		return uuid.Nil, ""
+	}
+	jobID := strings.TrimSpace(stringFromAny(meta["pending_waitpoint_job_id"]))
+	if jobID == "" {
+		return uuid.Nil, ""
+	}
+	uid, err := uuid.Parse(jobID)
+	if err != nil {
+		return uuid.Nil, ""
+	}
+	kind := strings.TrimSpace(stringFromAny(meta["pending_waitpoint_kind"]))
+	return uid, kind
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

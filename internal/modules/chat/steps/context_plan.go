@@ -526,6 +526,8 @@ type ContextPlanOutput struct {
 	Trace               map[string]any
 	EvidenceSources     []EvidenceSource
 	EvidenceTokenBudget int
+	Mode                string
+	EditTarget          *EditTarget
 }
 
 type sessionBlockRef struct {
@@ -533,6 +535,15 @@ type sessionBlockRef struct {
 	Ratio      float64
 	Confidence float64
 	TopDelta   float64
+}
+
+type EditTarget struct {
+	PathID     string
+	PathNodeID string
+	BlockID    string
+	BlockIndex int
+	Confidence float64
+	Source     string
 }
 
 type sessionContextSnapshot struct {
@@ -944,6 +955,67 @@ func matchBlocksForQuery(blockByID map[string]map[string]any, query string, limi
 	return out
 }
 
+func matchBlocksForTitleQuery(blockByID map[string]map[string]any, query string, limit int) []string {
+	if len(blockByID) == 0 {
+		return nil
+	}
+	tokens := normalizeQueryTokens(query)
+	if len(tokens) < 1 {
+		return nil
+	}
+	type scored struct {
+		id    string
+		score int
+	}
+	candidates := make([]scored, 0, len(blockByID))
+	for id, block := range blockByID {
+		if id == "" || block == nil {
+			continue
+		}
+		title := blockTitleForContext(block)
+		titleLower := strings.ToLower(strings.TrimSpace(title))
+		if titleLower == "" {
+			continue
+		}
+		score := 0
+		for _, tok := range tokens {
+			if tok == "" {
+				continue
+			}
+			if strings.Contains(titleLower, tok) {
+				score += 2
+			}
+		}
+		if score > 0 {
+			candidates = append(candidates, scored{id: id, score: score})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].id < candidates[j].id
+	})
+	minScore := int(math.Ceil(float64(len(tokens)) * 0.4))
+	if minScore < 2 {
+		minScore = 2
+	}
+	out := make([]string, 0, limit)
+	for _, c := range candidates {
+		if c.score < minScore {
+			break
+		}
+		out = append(out, c.id)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 func conceptKeysFromNode(node *types.PathNode) []string {
 	if node == nil || len(node.Metadata) == 0 || string(node.Metadata) == "null" {
 		return nil
@@ -1265,6 +1337,133 @@ func pickTopVisibleBlock(blocks []sessionBlockRef) string {
 		return bestPos.ID
 	}
 	return ""
+}
+
+func resolveEditTarget(sessionCtx *sessionContextSnapshot, sessionStale bool) *EditTarget {
+	if sessionCtx == nil || sessionStale {
+		return nil
+	}
+	pathNodeID := strings.TrimSpace(sessionCtx.ActivePathNodeID)
+	if pathNodeID == "" {
+		return nil
+	}
+	blockID := ""
+	confidence := 0.0
+	source := ""
+	if sessionCtx.CurrentBlock != nil && sessionCtx.CurrentBlock.ID != "" {
+		blockID = sessionCtx.CurrentBlock.ID
+		confidence = sessionCtx.CurrentBlock.Confidence
+		source = "current_block"
+	}
+	if blockID == "" && sessionCtx.ActiveDocBlockID != "" {
+		blockID = sessionCtx.ActiveDocBlockID
+		confidence = 0.6
+		source = "active_doc_block_id"
+	}
+	if blockID == "" && len(sessionCtx.VisibleBlocks) > 0 {
+		blockID = pickTopVisibleBlock(sessionCtx.VisibleBlocks)
+		confidence = 0.45
+		source = "visible_top"
+	}
+	if blockID == "" {
+		return nil
+	}
+	return &EditTarget{
+		PathID:     strings.TrimSpace(sessionCtx.ActivePathID),
+		PathNodeID: pathNodeID,
+		BlockID:    blockID,
+		BlockIndex: -1,
+		Confidence: confidence,
+		Source:     source,
+	}
+}
+
+func resolveEditTargetFromQuery(
+	ctx context.Context,
+	deps ContextPlanDeps,
+	sessionCtx *sessionContextSnapshot,
+	sessionStale bool,
+	query string,
+) *EditTarget {
+	if sessionCtx == nil || sessionStale {
+		return nil
+	}
+	if deps.NodeDocs == nil || deps.DB == nil {
+		return nil
+	}
+	pathNodeID := strings.TrimSpace(sessionCtx.ActivePathNodeID)
+	if pathNodeID == "" {
+		return nil
+	}
+	nodeID, err := uuid.Parse(pathNodeID)
+	if err != nil || nodeID == uuid.Nil {
+		return nil
+	}
+	dbc := dbctx.Context{Ctx: ctx, Tx: deps.DB}
+	docRows, err := deps.NodeDocs.GetByPathNodeIDs(dbc, []uuid.UUID{nodeID})
+	if err != nil || len(docRows) == 0 || docRows[0] == nil {
+		return nil
+	}
+	doc := docRows[0]
+	if len(doc.DocJSON) == 0 || string(doc.DocJSON) == "null" {
+		return nil
+	}
+	var docObj map[string]any
+	if err := json.Unmarshal(doc.DocJSON, &docObj); err != nil || docObj == nil {
+		return nil
+	}
+	rawBlocks, _ := docObj["blocks"].([]any)
+	if len(rawBlocks) == 0 {
+		return nil
+	}
+	blockByID := map[string]map[string]any{}
+	blockOrder := make([]string, 0, len(rawBlocks))
+	for i, raw := range rawBlocks {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := stringFromAnyCtx(m["id"])
+		if id == "" {
+			id = strconv.Itoa(i)
+		}
+		if id == "" {
+			continue
+		}
+		blockByID[id] = m
+		blockOrder = append(blockOrder, id)
+	}
+	if len(blockByID) == 0 {
+		return nil
+	}
+	matches := matchBlocksForTitleQuery(blockByID, query, 1)
+	source := "query_match_title"
+	if len(matches) == 0 {
+		matches = matchBlocksForQuery(blockByID, query, 1)
+		source = "query_match_body"
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	blockID := strings.TrimSpace(matches[0])
+	if blockID == "" {
+		return nil
+	}
+	blockIndex := -1
+	for i, id := range blockOrder {
+		if id == blockID {
+			blockIndex = i
+			break
+		}
+	}
+	return &EditTarget{
+		PathID:     strings.TrimSpace(sessionCtx.ActivePathID),
+		PathNodeID: pathNodeID,
+		BlockID:    blockID,
+		BlockIndex: blockIndex,
+		Confidence: 0.82,
+		Source:     source,
+	}
 }
 
 func buildLessonIndexText(blockOrder []string, blockByID map[string]map[string]any, maxTokens int) string {
@@ -1917,6 +2116,22 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 		}
 	}
 	out.Trace["context_route"] = routeTrace
+	out.Mode = route.Mode
+	if route.Mode == "edit" {
+		out.EditTarget = resolveEditTargetFromQuery(ctx, deps, sessionCtx, sessionStale, q)
+		if out.EditTarget == nil {
+			out.EditTarget = resolveEditTarget(sessionCtx, sessionStale)
+		}
+		if out.EditTarget != nil {
+			out.Trace["edit_target"] = map[string]any{
+				"path_id":      out.EditTarget.PathID,
+				"path_node_id": out.EditTarget.PathNodeID,
+				"block_id":     out.EditTarget.BlockID,
+				"confidence":   out.EditTarget.Confidence,
+				"source":       out.EditTarget.Source,
+			}
+		}
+	}
 	if sessionCtx != nil {
 		out.Trace["session_ctx"] = map[string]any{
 			"source":      sessionSource,

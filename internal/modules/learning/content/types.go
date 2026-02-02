@@ -83,6 +83,14 @@ type NodeDocQuickCheckBlockV1 struct {
 	Citations []CitationRefV1 `json:"citations"`
 }
 
+type NodeDocFlashcardBlockV1 struct {
+	Type        string          `json:"type"` // flashcard
+	FrontMD     string          `json:"front_md"`
+	BackMD      string          `json:"back_md"`
+	ConceptKeys []string        `json:"concept_keys,omitempty"`
+	Citations   []CitationRefV1 `json:"citations"`
+}
+
 type NodeDocDividerBlockV1 struct {
 	Type string `json:"type"` // divider
 }
@@ -101,14 +109,15 @@ type NodeDocV1 struct {
 }
 
 type NodeDocOutlineSectionV1 struct {
-	Heading              string `json:"heading"`
-	Goal                 string `json:"goal"`
+	Heading              string   `json:"heading"`
+	Goal                 string   `json:"goal"`
 	ConceptKeys          []string `json:"concept_keys"`
-	IncludeWorkedExample bool   `json:"include_worked_example"`
-	IncludeMediaBlock    bool   `json:"include_media_block"`
-	QuickChecks          int    `json:"quick_checks"`
-	BridgeIn             string `json:"bridge_in"`
-	BridgeOut            string `json:"bridge_out"`
+	IncludeWorkedExample bool     `json:"include_worked_example"`
+	IncludeMediaBlock    bool     `json:"include_media_block"`
+	QuickChecks          int      `json:"quick_checks"`
+	Flashcards           int      `json:"flashcards"`
+	BridgeIn             string   `json:"bridge_in"`
+	BridgeOut            string   `json:"bridge_out"`
 }
 
 type NodeDocOutlineV1 struct {

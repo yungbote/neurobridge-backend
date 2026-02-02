@@ -14,6 +14,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_purge"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_rebuild"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_respond"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_waitpoint_interpret"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/completed_unit_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_cluster_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
@@ -31,6 +32,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/material_signal_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_avatar_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_edit"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_edit_apply"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_patch"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_render"
@@ -47,6 +50,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_promote"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/realize_activities"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/runtime_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/runtime_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/saga_cleanup"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_backfill"
@@ -321,6 +325,21 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
+	chatWaitpointInterpret := chat_waitpoint_interpret.New(
+		db,
+		log,
+		clients.OpenaiClient,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.ChatTurn,
+		repos.JobRun,
+		jobService,
+		chatNotifier,
+	)
+	if err := jobRegistry.Register(chatWaitpointInterpret); err != nil {
+		return Services{}, err
+	}
+
 	waitpointStage := waitpoint_stage.New(
 		db,
 		log,
@@ -504,6 +523,22 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptRepresentation, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, repos.UserConceptState, repos.UserConceptModel, repos.UserMisconception, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
+		return Services{}, err
+	}
+
+	runtimePlan := runtime_plan_build.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.MaterialSetSummary,
+		repos.UserProfileVector,
+		repos.UserProgressionEvent,
+		clients.OpenaiClient,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(runtimePlan); err != nil {
 		return Services{}, err
 	}
 
@@ -725,6 +760,43 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.GcpBucket,
 	)
 	if err := jobRegistry.Register(nodeDocPatch); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocEdit := node_doc_edit.New(
+		db,
+		log,
+		repos.ChatThread,
+		repos.ChatMessage,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeFigure,
+		repos.LearningNodeVideo,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		repos.UserLibraryIndex,
+		repos.Asset,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		clients.GcpBucket,
+		chatNotifier,
+	)
+	if err := jobRegistry.Register(nodeDocEdit); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocEditApply := node_doc_edit_apply.New(
+		db,
+		log,
+		repos.JobRun,
+		jobService,
+		repos.ChatThread,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeDocRevision,
+	)
+	if err := jobRegistry.Register(nodeDocEditApply); err != nil {
 		return Services{}, err
 	}
 

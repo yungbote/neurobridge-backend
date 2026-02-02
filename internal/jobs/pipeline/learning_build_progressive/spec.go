@@ -40,6 +40,7 @@ var fallbackStageOrder = []string{
 	"psu_build",
 	"path_cover_render",
 	"node_doc_build",
+	"runtime_plan_build",
 }
 
 var fallbackDispatchStageOrder = []string{
@@ -79,6 +80,7 @@ var fallbackStageDeps = map[string][]string{
 	"path_cover_render": {"path_plan_build"},
 
 	"node_doc_build": {"psu_build", "path_plan_build", "embed_chunks"},
+	"runtime_plan_build": {"node_doc_build"},
 }
 
 type yamlPipelineSpec struct {

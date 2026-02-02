@@ -123,6 +123,7 @@ type NodeDocGenV1 struct {
 	Tables      []NodeDocGenTableV1      `json:"tables"`
 	Equations   []NodeDocGenEquationV1   `json:"equations"`
 	QuickChecks []NodeDocGenQuickCheckV1 `json:"quick_checks"`
+	Flashcards  []NodeDocGenFlashcardV1  `json:"flashcards"`
 	Dividers    []NodeDocGenDividerV1    `json:"dividers"`
 
 	Objectives     []NodeDocGenListBlockV1     `json:"objectives"`
@@ -225,6 +226,14 @@ type NodeDocGenQuickCheckV1 struct {
 	Citations []CitationRefV1 `json:"citations"`
 }
 
+type NodeDocGenFlashcardV1 struct {
+	ID          string          `json:"id"`
+	FrontMD     string          `json:"front_md"`
+	BackMD      string          `json:"back_md"`
+	ConceptKeys []string        `json:"concept_keys,omitempty"`
+	Citations   []CitationRefV1 `json:"citations"`
+}
+
 type NodeDocGenDividerV1 struct {
 	ID string `json:"id"`
 }
@@ -315,6 +324,8 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	equationSeq := make([]NodeDocGenEquationV1, 0, len(gen.Equations))
 	qcs := map[string]NodeDocGenQuickCheckV1{}
 	qcSeq := make([]NodeDocGenQuickCheckV1, 0, len(gen.QuickChecks))
+	fcs := map[string]NodeDocGenFlashcardV1{}
+	fcSeq := make([]NodeDocGenFlashcardV1, 0, len(gen.Flashcards))
 	divs := map[string]NodeDocGenDividerV1{}
 	dividerSeq := make([]NodeDocGenDividerV1, 0, len(gen.Dividers))
 
@@ -481,6 +492,18 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			q.ID = id
 			qcs[id] = q
 			qcSeq = append(qcSeq, q)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for _, f := range gen.Flashcards {
+			id, ok := addUnique("flashcard", f.ID, seen)
+			if !ok {
+				continue
+			}
+			f.ID = id
+			fcs[id] = f
+			fcSeq = append(fcSeq, f)
 		}
 	}
 	{
@@ -687,6 +710,7 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 	refTable := map[string]bool{}
 	refEquations := map[string]bool{}
 	refQC := map[string]bool{}
+	refFlashcard := map[string]bool{}
 	refDivider := map[string]bool{}
 
 	refObjectives := map[string]bool{}
@@ -862,6 +886,20 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 				"answer_id": q.AnswerID,
 				"answer_md": q.AnswerMD,
 				"citations": toAny(q.Citations),
+			})
+		case "flashcard":
+			f, ok := fcs[id]
+			if !ok {
+				continue
+			}
+			refFlashcard[id] = true
+			doc.Blocks = append(doc.Blocks, map[string]any{
+				"id":           id,
+				"type":         "flashcard",
+				"front_md":     f.FrontMD,
+				"back_md":      f.BackMD,
+				"concept_keys": toAny(f.ConceptKeys),
+				"citations":    toAny(f.Citations),
 			})
 		case "divider":
 			refDivider[id] = true
@@ -1140,6 +1178,19 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 			"answer_id": q.AnswerID,
 			"answer_md": q.AnswerMD,
 			"citations": toAny(q.Citations),
+		})
+	}
+	for _, f := range fcSeq {
+		if refFlashcard[f.ID] {
+			continue
+		}
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"id":           f.ID,
+			"type":         "flashcard",
+			"front_md":     f.FrontMD,
+			"back_md":      f.BackMD,
+			"concept_keys": toAny(f.ConceptKeys),
+			"citations":    toAny(f.Citations),
 		})
 	}
 	for _, d := range dividerSeq {

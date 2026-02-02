@@ -89,4 +89,10 @@ type Input struct {
 	TaxonomyCandidatesJSON  string
 	TaxonomyPathSummaryJSON string
 	TaxonomyConstraintsJSON string
+
+	// Runtime learning plan
+	RuntimePlanContextJSON string
+	RuntimePlanNodesJSON   string
+	RuntimePlanUserJSON    string
+	RuntimePlanSignalsJSON string
 }

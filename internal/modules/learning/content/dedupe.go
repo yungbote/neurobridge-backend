@@ -163,6 +163,21 @@ func DedupNodeDocV1(doc NodeDocV1) (NodeDocV1, []string) {
 			}
 			seen[key] = true
 			lastWasDivider = false
+		case "flashcard":
+			front := strings.TrimSpace(stringFromAny(b["front_md"]))
+			back := strings.TrimSpace(stringFromAny(b["back_md"]))
+			norm := normalize(front + "\n" + back)
+			if norm == "" {
+				removed = append(removed, "empty_flashcard")
+				continue
+			}
+			key := "flashcard:" + norm
+			if seen[key] {
+				removed = append(removed, "duplicate_flashcard")
+				continue
+			}
+			seen[key] = true
+			lastWasDivider = false
 
 		case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
 			title := strings.TrimSpace(stringFromAny(b["title"]))

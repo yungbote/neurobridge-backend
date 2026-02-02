@@ -13,7 +13,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "equation", "quick_check", "divider"]
+            "enum": ["heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "equation", "quick_check", "flashcard", "divider"]
           },
           "id": { "type": "string" },
 
@@ -79,6 +79,10 @@
           "columns": { "type": "array", "items": { "type": "string" } },
           "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
 
+          "front_md": { "type": "string" },
+          "back_md": { "type": "string" },
+          "concept_keys": { "type": "array", "items": { "type": "string" } },
+
           "prompt_md": { "type": "string" },
           "answer_md": { "type": "string" }
         },
@@ -104,6 +108,8 @@
           "display",
           "columns",
           "rows",
+          "front_md",
+          "back_md",
           "prompt_md",
           "answer_md"
         ],

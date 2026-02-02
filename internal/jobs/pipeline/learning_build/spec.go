@@ -50,6 +50,7 @@ var fallbackStageOrder = []string{
 	"node_videos_render",
 	"node_doc_build",
 	"node_doc_media_patch",
+	"runtime_plan_build",
 	"realize_activities",
 	"coverage_coherence_audit",
 	"priors_refresh",
@@ -104,8 +105,9 @@ var fallbackStageDeps = map[string][]string{
 
 	"node_doc_build":       {"psu_build", "path_plan_build", "embed_chunks", "material_kg_build"},
 	"node_doc_media_patch": {"node_doc_build", "node_figures_render", "node_videos_render", "material_kg_build"},
+	"runtime_plan_build":   {"node_doc_media_patch"},
 
-	"realize_activities":       {"psu_build", "path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_patch_build", "material_kg_build"},
+	"realize_activities":       {"runtime_plan_build", "psu_build", "path_plan_build", "embed_chunks", "user_profile_refresh", "concept_graph_patch_build", "material_kg_build"},
 	"coverage_coherence_audit": {"realize_activities"},
 	"priors_refresh":           {"realize_activities", "variant_stats_refresh", "chain_signature_build"},
 	"completed_unit_refresh":   {"realize_activities", "progression_compact", "chain_signature_build"},

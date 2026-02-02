@@ -58,6 +58,9 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 	for _, b := range gen.QuickChecks {
 		addID("quick_check", b.ID)
 	}
+	for _, b := range gen.Flashcards {
+		addID("flashcard", b.ID)
+	}
 	for _, b := range gen.Dividers {
 		addID("divider", b.ID)
 	}
@@ -189,6 +192,8 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 			prefix = "eq"
 		case "quick_check":
 			prefix = "qc"
+		case "flashcard":
+			prefix = "fc"
 		case "divider":
 			prefix = "div"
 		case "objectives":
@@ -337,6 +342,15 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 				idsFilled++
 			}
 			record("quick_check", gen.QuickChecks[i].ID)
+		}
+	}
+	{
+		seen := map[string]bool{}
+		for i := range gen.Flashcards {
+			if ensureID("flashcard", &gen.Flashcards[i].ID, i, seen) {
+				idsFilled++
+			}
+			record("flashcard", gen.Flashcards[i].ID)
 		}
 	}
 	{
@@ -524,7 +538,7 @@ func RepairNodeDocGenOrder(gen NodeDocGenV1) (NodeDocGenV1, map[string]any) {
 	kindOrder := []string{
 		"prerequisites", "objectives",
 		"heading", "paragraph", "callout", "code", "figure", "video", "diagram", "table", "equation",
-		"steps", "checklist", "quick_check", "intuition", "mental_model", "why_it_matters",
+		"steps", "checklist", "quick_check", "flashcard", "intuition", "mental_model", "why_it_matters",
 		"common_mistakes", "misconceptions", "edge_cases", "heuristics",
 		"faq", "glossary", "key_takeaways", "connections", "divider",
 	}

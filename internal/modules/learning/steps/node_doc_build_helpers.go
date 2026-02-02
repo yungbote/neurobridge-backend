@@ -1433,6 +1433,17 @@ func ensureNodeDocMeetsMinima(doc content.NodeDocV1, req content.NodeDocRequirem
 		bc["quick_check"]++
 		changed = true
 	}
+	for req.MinFlashcards > 0 && bc["flashcard"] < req.MinFlashcards {
+		doc.Blocks = append(doc.Blocks, map[string]any{
+			"type":         "flashcard",
+			"front_md":     "State the key term or idea in your own words.",
+			"back_md":      "A good answer captures the term and its role, plus one defining detail from the cited excerpt.",
+			"concept_keys": []any{},
+			"citations":    citations(),
+		})
+		bc["flashcard"]++
+		changed = true
+	}
 
 	// Ensure pitfalls, steps, and checklist requirements when present.
 	for req.MinPitfalls > 0 && bc["misconceptions"]+bc["common_mistakes"] < req.MinPitfalls {
@@ -1837,6 +1848,12 @@ func normalizeOutline(outline content.NodeDocOutlineV1, nodeTitle string, concep
 		if sec.QuickChecks > 4 {
 			sec.QuickChecks = 4
 		}
+		if sec.Flashcards < 0 {
+			sec.Flashcards = 0
+		}
+		if sec.Flashcards > 4 {
+			sec.Flashcards = 4
+		}
 		if sec.Heading == "" {
 			sec.Heading = "Section"
 		}
@@ -1853,6 +1870,7 @@ func normalizeOutline(outline content.NodeDocOutlineV1, nodeTitle string, concep
 			IncludeWorkedExample: false,
 			IncludeMediaBlock:    false,
 			QuickChecks:          0,
+			Flashcards:           0,
 			BridgeIn:             "",
 			BridgeOut:            "",
 		})
@@ -1863,6 +1881,7 @@ func normalizeOutline(outline content.NodeDocOutlineV1, nodeTitle string, concep
 			IncludeWorkedExample: true,
 			IncludeMediaBlock:    true,
 			QuickChecks:          1,
+			Flashcards:           1,
 			BridgeIn:             "",
 			BridgeOut:            "",
 		})
@@ -1977,7 +1996,7 @@ func ensureQuickChecksAfterTeaching(doc content.NodeDocV1, chunkByID map[uuid.UU
 	countsAsTeaching := func(t string) bool {
 		t = strings.ToLower(strings.TrimSpace(t))
 		switch t {
-		case "", "quick_check", "heading", "divider", "video", "code", "objectives", "prerequisites", "key_takeaways":
+		case "", "quick_check", "flashcard", "heading", "divider", "video", "code", "objectives", "prerequisites", "key_takeaways":
 			return false
 		default:
 			return true

@@ -170,4 +170,6 @@ stages:
       node_limit: 2
       node_select_mode: outline_and_lesson
       mark_remaining_pending: true
+  - name: runtime_plan_build
+    depends_on: [node_doc_build]
 variants:

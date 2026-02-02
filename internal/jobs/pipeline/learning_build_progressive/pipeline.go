@@ -417,6 +417,33 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.NodeVideosRender(jc.Ctx, learningmod.NodeVideosRenderInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "node_doc_build":
 			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "runtime_plan_build":
+			force := false
+			model := ""
+			if spec, ok := pipelineStageSpec(p.log, stageName); ok {
+				if v, ok := spec.Config["force"]; ok && v != nil {
+					switch t := v.(type) {
+					case bool:
+						force = t
+					default:
+						s := strings.TrimSpace(fmt.Sprint(v))
+						if strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes") {
+							force = true
+						}
+					}
+				}
+				if v, ok := spec.Config["model"]; ok && v != nil {
+					model = strings.TrimSpace(fmt.Sprint(v))
+				}
+			}
+			_, stageErr = uc.RuntimePlanBuild(jc.Ctx, learningmod.RuntimePlanBuildInput{
+				OwnerUserID:   jc.Job.OwnerUserID,
+				MaterialSetID: setID,
+				SagaID:        sagaID,
+				PathID:        pathID,
+				Force:         force,
+				Model:         model,
+			})
 		case "node_doc_media_patch":
 			_, stageErr = uc.NodeDocBuild(jc.Ctx, learningmod.NodeDocBuildInput{
 				OwnerUserID:   jc.Job.OwnerUserID,

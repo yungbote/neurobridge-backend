@@ -38,6 +38,7 @@ const (
 	PromptNodeRepresentationPlan        PromptName = "node_representation_plan"
 	PromptChainRepresentationCandidates PromptName = "chain_representation_candidate"
 	PromptOverrideResolution            PromptName = "override_resolution"
+	PromptRuntimePlan                   PromptName = "runtime_plan"
 
 	// Retrieval + Reuse
 	PromptRetrievalSpec PromptName = "retrieval_spec"

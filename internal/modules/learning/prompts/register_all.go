@@ -418,6 +418,39 @@ Task:
 	})
 
 	RegisterSpec(Spec{
+		Name:       PromptRuntimePlan,
+		Version:    1,
+		SchemaName: "runtime_plan",
+		Schema:     RuntimePlanSchema,
+		System: `
+You design a runtime learning cadence plan that governs breaks and pop-up learning checks.
+Use the provided path/node context and user history. Do not invent details not grounded in the inputs.
+Return JSON only.`,
+		User: `
+PATH_CONTEXT_JSON:
+{{.RuntimePlanContextJSON}}
+
+NODE_SUMMARIES_JSON:
+{{.RuntimePlanNodesJSON}}
+
+USER_CONTEXT_JSON:
+{{.RuntimePlanUserJSON}}
+
+SIGNALS_JSON:
+{{.RuntimePlanSignalsJSON}}
+
+Output rules:
+- Provide path, modules, and lessons plans.
+- module_index and lesson_index must correspond to node indices in NODE_SUMMARIES_JSON.
+- node_id must match the provided node id.
+- Use integers for all *_minutes and *_blocks fields.
+- Keep policies conservative; avoid extreme values.`,
+		Validators: []Validator{
+			RequireNonEmpty("RuntimePlanNodesJSON", func(in Input) string { return in.RuntimePlanNodesJSON }),
+		},
+	})
+
+	RegisterSpec(Spec{
 		Name:       PromptMediaRank,
 		Version:    1,
 		SchemaName: "media_rank",

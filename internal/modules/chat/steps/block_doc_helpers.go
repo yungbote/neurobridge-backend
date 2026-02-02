@@ -82,6 +82,8 @@ func blockTextForContext(block map[string]any) (string, string) {
 		return blockType, strings.TrimSpace(stringFromAnyCtx(block["caption"]))
 	case "quick_check":
 		return blockType, strings.TrimSpace(stringFromAnyCtx(block["prompt_md"]) + " " + stringFromAnyCtx(block["answer_md"]))
+	case "flashcard":
+		return blockType, strings.TrimSpace(stringFromAnyCtx(block["front_md"]) + " " + stringFromAnyCtx(block["back_md"]))
 	case "objectives", "prerequisites", "key_takeaways", "common_mistakes", "misconceptions", "edge_cases", "heuristics", "checklist", "connections":
 		items := extractListItems(block, "items_md", "items", "items_text", "items_md_list")
 		if len(items) == 0 {

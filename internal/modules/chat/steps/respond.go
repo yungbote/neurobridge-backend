@@ -269,6 +269,16 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 		if err != nil {
 			return out, err
 		}
+		if editRes := maybeHandleEditRequest(ctx, deps, in, thread, plan, userText); editRes.Handled {
+			if editRes.Err != nil {
+				return out, editRes.Err
+			}
+			if err := finalizeImmediateReply(ctx, deps, in, editRes.Reply, editRes.Meta); err != nil {
+				return out, err
+			}
+			out.AssistantText = strings.TrimSpace(editRes.Reply)
+			return out, nil
+		}
 		instructions = plan.Instructions
 		userPayload = plan.UserPayload
 		trace = plan.Trace

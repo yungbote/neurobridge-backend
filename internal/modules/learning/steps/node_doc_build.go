@@ -1207,6 +1207,7 @@ Rules:
 - bridge_in/bridge_out must be learner-facing and content-focused; do NOT mention outlines, plans, modules, paths, or lesson structure.
 - Avoid meta phrasing like "up next", "next lesson", "wrap-up", "bridge-in/out", "your next hop", or "you've seen the plan".
 - concept_keys per section should be a subset of the node's concepts (include prereqs when needed).
+- quick_checks and flashcards should be 0–4 per section; use flashcards for key term recall.
 - If PATTERN_CONTEXT_JSON is provided, align section flow to the selected opening/core/practice/closing patterns.
 - If STYLE_MANIFEST_JSON is provided, align tone and phrasing to its guidance.
 - If PATH_NARRATIVE_PLAN_JSON is provided, follow its continuity rules for bridge_in/out and thread_summary.
@@ -1772,7 +1773,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	The quality bar is elite: engaging and teacherly — not terse "lecture notes".
 	This is NOT an interactive chat: do not ask the learner any questions or solicit preferences.
 	Do not include any onboarding sections ("Entry Check", "Your goal/level", "Format preferences", etc).
-	The only questions in the entire doc must be inside quick_check blocks.
+	The only questions in the entire doc must be inside quick_check or flashcard blocks.
 
 		Teaching style rules:
 		- Write in a direct, friendly, confident voice (like a great tutor).
@@ -1820,7 +1821,7 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	Schema contract:
 	- Use "order" as the only render order. Each order item is {kind,id}.
 	- Each order item must reference exactly one object with the same id in the corresponding array:
-	  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | equations | objectives | prerequisites | key_takeaways | glossary | common_mistakes | misconceptions | edge_cases | heuristics | steps | checklist | faq | intuition | mental_model | why_it_matters | connections | quick_checks | dividers.
+	  headings | paragraphs | callouts | codes | figures | videos | diagrams | tables | equations | objectives | prerequisites | key_takeaways | glossary | common_mistakes | misconceptions | edge_cases | heuristics | steps | checklist | faq | intuition | mental_model | why_it_matters | connections | quick_checks | flashcards | dividers.
 	- IDs must be non-empty and unique within each array (e.g., "h1","p2","qc3").
 	- Do not create orphan blocks: every object you create must appear in "order".
 
@@ -1855,6 +1856,10 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		  - short_answer: kind="short_answer", options=[], answer_id=""; answer_md is the reference answer/explanation.
 		  - true_false: kind="true_false", options=[{id:"A",text:"True"},{id:"B",text:"False"}], answer_id="A"|"B".
 		  - mcq: kind="mcq", options has 3-5 options, answer_id matches one option id, answer_md explains why.
+		- Flashcards are short front/back recall prompts.
+		  - Use front_md as the question/prompt and back_md as the answer.
+		  - Include concept_keys (1–3) drawn from CONCEPT_KEYS for each flashcard.
+		  - Keep them tight (1–2 sentences each side).
 		- Heading levels must be 2, 3, or 4 (never use 1).
 		- Include a tip callout titled exactly "Worked example".
 		%s
@@ -2605,6 +2610,7 @@ func nodeDocRequirementsFingerprint(reqs content.NodeDocRequirements, diagramsDi
 		"min_paragraphs":     reqs.MinParagraphs,
 		"min_callouts":       reqs.MinCallouts,
 		"min_quick_checks":   reqs.MinQuickChecks,
+		"min_flashcards":     reqs.MinFlashcards,
 		"min_headings":       reqs.MinHeadings,
 		"min_diagrams":       reqs.MinDiagrams,
 		"min_tables":         reqs.MinTables,
