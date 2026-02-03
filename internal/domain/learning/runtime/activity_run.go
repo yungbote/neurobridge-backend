@@ -21,10 +21,10 @@ const (
 type ActivityRun struct {
 	ID uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 
-	UserID     uuid.UUID `gorm:"type:uuid;not null;index:idx_activity_run_user_activity,priority:1" json:"user_id"`
+	UserID     uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_activity_run_user_activity,priority:1" json:"user_id"`
 	PathID     uuid.UUID `gorm:"type:uuid;not null;index" json:"path_id"`
 	NodeID     uuid.UUID `gorm:"type:uuid;column:node_id;index" json:"node_id"`
-	ActivityID uuid.UUID `gorm:"type:uuid;not null;index:idx_activity_run_user_activity,priority:2;index" json:"activity_id"`
+	ActivityID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_activity_run_user_activity,priority:2;index" json:"activity_id"`
 
 	State ActivityRunState `gorm:"column:state;type:text;not null;default:'not_started'" json:"state"`
 

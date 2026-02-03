@@ -25,8 +25,8 @@ const (
 type PathRun struct {
 	ID uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 
-	UserID uuid.UUID `gorm:"type:uuid;not null;index:idx_path_run_user_path,priority:1" json:"user_id"`
-	PathID uuid.UUID `gorm:"type:uuid;not null;index:idx_path_run_user_path,priority:2;index" json:"path_id"`
+	UserID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_path_run_user_path,priority:1" json:"user_id"`
+	PathID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_path_run_user_path,priority:2;index" json:"path_id"`
 
 	State PathRunState `gorm:"column:state;type:text;not null;default:'not_started'" json:"state"`
 

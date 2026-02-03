@@ -432,6 +432,100 @@ func EnsureLearningIndexes(db *gorm.DB) error {
 		return fmt.Errorf("create idx_library_taxonomy_node_user_facet_key: %w", err)
 	}
 
+	// Runtime runs: enforce one row per (user,path/node/activity) and stable transitions.
+	if err := db.Exec(`
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY user_id, path_id
+					ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+				) AS rn
+			FROM path_run
+		)
+		DELETE FROM path_run WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	`).Error; err != nil {
+		return fmt.Errorf("dedupe path_run: %w", err)
+	}
+	if err := db.Exec(`
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY user_id, node_id
+					ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+				) AS rn
+			FROM node_run
+		)
+		DELETE FROM node_run WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	`).Error; err != nil {
+		return fmt.Errorf("dedupe node_run: %w", err)
+	}
+	if err := db.Exec(`
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY user_id, activity_id
+					ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+				) AS rn
+			FROM activity_run
+		)
+		DELETE FROM activity_run WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	`).Error; err != nil {
+		return fmt.Errorf("dedupe activity_run: %w", err)
+	}
+	if err := db.Exec(`
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY user_id, event_id
+					ORDER BY occurred_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+				) AS rn
+			FROM path_run_transition
+		)
+		DELETE FROM path_run_transition WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	`).Error; err != nil {
+		return fmt.Errorf("dedupe path_run_transition: %w", err)
+	}
+
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_path_run_user_path;`).Error; err != nil {
+		return fmt.Errorf("drop idx_path_run_user_path: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_path_run_user_path
+		ON path_run (user_id, path_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_path_run_user_path: %w", err)
+	}
+
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_node_run_user_node;`).Error; err != nil {
+		return fmt.Errorf("drop idx_node_run_user_node: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_node_run_user_node
+		ON node_run (user_id, node_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_node_run_user_node: %w", err)
+	}
+
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_activity_run_user_activity;`).Error; err != nil {
+		return fmt.Errorf("drop idx_activity_run_user_activity: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_run_user_activity
+		ON activity_run (user_id, activity_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_activity_run_user_activity: %w", err)
+	}
+
+	if err := db.Exec(`DROP INDEX IF EXISTS idx_path_run_transition_user_event;`).Error; err != nil {
+		return fmt.Errorf("drop idx_path_run_transition_user_event: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_path_run_transition_user_event
+		ON path_run_transition (user_id, event_id);
+	`).Error; err != nil {
+		return fmt.Errorf("create idx_path_run_transition_user_event: %w", err)
+	}
+
 	return nil
 }
 
