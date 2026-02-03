@@ -33,6 +33,7 @@ const (
 	SSEEventChatMessageDelta   SSEEvent = "ChatMessageDelta"
 	SSEEventChatMessageDone    SSEEvent = "ChatMessageDone"
 	SSEEventChatMessageError   SSEEvent = "ChatMessageError"
+	SSEEventRuntimePrompt      SSEEvent = "RuntimePrompt"
 
 	// Backwards-compat alias (typo).
 	SSEEVentChatMessageError SSEEvent = SSEEventChatMessageError

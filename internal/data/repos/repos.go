@@ -39,6 +39,8 @@ type UserStylePreferenceRepo = learning.UserStylePreferenceRepo
 type UserEventRepo = learning.UserEventRepo
 type UserEventCursorRepo = learning.UserEventCursorRepo
 type UserProgressionEventRepo = learning.UserProgressionEventRepo
+type UserGazeEventRepo = user.UserGazeEventRepo
+type UserGazeBlockStatRepo = user.UserGazeBlockStatRepo
 
 type ConceptRepo = learning.ConceptRepo
 type ConceptRepresentationRepo = learning.ConceptRepresentationRepo
@@ -174,6 +176,12 @@ func NewUserEventRepo(db *gorm.DB, baseLog *logger.Logger) UserEventRepo {
 }
 func NewUserEventCursorRepo(db *gorm.DB, baseLog *logger.Logger) UserEventCursorRepo {
 	return learning.NewUserEventCursorRepo(db, baseLog)
+}
+func NewUserGazeEventRepo(db *gorm.DB, baseLog *logger.Logger) UserGazeEventRepo {
+	return user.NewUserGazeEventRepo(db, baseLog)
+}
+func NewUserGazeBlockStatRepo(db *gorm.DB, baseLog *logger.Logger) UserGazeBlockStatRepo {
+	return user.NewUserGazeBlockStatRepo(db, baseLog)
 }
 func NewUserProgressionEventRepo(db *gorm.DB, baseLog *logger.Logger) UserProgressionEventRepo {
 	return learning.NewUserProgressionEventRepo(db, baseLog)

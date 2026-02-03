@@ -88,6 +88,8 @@ type Services struct {
 	Events services.EventService
 	// Runtime per-session state (active path/node/etc)
 	SessionState services.SessionStateService
+	// Gaze ingestion + aggregation
+	Gaze services.GazeService
 
 	// Jobs + notifications
 	JobNotifier  services.JobNotifier
@@ -140,6 +142,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
 	eventService := services.NewEventService(db, log, repos.UserEvent)
 	sessionStateService := services.NewSessionStateService(db, log, repos.UserSessionState)
+	gazeService := services.NewGazeService(log, repos.UserGazeEvent, repos.UserGazeBlockStat, repos.UserPersonalizationPrefs)
 
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
 	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
@@ -166,6 +169,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread, repos.ChatMessage)
 	chatNotifier := services.NewChatNotifier(emitter)
+	runtimeNotifier := services.NewRuntimeNotifier(emitter)
 
 	extractor := ingestion.NewContentExtractionService(
 		db,
@@ -847,11 +851,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.Path,
 		repos.PathNode,
 		repos.PathNodeActivity,
+		repos.LearningNodeDoc,
 		repos.PathRun,
 		repos.NodeRun,
 		repos.ActivityRun,
 		repos.PathRunTransition,
 		repos.UserSessionState,
+		runtimeNotifier,
 	)
 	if err := jobRegistry.Register(runtimeUpdate); err != nil {
 		return Services{}, err
@@ -1100,6 +1106,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		Material:         materialService,
 		Events:           eventService,
 		SessionState:     sessionStateService,
+		Gaze:             gazeService,
 		JobNotifier:      jobNotifier,
 		JobService:       jobService,
 		Workflow:         workflow,

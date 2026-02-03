@@ -30,6 +30,7 @@ const (
 
 	EventScrollDepth     = personalization.EventScrollDepth
 	EventBlockViewed     = personalization.EventBlockViewed
+	EventBlockRead       = personalization.EventBlockRead
 	EventTextSelected    = personalization.EventTextSelected
 	EventNoteCreated     = personalization.EventNoteCreated
 	EventBookmarkCreated = personalization.EventBookmarkCreated
@@ -47,13 +48,15 @@ const (
 	EventHintUsed          = personalization.EventHintUsed
 	EventExplanationOpened = personalization.EventExplanationOpened
 
-	EventFeedbackThumbsUp     = personalization.EventFeedbackThumbsUp
-	EventFeedbackThumbsDown   = personalization.EventFeedbackThumbsDown
-	EventFeedbackTooEasy      = personalization.EventFeedbackTooEasy
-	EventFeedbackTooHard      = personalization.EventFeedbackTooHard
-	EventFeedbackConfusing    = personalization.EventFeedbackConfusing
-	EventFeedbackLovedDiagram = personalization.EventFeedbackLovedDiagram
-	EventFeedbackWantExamples = personalization.EventFeedbackWantExamples
+	EventFeedbackThumbsUp       = personalization.EventFeedbackThumbsUp
+	EventFeedbackThumbsDown     = personalization.EventFeedbackThumbsDown
+	EventFeedbackTooEasy        = personalization.EventFeedbackTooEasy
+	EventFeedbackTooHard        = personalization.EventFeedbackTooHard
+	EventFeedbackConfusing      = personalization.EventFeedbackConfusing
+	EventFeedbackLovedDiagram   = personalization.EventFeedbackLovedDiagram
+	EventFeedbackWantExamples   = personalization.EventFeedbackWantExamples
+	EventRuntimePromptCompleted = personalization.EventRuntimePromptCompleted
+	EventRuntimePromptDismissed = personalization.EventRuntimePromptDismissed
 
 	EventClientError = personalization.EventClientError
 	EventClientPerf  = personalization.EventClientPerf
@@ -112,6 +115,8 @@ type UserMisconceptionInstance = personalization.UserMisconceptionInstance
 type UserStylePreference = personalization.UserStylePreference
 type UserEvent = personalization.UserEvent
 type UserEventCursor = personalization.UserEventCursor
+type UserGazeEvent = personalization.UserGazeEvent
+type UserGazeBlockStat = personalization.UserGazeBlockStat
 type UserProgressionEvent = personalization.UserProgressionEvent
 
 type Concept = core.Concept

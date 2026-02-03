@@ -29,6 +29,7 @@ type Handlers struct {
 	Path     *httpH.PathHandler
 	Activity *httpH.ActivityHandler
 	Event    *httpH.EventHandler
+	Gaze     *httpH.GazeHandler
 	Job      *httpH.JobHandler
 }
 
@@ -112,6 +113,7 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 		),
 		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
 		Event:    httpH.NewEventHandler(services.Events, services.JobService, repos.UserLibraryIndex, repos.Path),
+		Gaze:     httpH.NewGazeHandler(services.Gaze),
 		Job:      httpH.NewJobHandler(services.JobService),
 	}
 }
@@ -131,6 +133,7 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		ActivityHandler: handlers.Activity,
 		RuntimeHandler:  handlers.Runtime,
 		EventHandler:    handlers.Event,
+		GazeHandler:     handlers.Gaze,
 		JobHandler:      handlers.Job,
 	})
 }

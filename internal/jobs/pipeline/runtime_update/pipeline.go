@@ -152,6 +152,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 					if err := p.applyNodeRun(tdbc, userID, pathID, nodeID, typ, data, now); err != nil {
 						return err
 					}
+					if err := p.applyRuntimePlan(tdbc, userID, pathID, nodeID, typ, data, now); err != nil {
+						return err
+					}
 				}
 				if activityID != uuid.Nil {
 					if err := p.applyActivityRun(tdbc, userID, pathID, nodeID, activityID, typ, data, now); err != nil {

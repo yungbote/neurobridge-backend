@@ -31,6 +31,8 @@ type Repos struct {
 	UserEvent                repos.UserEventRepo
 	UserEventCursor          repos.UserEventCursorRepo
 	UserProgressionEvent     repos.UserProgressionEventRepo
+	UserGazeEvent            repos.UserGazeEventRepo
+	UserGazeBlockStat        repos.UserGazeBlockStatRepo
 	UserConceptState         repos.UserConceptStateRepo
 	UserConceptModel         repos.UserConceptModelRepo
 	UserMisconception        repos.UserMisconceptionInstanceRepo
@@ -114,6 +116,8 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		UserEvent:                repos.NewUserEventRepo(db, log),
 		UserEventCursor:          repos.NewUserEventCursorRepo(db, log),
 		UserProgressionEvent:     repos.NewUserProgressionEventRepo(db, log),
+		UserGazeEvent:            repos.NewUserGazeEventRepo(db, log),
+		UserGazeBlockStat:        repos.NewUserGazeBlockStatRepo(db, log),
 		UserConceptState:         repos.NewUserConceptStateRepo(db, log),
 		UserConceptModel:         repos.NewUserConceptModelRepo(db, log),
 		UserMisconception:        repos.NewUserMisconceptionInstanceRepo(db, log),

@@ -20,6 +20,7 @@ type RouterConfig struct {
 	RuntimeHandler  *httpH.RuntimeStateHandler
 	ActivityHandler *httpH.ActivityHandler
 	EventHandler    *httpH.EventHandler
+	GazeHandler     *httpH.GazeHandler
 	JobHandler      *httpH.JobHandler
 
 	HealthHandler *httpH.HealthHandler
@@ -151,6 +152,11 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// User Event
 		if cfg.EventHandler != nil {
 			protected.POST("/events", cfg.EventHandler.Ingest)
+		}
+
+		// Gaze
+		if cfg.GazeHandler != nil {
+			protected.POST("/gaze/ingest", cfg.GazeHandler.Ingest)
 		}
 
 		// Job

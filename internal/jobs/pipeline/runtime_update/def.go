@@ -5,6 +5,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
+	"github.com/yungbote/neurobridge-backend/internal/services"
 )
 
 type Pipeline struct {
@@ -15,11 +16,13 @@ type Pipeline struct {
 	paths     repos.PathRepo
 	pathNodes repos.PathNodeRepo
 	nodeActs  repos.PathNodeActivityRepo
+	nodeDocs  repos.LearningNodeDocRepo
 	pathRuns  repos.PathRunRepo
 	nodeRuns  repos.NodeRunRepo
 	actRuns   repos.ActivityRunRepo
 	trans     repos.PathRunTransitionRepo
 	sessions  repos.UserSessionStateRepo
+	notify    services.RuntimeNotifier
 }
 
 func New(
@@ -30,11 +33,13 @@ func New(
 	paths repos.PathRepo,
 	pathNodes repos.PathNodeRepo,
 	nodeActs repos.PathNodeActivityRepo,
+	nodeDocs repos.LearningNodeDocRepo,
 	pathRuns repos.PathRunRepo,
 	nodeRuns repos.NodeRunRepo,
 	actRuns repos.ActivityRunRepo,
 	trans repos.PathRunTransitionRepo,
 	sessions repos.UserSessionStateRepo,
+	notify services.RuntimeNotifier,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
@@ -44,11 +49,13 @@ func New(
 		paths:     paths,
 		pathNodes: pathNodes,
 		nodeActs:  nodeActs,
+		nodeDocs:  nodeDocs,
 		pathRuns:  pathRuns,
 		nodeRuns:  nodeRuns,
 		actRuns:   actRuns,
 		trans:     trans,
 		sessions:  sessions,
+		notify:    notify,
 	}
 }
 

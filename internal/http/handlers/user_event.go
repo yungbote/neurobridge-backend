@@ -56,7 +56,10 @@ func isMeaningfulEventType(t string) bool {
 		"feedback_want_examples",
 		// summarized engagement (NOT raw scroll spam unless you aggregate)
 		"scroll_depth",
-		"block_viewed":
+		"block_viewed",
+		"block_read",
+		"runtime_prompt_completed",
+		"runtime_prompt_dismissed":
 		return true
 	default:
 		return false

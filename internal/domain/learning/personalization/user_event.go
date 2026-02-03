@@ -27,6 +27,7 @@ const (
 	// Reading / Content Interaction
 	EventScrollDepth     = "scroll_depth"     // data: {percent, max_percent}
 	EventBlockViewed     = "block_viewed"     // data: {block_id, block_kind, dwell_ms}
+	EventBlockRead       = "block_read"       // data: {block_id, read_credit, source}
 	EventTextSelected    = "text_selected"    // data: {len, block_id}
 	EventNoteCreated     = "note_created"     // data: {block_id}
 	EventBookmarkCreated = "bookmark_created" // data: {block_id}
@@ -51,6 +52,10 @@ const (
 	EventFeedbackConfusing    = "feedback_confusing"
 	EventFeedbackLovedDiagram = "feedback_loved_diagram"
 	EventFeedbackWantExamples = "feedback_want_examples"
+
+	// runtime prompt lifecycle
+	EventRuntimePromptCompleted = "runtime_prompt_completed"
+	EventRuntimePromptDismissed = "runtime_prompt_dismissed"
 	// Diagnostics
 	EventClientError = "client_error" // data: {message, stack?}
 	EventClientPerf  = "client_perf"  // data: {ttfb_ms, render_ms, api_ms}

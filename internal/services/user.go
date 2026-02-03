@@ -556,6 +556,7 @@ func normalizePrefsV1(raw []byte) ([]byte, error) {
 
 	out["allowBehaviorPersonalization"] = anyBool(obj["allowBehaviorPersonalization"], true)
 	out["allowTelemetry"] = anyBool(obj["allowTelemetry"], true)
+	out["allowEyeTracking"] = anyBool(obj["allowEyeTracking"], false)
 
 	// Keep output stable and minimal.
 	b, err := json.Marshal(out)
