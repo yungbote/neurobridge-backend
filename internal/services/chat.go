@@ -126,6 +126,143 @@ func sanitizeCurrentBlock(raw any) map[string]any {
 	}
 }
 
+func sanitizeProgress(raw any, maxItems int) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]any{}
+	if state := stringFromAny(m["state"]); state != "" {
+		out["state"] = state
+	}
+	if conf := floatFromAny(m["confidence"]); conf > 0 {
+		out["confidence"] = conf
+	}
+	if fc := floatFromAny(m["forward_count"]); fc > 0 {
+		out["forward_count"] = int(fc)
+	}
+	if rc := floatFromAny(m["regression_count"]); rc > 0 {
+		out["regression_count"] = int(rc)
+	}
+	if ts := stringFromAny(m["last_progress_at"]); ts != "" {
+		out["last_progress_at"] = ts
+	}
+	if eb, ok := m["engaged_block"].(map[string]any); ok {
+		if id := stringFromAny(eb["id"]); id != "" {
+			entry := map[string]any{
+				"id": id,
+			}
+			if idx := floatFromAny(eb["index"]); idx != 0 {
+				entry["index"] = int(idx)
+			}
+			if conf := floatFromAny(eb["confidence"]); conf > 0 {
+				entry["confidence"] = conf
+			}
+			if ratio := floatFromAny(eb["ratio"]); ratio > 0 {
+				entry["ratio"] = ratio
+			}
+			if src := stringFromAny(eb["source"]); src != "" {
+				entry["source"] = src
+			}
+			if ms := floatFromAny(eb["engaged_ms"]); ms > 0 {
+				entry["engaged_ms"] = int(ms)
+			}
+			if ts := stringFromAny(eb["engaged_at"]); ts != "" {
+				entry["engaged_at"] = ts
+			}
+			out["engaged_block"] = entry
+		}
+	}
+	if seq, ok := m["engaged_seq"].([]any); ok && maxItems > 0 {
+		items := make([]map[string]any, 0, len(seq))
+		for _, rawItem := range seq {
+			row, ok := rawItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := stringFromAny(row["id"])
+			if id == "" {
+				continue
+			}
+			entry := map[string]any{"id": id}
+			if idx := floatFromAny(row["index"]); idx != 0 {
+				entry["index"] = int(idx)
+			}
+			if conf := floatFromAny(row["confidence"]); conf > 0 {
+				entry["confidence"] = conf
+			}
+			if ratio := floatFromAny(row["ratio"]); ratio > 0 {
+				entry["ratio"] = ratio
+			}
+			if src := stringFromAny(row["source"]); src != "" {
+				entry["source"] = src
+			}
+			if ms := floatFromAny(row["engaged_ms"]); ms > 0 {
+				entry["engaged_ms"] = int(ms)
+			}
+			if ts := stringFromAny(row["engaged_at"]); ts != "" {
+				entry["engaged_at"] = ts
+			}
+			items = append(items, entry)
+			if len(items) >= maxItems {
+				break
+			}
+		}
+		if len(items) > 0 {
+			out["engaged_seq"] = items
+		}
+	}
+	if seq, ok := m["completed_seq"].([]any); ok && maxItems > 0 {
+		items := make([]map[string]any, 0, len(seq))
+		for _, rawItem := range seq {
+			row, ok := rawItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := stringFromAny(row["id"])
+			if id == "" {
+				continue
+			}
+			entry := map[string]any{"id": id}
+			if idx := floatFromAny(row["index"]); idx != 0 {
+				entry["index"] = int(idx)
+			}
+			if conf := floatFromAny(row["confidence"]); conf > 0 {
+				entry["confidence"] = conf
+			}
+			if ratio := floatFromAny(row["ratio"]); ratio > 0 {
+				entry["ratio"] = ratio
+			}
+			if src := stringFromAny(row["source"]); src != "" {
+				entry["source"] = src
+			}
+			if dir := stringFromAny(row["direction"]); dir != "" {
+				entry["direction"] = dir
+			}
+			if jump := floatFromAny(row["jump"]); jump != 0 {
+				entry["jump"] = int(jump)
+			}
+			if ts := stringFromAny(row["completed_at"]); ts != "" {
+				entry["completed_at"] = ts
+			}
+			items = append(items, entry)
+			if len(items) >= maxItems {
+				break
+			}
+		}
+		if len(items) > 0 {
+			out["completed_seq"] = items
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func buildSessionSnapshot(state *types.UserSessionState) map[string]any {
 	if state == nil || state.UserID == uuid.Nil {
 		return nil
@@ -169,6 +306,9 @@ func buildSessionSnapshot(state *types.UserSessionState) map[string]any {
 			}
 			if vp, ok := meta["viewport"].(map[string]any); ok && len(vp) > 0 {
 				out["viewport"] = vp
+			}
+			if pr := sanitizeProgress(meta["progress"], 6); len(pr) > 0 {
+				out["progress"] = pr
 			}
 			if dock, ok := meta["chat_dock_open"]; ok {
 				out["chat_dock_open"] = dock

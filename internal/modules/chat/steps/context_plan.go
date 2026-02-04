@@ -290,6 +290,14 @@ func summarizeSessionForRouting(sessionCtx *sessionContextSnapshot) string {
 	if curID == "" {
 		curID = sessionCtx.ActiveDocBlockID
 	}
+	engagedID := ""
+	if sessionCtx.EngagedBlock != nil {
+		engagedID = sessionCtx.EngagedBlock.ID
+	}
+	completedID := ""
+	if len(sessionCtx.CompletedSeq) > 0 {
+		completedID = sessionCtx.CompletedSeq[len(sessionCtx.CompletedSeq)-1].ID
+	}
 	freshAt := sessionFreshAt(sessionCtx)
 	ageSec := sessionCtx.AgeSeconds
 	if ageSec == 0 && !freshAt.IsZero() {
@@ -306,6 +314,11 @@ func summarizeSessionForRouting(sessionCtx *sessionContextSnapshot) string {
 		fmt.Sprintf("stale: %t", sessionCtx.Stale),
 		fmt.Sprintf("visible_block_count: %d", len(sessionCtx.VisibleBlocks)),
 		"visible_block_ids: " + strings.Join(visibleIDs, ", "),
+		"progress_state: " + defaultString(sessionCtx.ProgressState, "(none)"),
+		fmt.Sprintf("progress_confidence: %.2f", sessionCtx.ProgressConfidence),
+		"progress_engaged_block_id: " + defaultString(engagedID, "(none)"),
+		"progress_completed_block_id: " + defaultString(completedID, "(none)"),
+		fmt.Sprintf("progress_forward/regress: %d/%d", sessionCtx.ForwardCount, sessionCtx.RegressionCount),
 	}, "\n"))
 }
 
@@ -537,6 +550,17 @@ type sessionBlockRef struct {
 	TopDelta   float64
 }
 
+type sessionProgressRef struct {
+	ID         string
+	Index      int
+	Confidence float64
+	Ratio      float64
+	At         time.Time
+	Direction  string
+	Jump       int
+	Source     string
+}
+
 type EditTarget struct {
 	PathID     string
 	PathNodeID string
@@ -558,6 +582,13 @@ type sessionContextSnapshot struct {
 	LastSeenAt       time.Time
 	VisibleBlocks    []sessionBlockRef
 	CurrentBlock     *sessionBlockRef
+	ProgressState    string
+	ProgressConfidence float64
+	EngagedBlock     *sessionProgressRef
+	EngagedSeq       []sessionProgressRef
+	CompletedSeq     []sessionProgressRef
+	ForwardCount     int
+	RegressionCount  int
 	AgeSeconds       float64
 	Stale            bool
 }
@@ -610,6 +641,30 @@ func floatFromAnyCtx(v any) float64 {
 	return 0
 }
 
+func intFromAnyCtx(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case float32:
+		return int(t)
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return int(i)
+		}
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			if i, err := strconv.Atoi(s); err == nil {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
 func boolFromAnyCtx(v any) bool {
 	switch t := v.(type) {
 	case bool:
@@ -631,6 +686,75 @@ func boolFromAnyCtx(v any) bool {
 		}
 	}
 	return false
+}
+
+func parseProgressTime(m map[string]any) time.Time {
+	if m == nil {
+		return time.Time{}
+	}
+	if ts := stringFromAnyCtx(m["engaged_at"]); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t
+		}
+	}
+	if ts := stringFromAnyCtx(m["completed_at"]); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t
+		}
+	}
+	if ts := stringFromAnyCtx(m["at"]); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func parseProgressRef(raw any) *sessionProgressRef {
+	row, ok := raw.(map[string]any)
+	if !ok || row == nil {
+		return nil
+	}
+	id := stringFromAnyCtx(row["id"])
+	if id == "" {
+		return nil
+	}
+	ref := &sessionProgressRef{
+		ID:         id,
+		Index:      intFromAnyCtx(row["index"]),
+		Confidence: floatFromAnyCtx(row["confidence"]),
+		Ratio:      floatFromAnyCtx(row["ratio"]),
+		Direction:  stringFromAnyCtx(row["direction"]),
+		Jump:       intFromAnyCtx(row["jump"]),
+		Source:     stringFromAnyCtx(row["source"]),
+	}
+	ref.At = parseProgressTime(row)
+	return ref
+}
+
+func parseProgressSeq(raw any, max int) []sessionProgressRef {
+	if raw == nil || max <= 0 {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]sessionProgressRef, 0, len(arr))
+	for _, it := range arr {
+		ref := parseProgressRef(it)
+		if ref == nil {
+			continue
+		}
+		out = append(out, *ref)
+		if len(out) >= max {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func parseSessionContext(msg *types.ChatMessage) *sessionContextSnapshot {
@@ -692,6 +816,22 @@ func parseSessionContext(msg *types.ChatMessage) *sessionContextSnapshot {
 				ID:         id,
 				Confidence: floatFromAnyCtx(cb["confidence"]),
 			}
+		}
+	}
+
+	if pr, ok := raw["progress"].(map[string]any); ok && pr != nil {
+		ctx.ProgressState = stringFromAnyCtx(pr["state"])
+		ctx.ProgressConfidence = floatFromAnyCtx(pr["confidence"])
+		ctx.ForwardCount = intFromAnyCtx(pr["forward_count"])
+		ctx.RegressionCount = intFromAnyCtx(pr["regression_count"])
+		if ref := parseProgressRef(pr["engaged_block"]); ref != nil {
+			ctx.EngagedBlock = ref
+		}
+		if seq := parseProgressSeq(pr["engaged_seq"], 8); len(seq) > 0 {
+			ctx.EngagedSeq = seq
+		}
+		if seq := parseProgressSeq(pr["completed_seq"], 8); len(seq) > 0 {
+			ctx.CompletedSeq = seq
 		}
 	}
 
@@ -790,6 +930,21 @@ func sessionSnapshotFromState(state *types.UserSessionState) *sessionContextSnap
 						ID:         id,
 						Confidence: floatFromAnyCtx(cb["confidence"]),
 					}
+				}
+			}
+			if pr, ok := meta["progress"].(map[string]any); ok && pr != nil {
+				ctx.ProgressState = stringFromAnyCtx(pr["state"])
+				ctx.ProgressConfidence = floatFromAnyCtx(pr["confidence"])
+				ctx.ForwardCount = intFromAnyCtx(pr["forward_count"])
+				ctx.RegressionCount = intFromAnyCtx(pr["regression_count"])
+				if ref := parseProgressRef(pr["engaged_block"]); ref != nil {
+					ctx.EngagedBlock = ref
+				}
+				if seq := parseProgressSeq(pr["engaged_seq"], 8); len(seq) > 0 {
+					ctx.EngagedSeq = seq
+				}
+				if seq := parseProgressSeq(pr["completed_seq"], 8); len(seq) > 0 {
+					ctx.CompletedSeq = seq
 				}
 			}
 		}
@@ -1782,6 +1937,21 @@ func buildUnitContext(ctx context.Context, deps ContextPlanDeps, thread *types.C
 	if sessionCtx.ScrollPercent > 0 {
 		b.WriteString(fmt.Sprintf("\nScroll: %.0f%%", sessionCtx.ScrollPercent))
 	}
+	if sessionCtx.ProgressState != "" {
+		b.WriteString("\nProgress state: " + sessionCtx.ProgressState)
+	}
+	if sessionCtx.ProgressConfidence > 0 {
+		b.WriteString(fmt.Sprintf("\nProgress confidence: %.2f", sessionCtx.ProgressConfidence))
+	}
+	if sessionCtx.EngagedBlock != nil && sessionCtx.EngagedBlock.ID != "" {
+		b.WriteString("\nEngaged block: " + sessionCtx.EngagedBlock.ID)
+	}
+	if len(sessionCtx.CompletedSeq) > 0 {
+		last := sessionCtx.CompletedSeq[len(sessionCtx.CompletedSeq)-1]
+		if last.ID != "" {
+			b.WriteString("\nLast completed block: " + last.ID)
+		}
+	}
 	b.WriteString("\n\n")
 	used := estimateTokens(b.String())
 	for _, s := range snips {
@@ -2134,9 +2304,17 @@ func BuildContextPlan(ctx context.Context, deps ContextPlanDeps, in ContextPlanI
 	}
 	if sessionCtx != nil {
 		out.Trace["session_ctx"] = map[string]any{
-			"source":      sessionSource,
-			"age_seconds": math.Round(sessionCtx.AgeSeconds),
-			"stale":       sessionStale,
+			"source":              sessionSource,
+			"age_seconds":         math.Round(sessionCtx.AgeSeconds),
+			"stale":               sessionStale,
+			"progress_state":      sessionCtx.ProgressState,
+			"progress_confidence": sessionCtx.ProgressConfidence,
+			"progress_engaged": func() string {
+				if sessionCtx.EngagedBlock != nil {
+					return sessionCtx.EngagedBlock.ID
+				}
+				return ""
+			}(),
 		}
 	}
 

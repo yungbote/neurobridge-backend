@@ -59,11 +59,27 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	if blockID == "" {
 		blockID = strings.TrimSpace(stringFromAny(data["question_id"]))
 	}
+	progressState := strings.TrimSpace(stringFromAny(data["progress_state"]))
+	progressConf := floatFromAny(data["progress_confidence"], 0)
+	progressOk := progressEligible(progressState, progressConf)
+	progressSignal := progressState != "" || progressConf > 0
+	if progressSignal {
+		nrRuntime["last_progress_state"] = progressState
+		nrRuntime["last_progress_confidence"] = progressConf
+		nrRuntime["last_progress_at"] = now.Format(time.RFC3339)
+		if progressOk {
+			if timeFromAny(prRuntime["progressing_since"]) == nil {
+				prRuntime["progressing_since"] = now.Format(time.RFC3339)
+			}
+		} else {
+			delete(prRuntime, "progressing_since")
+		}
+	}
 
 	// Update runtime counters from events.
 	blocksSeen := intFromAny(nrRuntime["blocks_seen"], 0)
 	lastBlockID := stringFromAny(nrRuntime["last_block_id"])
-	if typ == types.EventBlockViewed && blockID != "" && blockID != lastBlockID {
+	if typ == types.EventBlockViewed && blockID != "" && blockID != lastBlockID && progressOk {
 		blocksSeen++
 		nrRuntime["blocks_seen"] = blocksSeen
 		nrRuntime["last_block_id"] = blockID
@@ -71,11 +87,58 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	}
 
 	readBlocks := stringSliceFromAny(nrRuntime["read_blocks"])
-	if typ == types.EventBlockRead && blockID != "" {
+	if typ == types.EventBlockRead && blockID != "" && progressOk {
 		readBlocks = appendIfMissing(readBlocks, blockID)
 		nrRuntime["read_blocks"] = readBlocks
 		nrRuntime["last_read_block_id"] = blockID
 		nrRuntime["last_read_at"] = now.Format(time.RFC3339)
+	}
+
+	// Allow re-showing uncompleted prompts on lesson re-entry (configurable).
+	if typ == types.EventNodeOpened && allowReshowUncompleted() {
+		shownBlocks := stringSliceFromAny(nrRuntime["shown_blocks"])
+		if len(shownBlocks) > 0 {
+			completedBlocks := stringSliceFromAny(nrRuntime["completed_blocks"])
+			completedSet := map[string]bool{}
+			for _, id := range completedBlocks {
+				completedSet[id] = true
+			}
+			filtered := []string{}
+			for _, id := range shownBlocks {
+				if completedSet[id] {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) != len(shownBlocks) {
+				nrRuntime["shown_blocks"] = filtered
+
+				// Recompute prompt counters from completed blocks.
+				qcCount := 0
+				fcCount := 0
+				if docRow, err := p.nodeDocs.GetByPathNodeID(dbc, nodeID); err == nil && docRow != nil {
+					doc := content.NodeDocV1{}
+					if err := json.Unmarshal(docRow.DocJSON, &doc); err == nil {
+						for _, b := range doc.Blocks {
+							id := strings.TrimSpace(stringFromAny(b["id"]))
+							if id == "" || !completedSet[id] {
+								continue
+							}
+							typ := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+							if typ == "quick_check" {
+								qcCount++
+							}
+							if typ == "flashcard" {
+								fcCount++
+							}
+						}
+					}
+				}
+				nrRuntime["quick_checks_shown"] = qcCount
+				nrRuntime["flashcards_shown"] = fcCount
+				nrRuntime["last_quick_check_blocks"] = intFromAny(nrRuntime["last_quick_check_blocks"], 0)
+				nrRuntime["last_flashcard_blocks"] = intFromAny(nrRuntime["last_flashcard_blocks"], 0)
+			}
+		}
 	}
 
 	failStreak := intFromAny(nrRuntime["fail_streak"], 0)
@@ -192,11 +255,25 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		sessionStarted = &now
 		prRuntime["session_started_at"] = now.Format(time.RFC3339)
 	}
-	if policy.BreakAfterMinutes > 0 && now.Sub(*sessionStarted).Minutes() >= float64(policy.BreakAfterMinutes) {
+	breakStart := sessionStarted
+	if progressSignal {
+		if progressOk {
+			if progressingSince := timeFromAny(prRuntime["progressing_since"]); progressingSince != nil {
+				breakStart = progressingSince
+			}
+		}
+	}
+	if policy.BreakAfterMinutes > 0 && breakStart != nil && now.Sub(*breakStart).Minutes() >= float64(policy.BreakAfterMinutes) {
 		lastBreakAt := timeFromAny(prRuntime["last_break_at"])
 		if lastBreakAt == nil || now.Sub(*lastBreakAt).Minutes() >= float64(policy.BreakAfterMinutes) {
 			shouldBreak = true
 		}
+	}
+
+	if progressSignal && !progressOk {
+		shouldQuick = false
+		shouldFlash = false
+		shouldBreak = false
 	}
 
 	if !shouldQuick && !shouldFlash && !shouldBreak {

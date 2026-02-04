@@ -3,6 +3,8 @@ package runtime_update
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +53,7 @@ const (
 	defaultFCAfterFailStreak  = 2
 	defaultFCMaxPerLesson     = 6
 	runtimePromptMinGapMinute = 2
+	defaultProgressConfMin    = 0.6
 )
 
 func decodeJSONMap(raw datatypes.JSON) map[string]any {
@@ -133,6 +136,27 @@ func intFromAny(v any, fallback int) int {
 	return fallback
 }
 
+func floatFromAny(v any, fallback float64) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case string:
+		if t == "" {
+			return fallback
+		}
+		if n, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 func boolFromAny(v any) bool {
 	switch t := v.(type) {
 	case bool:
@@ -165,6 +189,44 @@ func timeFromAny(v any) *time.Time {
 		}
 	}
 	return nil
+}
+
+func progressConfMin() float64 {
+	raw := strings.TrimSpace(os.Getenv("RUNTIME_PROGRESS_CONF_MIN"))
+	if raw == "" {
+		return defaultProgressConfMin
+	}
+	if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
+		return v
+	}
+	return defaultProgressConfMin
+}
+
+func progressEligible(state string, conf float64) bool {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "" && conf <= 0 {
+		return true
+	}
+	if state != "progressing" {
+		return false
+	}
+	if conf <= 0 {
+		return false
+	}
+	return conf >= progressConfMin()
+}
+
+func allowReshowUncompleted() bool {
+	raw := strings.TrimSpace(os.Getenv("RUNTIME_RESHOW_UNCOMPLETED_PROMPTS"))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "y":
+		return true
+	default:
+		return false
+	}
 }
 
 func stringSliceFromAny(v any) []string {
