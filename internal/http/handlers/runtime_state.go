@@ -1,25 +1,59 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
+	learningsteps "github.com/yungbote/neurobridge-backend/internal/modules/learning/steps"
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 type RuntimeStateHandler struct {
-	pathRuns repos.PathRunRepo
-	nodeRuns repos.NodeRunRepo
-	actRuns  repos.ActivityRunRepo
+	pathRuns      repos.PathRunRepo
+	nodeRuns      repos.NodeRunRepo
+	actRuns       repos.ActivityRunRepo
+	pathNodes     repos.PathNodeRepo
+	concepts      repos.ConceptRepo
+	conceptStates repos.UserConceptStateRepo
+	conceptModels repos.UserConceptModelRepo
+	misconRepo    repos.UserMisconceptionInstanceRepo
+	calibRepo     repos.UserConceptCalibrationRepo
+	alertRepo     repos.UserModelAlertRepo
 }
 
-func NewRuntimeStateHandler(pathRuns repos.PathRunRepo, nodeRuns repos.NodeRunRepo, actRuns repos.ActivityRunRepo) *RuntimeStateHandler {
-	return &RuntimeStateHandler{pathRuns: pathRuns, nodeRuns: nodeRuns, actRuns: actRuns}
+func NewRuntimeStateHandler(
+	pathRuns repos.PathRunRepo,
+	nodeRuns repos.NodeRunRepo,
+	actRuns repos.ActivityRunRepo,
+	pathNodes repos.PathNodeRepo,
+	concepts repos.ConceptRepo,
+	conceptStates repos.UserConceptStateRepo,
+	conceptModels repos.UserConceptModelRepo,
+	misconRepo repos.UserMisconceptionInstanceRepo,
+	calibRepo repos.UserConceptCalibrationRepo,
+	alertRepo repos.UserModelAlertRepo,
+) *RuntimeStateHandler {
+	return &RuntimeStateHandler{
+		pathRuns:      pathRuns,
+		nodeRuns:      nodeRuns,
+		actRuns:       actRuns,
+		pathNodes:     pathNodes,
+		concepts:      concepts,
+		conceptStates: conceptStates,
+		conceptModels: conceptModels,
+		misconRepo:    misconRepo,
+		calibRepo:     calibRepo,
+		alertRepo:     alertRepo,
+	}
 }
 
 // GET /api/paths/:id/runtime
@@ -51,9 +85,185 @@ func (h *RuntimeStateHandler) GetPathRuntime(c *gin.Context) {
 		}
 	}
 
+	var knowledgeContext any
+	var knowledgeCalibration any
+	var knowledgeAlerts any
+	if pathRun != nil && pathRun.ActiveNodeID != nil && *pathRun.ActiveNodeID != uuid.Nil && h.pathNodes != nil {
+		if node, err := h.pathNodes.GetByID(dbc, *pathRun.ActiveNodeID); err == nil && node != nil {
+			var meta map[string]any
+			if len(node.Metadata) > 0 && string(node.Metadata) != "null" {
+				_ = json.Unmarshal(node.Metadata, &meta)
+			}
+			keys := append([]string{}, stringSliceFromAny(meta["concept_keys"])...)
+			keys = append(keys, stringSliceFromAny(meta["prereq_concept_keys"])...)
+			keys = normalizeKeys(keys)
+
+			if len(keys) > 0 && h.concepts != nil {
+				canonicalByKey := map[string]uuid.UUID{}
+				canonicalKeyByID := map[uuid.UUID]string{}
+				seenConceptIDs := map[uuid.UUID]bool{}
+
+				rows, _ := h.concepts.GetByScopeAndKeys(dbc, "path", &node.PathID, keys)
+				if len(rows) == 0 {
+					rows, _ = h.concepts.GetByScopeAndKeys(dbc, "global", nil, keys)
+				}
+				for _, c := range rows {
+					if c == nil || c.ID == uuid.Nil {
+						continue
+					}
+					key := strings.TrimSpace(strings.ToLower(c.Key))
+					if key == "" {
+						continue
+					}
+					id := c.ID
+					if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+						id = *c.CanonicalConceptID
+					}
+					if id == uuid.Nil {
+						continue
+					}
+					canonicalByKey[key] = id
+					if canonicalKeyByID[id] == "" {
+						canonicalKeyByID[id] = key
+					}
+					seenConceptIDs[id] = true
+				}
+
+				conceptIDs := make([]uuid.UUID, 0, len(seenConceptIDs))
+				for id := range seenConceptIDs {
+					conceptIDs = append(conceptIDs, id)
+				}
+
+				stateByID := map[uuid.UUID]*types.UserConceptState{}
+				if h.conceptStates != nil && len(conceptIDs) > 0 {
+					if rows, err := h.conceptStates.ListByUserAndConceptIDs(dbc, rd.UserID, conceptIDs); err == nil {
+						for _, r := range rows {
+							if r == nil || r.ConceptID == uuid.Nil {
+								continue
+							}
+							stateByID[r.ConceptID] = r
+						}
+					}
+				}
+
+				modelByID := map[uuid.UUID]*types.UserConceptModel{}
+				if h.conceptModels != nil && len(conceptIDs) > 0 {
+					if rows, err := h.conceptModels.ListByUserAndConceptIDs(dbc, rd.UserID, conceptIDs); err == nil {
+						for _, r := range rows {
+							if r == nil || r.CanonicalConceptID == uuid.Nil {
+								continue
+							}
+							modelByID[r.CanonicalConceptID] = r
+						}
+					}
+				}
+
+				misconByID := map[uuid.UUID][]*types.UserMisconceptionInstance{}
+				if h.misconRepo != nil && len(conceptIDs) > 0 {
+					if rows, err := h.misconRepo.ListActiveByUserAndConceptIDs(dbc, rd.UserID, conceptIDs); err == nil {
+						for _, r := range rows {
+							if r == nil || r.CanonicalConceptID == uuid.Nil {
+								continue
+							}
+							misconByID[r.CanonicalConceptID] = append(misconByID[r.CanonicalConceptID], r)
+						}
+					}
+				}
+
+				knowledgeContext = learningsteps.BuildUserKnowledgeContextV2(keys, canonicalByKey, stateByID, modelByID, misconByID, time.Now().UTC(), nil)
+
+				if h.calibRepo != nil && len(conceptIDs) > 0 {
+					conceptCalibs := make([]map[string]any, 0, len(conceptIDs))
+					totalCount := 0
+					totalExpected := 0.0
+					totalObserved := 0.0
+					totalBrier := 0.0
+					totalAbsErr := 0.0
+					if rows, err := h.calibRepo.ListByUserAndConceptIDs(dbc, rd.UserID, conceptIDs); err == nil {
+						for _, row := range rows {
+							if row == nil || row.ConceptID == uuid.Nil || row.Count <= 0 {
+								continue
+							}
+							denom := float64(row.Count)
+							expAvg := row.ExpectedSum / denom
+							obsAvg := row.ObservedSum / denom
+							brierAvg := row.BrierSum / denom
+							absErrAvg := row.AbsErrSum / denom
+							gap := expAvg - obsAvg
+							conceptCalibs = append(conceptCalibs, map[string]any{
+								"concept_id":  row.ConceptID.String(),
+								"concept_key": canonicalKeyByID[row.ConceptID],
+								"count":       row.Count,
+								"expected":    expAvg,
+								"observed":    obsAvg,
+								"gap":         gap,
+								"brier":       brierAvg,
+								"abs_err":     absErrAvg,
+							})
+							totalCount += row.Count
+							totalExpected += row.ExpectedSum
+							totalObserved += row.ObservedSum
+							totalBrier += row.BrierSum
+							totalAbsErr += row.AbsErrSum
+						}
+					}
+					var totals map[string]any
+					if totalCount > 0 {
+						denom := float64(totalCount)
+						totals = map[string]any{
+							"count":    totalCount,
+							"expected": totalExpected / denom,
+							"observed": totalObserved / denom,
+							"gap":      (totalExpected / denom) - (totalObserved / denom),
+							"brier":    totalBrier / denom,
+							"abs_err":  totalAbsErr / denom,
+						}
+					}
+					knowledgeCalibration = map[string]any{
+						"totals":   totals,
+						"concepts": conceptCalibs,
+					}
+				}
+
+				if h.alertRepo != nil && len(conceptIDs) > 0 {
+					if rows, err := h.alertRepo.ListByUserAndConceptIDs(dbc, rd.UserID, conceptIDs); err == nil && len(rows) > 0 {
+						filtered := make([]*types.UserModelAlert, 0, len(rows))
+						for _, r := range rows {
+							if r == nil || r.ConceptID == uuid.Nil {
+								continue
+							}
+							filtered = append(filtered, r)
+						}
+						knowledgeAlerts = filtered
+					}
+				}
+			}
+		}
+	}
+
 	response.RespondOK(c, gin.H{
-		"path_run":     pathRun,
-		"node_run":     nodeRun,
-		"activity_run": activityRun,
+		"path_run":            pathRun,
+		"node_run":            nodeRun,
+		"activity_run":        activityRun,
+		"knowledge_context":   knowledgeContext,
+		"knowledge_calibration": knowledgeCalibration,
+		"knowledge_alerts":    knowledgeAlerts,
 	})
+}
+
+func normalizeKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
 }

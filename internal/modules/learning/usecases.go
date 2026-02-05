@@ -144,6 +144,8 @@ type (
 	ConceptGraphBuildOutput      = steps.ConceptGraphBuildOutput
 	ConceptGraphPatchBuildInput  = steps.ConceptGraphPatchBuildInput
 	ConceptGraphPatchBuildOutput = steps.ConceptGraphPatchBuildOutput
+	ConceptBridgeBuildInput      = steps.ConceptBridgeBuildInput
+	ConceptBridgeBuildOutput     = steps.ConceptBridgeBuildOutput
 
 	MaterialKGBuildInput  = steps.MaterialKGBuildInput
 	MaterialKGBuildOutput = steps.MaterialKGBuildOutput
@@ -414,6 +416,18 @@ func (u Usecases) ConceptGraphPatchBuild(ctx context.Context, in ConceptGraphPat
 		Bootstrap: u.deps.Bootstrap,
 		Artifacts: u.deps.Artifacts,
 	}, steps.ConceptGraphPatchBuildInput(in))
+}
+
+func (u Usecases) ConceptBridgeBuild(ctx context.Context, in ConceptBridgeBuildInput) (ConceptBridgeBuildOutput, error) {
+	return steps.ConceptBridgeBuild(ctx, steps.ConceptBridgeBuildDeps{
+		DB:        u.deps.DB,
+		Log:       u.deps.Log,
+		Concepts:  u.deps.Concepts,
+		Edges:     u.deps.Edges,
+		AI:        u.deps.AI,
+		Vec:       u.deps.Vec,
+		Bootstrap: u.deps.Bootstrap,
+	}, steps.ConceptBridgeBuildInput(in))
 }
 
 func (u Usecases) MaterialKGBuild(ctx context.Context, in MaterialKGBuildInput) (MaterialKGBuildOutput, error) {
@@ -802,6 +816,7 @@ func (u Usecases) StructureExtract(ctx context.Context, in StructureExtractInput
 		Concepts:     u.deps.Concepts,
 		ConceptModel: u.deps.ConceptModel,
 		MisconRepo:   u.deps.MisconRepo,
+		Events:       u.deps.UserEvents,
 		AI:           u.deps.AI,
 	}, steps.StructureExtractInput(in))
 }

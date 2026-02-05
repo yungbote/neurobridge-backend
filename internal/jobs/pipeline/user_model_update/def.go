@@ -16,11 +16,18 @@ type Pipeline struct {
 	events       repos.UserEventRepo
 	cursors      repos.UserEventCursorRepo
 	concepts     repos.ConceptRepo
+	edges        repos.ConceptEdgeRepo
+	clusterMembers repos.ConceptClusterMemberRepo
 	actConcepts  repos.ActivityConceptRepo
 	conceptState repos.UserConceptStateRepo
 	conceptModel repos.UserConceptModelRepo
+	edgeStats    repos.UserConceptEdgeStatRepo
+	evidenceRepo repos.UserConceptEvidenceRepo
+	calibRepo    repos.UserConceptCalibrationRepo
+	alertRepo    repos.UserModelAlertRepo
 	misconRepo   repos.UserMisconceptionInstanceRepo
 	stylePrefs   repos.UserStylePreferenceRepo
+	testletState repos.UserTestletStateRepo
 	graph        *neo4jdb.Client
 
 	// kept for future expansion / wiring compatibility
@@ -34,11 +41,18 @@ func New(
 	events repos.UserEventRepo,
 	cursors repos.UserEventCursorRepo,
 	concepts repos.ConceptRepo,
+	edges repos.ConceptEdgeRepo,
 	actConcepts repos.ActivityConceptRepo,
 	conceptState repos.UserConceptStateRepo,
 	conceptModel repos.UserConceptModelRepo,
+	edgeStats repos.UserConceptEdgeStatRepo,
+	evidenceRepo repos.UserConceptEvidenceRepo,
+	calibRepo repos.UserConceptCalibrationRepo,
+	alertRepo repos.UserModelAlertRepo,
 	misconRepo repos.UserMisconceptionInstanceRepo,
 	stylePrefs repos.UserStylePreferenceRepo,
+	clusterMembers repos.ConceptClusterMemberRepo,
+	testletState repos.UserTestletStateRepo,
 	graph *neo4jdb.Client,
 	jobRuns repos.JobRunRepo,
 	jobSvc services.JobService,
@@ -49,11 +63,18 @@ func New(
 		events:       events,
 		cursors:      cursors,
 		concepts:     concepts,
+		edges:        edges,
+		clusterMembers: clusterMembers,
 		actConcepts:  actConcepts,
 		conceptState: conceptState,
 		conceptModel: conceptModel,
+		edgeStats:    edgeStats,
+		evidenceRepo: evidenceRepo,
+		calibRepo:    calibRepo,
+		alertRepo:    alertRepo,
 		misconRepo:   misconRepo,
 		stylePrefs:   stylePrefs,
+		testletState: testletState,
 		graph:        graph,
 		jobRuns:      jobRuns,
 		jobSvc:       jobSvc,

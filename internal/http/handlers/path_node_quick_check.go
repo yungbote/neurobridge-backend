@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,62 +136,143 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 
 	pathID := ""
 	conceptIDs := []string{}
+	canonicalByKey := map[string]string{}
+	conceptWeights := map[string]float64{}
+	nodeDifficultyLabel := ""
+	nodeDifficultyScore := 0.0
 	if h.pathNodes != nil {
 		if node, err := h.pathNodes.GetByID(dbctx.Context{Ctx: c.Request.Context()}, nodeID); err == nil && node != nil && node.PathID != uuid.Nil {
 			pathID = node.PathID.String()
 
+			var meta map[string]any
+			if len(node.Metadata) > 0 && string(node.Metadata) != "null" {
+				_ = json.Unmarshal(node.Metadata, &meta)
+			}
+			nodeDifficultyLabel = difficultyLabelFromMeta(meta)
+			nodeDifficultyScore = difficultyToTheta(nodeDifficultyLabel)
+
 			// Best-effort: attach node concept IDs so quick_check attempts update the user knowledge graph.
-			if h.concepts != nil && len(node.Metadata) > 0 && string(node.Metadata) != "null" {
-				var meta map[string]any
-				if json.Unmarshal(node.Metadata, &meta) == nil && meta != nil {
-					rawKeys, ok := meta["concept_keys"]
-					if !ok || rawKeys == nil {
-						rawKeys = meta["conceptKeys"]
+			if h.concepts != nil && meta != nil {
+				rawKeys, ok := meta["concept_keys"]
+				if !ok || rawKeys == nil {
+					rawKeys = meta["conceptKeys"]
+				}
+				keys := make([]string, 0, 16)
+				switch t := rawKeys.(type) {
+				case []string:
+					keys = append(keys, t...)
+				case []any:
+					for _, x := range t {
+						keys = append(keys, strings.TrimSpace(fmt.Sprint(x)))
 					}
-					keys := make([]string, 0, 16)
-					switch t := rawKeys.(type) {
-					case []string:
-						keys = append(keys, t...)
-					case []any:
-						for _, x := range t {
-							keys = append(keys, strings.TrimSpace(fmt.Sprint(x)))
-						}
-					default:
-						// ignore
+				default:
+					// ignore
+				}
+				seen := map[string]bool{}
+				norm := make([]string, 0, len(keys))
+				for _, k := range keys {
+					k = strings.TrimSpace(strings.ToLower(k))
+					if k == "" || seen[k] {
+						continue
 					}
-					seen := map[string]bool{}
-					norm := make([]string, 0, len(keys))
-					for _, k := range keys {
-						k = strings.TrimSpace(strings.ToLower(k))
-						if k == "" || seen[k] {
-							continue
-						}
-						seen[k] = true
-						norm = append(norm, k)
-					}
-					if len(norm) > 0 {
-						if rows, err := h.concepts.GetByScopeAndKeys(dbctx.Context{Ctx: c.Request.Context()}, "path", &node.PathID, norm); err == nil {
-							seenIDs := map[string]bool{}
-							for _, cc := range rows {
-								if cc == nil || cc.ID == uuid.Nil {
-									continue
-								}
-								id := cc.ID
-								if cc.CanonicalConceptID != nil && *cc.CanonicalConceptID != uuid.Nil {
-									id = *cc.CanonicalConceptID
-								}
-								s := id.String()
-								if s != "" && !seenIDs[s] {
-									seenIDs[s] = true
-									conceptIDs = append(conceptIDs, s)
-								}
+					seen[k] = true
+					norm = append(norm, k)
+				}
+				if len(norm) > 0 {
+					if rows, err := h.concepts.GetByScopeAndKeys(dbctx.Context{Ctx: c.Request.Context()}, "path", &node.PathID, norm); err == nil {
+						seenIDs := map[string]bool{}
+						for _, cc := range rows {
+							if cc == nil || cc.ID == uuid.Nil {
+								continue
 							}
+							key := strings.TrimSpace(strings.ToLower(cc.Key))
+							if key == "" {
+								continue
+							}
+							id := cc.ID
+							if cc.CanonicalConceptID != nil && *cc.CanonicalConceptID != uuid.Nil {
+								id = *cc.CanonicalConceptID
+							}
+							s := id.String()
+							if s != "" {
+								canonicalByKey[key] = s
+							}
+							if s != "" && !seenIDs[s] {
+								seenIDs[s] = true
+								conceptIDs = append(conceptIDs, s)
+							}
+						}
+					}
+				}
+
+				if len(canonicalByKey) > 0 {
+					rawWeights, ok := meta["concept_weights"]
+					if !ok || rawWeights == nil {
+						rawWeights = meta["conceptWeights"]
+					}
+					weightsByKey := map[string]float64{}
+					switch t := rawWeights.(type) {
+					case map[string]float64:
+						for k, v := range t {
+							weightsByKey[strings.TrimSpace(strings.ToLower(k))] = v
+						}
+					case map[string]any:
+						for k, v := range t {
+							weightsByKey[strings.TrimSpace(strings.ToLower(k))] = floatFromAny(v, 0)
+						}
+					}
+					if len(weightsByKey) > 0 {
+						total := 0.0
+						for key, w := range weightsByKey {
+							if w <= 0 {
+								continue
+							}
+							if id := canonicalByKey[key]; id != "" {
+								conceptWeights[id] += w
+								total += w
+							}
+						}
+						if total > 0 {
+							for id, w := range conceptWeights {
+								conceptWeights[id] = w / total
+							}
+						} else {
+							conceptWeights = map[string]float64{}
 						}
 					}
 				}
 			}
 		}
 	}
+
+	itemType := strings.ToLower(strings.TrimSpace(out.QuestionType))
+	optionsCount := out.OptionsCount
+	itemGuess := 0.18
+	if optionsCount > 1 {
+		itemGuess = 1.0 / float64(optionsCount)
+	} else if itemType == "true_false" {
+		itemGuess = 0.5
+	}
+	if itemGuess < 0.02 {
+		itemGuess = 0.02
+	}
+	itemDisc := 1.0
+	switch itemType {
+	case "freeform":
+		itemDisc = 1.15
+	case "true_false":
+		itemDisc = 0.75
+	case "mcq":
+		itemDisc = 0.95
+	}
+	itemDifficulty := nodeDifficultyScore
+	switch itemType {
+	case "freeform":
+		itemDifficulty += 0.15
+	case "true_false":
+		itemDifficulty -= 0.10
+	}
+	itemDifficulty = clampRange(itemDifficulty, -2.5, 2.5)
 
 	input := services.EventInput{
 		ClientEventID: strings.TrimSpace(req.ClientEventID),
@@ -199,6 +282,25 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 		PathNodeID:    nodeID.String(),
 		ConceptIDs:    conceptIDs,
 		Data:          data,
+	}
+	if len(conceptWeights) > 0 {
+		data["concept_weights"] = conceptWeights
+	}
+	if blockID != "" {
+		data["testlet_id"] = fmt.Sprintf("quick_check:%s:%s", nodeID.String(), blockID)
+		data["testlet_type"] = "quick_check"
+	}
+
+	data["item_type"] = itemType
+	data["item_options"] = optionsCount
+	data["item_guess"] = itemGuess
+	data["item_discrimination"] = itemDisc
+	data["item_difficulty"] = itemDifficulty
+	if nodeDifficultyLabel != "" {
+		data["node_difficulty_label"] = nodeDifficultyLabel
+	}
+	if !math.IsNaN(nodeDifficultyScore) && nodeDifficultyScore != 0 {
+		data["node_difficulty"] = nodeDifficultyScore
 	}
 
 	dbc := dbctx.Context{Ctx: c.Request.Context()}
@@ -212,4 +314,78 @@ func (h *PathHandler) bestEffortIngestQuickCheckEvent(
 		_, _, _ = h.jobSvc.EnqueueUserModelUpdateIfNeeded(dbc, userID, typ)
 		_, _, _ = h.jobSvc.EnqueueRuntimeUpdateIfNeeded(dbc, userID, typ)
 	}
+}
+
+func difficultyLabelFromMeta(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	raw := meta["difficulty"]
+	if raw == nil {
+		raw = meta["sig_difficulty"]
+	}
+	if raw == nil {
+		raw = meta["path_difficulty"]
+	}
+	return strings.TrimSpace(strings.ToLower(fmt.Sprint(raw)))
+}
+
+func difficultyToTheta(label string) float64 {
+	switch strings.TrimSpace(strings.ToLower(label)) {
+	case "intro", "introductory", "beginner":
+		return -0.9
+	case "foundation", "basic":
+		return -0.5
+	case "intermediate", "standard":
+		return 0.0
+	case "advanced":
+		return 0.6
+	case "expert", "research":
+		return 1.1
+	default:
+		if f, err := strconv.ParseFloat(label, 64); err == nil && !math.IsNaN(f) {
+			return clampRange(f, -2.5, 2.5)
+		}
+	}
+	return 0.0
+}
+
+func clampRange(v float64, lo float64, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func floatFromAny(v any, def float64) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case int32:
+		return float64(t)
+	case uint:
+		return float64(t)
+	case uint64:
+		return float64(t)
+	case uint32:
+		return float64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
+		}
+	}
+	return def
 }

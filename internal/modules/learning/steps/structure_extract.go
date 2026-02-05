@@ -2,6 +2,8 @@ package steps
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -28,6 +30,7 @@ type StructureExtractDeps struct {
 	Concepts     repos.ConceptRepo
 	ConceptModel repos.UserConceptModelRepo
 	MisconRepo   repos.UserMisconceptionInstanceRepo
+	Events       repos.UserEventRepo
 	AI           openai.Client
 }
 
@@ -64,6 +67,13 @@ type structureExtractMisconception struct {
 	PatternID   *string `json:"pattern_id,omitempty"`
 	Description string  `json:"description"`
 	Confidence  float64 `json:"confidence"`
+}
+
+type misconceptionTaxon struct {
+	PatternID   string `json:"pattern_id"`
+	Description string `json:"description"`
+	Source      string `json:"source,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 type structureExtractPayload struct {
@@ -166,6 +176,38 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 		return out, nil
 	}
 	conceptIndex := buildStructureConceptIndex(concepts)
+	pathConceptByCanonical := buildPathConceptIndex(concepts)
+
+	useTaxonomy := envBool("STRUCTURE_EXTRACT_USE_TAXONOMY", true)
+	taxonomyMax := envIntAllowZero("STRUCTURE_EXTRACT_TAXONOMY_MAX", 6)
+	if taxonomyMax < 1 {
+		taxonomyMax = 6
+	}
+	taxonomyByConcept := map[uuid.UUID][]misconceptionTaxon{}
+	if useTaxonomy {
+		canonicalIDs := collectCanonicalIDs(conceptIndex)
+		if len(canonicalIDs) > 0 {
+			rows, err := deps.Concepts.GetByIDs(dbc, canonicalIDs)
+			if err == nil {
+				for _, c := range rows {
+					if c == nil || c.ID == uuid.Nil {
+						continue
+					}
+					taxonomyByConcept[c.ID] = loadMisconceptionTaxonomy(c.Metadata)
+				}
+			}
+		}
+		// Fallback to path concept metadata when global concept is missing.
+		for cid, pc := range pathConceptByCanonical {
+			if _, ok := taxonomyByConcept[cid]; ok {
+				continue
+			}
+			if pc == nil || pc.ID == uuid.Nil {
+				continue
+			}
+			taxonomyByConcept[cid] = loadMisconceptionTaxonomy(pc.Metadata)
+		}
+	}
 
 	minChars := envIntAllowZero("STRUCTURE_EXTRACT_MIN_CHARS", 200)
 	if minChars < 40 {
@@ -185,6 +227,15 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 	maxUnc := envIntAllowZero("STRUCTURE_EXTRACT_MAX_UNCERTAINTY", 3)
 	if maxUnc < 1 {
 		maxUnc = 3
+	}
+	emitClaims := envBool("STRUCTURE_EXTRACT_EMIT_CLAIM_EVENTS", true)
+	claimMinScore := envFloatAllowZero("STRUCTURE_EXTRACT_CLAIM_MIN_SCORE", 0.35)
+	if claimMinScore <= 0 {
+		claimMinScore = 0.35
+	}
+	claimMax := envIntAllowZero("STRUCTURE_EXTRACT_CLAIM_MAX_CONCEPTS", 3)
+	if claimMax < 1 {
+		claimMax = 3
 	}
 	extractorVersion := envIntAllowZero("STRUCTURE_EXTRACT_VERSION", 1)
 	if extractorVersion < 1 {
@@ -220,7 +271,7 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 		window := buildStructureWindow(bySeq, msg.Seq, contextWindow)
 		window = append(window, msg)
 		windowText := formatStructureWindow(window)
-		sys, usr := structureExtractPrompt(windowText, candidates, extractorVersion)
+		sys, usr := structureExtractPrompt(windowText, candidates, taxonomyByConcept, taxonomyMax, extractorVersion)
 
 		obj, err := deps.AI.GenerateJSON(ctx, sys, usr, "structure_extract_v1", schemaStructureExtract())
 		if err != nil {
@@ -266,6 +317,14 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 				return nil
 			}
 
+			conceptRows, _ := deps.Concepts.GetByIDs(tdbc, conceptIDs)
+			conceptByID := map[uuid.UUID]*types.Concept{}
+			for _, c := range conceptRows {
+				if c != nil && c.ID != uuid.Nil {
+					conceptByID[c.ID] = c
+				}
+			}
+
 			models, err := deps.ConceptModel.ListByUserAndConceptIDs(tdbc, in.UserID, conceptIDs)
 			if err != nil {
 				return err
@@ -288,6 +347,21 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 
 			supportID := msg.ID.String()
 			seenAt := msg.CreatedAt
+			type claimCandidate struct {
+				score float64
+				event *types.UserEvent
+			}
+			claimEvents := []claimCandidate{}
+			misconMatchMin := envFloatAllowZero("STRUCTURE_EXTRACT_MISCONCEPT_MATCH_MIN", 0.78)
+			if misconMatchMin <= 0 {
+				misconMatchMin = 0.78
+			}
+			misconMaxPerConcept := envIntAllowZero("STRUCTURE_EXTRACT_MISCONCEPT_MAX_PER_CONCEPT", 50)
+			if misconMaxPerConcept < 1 {
+				misconMaxPerConcept = 50
+			}
+			conceptMetaUpdates := map[uuid.UUID]datatypes.JSON{}
+
 			for _, c := range payload.ConceptCandidates {
 				cid, err := uuid.Parse(strings.TrimSpace(c.CanonicalConceptID))
 				if err != nil || cid == uuid.Nil {
@@ -328,6 +402,44 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 				}
 
 				if cid == primaryConcept {
+					// Map misconceptions to a stable taxonomy (and extend it if needed).
+					if len(payload.Misconceptions) > 0 {
+						var conceptForTax *types.Concept
+						if existing := conceptByID[cid]; existing != nil {
+							conceptForTax = existing
+						} else if pc := pathConceptByCanonical[cid]; pc != nil {
+							conceptForTax = pc
+						}
+						if conceptForTax != nil {
+							tax := loadMisconceptionTaxonomy(conceptForTax.Metadata)
+							changed := false
+							for i := range payload.Misconceptions {
+								desc := strings.TrimSpace(payload.Misconceptions[i].Description)
+								if desc == "" {
+									continue
+								}
+								if pid, ok := findMisconceptionMatch(desc, tax, misconMatchMin); ok {
+									payload.Misconceptions[i].PatternID = &pid
+									continue
+								}
+								if len(tax) >= misconMaxPerConcept {
+									continue
+								}
+								pid := makeMisconceptionPatternID(cid, desc)
+								payload.Misconceptions[i].PatternID = &pid
+								tax = append(tax, misconceptionTaxon{
+									PatternID:   pid,
+									Description: desc,
+									Source:      "chat_extract",
+									CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+								})
+								changed = true
+							}
+							if changed {
+								conceptMetaUpdates[conceptForTax.ID] = upsertMisconceptionTaxonomy(conceptForTax.Metadata, tax)
+							}
+						}
+					}
 					for _, mc := range payload.Misconceptions {
 						desc := strings.TrimSpace(mc.Description)
 						if desc == "" {
@@ -363,6 +475,95 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 						}
 					}
 				}
+				if emitClaims && deps.Events != nil && c.AttributionScore >= claimMinScore {
+					polarity := strings.TrimSpace(strings.ToLower(payload.Polarity))
+					scope := strings.TrimSpace(strings.ToLower(payload.Scope))
+					isCorrect := false
+					hasTruth := false
+					isConfusion := false
+					switch polarity {
+					case "confident_right":
+						hasTruth = true
+						isCorrect = true
+					case "confident_wrong":
+						hasTruth = true
+						isCorrect = false
+					case "confusion":
+						isConfusion = true
+					}
+					signal := clamp01(payload.Calibration)
+					if signal == 0 {
+						signal = clamp01(c.AttributionScore)
+					}
+					data := map[string]any{
+						"concept_ids":       []string{cid.String()},
+						"polarity":          polarity,
+						"scope":             scope,
+						"calibration":       clamp01(payload.Calibration),
+						"attribution_score": clamp01(c.AttributionScore),
+						"signal_strength":   signal,
+						"thread_id":         thread.ID.String(),
+						"message_id":        msg.ID.String(),
+					}
+					if hasTruth {
+						data["is_correct"] = isCorrect
+						data["has_truth"] = true
+					}
+					if isConfusion {
+						data["is_confusion"] = true
+					}
+					if cid == primaryConcept && len(payload.Misconceptions) > 0 {
+						ids := []string{}
+						for _, mc := range payload.Misconceptions {
+							if mc.PatternID != nil && strings.TrimSpace(*mc.PatternID) != "" {
+								ids = append(ids, strings.TrimSpace(*mc.PatternID))
+							}
+						}
+						if len(ids) > 0 {
+							data["misconception_ids"] = dedupeStrings(ids)
+						}
+					}
+
+					clientEventID := fmt.Sprintf("structure_claim:%s:%s:%s", msg.ID.String(), cid.String(), polarity)
+					ev := &types.UserEvent{
+						ID:            uuid.New(),
+						UserID:        in.UserID,
+						ClientEventID: clientEventID,
+						OccurredAt:    seenAt,
+						PathID:        thread.PathID,
+						ConceptID:     &cid,
+						Type:          types.EventConceptClaimEvaluated,
+						Data:          datatypes.JSON(mustJSON(data)),
+					}
+					claimEvents = append(claimEvents, claimCandidate{score: c.AttributionScore, event: ev})
+				}
+			}
+			if len(conceptMetaUpdates) > 0 {
+				for id, meta := range conceptMetaUpdates {
+					if id == uuid.Nil {
+						continue
+					}
+					if err := deps.Concepts.UpdateFields(tdbc, id, map[string]interface{}{
+						"metadata": meta,
+					}); err != nil {
+						return err
+					}
+				}
+			}
+			if emitClaims && deps.Events != nil && len(claimEvents) > 0 {
+				sort.Slice(claimEvents, func(i, j int) bool {
+					return claimEvents[i].score > claimEvents[j].score
+				})
+				if claimMax > 0 && len(claimEvents) > claimMax {
+					claimEvents = claimEvents[:claimMax]
+				}
+				rows := make([]*types.UserEvent, 0, len(claimEvents))
+				for _, c := range claimEvents {
+					if c.event != nil {
+						rows = append(rows, c.event)
+					}
+				}
+				_, _ = deps.Events.CreateIgnoreDuplicates(tdbc, rows)
 			}
 			return nil
 		})
@@ -399,10 +600,10 @@ func buildStructureConceptIndex(concepts []*types.Concept) []structureCandidate 
 		if c == nil || c.ID == uuid.Nil {
 			continue
 		}
-		cid := c.ID
-		if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
-			cid = *c.CanonicalConceptID
+		if c.CanonicalConceptID == nil || *c.CanonicalConceptID == uuid.Nil {
+			continue
 		}
+		cid := *c.CanonicalConceptID
 		if cid == uuid.Nil || seen[cid] {
 			continue
 		}
@@ -416,6 +617,41 @@ func buildStructureConceptIndex(concepts []*types.Concept) []structureCandidate 
 			Tokens:             tokenizeConceptText(name),
 			KeyTokens:          tokenizeConceptText(key),
 		})
+	}
+	return out
+}
+
+func buildPathConceptIndex(concepts []*types.Concept) map[uuid.UUID]*types.Concept {
+	out := map[uuid.UUID]*types.Concept{}
+	for _, c := range concepts {
+		if c == nil || c.ID == uuid.Nil || c.CanonicalConceptID == nil || *c.CanonicalConceptID == uuid.Nil {
+			continue
+		}
+		cid := *c.CanonicalConceptID
+		prev := out[cid]
+		if prev == nil {
+			out[cid] = c
+			continue
+		}
+		if len(prev.Metadata) == 0 && len(c.Metadata) > 0 {
+			out[cid] = c
+		}
+	}
+	return out
+}
+
+func collectCanonicalIDs(index []structureCandidate) []uuid.UUID {
+	if len(index) == 0 {
+		return nil
+	}
+	seen := map[uuid.UUID]bool{}
+	out := make([]uuid.UUID, 0, len(index))
+	for _, c := range index {
+		if c.CanonicalConceptID == uuid.Nil || seen[c.CanonicalConceptID] {
+			continue
+		}
+		seen[c.CanonicalConceptID] = true
+		out = append(out, c.CanonicalConceptID)
 	}
 	return out
 }
@@ -447,6 +683,228 @@ func tokenizeConceptText(s string) []string {
 		}
 	}
 	return dedupeStrings(out)
+}
+
+func loadMisconceptionTaxonomy(raw datatypes.JSON) []misconceptionTaxon {
+	if len(raw) == 0 {
+		return nil
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return nil
+	}
+	var meta map[string]any
+	if json.Unmarshal(raw, &meta) != nil {
+		return nil
+	}
+	payload, ok := meta["misconception_taxonomy"]
+	if !ok {
+		return nil
+	}
+	if m, ok := payload.(map[string]any); ok {
+		if items, ok := m["items"]; ok {
+			payload = items
+		} else if items, ok := m["patterns"]; ok {
+			payload = items
+		}
+	}
+	list, ok := payload.([]any)
+	if !ok || len(list) == 0 {
+		return nil
+	}
+	out := make([]misconceptionTaxon, 0, len(list))
+	seenID := map[string]bool{}
+	seenDesc := map[string]bool{}
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		pattern := strings.TrimSpace(asString(m["pattern_id"]))
+		if pattern == "" {
+			pattern = strings.TrimSpace(asString(m["id"]))
+		}
+		desc := strings.TrimSpace(asString(m["description"]))
+		if desc == "" {
+			desc = strings.TrimSpace(asString(m["text"]))
+		}
+		if pattern == "" || desc == "" {
+			continue
+		}
+		if seenID[strings.ToLower(pattern)] {
+			continue
+		}
+		norm := normalizeMisconceptionText(desc)
+		if norm != "" && seenDesc[norm] {
+			continue
+		}
+		seenID[strings.ToLower(pattern)] = true
+		if norm != "" {
+			seenDesc[norm] = true
+		}
+		out = append(out, misconceptionTaxon{
+			PatternID:   pattern,
+			Description: desc,
+			Source:      strings.TrimSpace(asString(m["source"])),
+			CreatedAt:   strings.TrimSpace(asString(m["created_at"])),
+		})
+	}
+	return out
+}
+
+func upsertMisconceptionTaxonomy(raw datatypes.JSON, tax []misconceptionTaxon) datatypes.JSON {
+	meta := map[string]any{}
+	if len(raw) > 0 {
+		text := strings.TrimSpace(string(raw))
+		if text != "" && text != "null" {
+			_ = json.Unmarshal(raw, &meta)
+		}
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	clean := make([]misconceptionTaxon, 0, len(tax))
+	seenID := map[string]bool{}
+	seenDesc := map[string]bool{}
+	for _, t := range tax {
+		pattern := strings.TrimSpace(t.PatternID)
+		desc := strings.TrimSpace(t.Description)
+		if pattern == "" || desc == "" {
+			continue
+		}
+		lowPattern := strings.ToLower(pattern)
+		if seenID[lowPattern] {
+			continue
+		}
+		norm := normalizeMisconceptionText(desc)
+		if norm != "" && seenDesc[norm] {
+			continue
+		}
+		seenID[lowPattern] = true
+		if norm != "" {
+			seenDesc[norm] = true
+		}
+		clean = append(clean, misconceptionTaxon{
+			PatternID:   pattern,
+			Description: desc,
+			Source:      strings.TrimSpace(t.Source),
+			CreatedAt:   strings.TrimSpace(t.CreatedAt),
+		})
+	}
+	list := make([]map[string]any, 0, len(clean))
+	for _, t := range clean {
+		list = append(list, map[string]any{
+			"pattern_id":  t.PatternID,
+			"description": t.Description,
+			"source":      t.Source,
+			"created_at":  t.CreatedAt,
+		})
+	}
+	meta["misconception_taxonomy"] = list
+	return datatypes.JSON(mustJSON(meta))
+}
+
+func findMisconceptionMatch(desc string, tax []misconceptionTaxon, min float64) (string, bool) {
+	desc = normalizeMisconceptionText(desc)
+	if desc == "" || len(tax) == 0 {
+		return "", false
+	}
+	descTokens := tokenizeMisconceptionText(desc)
+	bestScore := 0.0
+	bestID := ""
+	for _, t := range tax {
+		pattern := strings.TrimSpace(t.PatternID)
+		if pattern == "" {
+			continue
+		}
+		tdesc := normalizeMisconceptionText(t.Description)
+		if tdesc == "" {
+			continue
+		}
+		if desc == tdesc {
+			return pattern, true
+		}
+		if strings.Contains(desc, tdesc) || strings.Contains(tdesc, desc) {
+			if 0.95 >= min {
+				return pattern, true
+			}
+		}
+		score := jaccardSimilarity(descTokens, tokenizeMisconceptionText(tdesc))
+		if score > bestScore {
+			bestScore = score
+			bestID = pattern
+		}
+	}
+	if bestID == "" || bestScore < min {
+		return "", false
+	}
+	return bestID, true
+}
+
+func makeMisconceptionPatternID(conceptID uuid.UUID, desc string) string {
+	norm := normalizeMisconceptionText(desc)
+	payload := conceptID.String() + "|" + norm
+	sum := sha1.Sum([]byte(payload))
+	return "mc_" + hex.EncodeToString(sum[:])[:12]
+}
+
+func normalizeMisconceptionText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteRune(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func tokenizeMisconceptionText(s string) []string {
+	norm := normalizeMisconceptionText(s)
+	if norm == "" {
+		return nil
+	}
+	parts := strings.Fields(norm)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if len(p) >= 3 {
+			out = append(out, p)
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func jaccardSimilarity(a, b []string) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	set := map[string]bool{}
+	for _, v := range a {
+		set[v] = true
+	}
+	inter := 0
+	union := len(set)
+	for _, v := range b {
+		if set[v] {
+			inter++
+		} else {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
 }
 
 func shouldExtractStructure(content string, minChars int) bool {
@@ -569,7 +1027,7 @@ func formatStructureWindow(msgs []*types.ChatMessage) string {
 	return strings.TrimSpace(b.String())
 }
 
-func structureExtractPrompt(window string, candidates []structureCandidate, version int) (string, string) {
+func structureExtractPrompt(window string, candidates []structureCandidate, taxonomy map[uuid.UUID][]misconceptionTaxon, taxonomyMax int, version int) (string, string) {
 	sys := `ROLE: Structural understanding extractor.
 TASK: Extract structured signals about a user's understanding from a chat message.
 OUTPUT: Return ONLY JSON matching the schema (no extra keys).
@@ -591,6 +1049,29 @@ RULES: Use ONLY the provided candidate concepts (canonical_concept_id). If none 
 		b.WriteString(" | ")
 		b.WriteString(strings.TrimSpace(c.Name))
 		b.WriteString("\n")
+	}
+	if len(taxonomy) > 0 && taxonomyMax > 0 {
+		b.WriteString("\nKnown misconception patterns (pattern_id | description):\n")
+		for _, c := range candidates {
+			tax := taxonomy[c.CanonicalConceptID]
+			if len(tax) == 0 {
+				continue
+			}
+			b.WriteString("- ")
+			b.WriteString(c.CanonicalConceptID.String())
+			b.WriteString(":\n")
+			max := taxonomyMax
+			if len(tax) < max {
+				max = len(tax)
+			}
+			for i := 0; i < max; i++ {
+				b.WriteString("  - ")
+				b.WriteString(strings.TrimSpace(tax[i].PatternID))
+				b.WriteString(" | ")
+				b.WriteString(strings.TrimSpace(tax[i].Description))
+				b.WriteString("\n")
+			}
+		}
 	}
 	b.WriteString("\nReturn JSON with extractor_version=")
 	b.WriteString(fmt.Sprint(version))

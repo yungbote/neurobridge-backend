@@ -19,6 +19,7 @@ type Pipeline struct {
 	concepts repos.ConceptRepo
 	model    repos.UserConceptModelRepo
 	miscon   repos.UserMisconceptionInstanceRepo
+	events   repos.UserEventRepo
 	jobs     services.JobService
 }
 
@@ -32,6 +33,7 @@ func New(
 	concepts repos.ConceptRepo,
 	model repos.UserConceptModelRepo,
 	miscon repos.UserMisconceptionInstanceRepo,
+	events repos.UserEventRepo,
 	jobs services.JobService,
 ) *Pipeline {
 	return &Pipeline{
@@ -44,6 +46,7 @@ func New(
 		concepts: concepts,
 		model:    model,
 		miscon:   miscon,
+		events:   events,
 		jobs:     jobs,
 	}
 }

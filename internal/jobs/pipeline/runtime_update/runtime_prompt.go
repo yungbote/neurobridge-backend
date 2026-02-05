@@ -13,13 +13,19 @@ import (
 )
 
 type runtimePrompt struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	NodeID    string `json:"node_id,omitempty"`
-	BlockID   string `json:"block_id,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	Status    string `json:"status,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID              string  `json:"id"`
+	Type            string  `json:"type"`
+	NodeID          string  `json:"node_id,omitempty"`
+	BlockID         string  `json:"block_id,omitempty"`
+	Reason          string  `json:"reason,omitempty"`
+	Status          string  `json:"status,omitempty"`
+	CreatedAt       string  `json:"created_at,omitempty"`
+	DecisionTraceID string  `json:"decision_trace_id,omitempty"`
+	PolicyKey       string  `json:"policy_key,omitempty"`
+	PolicyMode      string  `json:"policy_mode,omitempty"`
+	PolicyVersion   int     `json:"policy_version,omitempty"`
+	BehaviorProb    float64 `json:"behavior_prob,omitempty"`
+	ShadowProb      float64 `json:"shadow_prob,omitempty"`
 }
 
 type runtimePolicy struct {
@@ -350,25 +356,37 @@ func runtimePromptFromMap(m map[string]any) *runtimePrompt {
 		return nil
 	}
 	return &runtimePrompt{
-		ID:        id,
-		Type:      stringFromAny(m["type"]),
-		NodeID:    stringFromAny(m["node_id"]),
-		BlockID:   stringFromAny(m["block_id"]),
-		Reason:    stringFromAny(m["reason"]),
-		Status:    stringFromAny(m["status"]),
-		CreatedAt: stringFromAny(m["created_at"]),
+		ID:              id,
+		Type:            stringFromAny(m["type"]),
+		NodeID:          stringFromAny(m["node_id"]),
+		BlockID:         stringFromAny(m["block_id"]),
+		Reason:          stringFromAny(m["reason"]),
+		Status:          stringFromAny(m["status"]),
+		CreatedAt:       stringFromAny(m["created_at"]),
+		DecisionTraceID: stringFromAny(m["decision_trace_id"]),
+		PolicyKey:       stringFromAny(m["policy_key"]),
+		PolicyMode:      stringFromAny(m["policy_mode"]),
+		PolicyVersion:   intFromAny(m["policy_version"], 0),
+		BehaviorProb:    floatFromAny(m["behavior_prob"], 0),
+		ShadowProb:      floatFromAny(m["shadow_prob"], 0),
 	}
 }
 
 func runtimePromptToMap(p runtimePrompt) map[string]any {
 	return map[string]any{
-		"id":         p.ID,
-		"type":       p.Type,
-		"node_id":    p.NodeID,
-		"block_id":   p.BlockID,
-		"reason":     p.Reason,
-		"status":     p.Status,
-		"created_at": p.CreatedAt,
+		"id":                p.ID,
+		"type":              p.Type,
+		"node_id":           p.NodeID,
+		"block_id":          p.BlockID,
+		"reason":            p.Reason,
+		"status":            p.Status,
+		"created_at":        p.CreatedAt,
+		"decision_trace_id": p.DecisionTraceID,
+		"policy_key":        p.PolicyKey,
+		"policy_mode":       p.PolicyMode,
+		"policy_version":    p.PolicyVersion,
+		"behavior_prob":     p.BehaviorProb,
+		"shadow_prob":       p.ShadowProb,
 	}
 }
 

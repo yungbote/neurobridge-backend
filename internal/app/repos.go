@@ -35,8 +35,14 @@ type Repos struct {
 	UserGazeBlockStat        repos.UserGazeBlockStatRepo
 	UserConceptState         repos.UserConceptStateRepo
 	UserConceptModel         repos.UserConceptModelRepo
+	UserConceptEdgeStat      repos.UserConceptEdgeStatRepo
+	UserConceptEvidence      repos.UserConceptEvidenceRepo
+	UserConceptCalibration   repos.UserConceptCalibrationRepo
+	UserModelAlert           repos.UserModelAlertRepo
 	UserMisconception        repos.UserMisconceptionInstanceRepo
+	UserMisconceptionInstance repos.UserMisconceptionInstanceRepo
 	UserStylePreference      repos.UserStylePreferenceRepo
+	UserTestletState         repos.UserTestletStateRepo
 	Concept                  repos.ConceptRepo
 	ConceptRepresentation    repos.ConceptRepresentationRepo
 	ConceptMappingOverride   repos.ConceptMappingOverrideRepo
@@ -52,6 +58,8 @@ type Repos struct {
 	ActivityVariantStat      repos.ActivityVariantStatRepo
 	ActivityConcept          repos.ActivityConceptRepo
 	ActivityCitation         repos.ActivityCitationRepo
+	ModelSnapshot            repos.ModelSnapshotRepo
+	PolicyEvalSnapshot       repos.PolicyEvalSnapshotRepo
 	Path                     repos.PathRepo
 	PathNode                 repos.PathNodeRepo
 	PathNodeActivity         repos.PathNodeActivityRepo
@@ -120,8 +128,14 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		UserGazeBlockStat:        repos.NewUserGazeBlockStatRepo(db, log),
 		UserConceptState:         repos.NewUserConceptStateRepo(db, log),
 		UserConceptModel:         repos.NewUserConceptModelRepo(db, log),
+		UserConceptEdgeStat:      repos.NewUserConceptEdgeStatRepo(db, log),
+		UserConceptEvidence:      repos.NewUserConceptEvidenceRepo(db, log),
+		UserConceptCalibration:   repos.NewUserConceptCalibrationRepo(db, log),
+		UserModelAlert:           repos.NewUserModelAlertRepo(db, log),
 		UserMisconception:        repos.NewUserMisconceptionInstanceRepo(db, log),
+		UserMisconceptionInstance: repos.NewUserMisconceptionInstanceRepo(db, log),
 		UserStylePreference:      repos.NewUserStylePreferenceRepo(db, log),
+		UserTestletState:         repos.NewUserTestletStateRepo(db, log),
 		Concept:                  repos.NewConceptRepo(db, log),
 		ConceptRepresentation:    repos.NewConceptRepresentationRepo(db, log),
 		ConceptMappingOverride:   repos.NewConceptMappingOverrideRepo(db, log),
@@ -137,6 +151,8 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		ActivityVariantStat:      repos.NewActivityVariantStatRepo(db, log),
 		ActivityConcept:          repos.NewActivityConceptRepo(db, log),
 		ActivityCitation:         repos.NewActivityCitationRepo(db, log),
+		ModelSnapshot:            repos.NewModelSnapshotRepo(db, log),
+		PolicyEvalSnapshot:       repos.NewPolicyEvalSnapshotRepo(db, log),
 		Path:                     repos.NewPathRepo(db, log),
 		PathNode:                 repos.NewPathNodeRepo(db, log),
 		PathNodeActivity:         repos.NewPathNodeActivityRepo(db, log),

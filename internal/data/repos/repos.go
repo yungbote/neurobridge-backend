@@ -34,8 +34,13 @@ type TopicMasteryRepo = learning.TopicMasteryRepo
 type TopicStylePreferenceRepo = learning.TopicStylePreferenceRepo
 type UserConceptStateRepo = learning.UserConceptStateRepo
 type UserConceptModelRepo = learning.UserConceptModelRepo
+type UserConceptEdgeStatRepo = learning.UserConceptEdgeStatRepo
+type UserConceptEvidenceRepo = learning.UserConceptEvidenceRepo
+type UserConceptCalibrationRepo = learning.UserConceptCalibrationRepo
+type UserModelAlertRepo = learning.UserModelAlertRepo
 type UserMisconceptionInstanceRepo = learning.UserMisconceptionInstanceRepo
 type UserStylePreferenceRepo = learning.UserStylePreferenceRepo
+type UserTestletStateRepo = learning.UserTestletStateRepo
 type UserEventRepo = learning.UserEventRepo
 type UserEventCursorRepo = learning.UserEventCursorRepo
 type UserProgressionEventRepo = learning.UserProgressionEventRepo
@@ -66,6 +71,8 @@ type ConceptEvidenceRepo = learning.ConceptEvidenceRepo
 type CohortPriorRepo = learning.CohortPriorRepo
 type ActivityVariantStatRepo = learning.ActivityVariantStatRepo
 type DecisionTraceRepo = learning.DecisionTraceRepo
+type ModelSnapshotRepo = learning.ModelSnapshotRepo
+type PolicyEvalSnapshotRepo = learning.PolicyEvalSnapshotRepo
 type UserLibraryIndexRepo = learning.UserLibraryIndexRepo
 type ChainSignatureRepo = learning.ChainSignatureRepo
 type ChainPriorRepo = learning.ChainPriorRepo
@@ -165,11 +172,26 @@ func NewUserConceptStateRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptSta
 func NewUserConceptModelRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptModelRepo {
 	return learning.NewUserConceptModelRepo(db, baseLog)
 }
+func NewUserConceptEdgeStatRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptEdgeStatRepo {
+	return learning.NewUserConceptEdgeStatRepo(db, baseLog)
+}
+func NewUserConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptEvidenceRepo {
+	return learning.NewUserConceptEvidenceRepo(db, baseLog)
+}
+func NewUserConceptCalibrationRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptCalibrationRepo {
+	return learning.NewUserConceptCalibrationRepo(db, baseLog)
+}
+func NewUserModelAlertRepo(db *gorm.DB, baseLog *logger.Logger) UserModelAlertRepo {
+	return learning.NewUserModelAlertRepo(db, baseLog)
+}
 func NewUserMisconceptionInstanceRepo(db *gorm.DB, baseLog *logger.Logger) UserMisconceptionInstanceRepo {
 	return learning.NewUserMisconceptionInstanceRepo(db, baseLog)
 }
 func NewUserStylePreferenceRepo(db *gorm.DB, baseLog *logger.Logger) UserStylePreferenceRepo {
 	return learning.NewUserStylePreferenceRepo(db, baseLog)
+}
+func NewUserTestletStateRepo(db *gorm.DB, baseLog *logger.Logger) UserTestletStateRepo {
+	return learning.NewUserTestletStateRepo(db, baseLog)
 }
 func NewUserEventRepo(db *gorm.DB, baseLog *logger.Logger) UserEventRepo {
 	return learning.NewUserEventRepo(db, baseLog)
@@ -321,6 +343,12 @@ func NewActivityVariantStatRepo(db *gorm.DB, baseLog *logger.Logger) ActivityVar
 
 func NewDecisionTraceRepo(db *gorm.DB, baseLog *logger.Logger) DecisionTraceRepo {
 	return learning.NewDecisionTraceRepo(db, baseLog)
+}
+func NewModelSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) ModelSnapshotRepo {
+	return learning.NewModelSnapshotRepo(db, baseLog)
+}
+func NewPolicyEvalSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) PolicyEvalSnapshotRepo {
+	return learning.NewPolicyEvalSnapshotRepo(db, baseLog)
 }
 
 func NewUserLibraryIndexRepo(db *gorm.DB, baseLog *logger.Logger) UserLibraryIndexRepo {

@@ -60,6 +60,9 @@ const (
 
 	EventClientError = personalization.EventClientError
 	EventClientPerf  = personalization.EventClientPerf
+
+	EventConceptClaimEvaluated  = personalization.EventConceptClaimEvaluated
+	EventBridgeValidationNeeded = personalization.EventBridgeValidationNeeded
 )
 
 type User = user.User
@@ -111,8 +114,13 @@ type TopicMastery = personalization.TopicMastery
 type TopicStylePreference = personalization.TopicStylePreference
 type UserConceptState = personalization.UserConceptState
 type UserConceptModel = personalization.UserConceptModel
+type UserConceptEdgeStat = personalization.UserConceptEdgeStat
+type UserConceptEvidence = personalization.UserConceptEvidence
+type UserConceptCalibration = personalization.UserConceptCalibration
+type UserModelAlert = personalization.UserModelAlert
 type UserMisconceptionInstance = personalization.UserMisconceptionInstance
 type UserStylePreference = personalization.UserStylePreference
+type UserTestletState = personalization.UserTestletState
 type UserEvent = personalization.UserEvent
 type UserEventCursor = personalization.UserEventCursor
 type UserGazeEvent = personalization.UserGazeEvent
@@ -145,6 +153,8 @@ type ConceptClusterMember = products.ConceptClusterMember
 type UserLibraryIndex = products.UserLibraryIndex
 type CohortPrior = products.CohortPrior
 type DecisionTrace = products.DecisionTrace
+type ModelSnapshot = products.ModelSnapshot
+type PolicyEvalSnapshot = products.PolicyEvalSnapshot
 type ChainSignature = products.ChainSignature
 type ChainPrior = products.ChainPrior
 type UserCompletedUnit = products.UserCompletedUnit

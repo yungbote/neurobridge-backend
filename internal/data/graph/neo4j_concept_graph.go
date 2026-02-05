@@ -66,6 +66,7 @@ func UpsertPathConceptGraph(ctx context.Context, client *neo4jdb.Client, log *lo
 	prereq := make([]map[string]any, 0, len(edges))
 	related := make([]map[string]any, 0, len(edges))
 	analogy := make([]map[string]any, 0, len(edges))
+	bridge := make([]map[string]any, 0, len(edges))
 	for _, e := range edges {
 		if e == nil || e.FromConceptID == uuid.Nil || e.ToConceptID == uuid.Nil || e.EdgeType == "" {
 			continue
@@ -88,6 +89,8 @@ func UpsertPathConceptGraph(ctx context.Context, client *neo4jdb.Client, log *lo
 			related = append(related, rec)
 		case "analogy":
 			analogy = append(analogy, rec)
+		case "bridge":
+			bridge = append(bridge, rec)
 		}
 	}
 
@@ -199,6 +202,25 @@ SET e.id = r.id,
     e.path_id = r.path_id,
     e.synced_at = r.synced_at
 `, map[string]any{"rels": analogy})
+			if err != nil {
+				return nil, err
+			}
+			if _, err := res.Consume(ctx); err != nil {
+				return nil, err
+			}
+		}
+		if len(bridge) > 0 {
+			res, err := tx.Run(ctx, `
+UNWIND $rels AS r
+MATCH (a:Concept {id: r.from_id})
+MATCH (b:Concept {id: r.to_id})
+MERGE (a)-[e:CONCEPT_BRIDGE]->(b)
+SET e.id = r.id,
+    e.strength = r.strength,
+    e.evidence_json = r.evidence_json,
+    e.path_id = r.path_id,
+    e.synced_at = r.synced_at
+`, map[string]any{"rels": bridge})
 			if err != nil {
 				return nil, err
 			}

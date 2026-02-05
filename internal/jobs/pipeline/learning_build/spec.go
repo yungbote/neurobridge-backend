@@ -36,6 +36,7 @@ var fallbackStageOrder = []string{
 	"embed_chunks",
 	"concept_graph_build",
 	"concept_graph_patch_build",
+	"concept_bridge_build",
 	"material_signal_build",
 	"path_structure_refine",
 	"material_kg_build",
@@ -84,6 +85,7 @@ var fallbackStageDeps = map[string][]string{
 
 	"concept_graph_build":       {"path_structure_dispatch"},
 	"concept_graph_patch_build": {"concept_graph_build"},
+	"concept_bridge_build":      {"concept_graph_patch_build"},
 	"material_signal_build":     {"concept_graph_patch_build"},
 	"path_structure_refine":     {"concept_graph_patch_build"},
 	"material_kg_build":         {"concept_graph_patch_build", "embed_chunks"},

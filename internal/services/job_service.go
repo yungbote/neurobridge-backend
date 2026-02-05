@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/envutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 )
 
@@ -35,6 +37,8 @@ type JobService interface {
 	EnqueueCompletedUnitRefreshForPathIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueuePriorsRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueuePriorsRefreshForPathIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueuePolicyEvalRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, policyKey string, trigger string) (*types.JobRun, bool, error)
+	EnqueuePolicyModelTrainIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, policyKey string, trigger string) (*types.JobRun, bool, error)
 	GetByIDForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
 	GetLatestForEntityForRequestUser(dbc dbctx.Context, entityType string, entityID uuid.UUID, jobType string) (*types.JobRun, error)
 	CancelForRequestUser(dbc dbctx.Context, jobID uuid.UUID) (*types.JobRun, error)
@@ -494,6 +498,90 @@ func (s *jobService) EnqueuePriorsRefreshForPathIfNeeded(dbc dbctx.Context, owne
 		"path_id":         pathID.String(),
 	}
 	job, err := s.Enqueue(repoCtx, ownerUserID, "priors_refresh", "path", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueuePolicyEvalRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, policyKey string, trigger string) (*types.JobRun, bool, error) {
+	if !envutil.Bool("RUNTIME_RL_EVAL_ENABLED", true) {
+		return nil, false, nil
+	}
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	policyKey = strings.TrimSpace(policyKey)
+	if policyKey == "" {
+		policyKey = strings.TrimSpace(os.Getenv("RUNTIME_RL_POLICY_KEY"))
+	}
+	if policyKey == "" {
+		return nil, false, fmt.Errorf("missing policy_key")
+	}
+
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityType := "policy"
+	entityID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(policyKey))
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "policy_eval_refresh", entityType, &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"policy_key": policyKey,
+		"trigger":    trigger,
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "policy_eval_refresh", entityType, &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueuePolicyModelTrainIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, policyKey string, trigger string) (*types.JobRun, bool, error) {
+	if !envutil.Bool("RUNTIME_RL_TRAIN_ENABLED", true) {
+		return nil, false, nil
+	}
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	policyKey = strings.TrimSpace(policyKey)
+	if policyKey == "" {
+		policyKey = strings.TrimSpace(os.Getenv("RUNTIME_RL_POLICY_KEY"))
+	}
+	if policyKey == "" {
+		return nil, false, fmt.Errorf("missing policy_key")
+	}
+
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityType := "policy"
+	entityID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(policyKey))
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "policy_model_train", entityType, &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"policy_key": policyKey,
+		"trigger":    trigger,
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "policy_model_train", entityType, &entityID, payload)
 	if err != nil {
 		return nil, false, err
 	}

@@ -158,6 +158,8 @@ stages:
       mode: fast
   - name: concept_graph_patch_build
     depends_on: [concept_graph_build]
+  - name: concept_bridge_build
+    depends_on: [concept_graph_patch_build]
   - name: material_signal_build
     depends_on: [concept_graph_patch_build]
   - name: path_structure_refine

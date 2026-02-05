@@ -16,6 +16,7 @@ var wsRE = regexp.MustCompile(`\s{2,}`)
 
 var nodeDocMetaScrubRules = []scrubRule{
 	{Label: "quick check-in", Re: regexp.MustCompile(`(?i)quick check-in`), Replacement: "quick check"},
+	{Label: "entry check", Re: regexp.MustCompile(`(?i)\bentry\s+check\b`), Replacement: ""},
 	{Label: "here's the plan", Re: regexp.MustCompile(`(?i)here's the plan`), Replacement: "overview"},
 	{Label: "here is the plan", Re: regexp.MustCompile(`(?i)here is the plan`), Replacement: "overview"},
 	{Label: "plan:", Re: regexp.MustCompile(`(?i)\bplan:`), Replacement: "overview:"},
@@ -38,6 +39,12 @@ var nodeDocMetaScrubRules = []scrubRule{
 	{Label: "before we dive in", Re: regexp.MustCompile(`(?i)before we dive in`), Replacement: ""},
 	{Label: "answer these", Re: regexp.MustCompile(`(?i)\banswer these\b`), Replacement: ""},
 	{Label: "pick one", Re: regexp.MustCompile(`(?i)\bpick\s+one\b\s*:?\s*`), Replacement: ""},
+	{Label: "what are you using this for", Re: regexp.MustCompile(`(?i)what are you using this for\??`), Replacement: ""},
+	{Label: "what's your current", Re: regexp.MustCompile(`(?i)what['’]?s your current`), Replacement: ""},
+	{Label: "what is your current", Re: regexp.MustCompile(`(?i)what is your current`), Replacement: ""},
+	{Label: "do you prefer", Re: regexp.MustCompile(`(?i)do you prefer`), Replacement: ""},
+	{Label: "any constraints", Re: regexp.MustCompile(`(?i)any constraints`), Replacement: ""},
+	{Label: "while you think about that", Re: regexp.MustCompile(`(?i)while you think about that`), Replacement: ""},
 	{Label: "if you want to go deeper", Re: regexp.MustCompile(`(?i)if you want to go deeper`), Replacement: ""},
 	{Label: "if you'd like to go deeper", Re: regexp.MustCompile(`(?i)if you'd like to go deeper`), Replacement: ""},
 	{Label: "let me know if you want", Re: regexp.MustCompile(`(?i)let me know if you want`), Replacement: ""},
@@ -63,6 +70,27 @@ func scrubMetaText(s string) (string, []string) {
 		s = strings.ReplaceAll(s, " \n", "\n")
 		s = strings.ReplaceAll(s, "\n ", "\n")
 		s = strings.TrimSpace(s)
+	}
+	// Final safety pass: remove any remaining banned phrases to avoid validation failure.
+	if remaining := findBannedPhrases(s); len(remaining) > 0 {
+		for _, p := range remaining {
+			re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(p))
+			s = re.ReplaceAllString(s, "")
+		}
+		// If anything still matches, drop lines containing banned phrases.
+		if left := findBannedPhrases(s); len(left) > 0 {
+			lines := strings.Split(s, "\n")
+			kept := make([]string, 0, len(lines))
+			for _, line := range lines {
+				if len(findBannedPhrases(line)) > 0 {
+					continue
+				}
+				kept = append(kept, line)
+			}
+			s = strings.TrimSpace(strings.Join(kept, "\n"))
+			remaining = append(remaining, left...)
+		}
+		hit = append(hit, remaining...)
 	}
 	return s, dedupeStringsLocal(hit)
 }

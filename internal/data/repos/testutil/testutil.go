@@ -118,6 +118,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.UserEvent{},
 		&types.UserEventCursor{},
 		&types.UserConceptState{},
+		&types.UserConceptEdgeStat{},
 		&types.UserStylePreference{},
 
 		&types.LearningProfile{},

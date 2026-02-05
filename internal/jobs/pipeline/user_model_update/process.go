@@ -11,11 +11,73 @@ import (
 	"gorm.io/datatypes"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/platform/envutil"
 )
 
 const (
 	defaultDecayRate      = 0.015
 	maxExposureConfidence = 0.35
+	defaultBktLearn       = 0.18
+	defaultBktGuess       = 0.20
+	defaultBktSlip        = 0.08
+	defaultBktForget      = 0.02
+	minHalfLifeDays       = 0.20
+	maxHalfLifeDays       = 240.0
+)
+
+var (
+	ktBktLearnDefault       = clampRange(envutil.Float("USER_KT_BKT_P_LEARN", defaultBktLearn), 0.01, 0.9)
+	ktBktGuessDefault       = clampRange(envutil.Float("USER_KT_BKT_P_GUESS", defaultBktGuess), 0.01, 0.5)
+	ktBktSlipDefault        = clampRange(envutil.Float("USER_KT_BKT_P_SLIP", defaultBktSlip), 0.01, 0.5)
+	ktBktForgetDefault      = clampRange(envutil.Float("USER_KT_BKT_P_FORGET", defaultBktForget), 0.001, 0.3)
+	ktMinHalfLifeDays       = clampRange(envutil.Float("USER_KT_MIN_HALF_LIFE_DAYS", minHalfLifeDays), 0.05, 365)
+	ktMaxHalfLifeDays       = clampRange(envutil.Float("USER_KT_MAX_HALF_LIFE_DAYS", maxHalfLifeDays), 1.0, 3650)
+	ktReviewTargetCorrect   = clampRange(envutil.Float("USER_KT_REVIEW_TARGET_CORRECT", 0.87), 0.6, 0.99)
+	ktReviewTargetIncorrect = clampRange(envutil.Float("USER_KT_REVIEW_TARGET_INCORRECT", 0.65), 0.3, 0.95)
+	ktHierarchyEnabled      = envutil.Bool("USER_KT_HIERARCHY_ENABLED", true)
+	ktClusterPriorWeight    = clampRange(envutil.Float("USER_KT_CLUSTER_PRIOR_WEIGHT", 0.2), 0, 1)
+	ktParentPriorWeight     = clampRange(envutil.Float("USER_KT_PARENT_PRIOR_WEIGHT", 0.15), 0, 1)
+	ktPriorApplyConfBelow   = clampRange(envutil.Float("USER_KT_PRIOR_APPLY_CONF_BELOW", 0.3), 0, 1)
+	ktPriorApplyWeight      = clampRange(envutil.Float("USER_KT_PRIOR_APPLY_WEIGHT", 0.6), 0, 1)
+
+	propagationPrereqWeight  = clampRange(envutil.Float("USER_PROPAGATION_PREREQ_WEIGHT", 0.06), 0, 1)
+	propagationRelatedWeight = clampRange(envutil.Float("USER_PROPAGATION_RELATED_WEIGHT", 0.04), 0, 1)
+	propagationAnalogyWeight = clampRange(envutil.Float("USER_PROPAGATION_ANALOGY_WEIGHT", 0.05), 0, 1)
+	propagationMaxDelta      = clampRange(envutil.Float("USER_PROPAGATION_MAX_DELTA", 0.08), 0, 0.5)
+	propagationMinMastery    = clampRange(envutil.Float("USER_PROPAGATION_MIN_MASTERY", 0.65), 0, 1)
+	propagationMinConfidence = clampRange(envutil.Float("USER_PROPAGATION_MIN_CONF", 0.45), 0, 1)
+	propagationMaxEpi        = clampRange(envutil.Float("USER_PROPAGATION_MAX_EPI", 0.75), 0, 1)
+	propagationMaxAlea       = clampRange(envutil.Float("USER_PROPAGATION_MAX_ALEA", 0.75), 0, 1)
+
+	bridgeMinScore                = clampRange(envutil.Float("USER_BRIDGE_MIN_SCORE", 0.86), 0, 1)
+	bridgePropagationWeight       = clampRange(envutil.Float("USER_BRIDGE_PROPAGATION_WEIGHT", 0.04), 0, 1)
+	bridgeMinMastery              = clampRange(envutil.Float("USER_BRIDGE_MIN_MASTERY", 0.7), 0, 1)
+	bridgeMinConfidence           = clampRange(envutil.Float("USER_BRIDGE_MIN_CONF", 0.5), 0, 1)
+	bridgeMaxEpi                  = clampRange(envutil.Float("USER_BRIDGE_MAX_EPI", 0.6), 0, 1)
+	bridgeMaxAlea                 = clampRange(envutil.Float("USER_BRIDGE_MAX_ALEA", 0.6), 0, 1)
+	bridgeFalseWindowHours        = clampRange(envutil.Float("USER_BRIDGE_FALSE_WINDOW_HOURS", 48), 1, 720)
+	bridgeFalseRateTighten        = clampRange(envutil.Float("USER_BRIDGE_FALSE_RATE_TIGHTEN", 0.25), 0, 1)
+	bridgeHardBlockRate           = clampRange(envutil.Float("USER_BRIDGE_HARD_BLOCK_RATE", 0.5), 0, 1)
+	bridgeBlockHours              = clampRange(envutil.Float("USER_BRIDGE_BLOCK_HOURS", 72), 1, 720)
+	bridgeValidationCooldownHours = clampRange(envutil.Float("USER_BRIDGE_VALIDATION_COOLDOWN_HOURS", 72), 1, 720)
+	bridgeThresholdBoostStep      = clampRange(envutil.Float("USER_BRIDGE_THRESHOLD_BOOST_STEP", 0.04), 0, 0.5)
+
+	calibMinSamples = func() int {
+		v := envutil.Int("USER_CALIB_MIN_SAMPLES", 8)
+		if v < 1 {
+			return 1
+		}
+		return v
+	}()
+	calibGapWarn    = clampRange(envutil.Float("USER_CALIB_GAP_WARN", 0.2), 0, 1)
+	calibGapCrit    = clampRange(envutil.Float("USER_CALIB_GAP_CRIT", 0.3), 0, 1)
+	calibAbsErrWarn = clampRange(envutil.Float("USER_CALIB_ABS_ERR_WARN", 0.25), 0, 1)
+	calibAbsErrCrit = clampRange(envutil.Float("USER_CALIB_ABS_ERR_CRIT", 0.35), 0, 1)
+	calibBrierWarn  = clampRange(envutil.Float("USER_CALIB_BRIER_WARN", 0.25), 0, 1)
+	calibBrierCrit  = clampRange(envutil.Float("USER_CALIB_BRIER_CRIT", 0.35), 0, 1)
+
+	testletBetaPrior = clampRange(envutil.Float("USER_TESTLET_BETA_PRIOR", 1.0), 0.1, 10)
+	testletEmaAlpha  = clampRange(envutil.Float("USER_TESTLET_EMA_ALPHA", 0.18), 0.01, 0.8)
 )
 
 func ensureConceptState(prev *types.UserConceptState, userID uuid.UUID, conceptID uuid.UUID) *types.UserConceptState {
@@ -23,14 +85,21 @@ func ensureConceptState(prev *types.UserConceptState, userID uuid.UUID, conceptI
 		return prev
 	}
 	return &types.UserConceptState{
-		ID:         uuid.New(),
-		UserID:     userID,
-		ConceptID:  conceptID,
-		Mastery:    0,
-		Confidence: 0,
-		DecayRate:  defaultDecayRate,
-		Attempts:   0,
-		Correct:    0,
+		ID:                   uuid.New(),
+		UserID:               userID,
+		ConceptID:            conceptID,
+		Mastery:              0,
+		Confidence:           0,
+		DecayRate:            defaultDecayRate,
+		BktPLearn:            ktBktLearnDefault,
+		BktPGuess:            ktBktGuessDefault,
+		BktPSlip:             ktBktSlipDefault,
+		BktPForget:           ktBktForgetDefault,
+		EpistemicUncertainty: 1,
+		AleatoricUncertainty: 0.5,
+		HalfLifeDays:         1,
+		Attempts:             0,
+		Correct:              0,
 	}
 }
 
@@ -52,6 +121,10 @@ func applyQuestionAnsweredToState(st *types.UserConceptState, seenAt time.Time, 
 	isCorrect := boolFromAny(data["is_correct"], false)
 	latencyMS := intFromAny(data["latency_ms"], 0)
 	selfConf := clamp01(floatFromAny(data["confidence"], 0))
+	graderConf := clamp01(floatFromAny(data["grader_confidence"], 0))
+	if graderConf == 0 {
+		graderConf = clamp01(floatFromAny(data["grader_confidence_pct"], 0) / 100.0)
+	}
 
 	// Attempts/correct counters (queryable evidence).
 	st.Attempts += 1
@@ -59,50 +132,111 @@ func applyQuestionAnsweredToState(st *types.UserConceptState, seenAt time.Time, 
 		st.Correct += 1
 	}
 
-	m := clamp01(st.Mastery)
-	c := clamp01(st.Confidence)
+	prevM := clamp01(st.Mastery)
+	prevC := clamp01(st.Confidence)
 
-	// Stable learning-rate: scale by self-reported confidence and latency.
-	alpha := 0.08 * (0.75 + 0.5*selfConf)
-	if latencyMS > 0 && latencyMS > 12000 {
-		alpha *= 0.75
+	itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["item_type"])))
+	itemOptions := intFromAny(data["item_options"], 0)
+	itemGuess := clamp01(floatFromAny(data["item_guess"], 0))
+	if itemGuess <= 0 {
+		if itemOptions > 1 {
+			itemGuess = 1.0 / float64(itemOptions)
+		} else if itemType == "true_false" {
+			itemGuess = 0.5
+		}
 	}
-	alpha = clamp01(alpha)
+	if itemGuess <= 0 {
+		itemGuess = defaultBktGuess
+	}
 
+	itemDisc := floatFromAny(data["item_discrimination"], 1.0)
+	if itemDisc <= 0 {
+		itemDisc = 1.0
+	}
+	if itemDisc > 3 {
+		itemDisc = 3
+	}
+
+	itemDiff := floatFromAny(data["item_difficulty"], math.NaN())
+	if math.IsNaN(itemDiff) {
+		itemDiff = floatFromAny(data["node_difficulty"], math.NaN())
+	}
+	if math.IsNaN(itemDiff) {
+		itemDiff = 0
+	}
+	itemDiff = normalizeItemDifficulty(itemDiff)
+
+	pLearn, pGuess, pSlip, pForget := ensureBktParams(st)
+	if itemGuess > 0 {
+		pGuess = clamp01(0.6*pGuess + 0.4*itemGuess)
+	}
+
+	pKnown := prevM
+	if st.LastSeenAt != nil && !st.LastSeenAt.IsZero() && !seenAt.IsZero() && seenAt.After(*st.LastSeenAt) {
+		deltaDays := seenAt.Sub(*st.LastSeenAt).Hours() / 24.0
+		if deltaDays > 0 && pForget > 0 {
+			pKnown = pKnown * math.Exp(-pForget*deltaDays)
+		}
+	}
+	pKnown = bktPosterior(pKnown, isCorrect, pGuess, pSlip)
+	learnFactor := 1.0
+	if !isCorrect {
+		learnFactor = 0.55
+	}
+	pKnown = pKnown + (1.0-pKnown)*pLearn*learnFactor
+	pKnown = clamp01(pKnown)
+
+	theta := logit(pKnown)
+	pCorrect := irtProb(theta, itemDisc, itemDiff, itemGuess)
+	err := 0.0
 	if isCorrect {
-		m = m + (1.0-m)*alpha
-		c = c + (1.0-c)*0.06
-	} else {
-		m = m - m*0.12
-		c = c - c*0.08
+		err = 1.0
+	}
+	err = err - pCorrect
+	lr := 0.12 * (0.6 + 0.4*selfConf)
+	if latencyMS > 0 && latencyMS > 12000 {
+		lr *= 0.85
+	}
+	if st.EpistemicUncertainty > 0 {
+		lr *= clamp01(1.0 - (st.EpistemicUncertainty * 0.6))
+	}
+	theta = theta + lr*err
+	pIrt := sigmoid(theta)
+
+	mix := clamp01(0.35 + 0.15*itemDisc)
+	m := clamp01((1.0-mix)*pKnown + mix*pIrt)
+	if prevM > 0 {
+		m = clamp01(0.2*prevM + 0.8*m)
 	}
 
 	st.Mastery = clamp01(m)
-	st.Confidence = clamp01(c)
+
+	epi, alea := updateUncertainty(st, selfConf, graderConf, seenAt)
+	st.EpistemicUncertainty = epi
+	st.AleatoricUncertainty = alea
+
+	combinedConf := clamp01(1.0 - 0.5*(epi+alea))
+	if selfConf > 0 {
+		combinedConf = clamp01(0.7*combinedConf + 0.3*selfConf)
+	} else if graderConf > 0 {
+		combinedConf = clamp01(0.7*combinedConf + 0.3*graderConf)
+	}
+	if prevC > 0 {
+		combinedConf = clamp01(0.6*prevC + 0.4*combinedConf)
+	}
+	st.Confidence = combinedConf
+
+	st.BktPLearn = pLearn
+	st.BktPGuess = pGuess
+	st.BktPSlip = pSlip
+	st.BktPForget = pForget
 
 	setLastSeen(st, seenAt)
-
-	// Simple review scheduling: incorrect => soon; correct => later as mastery rises.
+	scheduleNextReview(st, seenAt, isCorrect)
 	now := seenAt
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	strength := clamp01(st.Mastery * st.Confidence)
-	days := 0.25 + (strength * strength * 28.0)
-	if !isCorrect {
-		days = 0.25
-	}
-	if days < 0.10 {
-		days = 0.10
-	}
-	if days > 60 {
-		days = 60
-	}
-	next := now.Add(time.Duration(days*24) * time.Hour).UTC()
-	st.NextReviewAt = &next
-
-	// Decay rate is a coarse signal for future spaced repetition logic.
-	st.DecayRate = clamp01(defaultDecayRate + (1.0-strength)*0.01)
 
 	// Track a small rolling misconception log on incorrect answers (best-effort).
 	if !isCorrect {
@@ -126,6 +260,144 @@ func applyQuestionAnsweredToState(st *types.UserConceptState, seenAt time.Time, 
 			st.Misconceptions = datatypes.JSON(b)
 		}
 	}
+}
+
+func expectedCorrectnessForQuestion(st *types.UserConceptState, seenAt time.Time, data map[string]any) float64 {
+	if st == nil {
+		st = &types.UserConceptState{
+			Mastery:    0,
+			BktPGuess:  ktBktGuessDefault,
+			BktPForget: ktBktForgetDefault,
+		}
+	}
+	prevM := clamp01(st.Mastery)
+	itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["item_type"])))
+	itemOptions := intFromAny(data["item_options"], 0)
+	itemGuess := clamp01(floatFromAny(data["item_guess"], 0))
+	if itemGuess <= 0 {
+		if itemOptions > 1 {
+			itemGuess = 1.0 / float64(itemOptions)
+		} else if itemType == "true_false" {
+			itemGuess = 0.5
+		}
+	}
+	if itemGuess <= 0 {
+		itemGuess = defaultBktGuess
+	}
+	itemDisc := floatFromAny(data["item_discrimination"], 1.0)
+	if itemDisc <= 0 {
+		itemDisc = 1.0
+	}
+	if itemDisc > 3 {
+		itemDisc = 3
+	}
+	itemDiff := floatFromAny(data["item_difficulty"], math.NaN())
+	if math.IsNaN(itemDiff) {
+		itemDiff = floatFromAny(data["node_difficulty"], math.NaN())
+	}
+	if math.IsNaN(itemDiff) {
+		itemDiff = 0
+	}
+	itemDiff = normalizeItemDifficulty(itemDiff)
+
+	_, _, _, pForget := ensureBktParams(st)
+	pKnown := prevM
+	if st.LastSeenAt != nil && !st.LastSeenAt.IsZero() && !seenAt.IsZero() && seenAt.After(*st.LastSeenAt) {
+		deltaDays := seenAt.Sub(*st.LastSeenAt).Hours() / 24.0
+		if deltaDays > 0 && pForget > 0 {
+			pKnown = pKnown * math.Exp(-pForget*deltaDays)
+		}
+	}
+	pKnown = clamp01(pKnown)
+	theta := logit(pKnown)
+	pCorrect := irtProb(theta, itemDisc, itemDiff, itemGuess)
+	return clamp01(pCorrect)
+}
+
+func evidenceSignalForEvent(typ string, data map[string]any) (float64, float64) {
+	typ = strings.TrimSpace(typ)
+	conf := clamp01(floatFromAny(data["confidence"], 0))
+	if conf == 0 {
+		conf = clamp01(floatFromAny(data["grader_confidence"], 0))
+	}
+	if conf == 0 {
+		conf = clamp01(floatFromAny(data["verdict_confidence"], 0))
+	}
+	strength := 0.3
+	switch typ {
+	case types.EventQuestionAnswered:
+		strength = 1.0
+		if conf == 0 {
+			conf = 0.65
+		}
+	case types.EventConceptClaimEvaluated:
+		strength = 0.7
+		if conf == 0 {
+			conf = 0.5
+		}
+	case types.EventHintUsed:
+		strength = 0.35
+		if conf == 0 {
+			conf = 0.5
+		}
+	case types.EventActivityCompleted:
+		strength = 0.55
+		if conf == 0 {
+			conf = 0.6
+		}
+	case types.EventScrollDepth, types.EventBlockViewed, types.EventBlockRead:
+		strength = 0.2
+		if conf == 0 {
+			conf = 0.35
+		}
+	case "propagation":
+		strength = 0.15
+		if conf == 0 {
+			conf = 0.5
+		}
+	case "bridge_transfer":
+		strength = 0.22
+		if conf == 0 {
+			conf = 0.6
+		}
+	}
+	return clamp01(strength), clamp01(conf)
+}
+
+func applyClaimEvaluatedToState(st *types.UserConceptState, seenAt time.Time, data map[string]any) {
+	if st == nil {
+		return
+	}
+	if !boolFromAny(data["has_truth"], false) {
+		setLastSeen(st, seenAt)
+		return
+	}
+	isCorrect := boolFromAny(data["is_correct"], false)
+	strength := clamp01(floatFromAny(data["signal_strength"], 0))
+	if strength == 0 {
+		strength = clamp01(floatFromAny(data["attribution_score"], 0))
+	}
+	if strength == 0 {
+		strength = 0.25
+	}
+
+	m := clamp01(st.Mastery)
+	c := clamp01(st.Confidence)
+	delta := 0.02 + 0.05*strength
+	if isCorrect {
+		m = clamp01(m + (1.0-m)*delta)
+		c = clamp01(c + 0.2*delta)
+	} else {
+		m = clamp01(m - (m * delta * 0.6))
+		c = clamp01(c - (c * delta * 0.4))
+	}
+	if boolFromAny(data["is_confusion"], false) {
+		c = clamp01(c * 0.9)
+		st.EpistemicUncertainty = clamp01(st.EpistemicUncertainty + 0.08)
+	}
+	st.Mastery = m
+	st.Confidence = c
+	setLastSeen(st, seenAt)
 }
 
 func applyActivityCompletedToState(st *types.UserConceptState, seenAt time.Time, data map[string]any) {
@@ -161,6 +433,11 @@ func applyExposureToState(st *types.UserConceptState, seenAt time.Time, data map
 	}
 	// Scale exposure weight by dwell time (cap at ~2 minutes) and scroll depth.
 	w := clamp01((dwellMS / 120000.0) * maxPct)
+	readCredit := clamp01(floatFromAny(data["read_credit"], 0))
+	if readCredit > 0 {
+		// Read credit is a stronger signal than raw dwell. Blend conservatively.
+		w = clamp01(w + 0.45*readCredit)
+	}
 	c := clamp01(st.Confidence)
 	c = clamp01(c + 0.06*w)
 	if c > maxExposureConfidence {
@@ -340,6 +617,171 @@ func clamp01(x float64) float64 {
 		return 1
 	}
 	return x
+}
+
+func clampRange(x float64, lo float64, hi float64) float64 {
+	if math.IsNaN(x) {
+		return lo
+	}
+	if x < lo {
+		return lo
+	}
+	if x > hi {
+		return hi
+	}
+	return x
+}
+
+func ensureBktParams(st *types.UserConceptState) (float64, float64, float64, float64) {
+	pLearn := clamp01(st.BktPLearn)
+	if pLearn <= 0 {
+		pLearn = ktBktLearnDefault
+	}
+	pGuess := clamp01(st.BktPGuess)
+	if pGuess <= 0 {
+		pGuess = ktBktGuessDefault
+	}
+	pSlip := clamp01(st.BktPSlip)
+	if pSlip <= 0 {
+		pSlip = ktBktSlipDefault
+	}
+	pForget := clamp01(st.BktPForget)
+	if pForget <= 0 {
+		pForget = ktBktForgetDefault
+	}
+	return pLearn, pGuess, pSlip, pForget
+}
+
+func normalizeItemDifficulty(x float64) float64 {
+	if math.IsNaN(x) {
+		return 0
+	}
+	if x >= 0 && x <= 1 {
+		// Map [0,1] -> [-1,1] on theta scale.
+		return clampRange((x-0.5)*2.0, -1.5, 1.5)
+	}
+	return clampRange(x, -2.5, 2.5)
+}
+
+func bktPosterior(pKnown float64, isCorrect bool, pGuess float64, pSlip float64) float64 {
+	pKnown = clamp01(pKnown)
+	pGuess = clamp01(pGuess)
+	pSlip = clamp01(pSlip)
+	if isCorrect {
+		num := pKnown * (1.0 - pSlip)
+		den := num + (1.0-pKnown)*pGuess
+		if den > 0 {
+			return clamp01(num / den)
+		}
+		return pKnown
+	}
+	num := pKnown * pSlip
+	den := num + (1.0-pKnown)*(1.0-pGuess)
+	if den > 0 {
+		return clamp01(num / den)
+	}
+	return pKnown
+}
+
+func logit(p float64) float64 {
+	p = clampRange(p, 0.001, 0.999)
+	return math.Log(p / (1.0 - p))
+}
+
+func sigmoid(x float64) float64 {
+	if x >= 0 {
+		z := math.Exp(-x)
+		return 1.0 / (1.0 + z)
+	}
+	z := math.Exp(x)
+	return z / (1.0 + z)
+}
+
+func irtProb(theta float64, a float64, b float64, g float64) float64 {
+	a = clampRange(a, 0.2, 3.0)
+	b = clampRange(b, -3.0, 3.0)
+	g = clampRange(g, 0.0, 0.45)
+	p := sigmoid(a * (theta - b))
+	return g + (1.0-g)*p
+}
+
+func updateUncertainty(st *types.UserConceptState, selfConf float64, graderConf float64, seenAt time.Time) (float64, float64) {
+	attempts := float64(st.Attempts)
+	epiTarget := 1.0 / math.Sqrt(attempts+1.0)
+	if st.LastSeenAt != nil && !st.LastSeenAt.IsZero() && !seenAt.IsZero() && seenAt.After(*st.LastSeenAt) {
+		deltaDays := seenAt.Sub(*st.LastSeenAt).Hours() / 24.0
+		if deltaDays > 14 {
+			epiTarget = clamp01(epiTarget + (deltaDays / 90.0))
+		}
+	}
+	if epiTarget < 0.05 {
+		epiTarget = 0.05
+	}
+	epiPrev := clamp01(st.EpistemicUncertainty)
+	epi := clamp01(epiPrev*0.75 + epiTarget*0.25)
+
+	accuracy := 0.5
+	if st.Attempts > 0 {
+		accuracy = float64(st.Correct) / float64(st.Attempts)
+	}
+	aleaTarget := clamp01(4.0 * accuracy * (1.0 - accuracy))
+	if selfConf > 0 {
+		aleaTarget = clamp01(0.7*aleaTarget + 0.3*(1.0-selfConf))
+	}
+	if graderConf > 0 {
+		aleaTarget = clamp01(0.8*aleaTarget + 0.2*(1.0-graderConf))
+	}
+	aleaPrev := clamp01(st.AleatoricUncertainty)
+	alea := clamp01(aleaPrev*0.75 + aleaTarget*0.25)
+
+	return epi, alea
+}
+
+func scheduleNextReview(st *types.UserConceptState, seenAt time.Time, isCorrect bool) {
+	if st == nil {
+		return
+	}
+	now := seenAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	epi := clamp01(st.EpistemicUncertainty)
+	alea := clamp01(st.AleatoricUncertainty)
+	strength := clamp01(st.Mastery) * clamp01(1.0-0.5*(epi+alea))
+
+	base := 0.6 + (10.0 * strength * strength)
+	if !isCorrect {
+		base *= 0.55
+	}
+	if st.HalfLifeDays > 0 {
+		base = 0.5*st.HalfLifeDays + 0.5*base
+	}
+	halfLife := clampRange(base, ktMinHalfLifeDays, ktMaxHalfLifeDays)
+	st.HalfLifeDays = halfLife
+
+	target := ktReviewTargetCorrect
+	if !isCorrect {
+		target = ktReviewTargetIncorrect
+	}
+	days := -math.Log(target) * halfLife
+	if days < 0.10 {
+		days = 0.10
+	}
+	if days > 365 {
+		days = 365
+	}
+	next := now.Add(time.Duration(days*24) * time.Hour).UTC()
+	if st.NextReviewAt == nil || st.NextReviewAt.IsZero() {
+		st.NextReviewAt = &next
+	} else if isCorrect && next.After(*st.NextReviewAt) {
+		st.NextReviewAt = &next
+	} else if !isCorrect && next.Before(*st.NextReviewAt) {
+		st.NextReviewAt = &next
+	}
+
+	if halfLife > 0 {
+		st.DecayRate = clamp01(math.Ln2 / halfLife)
+	}
 }
 
 // ---- structural model helpers ----
@@ -592,4 +1034,103 @@ func applyRetryToModel(model *types.UserConceptModel, seenAt time.Time, data map
 	}
 	model.Uncertainty = datatypes.JSON(mustJSON(unc))
 	return false
+}
+
+func propagationWeightForEdge(edgeType string) float64 {
+	switch strings.ToLower(strings.TrimSpace(edgeType)) {
+	case "prereq":
+		return propagationPrereqWeight
+	case "related":
+		return propagationRelatedWeight
+	case "analogy":
+		return propagationAnalogyWeight
+	default:
+		return 0
+	}
+}
+
+func canPropagateFrom(st *types.UserConceptState, minMastery float64, minConf float64, maxEpi float64, maxAlea float64) bool {
+	if st == nil {
+		return false
+	}
+	if clamp01(st.Mastery) < minMastery {
+		return false
+	}
+	if clamp01(st.Confidence) < minConf {
+		return false
+	}
+	if clamp01(st.EpistemicUncertainty) > maxEpi {
+		return false
+	}
+	if clamp01(st.AleatoricUncertainty) > maxAlea {
+		return false
+	}
+	return true
+}
+
+func applyPropagationDelta(from *types.UserConceptState, to *types.UserConceptState, weight float64, maxDelta float64) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	weight = clampRange(weight, 0, 1)
+	if weight == 0 {
+		return false
+	}
+	fromM := clamp01(from.Mastery)
+	toM := clamp01(to.Mastery)
+	if fromM <= toM {
+		return false
+	}
+	rawDelta := (fromM - toM) * weight
+	if rawDelta <= 0 {
+		return false
+	}
+	delta := rawDelta
+	if maxDelta > 0 {
+		delta = math.Min(delta, maxDelta)
+	}
+	toM = clamp01(toM + delta)
+	if toM > fromM {
+		toM = fromM
+	}
+	to.Mastery = toM
+	to.Confidence = clamp01(math.Max(clamp01(to.Confidence), clamp01(from.Confidence*0.5)))
+	to.EpistemicUncertainty = clamp01(to.EpistemicUncertainty * (1.0 - 0.2*delta))
+	return true
+}
+
+func hoursToDuration(hours float64) time.Duration {
+	if hours <= 0 {
+		return 0
+	}
+	return time.Duration(hours * float64(time.Hour))
+}
+
+func shouldRequestBridgeValidation(last *time.Time, now time.Time, cooldown time.Duration) bool {
+	if cooldown <= 0 {
+		return true
+	}
+	if last == nil || last.IsZero() {
+		return true
+	}
+	return now.Sub(*last) >= cooldown
+}
+
+func bridgeValidationBucket(now time.Time, cooldown time.Duration) int64 {
+	if cooldown <= 0 {
+		return now.Unix()
+	}
+	sec := int64(cooldown.Seconds())
+	if sec <= 0 {
+		return now.Unix()
+	}
+	return now.Unix() / sec
+}
+
+func ptrTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	tt := t.UTC()
+	return &tt
 }

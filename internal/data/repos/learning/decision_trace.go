@@ -1,7 +1,11 @@
 package learning
 
 import (
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
@@ -11,9 +15,11 @@ import (
 
 type DecisionTraceRepo interface {
 	Create(dbc dbctx.Context, rows []*types.DecisionTrace) ([]*types.DecisionTrace, error)
+	UpdateChosen(dbc dbctx.Context, id uuid.UUID, chosen datatypes.JSON) error
 
 	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.DecisionTrace, error)
 	ListByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.DecisionTrace, error)
+	ListByDecisionTypeSince(dbc dbctx.Context, decisionType string, since time.Time, limit int) ([]*types.DecisionTrace, error)
 }
 
 type decisionTraceRepo struct {
@@ -37,6 +43,20 @@ func (r *decisionTraceRepo) Create(dbc dbctx.Context, rows []*types.DecisionTrac
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (r *decisionTraceRepo) UpdateChosen(dbc dbctx.Context, id uuid.UUID, chosen datatypes.JSON) error {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	if id == uuid.Nil {
+		return nil
+	}
+	return t.WithContext(dbc.Ctx).
+		Model(&types.DecisionTrace{}).
+		Where("id = ?", id).
+		Update("chosen", chosen).Error
 }
 
 func (r *decisionTraceRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.DecisionTrace, error) {
@@ -74,6 +94,35 @@ func (r *decisionTraceRepo) ListByUser(dbc dbctx.Context, userID uuid.UUID, limi
 		Order("occurred_at DESC, created_at DESC").
 		Limit(limit).
 		Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *decisionTraceRepo) ListByDecisionTypeSince(dbc dbctx.Context, decisionType string, since time.Time, limit int) ([]*types.DecisionTrace, error) {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	decisionType = strings.TrimSpace(decisionType)
+	out := []*types.DecisionTrace{}
+	if decisionType == "" {
+		return out, nil
+	}
+	if limit <= 0 {
+		limit = 5000
+	}
+	if limit > 20000 {
+		limit = 20000
+	}
+	q := t.WithContext(dbc.Ctx).
+		Where("decision_type = ?", decisionType).
+		Order("occurred_at DESC, created_at DESC").
+		Limit(limit)
+	if !since.IsZero() {
+		q = q.Where("occurred_at >= ?", since)
+	}
+	if err := q.Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil

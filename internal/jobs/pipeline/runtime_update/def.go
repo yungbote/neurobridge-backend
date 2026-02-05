@@ -22,6 +22,14 @@ type Pipeline struct {
 	actRuns   repos.ActivityRunRepo
 	trans     repos.PathRunTransitionRepo
 	sessions  repos.UserSessionStateRepo
+	concepts  repos.ConceptRepo
+	conStates repos.UserConceptStateRepo
+	miscons   repos.UserMisconceptionInstanceRepo
+	testlets  repos.UserTestletStateRepo
+	traces    repos.DecisionTraceRepo
+	models    repos.ModelSnapshotRepo
+	evals     repos.PolicyEvalSnapshotRepo
+	jobSvc    services.JobService
 	notify    services.RuntimeNotifier
 }
 
@@ -39,6 +47,14 @@ func New(
 	actRuns repos.ActivityRunRepo,
 	trans repos.PathRunTransitionRepo,
 	sessions repos.UserSessionStateRepo,
+	concepts repos.ConceptRepo,
+	conStates repos.UserConceptStateRepo,
+	miscons repos.UserMisconceptionInstanceRepo,
+	testlets repos.UserTestletStateRepo,
+	traces repos.DecisionTraceRepo,
+	models repos.ModelSnapshotRepo,
+	evals repos.PolicyEvalSnapshotRepo,
+	jobSvc services.JobService,
 	notify services.RuntimeNotifier,
 ) *Pipeline {
 	return &Pipeline{
@@ -55,6 +71,14 @@ func New(
 		actRuns:   actRuns,
 		trans:     trans,
 		sessions:  sessions,
+		concepts:  concepts,
+		conStates: conStates,
+		miscons:   miscons,
+		testlets:  testlets,
+		traces:    traces,
+		models:    models,
+		evals:     evals,
+		jobSvc:    jobSvc,
 		notify:    notify,
 	}
 }

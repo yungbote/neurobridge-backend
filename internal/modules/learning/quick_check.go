@@ -23,11 +23,13 @@ type QuickCheckAttemptInput struct {
 }
 
 type QuickCheckAttemptOutput struct {
-	Status     string  `json:"status"` // correct|try_again|wrong|hint
-	IsCorrect  bool    `json:"is_correct"`
-	FeedbackMD string  `json:"feedback_md"`
-	HintMD     string  `json:"hint_md"`
-	Confidence float64 `json:"confidence"`
+	Status       string  `json:"status"` // correct|try_again|wrong|hint
+	IsCorrect    bool    `json:"is_correct"`
+	FeedbackMD   string  `json:"feedback_md"`
+	HintMD       string  `json:"hint_md"`
+	Confidence   float64 `json:"confidence"`
+	QuestionType string  `json:"question_type,omitempty"`
+	OptionsCount int     `json:"options_count,omitempty"`
 }
 
 func (u Usecases) QuickCheckAttempt(ctx context.Context, in QuickCheckAttemptInput) (QuickCheckAttemptOutput, error) {
@@ -97,8 +99,12 @@ func (u Usecases) QuickCheckAttempt(ctx context.Context, in QuickCheckAttemptInp
 		return QuickCheckAttemptOutput{}, apierr.New(http.StatusNotFound, "quick_check_not_found", nil)
 	}
 
+	qType := quickCheckQuestionType(qc)
 	if isChoiceQuickCheck(qc) {
-		return gradeChoiceQuickCheck(qc, action, strings.TrimSpace(in.Answer)), nil
+		out := gradeChoiceQuickCheck(qc, action, strings.TrimSpace(in.Answer))
+		out.QuestionType = qType
+		out.OptionsCount = len(qc.Options)
+		return out, nil
 	}
 
 	if u.deps.AI == nil {
@@ -115,6 +121,8 @@ func (u Usecases) QuickCheckAttempt(ctx context.Context, in QuickCheckAttemptInp
 	if err != nil {
 		return QuickCheckAttemptOutput{}, apierr.New(http.StatusBadGateway, "quick_check_grade_failed", err)
 	}
+	out.QuestionType = qType
+	out.OptionsCount = len(qc.Options)
 	return out, nil
 }
 
@@ -135,6 +143,20 @@ func isChoiceQuickCheck(q quickCheckBlock) bool {
 		return true
 	}
 	return len(q.Options) > 0
+}
+
+func quickCheckQuestionType(q quickCheckBlock) string {
+	k := strings.ToLower(strings.TrimSpace(q.Kind))
+	switch k {
+	case "mcq", "multiple_choice":
+		return "mcq"
+	case "true_false", "truefalse", "tf":
+		return "true_false"
+	}
+	if strings.TrimSpace(q.AnswerID) != "" || len(q.Options) > 0 {
+		return "mcq"
+	}
+	return "freeform"
 }
 
 func gradeChoiceQuickCheck(q quickCheckBlock, action string, answer string) QuickCheckAttemptOutput {

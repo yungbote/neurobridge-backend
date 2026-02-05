@@ -16,6 +16,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_respond"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/chat_waitpoint_interpret"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/completed_unit_refresh"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_bridge_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_cluster_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_patch_build"
@@ -45,6 +46,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_dispatch"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/path_structure_refine"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/policy_eval_refresh"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/policy_model_train"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/priors_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/progression_compact"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/psu_build"
@@ -252,6 +255,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.Concept,
 		repos.UserConceptModel,
 		repos.UserMisconception,
+		repos.UserEvent,
 		jobService,
 	)
 	if err := jobRegistry.Register(structureExtract); err != nil {
@@ -417,6 +421,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
 	if err := jobRegistry.Register(conceptGraphPatch); err != nil {
+		return Services{}, err
+	}
+
+	conceptBridge := concept_bridge_build.New(db, log, repos.Concept, repos.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, bootstrapSvc)
+	if err := jobRegistry.Register(conceptBridge); err != nil {
 		return Services{}, err
 	}
 
@@ -857,9 +866,27 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ActivityRun,
 		repos.PathRunTransition,
 		repos.UserSessionState,
+		repos.Concept,
+		repos.UserConceptState,
+		repos.UserMisconception,
+		repos.UserTestletState,
+		repos.DecisionTrace,
+		repos.ModelSnapshot,
+		repos.PolicyEvalSnapshot,
+		jobService,
 		runtimeNotifier,
 	)
 	if err := jobRegistry.Register(runtimeUpdate); err != nil {
+		return Services{}, err
+	}
+
+	policyEval := policy_eval_refresh.New(db, log, repos.DecisionTrace, repos.PolicyEvalSnapshot)
+	if err := jobRegistry.Register(policyEval); err != nil {
+		return Services{}, err
+	}
+
+	policyTrain := policy_model_train.New(db, log, repos.DecisionTrace, repos.ModelSnapshot)
+	if err := jobRegistry.Register(policyTrain); err != nil {
 		return Services{}, err
 	}
 
@@ -1063,11 +1090,18 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.UserEvent,
 		repos.UserEventCursor,
 		repos.Concept,
+		repos.ConceptEdge,
 		repos.ActivityConcept,
 		repos.UserConceptState,
 		repos.UserConceptModel,
+		repos.UserConceptEdgeStat,
+		repos.UserConceptEvidence,
+		repos.UserConceptCalibration,
+		repos.UserModelAlert,
 		repos.UserMisconception,
 		repos.UserStylePreference,
+		repos.ConceptClusterMember,
+		repos.UserTestletState,
 		clients.Neo4j,
 		repos.JobRun,
 		jobService,

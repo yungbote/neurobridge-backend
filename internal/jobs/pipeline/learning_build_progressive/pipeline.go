@@ -331,6 +331,8 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 			_, stageErr = uc.ConceptGraphBuild(jc.Ctx, learningmod.ConceptGraphBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID, Mode: mode})
 		case "concept_graph_patch_build":
 			_, stageErr = uc.ConceptGraphPatchBuild(jc.Ctx, learningmod.ConceptGraphPatchBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
+		case "concept_bridge_build":
+			_, stageErr = uc.ConceptBridgeBuild(jc.Ctx, learningmod.ConceptBridgeBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_signal_build":
 			_, stageErr = uc.MaterialSignalBuild(jc.Ctx, learningmod.MaterialSignalBuildInput{OwnerUserID: jc.Job.OwnerUserID, MaterialSetID: setID, SagaID: sagaID, PathID: pathID})
 		case "material_kg_build":

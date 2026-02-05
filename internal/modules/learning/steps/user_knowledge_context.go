@@ -16,6 +16,9 @@ type ConceptKnowledgeV1 struct {
 	CanonicalConceptID string   `json:"canonical_concept_id,omitempty"`
 	Mastery            float64  `json:"mastery"`
 	Confidence         float64  `json:"confidence"`
+	EpistemicUncertainty float64 `json:"epistemic_uncertainty,omitempty"`
+	AleatoricUncertainty float64 `json:"aleatoric_uncertainty,omitempty"`
+	HalfLifeDays         float64 `json:"half_life_days,omitempty"`
 	Attempts           int      `json:"attempts,omitempty"`
 	Correct            int      `json:"correct,omitempty"`
 	LastSeenAt         string   `json:"last_seen_at,omitempty"`
@@ -139,6 +142,9 @@ func BuildUserKnowledgeContextV1(
 
 		entry.Mastery = clamp01(st.Mastery)
 		entry.Confidence = clamp01(st.Confidence)
+		entry.EpistemicUncertainty = clamp01(st.EpistemicUncertainty)
+		entry.AleatoricUncertainty = clamp01(st.AleatoricUncertainty)
+		entry.HalfLifeDays = st.HalfLifeDays
 		entry.Attempts = st.Attempts
 		entry.Correct = st.Correct
 		if st.LastSeenAt != nil && !st.LastSeenAt.IsZero() {

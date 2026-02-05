@@ -16,6 +16,19 @@ type UserConceptState struct {
 	Mastery    float64 `gorm:"column:mastery;not null;default:0" json:"mastery"`
 	Confidence float64 `gorm:"column:confidence;not null;default:0" json:"confidence"`
 
+	// Knowledge tracing parameters (BKT).
+	BktPLearn  float64 `gorm:"column:bkt_p_learn;not null;default:0" json:"bkt_p_learn,omitempty"`
+	BktPGuess  float64 `gorm:"column:bkt_p_guess;not null;default:0" json:"bkt_p_guess,omitempty"`
+	BktPSlip   float64 `gorm:"column:bkt_p_slip;not null;default:0" json:"bkt_p_slip,omitempty"`
+	BktPForget float64 `gorm:"column:bkt_p_forget;not null;default:0" json:"bkt_p_forget,omitempty"`
+
+	// Split uncertainty.
+	EpistemicUncertainty float64 `gorm:"column:epistemic_uncertainty;not null;default:0" json:"epistemic_uncertainty,omitempty"`
+	AleatoricUncertainty float64 `gorm:"column:aleatoric_uncertainty;not null;default:0" json:"aleatoric_uncertainty,omitempty"`
+
+	// Retention model.
+	HalfLifeDays float64 `gorm:"column:half_life_days;not null;default:0" json:"half_life_days,omitempty"`
+
 	LastSeenAt   *time.Time `gorm:"column:last_seen_at;index" json:"last_seen_at,omitempty"`
 	NextReviewAt *time.Time `gorm:"column:next_review_at;index" json:"next_review_at,omitempty"`
 	DecayRate    float64    `gorm:"column:decay_rate;not null;default:0" json:"decay_rate"`

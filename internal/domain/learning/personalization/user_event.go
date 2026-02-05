@@ -44,6 +44,10 @@ const (
 	// Hints / help
 	EventHintUsed          = "hint_used"
 	EventExplanationOpened = "explanation_opened"
+	// Structured chat understanding
+	EventConceptClaimEvaluated = "concept_claim_evaluated"
+	// Transfer safety / bridge validation prompts
+	EventBridgeValidationNeeded = "bridge_validation_needed"
 	// Feedback
 	EventFeedbackThumbsUp     = "feedback_thumbs_up"
 	EventFeedbackThumbsDown   = "feedback_thumbs_down"

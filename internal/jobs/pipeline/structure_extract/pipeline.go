@@ -31,6 +31,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Concepts:     p.concepts,
 		ConceptModel: p.model,
 		MisconRepo:   p.miscon,
+		UserEvents:   p.events,
 		AI:           p.ai,
 	}).StructureExtract(jc.Ctx, learningmod.StructureExtractInput{
 		UserID:    jc.Job.OwnerUserID,

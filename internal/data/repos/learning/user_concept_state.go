@@ -78,6 +78,13 @@ func (r *userConceptStateRepo) Upsert(dbc dbctx.Context, row *types.UserConceptS
 			DoUpdates: clause.AssignmentColumns([]string{
 				"mastery",
 				"confidence",
+				"bkt_p_learn",
+				"bkt_p_guess",
+				"bkt_p_slip",
+				"bkt_p_forget",
+				"epistemic_uncertainty",
+				"aleatoric_uncertainty",
+				"half_life_days",
 				"last_seen_at",
 				"next_review_at",
 				"decay_rate",

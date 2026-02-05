@@ -234,6 +234,11 @@ func stringSliceFromAny(v any) []string {
 			}
 		}
 		return out
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			return []string{s}
+		}
+		return nil
 	default:
 		return nil
 	}
