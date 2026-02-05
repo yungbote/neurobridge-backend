@@ -909,10 +909,11 @@
 	            }
 	          },
 	          "answer_id": { "type": "string" },
-	          "answer_md": { "type": "string" },
-	          "citations": {
-	            "type": "array",
-	            "items": {
+          "answer_md": { "type": "string" },
+          "trigger_after_block_ids": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
 	              "type": "object",
               "properties": {
                 "chunk_id": { "type": "string" },
@@ -933,7 +934,7 @@
 	            }
 	          }
 	        },
-	        "required": ["id", "kind", "prompt_md", "options", "answer_id", "answer_md", "citations"],
+        "required": ["id", "kind", "prompt_md", "options", "answer_id", "answer_md", "trigger_after_block_ids", "citations"],
 	        "additionalProperties": false
 	      }
 	    },
@@ -944,12 +945,13 @@
 	        "type": "object",
 	        "properties": {
 	          "id": { "type": "string" },
-	          "front_md": { "type": "string" },
-	          "back_md": { "type": "string" },
-	          "concept_keys": { "type": "array", "items": { "type": "string" } },
-	          "citations": {
-	            "type": "array",
-	            "items": {
+          "front_md": { "type": "string" },
+          "back_md": { "type": "string" },
+          "concept_keys": { "type": "array", "items": { "type": "string" } },
+          "trigger_after_block_ids": { "type": "array", "items": { "type": "string" } },
+          "citations": {
+            "type": "array",
+            "items": {
 	              "type": "object",
 	              "properties": {
 	                "chunk_id": { "type": "string" },
@@ -970,7 +972,7 @@
 	            }
 	          }
 	        },
-        "required": ["id", "front_md", "back_md", "concept_keys", "citations"],
+        "required": ["id", "front_md", "back_md", "concept_keys", "trigger_after_block_ids", "citations"],
         "additionalProperties": false
       }
     },

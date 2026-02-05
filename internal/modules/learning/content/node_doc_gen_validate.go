@@ -13,6 +13,7 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 
 	type idSet map[string]bool
 	idsByKind := map[string]idSet{}
+	allIDs := map[string]bool{}
 
 	addID := func(kind, id string) {
 		kind = strings.ToLower(strings.TrimSpace(kind))
@@ -26,6 +27,7 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 			idsByKind[kind] = set
 		}
 		set[id] = true
+		allIDs[id] = true
 	}
 
 	for _, b := range gen.Headings {
@@ -112,7 +114,8 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 
 	seenOrder := map[string]bool{}
 	refByKind := map[string]int{}
-	for _, item := range gen.Order {
+	orderIndex := map[string]int{}
+	for idx, item := range gen.Order {
 		kind := strings.ToLower(strings.TrimSpace(item.Kind))
 		id := strings.TrimSpace(item.ID)
 		if kind == "" || id == "" {
@@ -125,6 +128,9 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 			continue
 		}
 		seenOrder[key] = true
+		if _, ok := orderIndex[id]; !ok {
+			orderIndex[id] = idx
+		}
 		if idsByKind[kind] == nil || !idsByKind[kind][id] {
 			errs = append(errs, fmt.Sprintf("order references missing block %s", key))
 			continue
@@ -146,6 +152,49 @@ func NodeDocGenOrderIssues(gen NodeDocGenV1) ([]string, map[string]any) {
 	metrics["order_items"] = len(gen.Order)
 	metrics["order_missing_blocks"] = missing
 	metrics["order_ref_counts"] = refByKind
+
+	// Validate trigger_after_block_ids references (best-effort, non-fatal).
+	missingTriggers := 0
+	lateTriggers := 0
+	checkTriggers := func(kind string, id string, triggers []string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		parentIdx := -1
+		if idx, ok := orderIndex[id]; ok {
+			parentIdx = idx
+		}
+		for _, t := range triggers {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if !allIDs[t] {
+				errs = append(errs, fmt.Sprintf("%s %s trigger_after_block_ids missing %s", kind, id, t))
+				missingTriggers++
+				continue
+			}
+			if parentIdx >= 0 {
+				if trgIdx, ok := orderIndex[t]; ok && trgIdx > parentIdx {
+					errs = append(errs, fmt.Sprintf("%s %s trigger_after_block_ids occurs after block %s", kind, id, t))
+					lateTriggers++
+				}
+			}
+		}
+	}
+	for _, qc := range gen.QuickChecks {
+		checkTriggers("quick_check", qc.ID, qc.TriggerAfterBlockIDs)
+	}
+	for _, fc := range gen.Flashcards {
+		checkTriggers("flashcard", fc.ID, fc.TriggerAfterBlockIDs)
+	}
+	if missingTriggers > 0 {
+		metrics["trigger_missing_ids"] = missingTriggers
+	}
+	if lateTriggers > 0 {
+		metrics["trigger_late_ids"] = lateTriggers
+	}
 	return errs, metrics
 }
 

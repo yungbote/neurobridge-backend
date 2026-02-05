@@ -51,6 +51,8 @@ type SSEHub struct {
 	subscriptions map[string]map[*SSEClient]bool
 }
 
+const sseOutboundBufferSize = 100
+
 func NewSSEHub(log *logger.Logger) *SSEHub {
 	return &SSEHub{
 		logger:        log.With("component", "SSEHub"),
@@ -63,7 +65,7 @@ func (hub *SSEHub) NewSSEClient(userID uuid.UUID) *SSEClient {
 		ID:       uuid.New(),
 		UserID:   userID,
 		Channels: make(map[string]bool),
-		Outbound: make(chan SSEMessage, 10),
+		Outbound: make(chan SSEMessage, sseOutboundBufferSize),
 		done:     make(chan struct{}),
 		Logger:   hub.logger.With("clientID", nil),
 	}
@@ -137,11 +139,32 @@ func (hub *SSEHub) Broadcast(msg SSEMessage) {
 		return
 	}
 	for c := range clientsMap {
-		select {
-		case c.Outbound <- msg:
-		default:
-			hub.logger.Warn("Dropping SSE message; outbound buffer full", "clientID", c.ID)
-		}
+		hub.deliverMessage(c, msg)
+	}
+}
+
+func (hub *SSEHub) deliverMessage(client *SSEClient, msg SSEMessage) {
+	select {
+	case client.Outbound <- msg:
+		return
+	default:
+	}
+
+	if msg.Event != SSEEventRuntimePrompt {
+		hub.logger.Warn("Dropping SSE message; outbound buffer full", "clientID", client.ID)
+		return
+	}
+
+	// Runtime prompts are user-visible; drop the oldest queued message to make room.
+	select {
+	case <-client.Outbound:
+	default:
+	}
+	select {
+	case client.Outbound <- msg:
+		hub.logger.Warn("SSE buffer full; dropped oldest message to deliver runtime prompt", "clientID", client.ID)
+	default:
+		hub.logger.Warn("Dropping runtime prompt; outbound buffer full", "clientID", client.ID)
 	}
 }
 

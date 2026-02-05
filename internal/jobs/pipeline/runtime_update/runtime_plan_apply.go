@@ -295,6 +295,14 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		return nil
 	}
 
+	blockIndex := map[string]int{}
+	for i, b := range doc.Blocks {
+		id := strings.TrimSpace(stringFromAny(b["id"]))
+		if id != "" {
+			blockIndex[id] = i
+		}
+	}
+
 	readSet := map[string]bool{}
 	for _, id := range readBlocks {
 		s := strings.TrimSpace(id)
@@ -312,6 +320,132 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		}
 	}
 
+	extractChunkIDs := func(raw any) []string {
+		out := []string{}
+		for _, item := range stringSliceFromAny(raw) {
+			if item == "" {
+				continue
+			}
+			out = appendIfMissing(out, item)
+		}
+		// Handle citation objects [{chunk_id: "..."}].
+		switch arr := raw.(type) {
+		case []any:
+			for _, v := range arr {
+				m, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(stringFromAny(m["chunk_id"]))
+				if id != "" {
+					out = appendIfMissing(out, id)
+				}
+			}
+		}
+		return out
+	}
+
+	isTeachingBlock := func(t string) bool {
+		t = strings.ToLower(strings.TrimSpace(t))
+		switch t {
+		case "", "quick_check", "flashcard", "heading", "divider", "objectives", "prerequisites", "key_takeaways", "glossary":
+			return false
+		default:
+			return true
+		}
+	}
+
+	inferTriggerIDs := func(block map[string]any, idx int) []string {
+		if idx <= 0 {
+			return nil
+		}
+		citeIDs := map[string]bool{}
+		for _, id := range extractChunkIDs(block["citations"]) {
+			if id != "" {
+				citeIDs[id] = true
+			}
+		}
+		candidates := []string{}
+		for i := idx - 1; i >= 0; i-- {
+			b := doc.Blocks[i]
+			if b == nil {
+				continue
+			}
+			t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+			if !isTeachingBlock(t) {
+				continue
+			}
+			id := strings.TrimSpace(stringFromAny(b["id"]))
+			if id == "" {
+				continue
+			}
+			if len(citeIDs) > 0 {
+				overlap := false
+				for _, c := range extractChunkIDs(b["citations"]) {
+					if citeIDs[c] {
+						overlap = true
+						break
+					}
+				}
+				if !overlap {
+					continue
+				}
+			}
+			candidates = append(candidates, id)
+			if len(candidates) >= 3 {
+				break
+			}
+		}
+		if len(candidates) == 0 {
+			// Fallback to the nearest previous teaching block.
+			for i := idx - 1; i >= 0; i-- {
+				b := doc.Blocks[i]
+				if b == nil {
+					continue
+				}
+				t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+				if !isTeachingBlock(t) {
+					continue
+				}
+				id := strings.TrimSpace(stringFromAny(b["id"]))
+				if id != "" {
+					candidates = append(candidates, id)
+					break
+				}
+			}
+		}
+		return candidates
+	}
+
+	triggerSatisfied := func(block map[string]any, idx int) bool {
+		triggers := stringSliceFromAny(block["trigger_after_block_ids"])
+		if len(triggers) == 0 {
+			triggers = inferTriggerIDs(block, idx)
+		}
+		if len(triggers) == 0 {
+			if lastReadIndex >= 0 && idx > lastReadIndex {
+				return false
+			}
+			return true
+		}
+		for _, id := range triggers {
+			if id == "" {
+				continue
+			}
+			blockIdx, ok := blockIndex[id]
+			if !ok {
+				return false
+			}
+			if blockIdx > idx {
+				return false
+			}
+			if !readSet[id] {
+				return false
+			}
+		}
+		return true
+	}
+
 	findBlock := func(kind string) string {
 		for i, b := range doc.Blocks {
 			if strings.EqualFold(stringFromAny(b["type"]), kind) {
@@ -319,10 +453,10 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 				if id == "" {
 					continue
 				}
-				if lastReadIndex >= 0 && i > lastReadIndex {
+				if containsString(completedBlocks, id) || containsString(shownBlocks, id) {
 					continue
 				}
-				if containsString(completedBlocks, id) || containsString(shownBlocks, id) {
+				if !triggerSatisfied(b, i) {
 					continue
 				}
 				return id

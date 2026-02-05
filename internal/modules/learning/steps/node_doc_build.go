@@ -1856,10 +1856,13 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		  - short_answer: kind="short_answer", options=[], answer_id=""; answer_md is the reference answer/explanation.
 		  - true_false: kind="true_false", options=[{id:"A",text:"True"},{id:"B",text:"False"}], answer_id="A"|"B".
 		  - mcq: kind="mcq", options has 3-5 options, answer_id matches one option id, answer_md explains why.
+		  - For each quick_check, include trigger_after_block_ids: 1–3 block IDs that teach the tested idea.
+		    These IDs MUST reference blocks that appear earlier in order (paragraph/callout/etc).
 		- Flashcards are short front/back recall prompts.
 		  - Use front_md as the question/prompt and back_md as the answer.
 		  - Include concept_keys (1–3) drawn from CONCEPT_KEYS for each flashcard.
 		  - Keep them tight (1–2 sentences each side).
+		  - For each flashcard, include trigger_after_block_ids: 1–3 earlier teaching block IDs.
 		- Heading levels must be 2, 3, or 4 (never use 1).
 		- Include a tip callout titled exactly "Worked example".
 		%s

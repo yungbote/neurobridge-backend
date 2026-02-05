@@ -84,7 +84,8 @@
           "concept_keys": { "type": "array", "items": { "type": "string" } },
 
           "prompt_md": { "type": "string" },
-          "answer_md": { "type": "string" }
+          "answer_md": { "type": "string" },
+          "trigger_after_block_ids": { "type": "array", "items": { "type": "string" } }
         },
         "required": [
           "type",

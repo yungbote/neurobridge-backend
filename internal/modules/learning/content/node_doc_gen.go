@@ -222,16 +222,18 @@ type NodeDocGenQuickCheckV1 struct {
 	Options  []DrillQuestionOptionV1 `json:"options"`
 	AnswerID string                  `json:"answer_id"`
 
-	AnswerMD  string          `json:"answer_md"`
-	Citations []CitationRefV1 `json:"citations"`
+	AnswerMD             string          `json:"answer_md"`
+	TriggerAfterBlockIDs []string        `json:"trigger_after_block_ids,omitempty"`
+	Citations            []CitationRefV1 `json:"citations"`
 }
 
 type NodeDocGenFlashcardV1 struct {
-	ID          string          `json:"id"`
-	FrontMD     string          `json:"front_md"`
-	BackMD      string          `json:"back_md"`
-	ConceptKeys []string        `json:"concept_keys,omitempty"`
-	Citations   []CitationRefV1 `json:"citations"`
+	ID                   string          `json:"id"`
+	FrontMD              string          `json:"front_md"`
+	BackMD               string          `json:"back_md"`
+	ConceptKeys          []string        `json:"concept_keys,omitempty"`
+	TriggerAfterBlockIDs []string        `json:"trigger_after_block_ids,omitempty"`
+	Citations            []CitationRefV1 `json:"citations"`
 }
 
 type NodeDocGenDividerV1 struct {
@@ -301,6 +303,17 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 		var out any
 		_ = json.Unmarshal(b, &out)
 		return out
+	}
+	cleanTriggerIDs := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			out = append(out, id)
+		}
+		return dedupeStrings(out)
 	}
 
 	// Build maps for fast lookup by id.
@@ -877,15 +890,17 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 				continue
 			}
 			refQC[id] = true
+			triggerIDs := cleanTriggerIDs(q.TriggerAfterBlockIDs)
 			doc.Blocks = append(doc.Blocks, map[string]any{
-				"id":        id,
-				"type":      "quick_check",
-				"kind":      q.Kind,
-				"prompt_md": q.PromptMD,
-				"options":   toAny(q.Options),
-				"answer_id": q.AnswerID,
-				"answer_md": q.AnswerMD,
-				"citations": toAny(q.Citations),
+				"id":                     id,
+				"type":                   "quick_check",
+				"kind":                   q.Kind,
+				"prompt_md":              q.PromptMD,
+				"options":                toAny(q.Options),
+				"answer_id":              q.AnswerID,
+				"answer_md":              q.AnswerMD,
+				"trigger_after_block_ids": toAny(triggerIDs),
+				"citations":              toAny(q.Citations),
 			})
 		case "flashcard":
 			f, ok := fcs[id]
@@ -893,13 +908,15 @@ func ConvertNodeDocGenV1ToV1(gen NodeDocGenV1) (NodeDocV1, []string) {
 				continue
 			}
 			refFlashcard[id] = true
+			triggerIDs := cleanTriggerIDs(f.TriggerAfterBlockIDs)
 			doc.Blocks = append(doc.Blocks, map[string]any{
-				"id":           id,
-				"type":         "flashcard",
-				"front_md":     f.FrontMD,
-				"back_md":      f.BackMD,
-				"concept_keys": toAny(f.ConceptKeys),
-				"citations":    toAny(f.Citations),
+				"id":                     id,
+				"type":                   "flashcard",
+				"front_md":               f.FrontMD,
+				"back_md":                f.BackMD,
+				"concept_keys":           toAny(f.ConceptKeys),
+				"trigger_after_block_ids": toAny(triggerIDs),
+				"citations":              toAny(f.Citations),
 			})
 		case "divider":
 			refDivider[id] = true
