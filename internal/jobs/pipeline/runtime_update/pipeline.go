@@ -81,6 +81,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 				if typ == "" {
 					continue
 				}
+				if p.metrics != nil {
+					p.metrics.IncRuntimeTrigger(trigger, typ)
+				}
 
 				var data map[string]any
 				if len(ev.Data) > 0 && string(ev.Data) != "null" {

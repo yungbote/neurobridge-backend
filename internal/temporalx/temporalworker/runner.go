@@ -13,6 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 	"github.com/yungbote/neurobridge-backend/internal/temporalx"
@@ -34,6 +35,7 @@ type Runner struct {
 	jobRepo  repos.JobRunRepo
 	registry *jobrt.Registry
 	notify   services.JobNotifier
+	metrics  *observability.Metrics
 }
 
 func NewRunner(
@@ -43,6 +45,7 @@ func NewRunner(
 	jobRepo repos.JobRunRepo,
 	registry *jobrt.Registry,
 	notify services.JobNotifier,
+	metrics *observability.Metrics,
 ) (*Runner, error) {
 	if tc == nil {
 		return nil, fmt.Errorf("temporal client is not configured")
@@ -57,6 +60,7 @@ func NewRunner(
 		jobRepo:  jobRepo,
 		registry: registry,
 		notify:   notify,
+		metrics:  metrics,
 	}, nil
 }
 
@@ -173,6 +177,7 @@ func (r *Runner) newWorker() (worker.Worker, error) {
 		Jobs:     r.jobRepo,
 		Registry: r.registry,
 		Notify:   r.notify,
+		Metrics:  r.metrics,
 	}
 
 	w.RegisterWorkflowWithOptions(jobrun.Workflow, workflow.RegisterOptions{Name: jobrun.WorkflowName})

@@ -46,6 +46,14 @@ const (
 	EventExplanationOpened = "explanation_opened"
 	// Structured chat understanding
 	EventConceptClaimEvaluated = "concept_claim_evaluated"
+	// Experiments / growth
+	EventExperimentExposure        = "experiment_exposure"         // data: {experiment, variant, source?}
+	EventExperimentGuardrailBreach = "experiment_guardrail_breach" // data: {experiment, guardrail}
+	EventEngagementFunnelStep      = "engagement_funnel_step"      // data: {funnel, step}
+	// Cost telemetry
+	EventCostTelemetry = "cost_telemetry" // data: {category, amount_usd, source?}
+	// Security
+	EventSecurityEvent = "security_event" // data: {event}
 	// Transfer safety / bridge validation prompts
 	EventBridgeValidationNeeded = "bridge_validation_needed"
 	// Feedback

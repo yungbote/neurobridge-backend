@@ -4,6 +4,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -31,6 +32,7 @@ type Pipeline struct {
 	evals     repos.PolicyEvalSnapshotRepo
 	jobSvc    services.JobService
 	notify    services.RuntimeNotifier
+	metrics   *observability.Metrics
 }
 
 func New(
@@ -56,6 +58,7 @@ func New(
 	evals repos.PolicyEvalSnapshotRepo,
 	jobSvc services.JobService,
 	notify services.RuntimeNotifier,
+	metrics *observability.Metrics,
 ) *Pipeline {
 	return &Pipeline{
 		db:        db,
@@ -80,6 +83,7 @@ func New(
 		evals:     evals,
 		jobSvc:    jobSvc,
 		notify:    notify,
+		metrics:   metrics,
 	}
 }
 

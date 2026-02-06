@@ -21,6 +21,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content/schema"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
@@ -2436,6 +2437,10 @@ Return ONLY JSON matching schema.`,
 				return nil
 			}
 
+			observability.ReportDataQualityErrors(ctx, deps.Log, "node_doc_build", lastErrors, map[string]any{
+				"path_id":      pathID.String(),
+				"path_node_id": w.Node.ID.String(),
+			})
 			return fmt.Errorf("node_doc_build: failed validation after retries (path_node_id=%s errors=%v)", w.Node.ID.String(), lastErrors)
 		})
 	}

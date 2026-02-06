@@ -30,6 +30,7 @@ func NewRealtimeHandler(log *logger.Logger, hub *realtime.SSEHub) *RealtimeHandl
 
 func (h *RealtimeHandler) SSEStream(c *gin.Context) {
 	rd := ctxutil.GetRequestData(c.Request.Context())
+	td := ctxutil.GetTraceData(c.Request.Context())
 	if rd == nil || rd.UserID == uuid.Nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
 		return
@@ -51,6 +52,12 @@ func (h *RealtimeHandler) SSEStream(c *gin.Context) {
 	client := h.Hub.NewSSEClient(userID)
 	client.ID = uuid.New()
 	client.Logger = h.Log.With("SSEClientID", client.ID)
+	if td != nil {
+		client.TraceID = td.TraceID
+		client.RequestID = td.RequestID
+		c.Header("X-Trace-Id", td.TraceID)
+		c.Header("X-Request-Id", td.RequestID)
+	}
 
 	// Store client keyed by sessionID
 	h.clients[sessionID] = client

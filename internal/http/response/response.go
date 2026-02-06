@@ -11,7 +11,9 @@ type APIError struct {
 }
 
 type ErrorEnvelope struct {
-	Error APIError `json:"error"`
+	Error     APIError `json:"error"`
+	TraceID   string   `json:"trace_id,omitempty"`
+	RequestID string   `json:"request_id,omitempty"`
 }
 
 func RespondError(c *gin.Context, status int, code string, err error) {
@@ -19,11 +21,15 @@ func RespondError(c *gin.Context, status int, code string, err error) {
 	if err != nil {
 		msg = err.Error()
 	}
+	traceID := c.GetString("trace_id")
+	requestID := c.GetString("request_id")
 	c.JSON(status, ErrorEnvelope{
 		Error: APIError{
 			Message: msg,
 			Code:    code,
 		},
+		TraceID:   traceID,
+		RequestID: requestID,
 	})
 }
 

@@ -16,6 +16,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/steps"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
@@ -31,8 +32,10 @@ type App struct {
 	Clients  Clients
 	Services Services
 
-	SSEHub *realtime.SSEHub
-	cancel context.CancelFunc
+	SSEHub       *realtime.SSEHub
+	Metrics      *observability.Metrics
+	otelShutdown func(context.Context) error
+	cancel       context.CancelFunc
 }
 
 func New() (*App, error) {
@@ -49,6 +52,8 @@ func New() (*App, error) {
 	cfg := LoadConfig(log)
 
 	prompts.RegisterAll()
+
+	metrics := observability.Init(log)
 
 	pg, err := db.NewPostgresService(log)
 	if err != nil {
@@ -78,7 +83,7 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	serviceset, err := wireServices(theDB, log, cfg, reposet, ssehub, clientSet)
+	serviceset, err := wireServices(theDB, log, cfg, reposet, ssehub, clientSet, metrics)
 	if err != nil {
 		clientSet.Close()
 		log.Sync()
@@ -87,7 +92,7 @@ func New() (*App, error) {
 
 	handlerset := wireHandlers(log, theDB, serviceset, reposet, clientSet, ssehub)
 	middleware := wireMiddleware(log, serviceset)
-	router := wireRouter(handlerset, middleware)
+	router := wireRouter(log, handlerset, middleware, metrics)
 
 	return &App{
 		Log:      log,
@@ -98,6 +103,7 @@ func New() (*App, error) {
 		Clients:  clientSet,
 		Services: serviceset,
 		SSEHub:   ssehub,
+		Metrics:  metrics,
 	}, nil
 }
 
@@ -107,6 +113,38 @@ func (a *App) Start(runServer bool, runWorker bool) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+	if a.otelShutdown == nil {
+		serviceName := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME"))
+		if serviceName == "" {
+			switch {
+			case runServer && !runWorker:
+				serviceName = "neurobridge-api"
+			case runWorker && !runServer:
+				serviceName = "neurobridge-worker"
+			default:
+				serviceName = "neurobridge"
+			}
+		}
+		a.otelShutdown = observability.InitOTel(ctx, a.Log, observability.OtelConfig{
+			ServiceName: serviceName,
+			Environment: strings.TrimSpace(os.Getenv("OTEL_ENVIRONMENT")),
+			Version:     strings.TrimSpace(os.Getenv("APP_VERSION")),
+		})
+	}
+
+	if a.Metrics != nil {
+		addr := strings.TrimSpace(os.Getenv("METRICS_ADDR"))
+		if addr == "" {
+			if port := strings.TrimSpace(os.Getenv("METRICS_PORT")); port != "" {
+				addr = ":" + port
+			}
+		}
+		a.Metrics.StartServer(ctx, a.Log, addr)
+		a.Metrics.StartPostgresCollector(ctx, a.Log, a.DB)
+		a.Metrics.StartRedisCollector(ctx, a.Log, os.Getenv("REDIS_ADDR"))
+		a.Metrics.StartJobQueueCollector(ctx, a.Log, a.DB)
+		a.Metrics.StartSLOEvaluator(ctx, a.Log)
+	}
 
 	// (A) API server: Redis -> Hub forwarder (optional)
 	if runServer && a.Clients.SSEBus != nil && a.SSEHub != nil {
@@ -148,6 +186,12 @@ func (a *App) Close() {
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
+	}
+	if a.otelShutdown != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = a.otelShutdown(shutdownCtx)
+		cancel()
+		a.otelShutdown = nil
 	}
 	a.Clients.Close()
 	if a.Log != nil {

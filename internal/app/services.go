@@ -67,6 +67,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/web_resources_seed"
 	jobruntime "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/realtime/bus"
@@ -112,7 +113,7 @@ type Services struct {
 	SSEBus bus.Bus
 }
 
-func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *realtime.SSEHub, clients Clients) (Services, error) {
+func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *realtime.SSEHub, clients Clients, metrics *observability.Metrics) (Services, error) {
 	log.Info("Wiring services...")
 
 	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket, clients.OpenaiClient)
@@ -875,6 +876,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.PolicyEvalSnapshot,
 		jobService,
 		runtimeNotifier,
+		metrics,
 	)
 	if err := jobRegistry.Register(runtimeUpdate); err != nil {
 		return Services{}, err
@@ -1004,6 +1006,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			CohortPriors:   repos.CohortPrior,
 			CompletedUnits: repos.UserCompletedUnit,
 		},
+		metrics,
 	)
 	if err := jobRegistry.Register(learningBuild); err != nil {
 		return Services{}, err
@@ -1079,6 +1082,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			CohortPriors:   repos.CohortPrior,
 			CompletedUnits: repos.UserCompletedUnit,
 		},
+		metrics,
 	)
 	if err := jobRegistry.Register(learningBuildProgressive); err != nil {
 		return Services{}, err
@@ -1112,7 +1116,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	var temporalRunner *temporalworker.Runner
 	if runWorker {
-		w, err := temporalworker.NewRunner(log, clients.Temporal, db, repos.JobRun, jobRegistry, jobNotifier)
+		w, err := temporalworker.NewRunner(log, clients.Temporal, db, repos.JobRun, jobRegistry, jobNotifier, metrics)
 		if err != nil {
 			return Services{}, fmt.Errorf("init temporal worker: %w", err)
 		}

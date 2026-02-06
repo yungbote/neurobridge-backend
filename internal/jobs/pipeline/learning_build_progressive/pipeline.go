@@ -133,6 +133,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 		return p.isCanceled(ctx)
 	}
 	engine.OnFail = func(ctx *jobrt.Context, st *orchestrator.OrchestratorState, stage string, jobStage string, err error) {
+		p.emitStageMetrics("learning_build_progressive", st)
 		if ctx == nil || p == nil || p.saga == nil || sagaID == uuid.Nil {
 			return
 		}
@@ -143,6 +144,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 		_ = p.saga.Compensate(ctx.Ctx, sagaID)
 	}
 	engine.OnSuccess = func(ctx *jobrt.Context, st *orchestrator.OrchestratorState) error {
+		p.emitStageMetrics("learning_build_progressive", st)
 		if ctx == nil || p == nil || p.db == nil || p.path == nil || pathID == uuid.Nil {
 			return nil
 		}
@@ -202,6 +204,28 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 	}
 	stages := buildChildStagesForNames(order, setID, sagaID, pathID, threadID, specs)
 	return engine.Run(jc, stages, finalResult, init)
+}
+
+func (p *Pipeline) emitStageMetrics(pipeline string, st *orchestrator.OrchestratorState) {
+	if p == nil || p.metrics == nil || st == nil || st.Stages == nil {
+		return
+	}
+	for name, ss := range st.Stages {
+		if ss == nil {
+			continue
+		}
+		status := strings.TrimSpace(string(ss.Status))
+		switch ss.Status {
+		case orchestrator.StageSucceeded, orchestrator.StageFailed, orchestrator.StageSkipped:
+		default:
+			continue
+		}
+		var dur time.Duration
+		if ss.StartedAt != nil && ss.FinishedAt != nil {
+			dur = ss.FinishedAt.Sub(*ss.StartedAt)
+		}
+		p.metrics.ObserveLearningBuildStage(pipeline, name, status, dur)
+	}
 }
 
 func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID uuid.UUID) error {

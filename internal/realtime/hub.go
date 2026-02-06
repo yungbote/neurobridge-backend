@@ -40,9 +40,11 @@ const (
 )
 
 type SSEMessage struct {
-	Channel string   `json:"channel"`
-	Event   SSEEvent `json:"event"`
-	Data    any      `json:"data,omitempty"`
+	Channel   string   `json:"channel"`
+	Event     SSEEvent `json:"event"`
+	Data      any      `json:"data,omitempty"`
+	TraceID   string   `json:"trace_id,omitempty"`
+	RequestID string   `json:"request_id,omitempty"`
 }
 
 type SSEHub struct {
@@ -197,6 +199,12 @@ func (hub *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request, client *SSE
 			fmt.Fprint(w, ": ping "+strings.Repeat("#", pingChunkedSize)+"\n\n")
 			flusher.Flush()
 		case msg := <-client.Outbound:
+			if msg.TraceID == "" && client.TraceID != "" {
+				msg.TraceID = client.TraceID
+			}
+			if msg.RequestID == "" && client.RequestID != "" {
+				msg.RequestID = client.RequestID
+			}
 			_, _ = fmt.Fprintf(w, "event: message\n")
 			jsonBytes, err := json.Marshal(msg)
 			if err != nil {

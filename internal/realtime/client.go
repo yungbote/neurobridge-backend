@@ -7,10 +7,12 @@ import (
 )
 
 type SSEClient struct {
-	ID       uuid.UUID
-	UserID   uuid.UUID
-	Channels map[string]bool
-	Outbound chan SSEMessage
-	done     chan struct{}
-	Logger   *logger.Logger
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Channels  map[string]bool
+	Outbound  chan SSEMessage
+	done      chan struct{}
+	Logger    *logger.Logger
+	TraceID   string
+	RequestID string
 }

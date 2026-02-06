@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -57,6 +59,7 @@ func NewContext(ctx context.Context, db *gorm.DB, job *types.JobRun, repo repos.
 		Notify: notify,
 	}
 	_ = c.decodePayload()
+	c.applyTraceData()
 	return c
 }
 
@@ -83,6 +86,22 @@ func (c *Context) decodePayload() error {
 	}
 	c.payload = m
 	return nil
+}
+
+func (c *Context) applyTraceData() {
+	if c == nil || c.Ctx == nil {
+		return
+	}
+	payload := c.Payload()
+	traceID := strings.TrimSpace(fmt.Sprint(payload["trace_id"]))
+	reqID := strings.TrimSpace(fmt.Sprint(payload["request_id"]))
+	if traceID == "" && reqID == "" {
+		return
+	}
+	c.Ctx = ctxutil.WithTraceData(c.Ctx, &ctxutil.TraceData{
+		TraceID:   traceID,
+		RequestID: reqID,
+	})
 }
 
 /*
@@ -309,8 +328,6 @@ func toIfaceMap(in map[string]any) map[string]interface{} {
 	}
 	return out
 }
-
-
 
 
 

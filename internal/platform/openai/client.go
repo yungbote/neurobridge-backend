@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/platform/httpx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/promptstyle"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 )
 
 // ImageInput is the normalized multimodal image input used by Client.
@@ -501,6 +503,8 @@ func (c *client) doOnce(ctx context.Context, httpClient *http.Client, method, pa
 
 func (c *client) doWithClient(ctx context.Context, httpClient *http.Client, method, path string, body any, out any) error {
 	backoff := 1 * time.Second
+	start := time.Now()
+	model := extractModelFromRequest(body)
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if ctx.Err() != nil {
@@ -509,6 +513,10 @@ func (c *client) doWithClient(ctx context.Context, httpClient *http.Client, meth
 
 		resp, raw, err := c.doOnce(ctx, httpClient, method, path, body)
 		if err == nil {
+			if metrics := observability.Current(); metrics != nil {
+				inputTokens, outputTokens := extractUsageFromRaw(raw)
+				metrics.ObserveLLMRequest(model, path, statusFromResp(resp), time.Since(start), inputTokens, outputTokens)
+			}
 			if out == nil {
 				return nil
 			}
@@ -519,9 +527,15 @@ func (c *client) doWithClient(ctx context.Context, httpClient *http.Client, meth
 		}
 
 		if !httpx.IsRetryableError(err) {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.ObserveLLMRequest(model, path, statusFromRespErr(resp, err), time.Since(start), 0, 0)
+			}
 			return err
 		}
 		if attempt == c.maxRetries {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.ObserveLLMRequest(model, path, statusFromRespErr(resp, err), time.Since(start), 0, 0)
+			}
 			return err
 		}
 
@@ -1084,6 +1098,13 @@ type responsesResponse struct {
 		} `json:"content,omitempty"`
 	} `json:"output"`
 	Refusal string `json:"refusal,omitempty"`
+	Usage   struct {
+		InputTokens      int `json:"input_tokens"`
+		OutputTokens     int `json:"output_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 func extractOutputText(resp responsesResponse) string {
@@ -1246,6 +1267,8 @@ func (c *client) StreamText(ctx context.Context, system string, user string, onD
 		Stream: true,
 	}
 	c.applyTemperature(&reqBody)
+	start := time.Now()
+	inputTokens := estimateTokens(system) + estimateTokens(user)
 
 	doStream := func(body responsesRequest) (*http.Response, []byte, error) {
 		var buf bytes.Buffer
@@ -1282,6 +1305,9 @@ func (c *client) StreamText(ctx context.Context, system string, user string, onD
 		}
 	}
 	if err != nil {
+		if metrics := observability.Current(); metrics != nil {
+			metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromRespErr(resp, err), time.Since(start), inputTokens, 0)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -1327,7 +1353,13 @@ func (c *client) StreamText(ctx context.Context, system string, user string, onD
 		return nil
 	})
 	if err != nil {
+		if metrics := observability.Current(); metrics != nil {
+			metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromRespErr(resp, err), time.Since(start), inputTokens, estimateTokens(full.String()))
+		}
 		return "", err
+	}
+	if metrics := observability.Current(); metrics != nil {
+		metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromResp(resp), time.Since(start), inputTokens, estimateTokens(full.String()))
 	}
 	return full.String(), nil
 }
@@ -1404,6 +1436,8 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 		Stream: true,
 	}
 	c.applyTemperature(&reqBody)
+	start := time.Now()
+	inputTokens := estimateTokens(instructions) + estimateTokens(user)
 
 	doStream := func(body responsesRequest) (*http.Response, []byte, error) {
 		var buf bytes.Buffer
@@ -1440,6 +1474,9 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 		}
 	}
 	if err != nil {
+		if metrics := observability.Current(); metrics != nil {
+			metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromRespErr(resp, err), time.Since(start), inputTokens, 0)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -1488,7 +1525,155 @@ func (c *client) StreamTextInConversation(ctx context.Context, conversationID st
 		return nil
 	})
 	if err != nil {
+		if metrics := observability.Current(); metrics != nil {
+			metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromRespErr(resp, err), time.Since(start), inputTokens, estimateTokens(full.String()))
+		}
 		return "", err
 	}
+	if metrics := observability.Current(); metrics != nil {
+		metrics.ObserveLLMRequest(reqBody.Model, "/v1/responses", statusFromResp(resp), time.Since(start), inputTokens, estimateTokens(full.String()))
+	}
 	return full.String(), nil
+}
+
+func extractUsageFromRaw(raw []byte) (int, int) {
+	if len(raw) == 0 {
+		return 0, 0
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0, 0
+	}
+	usageAny, ok := payload["usage"]
+	if !ok || usageAny == nil {
+		return 0, 0
+	}
+	usage, ok := usageAny.(map[string]any)
+	if !ok {
+		return 0, 0
+	}
+
+	inTokens := intFromAny(usage["input_tokens"])
+	outTokens := intFromAny(usage["output_tokens"])
+	if inTokens == 0 && outTokens == 0 {
+		inTokens = intFromAny(usage["prompt_tokens"])
+		outTokens = intFromAny(usage["completion_tokens"])
+	}
+	if inTokens == 0 && outTokens == 0 {
+		if total := intFromAny(usage["total_tokens"]); total > 0 {
+			inTokens = total
+		}
+	}
+	return inTokens, outTokens
+}
+
+func intFromAny(v any) int {
+	switch val := v.(type) {
+	case nil:
+		return 0
+	case int:
+		return val
+	case int32:
+		return int(val)
+	case int64:
+		return int(val)
+	case float32:
+		return int(val)
+	case float64:
+		return int(val)
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := val.Float64(); err == nil {
+			return int(f)
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func extractModelFromRequest(body any) string {
+	switch v := body.(type) {
+	case nil:
+		return ""
+	case responsesRequest:
+		return strings.TrimSpace(v.Model)
+	case *responsesRequest:
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.Model)
+	case embeddingsRequest:
+		return strings.TrimSpace(v.Model)
+	case *embeddingsRequest:
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.Model)
+	case imagesGenerationRequest:
+		return strings.TrimSpace(v.Model)
+	case *imagesGenerationRequest:
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.Model)
+	case map[string]any:
+		if m, ok := v["model"].(string); ok {
+			return strings.TrimSpace(m)
+		}
+	case map[string]string:
+		if m, ok := v["model"]; ok {
+			return strings.TrimSpace(m)
+		}
+	}
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return ""
+	}
+	if m, ok := payload["model"].(string); ok {
+		return strings.TrimSpace(m)
+	}
+	return ""
+}
+
+func statusFromResp(resp *http.Response) string {
+	if resp == nil {
+		return "unknown"
+	}
+	return strconv.Itoa(resp.StatusCode)
+}
+
+func statusFromRespErr(resp *http.Response, err error) string {
+	if resp != nil {
+		return strconv.Itoa(resp.StatusCode)
+	}
+	var httpErr *openAIHTTPError
+	if err != nil && errors.As(err, &httpErr) {
+		return strconv.Itoa(httpErr.StatusCode)
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "error"
+}
+
+func estimateTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	runes := []rune(text)
+	return int(math.Ceil(float64(len(runes)) / 4.0))
 }

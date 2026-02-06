@@ -13,12 +13,27 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/domain/learning/personalization"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 )
 
 var eventTypeRe = regexp.MustCompile(`^[a-z0-9_\.]{3,64}$`)
+
+var requiredEventKeys = map[string][]string{
+	personalization.EventBlockRead:              {"block_id"},
+	personalization.EventBlockViewed:            {"block_id"},
+	personalization.EventQuestionAnswered:       {"question_id", "is_correct"},
+	personalization.EventRuntimePromptCompleted: {"prompt_id"},
+	personalization.EventRuntimePromptDismissed: {"prompt_id"},
+	personalization.EventExperimentExposure:        {"experiment", "variant"},
+	personalization.EventExperimentGuardrailBreach: {"experiment", "guardrail"},
+	personalization.EventEngagementFunnelStep:      {"funnel", "step"},
+	personalization.EventCostTelemetry:             {"category", "amount_usd"},
+	personalization.EventSecurityEvent:             {"event"},
+}
 
 type EventInput struct {
 	ClientEventID   string         `json:"client_event_id"`
@@ -64,6 +79,7 @@ func (s *eventService) Ingest(dbc dbctx.Context, inputs []EventInput) (int, erro
 	}
 	now := time.Now().UTC()
 	rows := make([]*types.UserEvent, 0, len(inputs))
+	metrics := observability.Current()
 	for i := range inputs {
 		in := inputs[i]
 
@@ -124,6 +140,57 @@ func (s *eventService) Ingest(dbc dbctx.Context, inputs []EventInput) (int, erro
 		}
 		if strings.TrimSpace(in.Modality) != "" {
 			data["modality"] = strings.TrimSpace(in.Modality)
+		}
+		if reqKeys, ok := requiredEventKeys[typ]; ok && len(reqKeys) > 0 {
+			missing := make([]string, 0, len(reqKeys))
+			for _, key := range reqKeys {
+				if _, ok := data[key]; !ok {
+					missing = append(missing, key)
+				}
+			}
+			if len(missing) > 0 {
+				observability.ReportDataQualityMissingKeys(dbc.Ctx, s.log, "user_event_ingest", missing, map[string]any{
+					"event_type": typ,
+				})
+			}
+		}
+		if metrics != nil {
+			switch typ {
+			case personalization.EventClientPerf:
+				kind := strings.TrimSpace(fmt.Sprint(data["kind"]))
+				name := strings.TrimSpace(fmt.Sprint(data["name"]))
+				ms := floatFromAny(data["duration_ms"])
+				if ms <= 0 {
+					ms = floatFromAny(data["value"])
+				}
+				if ms > 0 {
+					metrics.ObserveClientPerf(kind, name, ms/1000)
+				}
+			case personalization.EventClientError:
+				kind := strings.TrimSpace(fmt.Sprint(data["kind"]))
+				metrics.IncClientError(kind)
+			case personalization.EventExperimentExposure:
+				experiment := stringFromAny(data["experiment"])
+				variant := stringFromAny(data["variant"])
+				source := stringFromAny(data["source"])
+				metrics.IncExperimentExposure(experiment, variant, source)
+			case personalization.EventExperimentGuardrailBreach:
+				experiment := stringFromAny(data["experiment"])
+				guardrail := stringFromAny(data["guardrail"])
+				metrics.IncExperimentGuardrail(experiment, guardrail)
+			case personalization.EventEngagementFunnelStep:
+				funnel := stringFromAny(data["funnel"])
+				step := stringFromAny(data["step"])
+				metrics.IncEngagementFunnelStep(funnel, step)
+			case personalization.EventCostTelemetry:
+				category := stringFromAny(data["category"])
+				source := stringFromAny(data["source"])
+				amount := floatFromAny(data["amount_usd"])
+				metrics.AddCost(category, source, amount)
+			case personalization.EventSecurityEvent:
+				event := stringFromAny(data["event"])
+				metrics.IncSecurityEvent(event)
+			}
 		}
 		b, _ := json.Marshal(data)
 		rows = append(rows, &types.UserEvent{

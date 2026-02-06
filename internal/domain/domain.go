@@ -63,6 +63,11 @@ const (
 
 	EventConceptClaimEvaluated  = personalization.EventConceptClaimEvaluated
 	EventBridgeValidationNeeded = personalization.EventBridgeValidationNeeded
+	EventExperimentExposure        = personalization.EventExperimentExposure
+	EventExperimentGuardrailBreach = personalization.EventExperimentGuardrailBreach
+	EventEngagementFunnelStep      = personalization.EventEngagementFunnelStep
+	EventCostTelemetry             = personalization.EventCostTelemetry
+	EventSecurityEvent             = personalization.EventSecurityEvent
 )
 
 type User = user.User

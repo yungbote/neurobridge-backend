@@ -83,6 +83,21 @@ func (s *jobService) Enqueue(dbc dbctx.Context, ownerUserID uuid.UUID, jobType s
 	if s.temporal == nil {
 		return nil, fmt.Errorf("temporal not configured (TEMPORAL_ADDRESS)")
 	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if td := ctxutil.GetTraceData(dbc.Ctx); td != nil {
+		if td.TraceID != "" {
+			if _, ok := payload["trace_id"]; !ok {
+				payload["trace_id"] = td.TraceID
+			}
+		}
+		if td.RequestID != "" {
+			if _, ok := payload["request_id"]; !ok {
+				payload["request_id"] = td.RequestID
+			}
+		}
+	}
 	transaction := dbc.Tx
 	if transaction == nil {
 		transaction = s.db

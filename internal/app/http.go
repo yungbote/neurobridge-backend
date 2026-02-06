@@ -7,6 +7,7 @@ import (
 	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"gorm.io/gorm"
@@ -61,10 +62,10 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 		Snapshots:  repos.LibraryTaxonomySnapshot,
 	})
 	return Handlers{
-		Health:   httpH.NewHealthHandler(),
-		Auth:     httpH.NewAuthHandler(services.Auth),
-		User:     httpH.NewUserHandler(services.User, sseHub),
-		Session:  httpH.NewSessionStateHandler(services.SessionState),
+		Health:  httpH.NewHealthHandler(),
+		Auth:    httpH.NewAuthHandler(services.Auth),
+		User:    httpH.NewUserHandler(services.User, sseHub),
+		Session: httpH.NewSessionStateHandler(services.SessionState),
 		Runtime: httpH.NewRuntimeStateHandler(
 			repos.PathRun,
 			repos.NodeRun,
@@ -129,8 +130,8 @@ func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repo
 	}
 }
 
-func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
-	return http.NewRouter(http.RouterConfig{
+func wireRouter(log *logger.Logger, handlers Handlers, middleware Middleware, metrics *observability.Metrics) *gin.Engine {
+	r := http.NewRouter(http.RouterConfig{
 		HealthHandler:   handlers.Health,
 		AuthHandler:     handlers.Auth,
 		AuthMiddleware:  middleware.Auth,
@@ -147,6 +148,13 @@ func wireRouter(handlers Handlers, middleware Middleware) *gin.Engine {
 		GazeHandler:     handlers.Gaze,
 		JobHandler:      handlers.Job,
 	})
+	if log != nil {
+		r.Use(httpMW.RequestLogger(log))
+	}
+	if metrics != nil {
+		r.Use(httpMW.Metrics(metrics))
+	}
+	return r
 }
 
 func wireMiddleware(log *logger.Logger, services Services) Middleware {

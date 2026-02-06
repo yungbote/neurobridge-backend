@@ -1,7 +1,12 @@
 package http
 
 import (
+	"os"
+	"strings"
+
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+
 	httpH "github.com/yungbote/neurobridge-backend/internal/http/handlers"
 	httpMW "github.com/yungbote/neurobridge-backend/internal/http/middleware"
 )
@@ -28,12 +33,17 @@ type RouterConfig struct {
 
 func NewRouter(cfg RouterConfig) *gin.Engine {
 	r := gin.Default()
+	r.Use(otelgin.Middleware("neurobridge-api"))
 	r.Use(httpMW.AttachRequestContext())
+	r.Use(httpMW.AttachTraceContext())
 	r.Use(httpMW.CORS())
 
 	// Health
 	if cfg.HealthHandler != nil {
 		r.GET("/healthcheck", cfg.HealthHandler.HealthCheck)
+		if metricsHealthRouteEnabled() {
+			r.GET("/health/metrics", cfg.HealthHandler.MetricsHealth)
+		}
 	}
 
 	api := r.Group("/api")
@@ -168,4 +178,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	}
 
 	return r
+}
+
+func metricsHealthRouteEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("METRICS_HEALTHCHECK_ENABLED"))
+	if v == "" {
+		return false
+	}
+	return strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
 }

@@ -69,6 +69,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	progressOk := progressEligible(progressState, progressConf)
 	progressSignal := progressState != "" || progressConf > 0
 	if progressSignal {
+		if p.metrics != nil {
+			p.metrics.ObserveRuntimeProgress(progressState, progressConf)
+		}
 		nrRuntime["last_progress_state"] = progressState
 		nrRuntime["last_progress_confidence"] = progressConf
 		nrRuntime["last_progress_at"] = now.Format(time.RFC3339)
@@ -171,6 +174,13 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 				if typ == types.EventRuntimePromptCompleted && pending.BlockID != "" {
 					completedBlocks = appendIfMissing(completedBlocks, pending.BlockID)
 				}
+				if p.metrics != nil {
+					if typ == types.EventRuntimePromptCompleted {
+						p.metrics.IncRuntimePrompt(pending.Type, "completed")
+					} else {
+						p.metrics.IncRuntimePrompt(pending.Type, "dismissed")
+					}
+				}
 				if pending.BlockID != "" {
 					stats := banditBlock(banditBlocks, pending.BlockID)
 					if typ == types.EventRuntimePromptCompleted {
@@ -186,6 +196,15 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			if boolFromAny(data["is_correct"]) {
 				handled = true
 				completedBlocks = appendIfMissing(completedBlocks, pending.BlockID)
+			}
+			if p.metrics != nil {
+				isCorrect := boolFromAny(data["is_correct"])
+				p.metrics.IncQuickCheckAnswered(isCorrect)
+				if isCorrect {
+					p.metrics.IncRuntimePrompt("quick_check", "answered_correct")
+				} else {
+					p.metrics.IncRuntimePrompt("quick_check", "answered_incorrect")
+				}
 			}
 			stats := banditBlock(banditBlocks, pending.BlockID)
 			stats["attempts"] = intFromAny(stats["attempts"], 0) + 1
@@ -731,20 +750,20 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		}
 
 		return promptCandidate{
-			BlockID:         id,
-			Kind:            kind,
-			Index:           idx,
-			ConceptIDs:      conceptIDs,
-			ConceptKeys:     conceptKeys,
-			TestletID:       testletID,
-			TestletType:     testletType,
+			BlockID:            id,
+			Kind:               kind,
+			Index:              idx,
+			ConceptIDs:         conceptIDs,
+			ConceptKeys:        conceptKeys,
+			TestletID:          testletID,
+			TestletType:        testletType,
 			TestletUncertainty: testletUnc,
-			InfoGain:        infoGain,
-			Counterfactual:  counterfactual,
-			Score:           score,
-			PolicyFeatures:  policyFeatures,
-			ScoreComponents: scoreParts,
-			Reason:          reason,
+			InfoGain:           infoGain,
+			Counterfactual:     counterfactual,
+			Score:              score,
+			PolicyFeatures:     policyFeatures,
+			ScoreComponents:    scoreParts,
+			Reason:             reason,
 		}, true
 	}
 
@@ -878,18 +897,18 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		}
 	case selected != nil:
 		prompt = runtimePrompt{
-			ID:        uuid.New().String(),
-			Type:      selected.Kind,
-			NodeID:    nodeID.String(),
-			BlockID:   selected.BlockID,
-			Status:    "pending",
-			Reason:    selected.Reason,
-			CreatedAt: now.Format(time.RFC3339),
-			PolicyKey:    behaviorPolicyKey,
-			PolicyMode:   policyModeUsed,
+			ID:            uuid.New().String(),
+			Type:          selected.Kind,
+			NodeID:        nodeID.String(),
+			BlockID:       selected.BlockID,
+			Status:        "pending",
+			Reason:        selected.Reason,
+			CreatedAt:     now.Format(time.RFC3339),
+			PolicyKey:     behaviorPolicyKey,
+			PolicyMode:    policyModeUsed,
 			PolicyVersion: policyVersion,
-			BehaviorProb: selected.BehaviorProb,
-			ShadowProb:   selected.ShadowProb,
+			BehaviorProb:  selected.BehaviorProb,
+			ShadowProb:    selected.ShadowProb,
 		}
 	}
 
@@ -902,6 +921,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		_ = p.nodeRuns.Upsert(dbc, nr)
 		return nil
 	}
+	if p.metrics != nil {
+		p.metrics.IncRuntimePrompt(prompt.Type, "shown")
+	}
 
 	if selected != nil && (prompt.Type == "quick_check" || prompt.Type == "flashcard") && p.traces != nil {
 		traceID := uuid.New()
@@ -910,56 +932,56 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		candPayload := make([]map[string]any, 0, len(candidates))
 		for _, cand := range candidates {
 			candPayload = append(candPayload, map[string]any{
-				"block_id":           cand.BlockID,
-				"kind":               cand.Kind,
-				"index":              cand.Index,
-				"info_gain":          cand.InfoGain,
-				"score":              cand.Score,
-				"policy_score":       cand.PolicyScore,
-				"baseline_prob":      cand.BaselineProb,
-				"policy_prob":        cand.PolicyProb,
-				"testlet_id":         cand.TestletID,
-				"testlet_type":       cand.TestletType,
+				"block_id":            cand.BlockID,
+				"kind":                cand.Kind,
+				"index":               cand.Index,
+				"info_gain":           cand.InfoGain,
+				"score":               cand.Score,
+				"policy_score":        cand.PolicyScore,
+				"baseline_prob":       cand.BaselineProb,
+				"policy_prob":         cand.PolicyProb,
+				"testlet_id":          cand.TestletID,
+				"testlet_type":        cand.TestletType,
 				"testlet_uncertainty": cand.TestletUncertainty,
-				"counterfactual":     cand.Counterfactual,
-				"concept_keys":       cand.ConceptKeys,
-				"score_components":   cand.ScoreComponents,
-				"policy_features":    cand.PolicyFeatures,
+				"counterfactual":      cand.Counterfactual,
+				"concept_keys":        cand.ConceptKeys,
+				"score_components":    cand.ScoreComponents,
+				"policy_features":     cand.PolicyFeatures,
 			})
 		}
 
 		chosenPayload := map[string]any{
-			"block_id":         selected.BlockID,
-			"kind":             selected.Kind,
-			"prompt_id":        prompt.ID,
-			"policy_key":       behaviorPolicyKey,
-			"policy_mode":      policyModeUsed,
-			"policy_version":   policyVersion,
-			"policy_prob":      selected.PolicyProb,
-			"baseline_prob":    selected.BaselineProb,
-			"behavior_prob":    selected.BehaviorProb,
+			"block_id":          selected.BlockID,
+			"kind":              selected.Kind,
+			"prompt_id":         prompt.ID,
+			"policy_key":        behaviorPolicyKey,
+			"policy_mode":       policyModeUsed,
+			"policy_version":    policyVersion,
+			"policy_prob":       selected.PolicyProb,
+			"baseline_prob":     selected.BaselineProb,
+			"behavior_prob":     selected.BehaviorProb,
 			"shadow_policy_key": shadowPolicyKey,
-			"shadow_prob":      selected.ShadowProb,
-			"policy_score":     selected.PolicyScore,
-			"baseline_score":   selected.Score,
-			"testlet_id":       selected.TestletID,
-			"testlet_type":     selected.TestletType,
-			"policy_features":  selected.PolicyFeatures,
-			"created_at":       now.Format(time.RFC3339),
+			"shadow_prob":       selected.ShadowProb,
+			"policy_score":      selected.PolicyScore,
+			"baseline_score":    selected.Score,
+			"testlet_id":        selected.TestletID,
+			"testlet_type":      selected.TestletType,
+			"policy_features":   selected.PolicyFeatures,
+			"created_at":        now.Format(time.RFC3339),
 		}
 
 		inputs := map[string]any{
-			"path_id":            pathID.String(),
-			"node_id":            nodeID.String(),
-			"readiness_status":   readinessStatus,
-			"readiness_score":    readinessScore,
-			"fatigue_score":      fatigueScore,
-			"progress_state":     progressState,
+			"path_id":             pathID.String(),
+			"node_id":             nodeID.String(),
+			"readiness_status":    readinessStatus,
+			"readiness_score":     readinessScore,
+			"fatigue_score":       fatigueScore,
+			"progress_state":      progressState,
 			"progress_confidence": progressConf,
-			"policy_mode":        policyModeUsed,
-			"policy_key":         behaviorPolicyKey,
-			"shadow_policy_key":  shadowPolicyKey,
-			"candidate_count":    len(candidates),
+			"policy_mode":         policyModeUsed,
+			"policy_key":          behaviorPolicyKey,
+			"shadow_policy_key":   shadowPolicyKey,
+			"candidate_count":     len(candidates),
 		}
 
 		pathIDCopy := pathID
@@ -1127,7 +1149,7 @@ func softmaxScores(cands []promptCandidate, scoreFn func(promptCandidate) float6
 	sum := 0.0
 	out := make([]float64, len(cands))
 	for i, c := range cands {
-		v := math.Exp((scoreFn(c)/temp)-maxScore)
+		v := math.Exp((scoreFn(c) / temp) - maxScore)
 		out[i] = v
 		sum += v
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
@@ -33,16 +34,16 @@ type InlineDeps struct {
 	MaterialSets repos.MaterialSetRepo
 	Summaries    repos.MaterialSetSummaryRepo
 
-	Concepts repos.ConceptRepo
-	ConceptReps    repos.ConceptRepresentationRepo
+	Concepts         repos.ConceptRepo
+	ConceptReps      repos.ConceptRepresentationRepo
 	MappingOverrides repos.ConceptMappingOverrideRepo
-	Evidence repos.ConceptEvidenceRepo
-	Edges    repos.ConceptEdgeRepo
+	Evidence         repos.ConceptEvidenceRepo
+	Edges            repos.ConceptEdgeRepo
 
 	Clusters repos.ConceptClusterRepo
 	Members  repos.ConceptClusterMemberRepo
 
-	ChainSignatures repos.ChainSignatureRepo
+	ChainSignatures     repos.ChainSignatureRepo
 	PathStructuralUnits repos.PathStructuralUnitRepo
 
 	StylePrefs       repos.UserStylePreferenceRepo
@@ -90,7 +91,8 @@ type Pipeline struct {
 	saga      services.SagaService
 	bootstrap services.LearningBuildBootstrapService
 
-	inline *InlineDeps
+	inline  *InlineDeps
+	metrics *observability.Metrics
 
 	minPoll time.Duration
 	maxPoll time.Duration
@@ -110,6 +112,7 @@ func New(
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
 	inline *InlineDeps,
+	metrics *observability.Metrics,
 ) *Pipeline {
 	minPoll := 2 * time.Second
 	maxPoll := 10 * time.Second
@@ -159,6 +162,7 @@ func New(
 		saga:              saga,
 		bootstrap:         bootstrap,
 		inline:            inline,
+		metrics:           metrics,
 		minPoll:           minPoll,
 		maxPoll:           maxPoll,
 		childMaxWait:      childMaxWait,

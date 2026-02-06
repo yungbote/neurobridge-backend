@@ -1,13 +1,16 @@
 package middleware
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
-	"net/http"
-	"strings"
 )
 
 type AuthMiddleware struct {
@@ -25,6 +28,9 @@ func (am *AuthMiddleware) RequireAuth() gin.HandlerFunc {
 		tokenString := extractTokenFromAll(c)
 		am.log.Debug("TokenString", "token", tokenString)
 		if tokenString == "" {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.IncSecurityEvent("missing_token")
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{"message": "missing or invalid token", "code": "unauthorized"},
 			})
@@ -32,6 +38,9 @@ func (am *AuthMiddleware) RequireAuth() gin.HandlerFunc {
 		}
 		ctx, err := am.authService.SetContextFromToken(c.Request.Context(), tokenString)
 		if err != nil {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.IncSecurityEvent("invalid_token")
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{"messages": err.Error(), "code": "unauthorized"},
 			})
@@ -41,6 +50,9 @@ func (am *AuthMiddleware) RequireAuth() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 		rd := ctxutil.GetRequestData(ctx)
 		if rd == nil || rd.UserID == uuid.Nil {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.IncSecurityEvent("forbidden")
+			}
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": gin.H{"message": "forbidden", "code": "forbidden"},
 			})
