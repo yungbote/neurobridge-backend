@@ -49,6 +49,14 @@ type Metrics struct {
 	engagementFunnel       *CounterVec
 	costTotal              *CounterVec
 	securityEvents         *CounterVec
+	convergenceReadiness   *CounterVec
+	convergenceReadinessScore *HistogramVec
+	convergenceMisconActive *HistogramVec
+	convergenceCoverageDebt *HistogramVec
+	convergenceGateDecision *CounterVec
+	convergenceMisconResolution *CounterVec
+	convergenceFlowRemaining *HistogramVec
+	convergenceFlowSpend *HistogramVec
 	queueDepth             *GaugeVec
 	pgStats                *GaugeVec
 	redisUp                *Gauge
@@ -248,6 +256,51 @@ func Init(log *logger.Logger) *Metrics {
 				"Security-related events by type.",
 				[]string{"event"},
 			),
+			convergenceReadiness: NewCounterVec(
+				"nb_convergence_readiness_total",
+				"Convergence readiness outcomes by status.",
+				[]string{"status"},
+			),
+			convergenceReadinessScore: NewHistogramVec(
+				"nb_convergence_readiness_score",
+				"Readiness score distribution by status.",
+				[]string{"status"},
+				[]float64{0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95, 0.99, 1},
+			),
+			convergenceMisconActive: NewHistogramVec(
+				"nb_convergence_misconceptions_active",
+				"Active misconceptions per readiness snapshot.",
+				[]string{},
+				[]float64{0, 1, 2, 3, 5, 8, 13, 21},
+			),
+			convergenceCoverageDebt: NewHistogramVec(
+				"nb_convergence_coverage_debt_max",
+				"Max coverage debt per readiness snapshot.",
+				[]string{},
+				[]float64{0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95, 1},
+			),
+			convergenceGateDecision: NewCounterVec(
+				"nb_convergence_prereq_gate_total",
+				"Prereq gate decisions by decision/reason.",
+				[]string{"decision", "reason"},
+			),
+			convergenceMisconResolution: NewCounterVec(
+				"nb_convergence_misconception_resolution_total",
+				"Misconception resolution state transitions by status.",
+				[]string{"status"},
+			),
+			convergenceFlowRemaining: NewHistogramVec(
+				"nb_convergence_flow_budget_remaining_ratio",
+				"Remaining flow budget ratio.",
+				[]string{},
+				[]float64{0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1},
+			),
+			convergenceFlowSpend: NewHistogramVec(
+				"nb_convergence_flow_budget_spend_ratio",
+				"Flow budget spend ratio.",
+				[]string{},
+				[]float64{0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1},
+			),
 			queueDepth:          NewGaugeVec("nb_job_queue_depth", "Job queue depth by status.", []string{"status"}),
 			pgStats:             NewGaugeVec("nb_postgres_stats", "Postgres connection stats.", []string{"metric"}),
 			redisUp:             NewGauge("nb_redis_up", "Redis connectivity (1=up, 0=down)."),
@@ -395,6 +448,30 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 		return err
 	}
 	if err := m.securityEvents.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceReadiness.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceReadinessScore.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceMisconActive.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceCoverageDebt.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceGateDecision.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceMisconResolution.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceFlowRemaining.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.convergenceFlowSpend.WritePrometheus(w); err != nil {
 		return err
 	}
 	if err := m.queueDepth.WritePrometheus(w); err != nil {
@@ -642,6 +719,86 @@ func (m *Metrics) IncSecurityEvent(event string) {
 		event = "unknown"
 	}
 	m.securityEvents.Inc(event)
+}
+
+func (m *Metrics) ObserveConvergenceReadiness(status string, score float64, coverageDebt float64, misconActive int) {
+	if m == nil {
+		return
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "unknown"
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	if coverageDebt < 0 {
+		coverageDebt = 0
+	}
+	if coverageDebt > 1 {
+		coverageDebt = 1
+	}
+	if misconActive < 0 {
+		misconActive = 0
+	}
+	m.convergenceReadiness.Inc(status)
+	m.convergenceReadinessScore.Observe(score, status)
+	m.convergenceMisconActive.Observe(float64(misconActive))
+	m.convergenceCoverageDebt.Observe(coverageDebt)
+}
+
+func (m *Metrics) IncConvergenceGateDecision(decision, reason string) {
+	if m == nil {
+		return
+	}
+	decision = strings.TrimSpace(decision)
+	if decision == "" {
+		decision = "unknown"
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.convergenceGateDecision.Inc(decision, reason)
+}
+
+func (m *Metrics) IncConvergenceMisconceptionResolution(status string) {
+	if m == nil {
+		return
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "unknown"
+	}
+	m.convergenceMisconResolution.Inc(status)
+}
+
+func (m *Metrics) ObserveConvergenceFlowBudget(total float64, remaining float64, spend float64) {
+	if m == nil {
+		return
+	}
+	if total <= 0 {
+		return
+	}
+	remainingRatio := remaining / total
+	spendRatio := spend / total
+	if remainingRatio < 0 {
+		remainingRatio = 0
+	}
+	if remainingRatio > 1 {
+		remainingRatio = 1
+	}
+	if spendRatio < 0 {
+		spendRatio = 0
+	}
+	if spendRatio > 1 {
+		spendRatio = 1
+	}
+	m.convergenceFlowRemaining.Observe(remainingRatio)
+	m.convergenceFlowSpend.Observe(spendRatio)
 }
 
 func (m *Metrics) ObserveClientPerf(kind, name string, seconds float64) {

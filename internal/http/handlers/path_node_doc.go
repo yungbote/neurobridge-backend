@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,9 +16,11 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
+	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/http/response"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
+	docgen "github.com/yungbote/neurobridge-backend/internal/modules/learning/docgen"
 	"github.com/yungbote/neurobridge-backend/internal/platform/ctxutil"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
@@ -68,17 +73,19 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		return
 	}
 
-	var doc content.NodeDocV1
-	if err := json.Unmarshal(docRow.DocJSON, &doc); err != nil {
+	var baseDoc content.NodeDocV1
+	if err := json.Unmarshal(docRow.DocJSON, &baseDoc); err != nil {
 		response.RespondError(c, http.StatusInternalServerError, "doc_invalid_json", err)
 		return
 	}
 
-	if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
-		doc = withIDs
-		if rawDoc, err := json.Marshal(doc); err == nil {
+	baseContentHash := docRow.ContentHash
+	if withIDs, changed := content.EnsureNodeDocBlockIDs(baseDoc); changed {
+		baseDoc = withIDs
+		if rawDoc, err := json.Marshal(baseDoc); err == nil {
 			if canon, cErr := content.CanonicalizeJSON(rawDoc); cErr == nil {
 				now := time.Now().UTC()
+				contentHash := content.HashBytes(canon)
 				updated := &types.LearningNodeDoc{
 					ID:            docRow.ID,
 					UserID:        docRow.UserID,
@@ -87,23 +94,444 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 					SchemaVersion: docRow.SchemaVersion,
 					DocJSON:       datatypes.JSON(canon),
 					DocText:       docRow.DocText,
-					ContentHash:   content.HashBytes(canon),
+					ContentHash:   contentHash,
 					SourcesHash:   docRow.SourcesHash,
 					CreatedAt:     docRow.CreatedAt,
 					UpdatedAt:     now,
 				}
 				_ = h.nodeDocs.Upsert(dbctx.Context{Ctx: c.Request.Context()}, updated)
+				baseContentHash = contentHash
 			}
 		}
 	}
 
-	// Generated figures are stored in a private bucket; rewrite figure URLs to a protected streaming endpoint.
-	// This avoids mixed public/private bucket configs and prevents stale/signed URLs from breaking the UI.
-	if withAssetURLs, changed := h.rewriteNodeDocFigureAssetURLs(doc, nodeID); changed {
-		doc = withAssetURLs
+	variantRow, variantDoc, variantContentHash, variantReady := h.loadDocVariant(c, rd.UserID, nodeID)
+
+	policyMode := docgen.DocVariantPolicyMode()
+	rolloutPct := docgen.DocVariantRolloutPct()
+	eligible := rolloutEligible(rd.UserID, rolloutPct)
+	safe := true
+	if policyMode == "active" && docgen.DocVariantRequireSafe() {
+		safe = docVariantPolicySafe(c.Request.Context(), h.policyEval)
 	}
 
-	response.RespondOK(c, gin.H{"doc": doc})
+	servedDoc := baseDoc
+	servedVariant := false
+
+	exposureDoc := baseDoc
+	exposureContentHash := baseContentHash
+	exposureKind := "base"
+	exposurePolicyVersion := docgen.DocPolicyVersion()
+	exposureVariantKind := "base"
+	var exposureVariantID *uuid.UUID
+	baseDocID := docRow.ID
+	if variantRow != nil && variantRow.BaseDocID != nil && *variantRow.BaseDocID != uuid.Nil {
+		baseDocID = *variantRow.BaseDocID
+	}
+
+	candidateMeta := map[string]any{
+		"policy_mode":      policyMode,
+		"rollout_pct":      rolloutPct,
+		"rollout_eligible": eligible,
+		"safe_required":    docgen.DocVariantRequireSafe(),
+		"safe_to_activate": safe,
+	}
+
+	if variantReady {
+		candidatePolicyVersion := strings.TrimSpace(variantRow.PolicyVersion)
+		candidateVariantKind := strings.TrimSpace(variantRow.VariantKind)
+		candidateVariantID := variantRow.ID
+		candidateMeta["candidate_variant_id"] = variantRow.ID.String()
+		candidateMeta["candidate_variant_kind"] = candidateVariantKind
+		candidateMeta["candidate_policy_version"] = candidatePolicyVersion
+		candidateMeta["candidate_status"] = strings.TrimSpace(variantRow.Status)
+
+		switch policyMode {
+		case "active":
+			if eligible && safe {
+				servedDoc = variantDoc
+				servedVariant = true
+				exposureDoc = variantDoc
+				exposureContentHash = variantContentHash
+				exposureKind = "served"
+			} else if !eligible {
+				exposureKind = "holdback"
+			} else if !safe {
+				exposureKind = "rollback"
+			}
+		case "shadow":
+			if eligible {
+				exposureDoc = variantDoc
+				exposureContentHash = variantContentHash
+				exposureKind = "shadow"
+			}
+		default:
+			// off: keep base exposure
+		}
+		if exposureKind == "served" || exposureKind == "shadow" {
+			exposureVariantKind = candidateVariantKind
+			exposurePolicyVersion = candidatePolicyVersion
+			id := candidateVariantID
+			exposureVariantID = &id
+		}
+	}
+	candidateMeta["served_variant"] = servedVariant
+	candidateMeta["exposure_kind"] = exposureKind
+
+	// Generated figures are stored in a private bucket; rewrite figure URLs to a protected streaming endpoint.
+	// This avoids mixed public/private bucket configs and prevents stale/signed URLs from breaking the UI.
+	if withAssetURLs, changed := h.rewriteNodeDocFigureAssetURLs(servedDoc, nodeID); changed {
+		servedDoc = withAssetURLs
+	}
+
+	var prereqGate *types.PrereqGateDecision
+	var gateEvidence prereqGateEvidence
+	if h.prereqGates != nil {
+		if row, err := h.prereqGates.GetLatestByUserAndNode(dbctx.Context{Ctx: c.Request.Context()}, rd.UserID, nodeID); err == nil && row != nil {
+			prereqGate = row
+			if len(row.EvidenceJSON) > 0 && string(row.EvidenceJSON) != "null" {
+				_ = json.Unmarshal(row.EvidenceJSON, &gateEvidence)
+			}
+		}
+	}
+
+	if prereqGate != nil && strings.EqualFold(prereqGate.Decision, "blocked") && strings.EqualFold(prereqGate.GateMode, "hard") {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":       response.APIError{Message: "prereq_gate_blocked", Code: "prereq_gate_blocked"},
+			"prereq_gate": prereqGate,
+			"evidence":    gateEvidence,
+		})
+		return
+	}
+
+	if h.docVariantExposure != nil {
+		h.logDocVariantExposure(
+			c,
+			rd,
+			nodeID,
+			node.PathID,
+			exposureDoc,
+			baseDocID,
+			exposureVariantID,
+			exposureVariantKind,
+			exposurePolicyVersion,
+			exposureKind,
+			exposureContentHash,
+			candidateMeta,
+		)
+	}
+
+	if prereqGate != nil {
+		if patched, changed := injectPrereqGateCallout(servedDoc, gateEvidence); changed {
+			servedDoc = patched
+		}
+	}
+
+	response.RespondOK(c, gin.H{
+		"doc":         servedDoc,
+		"prereq_gate": prereqGate,
+	})
+}
+
+type docVariantBaseline struct {
+	ConceptID            string  `json:"concept_id,omitempty"`
+	ConceptKey           string  `json:"concept_key,omitempty"`
+	Mastery              float64 `json:"mastery,omitempty"`
+	Confidence           float64 `json:"confidence,omitempty"`
+	EpistemicUncertainty float64 `json:"epistemic_uncertainty,omitempty"`
+	AleatoricUncertainty float64 `json:"aleatoric_uncertainty,omitempty"`
+}
+
+func (h *PathHandler) loadDocVariant(c *gin.Context, userID, nodeID uuid.UUID) (*types.LearningNodeDocVariant, content.NodeDocV1, string, bool) {
+	empty := content.NodeDocV1{}
+	if h == nil || h.docVariants == nil || userID == uuid.Nil || nodeID == uuid.Nil {
+		return nil, empty, "", false
+	}
+	row, err := h.docVariants.GetLatestByUserAndNode(dbctx.Context{Ctx: c.Request.Context()}, userID, nodeID)
+	if err != nil || row == nil {
+		if err != nil && h.log != nil {
+			h.log.Warn("GetPathNodeDoc failed (load variant)", "error", err, "path_node_id", nodeID)
+		}
+		return nil, empty, "", false
+	}
+	if strings.ToLower(strings.TrimSpace(row.Status)) != "active" {
+		return nil, empty, "", false
+	}
+	if row.ExpiresAt != nil && !row.ExpiresAt.IsZero() && time.Now().After(*row.ExpiresAt) {
+		return nil, empty, "", false
+	}
+	if len(row.DocJSON) == 0 || string(row.DocJSON) == "null" {
+		return nil, empty, "", false
+	}
+
+	var doc content.NodeDocV1
+	if err := json.Unmarshal(row.DocJSON, &doc); err != nil {
+		return nil, empty, "", false
+	}
+	contentHash := row.ContentHash
+
+	if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
+		doc = withIDs
+		if rawDoc, err := json.Marshal(doc); err == nil {
+			if canon, cErr := content.CanonicalizeJSON(rawDoc); cErr == nil {
+				now := time.Now().UTC()
+				contentHash = content.HashBytes(canon)
+				updated := &types.LearningNodeDocVariant{
+					ID:              row.ID,
+					UserID:          row.UserID,
+					PathID:          row.PathID,
+					PathNodeID:      row.PathNodeID,
+					BaseDocID:       row.BaseDocID,
+					VariantKind:     row.VariantKind,
+					PolicyVersion:   row.PolicyVersion,
+					SchemaVersion:   row.SchemaVersion,
+					SnapshotID:      row.SnapshotID,
+					RetrievalPackID: row.RetrievalPackID,
+					TraceID:         row.TraceID,
+					DocJSON:         datatypes.JSON(canon),
+					DocText:         row.DocText,
+					ContentHash:     contentHash,
+					SourcesHash:     row.SourcesHash,
+					Status:          row.Status,
+					ExpiresAt:       row.ExpiresAt,
+					CreatedAt:       row.CreatedAt,
+					UpdatedAt:       now,
+				}
+				_ = h.docVariants.Upsert(dbctx.Context{Ctx: c.Request.Context()}, updated)
+			}
+		}
+	}
+
+	return row, doc, contentHash, true
+}
+
+func (h *PathHandler) logDocVariantExposure(
+	c *gin.Context,
+	rd *ctxutil.RequestData,
+	nodeID uuid.UUID,
+	pathID uuid.UUID,
+	doc content.NodeDocV1,
+	baseDocID uuid.UUID,
+	variantID *uuid.UUID,
+	variantKind string,
+	policyVersion string,
+	exposureKind string,
+	contentHash string,
+	metadata map[string]any,
+) {
+	if h == nil || h.docVariantExposure == nil || rd == nil || rd.UserID == uuid.Nil || pathID == uuid.Nil || nodeID == uuid.Nil {
+		return
+	}
+	ctx := c.Request.Context()
+	conceptKeys := normalizeConceptKeys(extractDocConceptKeys(doc))
+	conceptIDs, idToKey := h.resolveConceptIDs(ctx, pathID, conceptKeys)
+	baseline := h.buildConceptBaseline(ctx, rd.UserID, conceptIDs, idToKey)
+
+	exposure := &types.DocVariantExposure{
+		ID:            uuid.New(),
+		UserID:        rd.UserID,
+		PathID:        pathID,
+		PathNodeID:    nodeID,
+		BaseDocID:     nil,
+		VariantID:     nil,
+		VariantKind:   strings.TrimSpace(variantKind),
+		PolicyVersion: strings.TrimSpace(policyVersion),
+		SchemaVersion: 1,
+		ExposureKind:  strings.TrimSpace(exposureKind),
+		Source:        "api",
+		ContentHash:   strings.TrimSpace(contentHash),
+	}
+	if baseDocID != uuid.Nil {
+		exposure.BaseDocID = &baseDocID
+	}
+	if variantID != nil && *variantID != uuid.Nil {
+		exposure.VariantID = variantID
+	}
+	if rd.SessionID != uuid.Nil {
+		exposure.SessionID = &rd.SessionID
+	}
+	if td := ctxutil.GetTraceData(ctx); td != nil {
+		exposure.TraceID = strings.TrimSpace(td.TraceID)
+		exposure.RequestID = strings.TrimSpace(td.RequestID)
+	}
+
+	if len(conceptKeys) > 0 {
+		if b, err := json.Marshal(conceptKeys); err == nil {
+			exposure.ConceptKeys = datatypes.JSON(b)
+		}
+	}
+	if len(conceptIDs) > 0 {
+		if b, err := json.Marshal(uuidStrings(conceptIDs)); err == nil {
+			exposure.ConceptIDs = datatypes.JSON(b)
+		}
+	}
+	if len(baseline) > 0 {
+		if b, err := json.Marshal(baseline); err == nil {
+			exposure.BaselineJSON = datatypes.JSON(b)
+		}
+	}
+	if metadata != nil {
+		if b, err := json.Marshal(metadata); err == nil {
+			exposure.Metadata = datatypes.JSON(b)
+		}
+	}
+	_ = h.docVariantExposure.Create(dbctx.Context{Ctx: ctx}, exposure)
+}
+
+func (h *PathHandler) resolveConceptIDs(ctx context.Context, pathID uuid.UUID, keys []string) ([]uuid.UUID, map[uuid.UUID]string) {
+	out := []uuid.UUID{}
+	idToKey := map[uuid.UUID]string{}
+	if h == nil || h.concepts == nil || pathID == uuid.Nil || len(keys) == 0 {
+		return out, idToKey
+	}
+	rows, err := h.concepts.GetByScope(dbctx.Context{Ctx: ctx}, "path", &pathID)
+	if err != nil || len(rows) == 0 {
+		return out, idToKey
+	}
+	byKey := map[string]uuid.UUID{}
+	for _, c := range rows {
+		if c == nil || c.ID == uuid.Nil {
+			continue
+		}
+		key := normalizeConceptKeyDoc(c.Key)
+		if key == "" {
+			continue
+		}
+		id := c.ID
+		if c.CanonicalConceptID != nil && *c.CanonicalConceptID != uuid.Nil {
+			id = *c.CanonicalConceptID
+		}
+		if id != uuid.Nil {
+			byKey[key] = id
+		}
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, key := range keys {
+		if id, ok := byKey[normalizeConceptKeyDoc(key)]; ok && id != uuid.Nil && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+			idToKey[id] = normalizeConceptKeyDoc(key)
+		}
+	}
+	return out, idToKey
+}
+
+func (h *PathHandler) buildConceptBaseline(ctx context.Context, userID uuid.UUID, conceptIDs []uuid.UUID, idToKey map[uuid.UUID]string) []docVariantBaseline {
+	out := []docVariantBaseline{}
+	if h == nil || h.conceptState == nil || userID == uuid.Nil || len(conceptIDs) == 0 {
+		return out
+	}
+	rows, err := h.conceptState.ListByUserAndConceptIDs(dbctx.Context{Ctx: ctx}, userID, conceptIDs)
+	if err != nil {
+		return out
+	}
+	for _, st := range rows {
+		if st == nil || st.ConceptID == uuid.Nil {
+			continue
+		}
+		out = append(out, docVariantBaseline{
+			ConceptID:            st.ConceptID.String(),
+			ConceptKey:           idToKey[st.ConceptID],
+			Mastery:              st.Mastery,
+			Confidence:           st.Confidence,
+			EpistemicUncertainty: st.EpistemicUncertainty,
+			AleatoricUncertainty: st.AleatoricUncertainty,
+		})
+	}
+	return out
+}
+
+func docVariantPolicySafe(ctx context.Context, evals repos.PolicyEvalSnapshotRepo) bool {
+	if evals == nil {
+		return false
+	}
+	snap, err := evals.GetLatestByKey(dbctx.Context{Ctx: ctx}, docgen.DocVariantPolicyKey())
+	if err != nil || snap == nil {
+		return false
+	}
+	return docVariantSnapshotSafe(snap)
+}
+
+func docVariantSnapshotSafe(snap *types.PolicyEvalSnapshot) bool {
+	if snap == nil {
+		return false
+	}
+	if snap.Samples < docgen.DocVariantSafeMinSamples() {
+		return false
+	}
+	if snap.IPS < docgen.DocVariantSafeMinIPS() {
+		return false
+	}
+	if snap.Lift < docgen.DocVariantSafeMinLift() {
+		return false
+	}
+	return true
+}
+
+func rolloutEligible(userID uuid.UUID, pct float64) bool {
+	if pct >= 1.0 {
+		return true
+	}
+	if pct <= 0 || userID == uuid.Nil {
+		return false
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(userID.String()))
+	val := float64(h.Sum32()%10000) / 10000.0
+	return val < pct
+}
+
+func extractDocConceptKeys(doc content.NodeDocV1) []string {
+	keys := make([]string, 0, len(doc.ConceptKeys))
+	keys = append(keys, doc.ConceptKeys...)
+	for _, block := range doc.Blocks {
+		if block == nil {
+			continue
+		}
+		keys = append(keys, stringSliceFromAny(block["concept_keys"])...)
+		payload, ok := block["payload"].(map[string]any)
+		if !ok || payload == nil {
+			continue
+		}
+		keys = append(keys, stringSliceFromAny(payload["concept_keys"])...)
+		if cards, ok := payload["cards"].([]any); ok {
+			for _, card := range cards {
+				if m, ok := card.(map[string]any); ok {
+					keys = append(keys, stringSliceFromAny(m["concept_keys"])...)
+				}
+			}
+		}
+		if questions, ok := payload["questions"].([]any); ok {
+			for _, q := range questions {
+				if m, ok := q.(map[string]any); ok {
+					keys = append(keys, stringSliceFromAny(m["concept_keys"])...)
+				}
+			}
+		}
+	}
+	return keys
+}
+
+func normalizeConceptKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		k = normalizeConceptKeyDoc(k)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeConceptKeyDoc(k string) string {
+	return strings.ToLower(strings.TrimSpace(k))
 }
 
 // GET /api/path-nodes/:id/assets/view?key=...
@@ -260,6 +688,160 @@ func (h *PathHandler) rewriteNodeDocFigureAssetURLs(doc content.NodeDocV1, nodeI
 	}
 
 	return doc, changed
+}
+
+type prereqGateEvidence struct {
+	Status                string   `json:"status"`
+	Decision              string   `json:"decision"`
+	Mode                  string   `json:"mode"`
+	Reason                string   `json:"reason"`
+	Score                 float64  `json:"score"`
+	WeakConcepts          []string `json:"weak_concepts"`
+	UncertainConcepts     []string `json:"uncertain_concepts"`
+	MisconceptionConcepts []string `json:"misconception_concepts"`
+	DueReviewConcepts     []string `json:"due_review_concepts"`
+	FrameBridgeFrom       string   `json:"frame_bridge_from"`
+	FrameBridgeTo         string   `json:"frame_bridge_to"`
+	FrameBridgeMD         string   `json:"frame_bridge_md"`
+	EscalationAction      string   `json:"escalation_action"`
+	EscalationReason      string   `json:"escalation_reason"`
+}
+
+func injectPrereqGateCallout(doc content.NodeDocV1, evidence prereqGateEvidence) (content.NodeDocV1, bool) {
+	if len(doc.Blocks) == 0 {
+		return doc, false
+	}
+	weak := normalizeKeyList(evidence.WeakConcepts)
+	uncertain := normalizeKeyList(evidence.UncertainConcepts)
+	miscons := normalizeKeyList(evidence.MisconceptionConcepts)
+	due := normalizeKeyList(evidence.DueReviewConcepts)
+	frameMD := strings.TrimSpace(evidence.FrameBridgeMD)
+	if frameMD == "" && evidence.FrameBridgeFrom != "" && evidence.FrameBridgeTo != "" {
+		frameMD = fmt.Sprintf("Try reframing from **%s** to **%s** and restate the rule in the new frame.", evidence.FrameBridgeFrom, evidence.FrameBridgeTo)
+	}
+	needsPrereq := len(weak) > 0 || len(miscons) > 0 || len(due) > 0 || len(uncertain) > 0
+	needsFrame := frameMD != ""
+	needsEscalation := strings.TrimSpace(evidence.EscalationAction) != ""
+	if !needsPrereq && !needsFrame && !needsEscalation {
+		return doc, false
+	}
+
+	blocksToInsert := []map[string]any{}
+	if needsPrereq {
+		variant := "note"
+		title := "Prerequisite check"
+		if strings.EqualFold(evidence.Status, "not_ready") {
+			variant = "warning"
+			title = "Prerequisites need attention"
+		} else if len(due) > 0 {
+			variant = "info"
+			title = "Quick prereq refresher"
+		}
+
+		parts := []string{
+			"Before moving on, take a moment to shore up prerequisites.",
+		}
+		if len(weak) > 0 {
+			parts = append(parts, "Weak prerequisites:\n- "+strings.Join(weak, "\n- "))
+		}
+		if len(uncertain) > 0 {
+			parts = append(parts, "Uncertain prerequisites:\n- "+strings.Join(uncertain, "\n- "))
+		}
+		if len(miscons) > 0 {
+			parts = append(parts, "Active misconceptions to correct:\n- "+strings.Join(miscons, "\n- "))
+		}
+		if len(due) > 0 {
+			parts = append(parts, "Spaced review due:\n- "+strings.Join(due, "\n- "))
+		}
+		parts = append(parts, "Use the quick checks and flashcards, or revisit prerequisite sections if anything feels shaky.")
+		md := strings.Join(parts, "\n\n")
+
+		blocksToInsert = append(blocksToInsert, map[string]any{
+			"id":      uuid.New().String(),
+			"type":    "callout",
+			"variant": variant,
+			"title":   title,
+			"md":      md,
+		})
+	}
+
+	if needsFrame {
+		blocksToInsert = append(blocksToInsert, map[string]any{
+			"id":      uuid.New().String(),
+			"type":    "callout",
+			"variant": "info",
+			"title":   "Try a different frame",
+			"md":      frameMD,
+		})
+	}
+
+	if needsEscalation {
+		action := strings.ToLower(strings.TrimSpace(evidence.EscalationAction))
+		parts := []string{
+			"We noticed repeated friction on prerequisites. Try a different support path:",
+		}
+		switch action {
+		case "alternate_modality":
+			parts = append(parts, "- Switch modality: try a short video, diagram, or interactive activity.")
+			parts = append(parts, "- Then retry the quick checks.")
+		case "guided_recap":
+			parts = append(parts, "- Take the guided recap.")
+			parts = append(parts, "- Then retry the quick checks.")
+		default:
+			parts = append(parts, "- Take a short recap or ask for a worked example.")
+		}
+		escalationMD := strings.Join(parts, "\n")
+		blocksToInsert = append(blocksToInsert, map[string]any{
+			"id":      uuid.New().String(),
+			"type":    "callout",
+			"variant": "warning",
+			"title":   "Need a different approach",
+			"md":      escalationMD,
+		})
+	}
+
+	insertAt := 0
+	for i, b := range doc.Blocks {
+		if b == nil {
+			continue
+		}
+		typ := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		if typ == "prerequisites" {
+			insertAt = i + 1
+			break
+		}
+		if typ == "objectives" {
+			insertAt = i + 1
+		}
+	}
+	blocks := append([]map[string]any{}, doc.Blocks...)
+	if len(blocksToInsert) > 0 {
+		if insertAt >= len(blocks) {
+			blocks = append(blocks, blocksToInsert...)
+		} else {
+			blocks = append(blocks[:insertAt], append(blocksToInsert, blocks[insertAt:]...)...)
+		}
+	}
+	doc.Blocks = blocks
+	return doc, len(blocksToInsert) > 0
+}
+
+func normalizeKeyList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, k := range in {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 type DocPatchSelection struct {

@@ -12,7 +12,7 @@ import (
 type PolicyEvalSnapshot struct {
 	ID uuid.UUID `gorm:"type:uuid;default:uuid_generate_v4();primaryKey" json:"id"`
 
-	PolicyKey  string    `gorm:"column:policy_key;not null;index" json:"policy_key"`
+	PolicyKey   string    `gorm:"column:policy_key;not null;index" json:"policy_key"`
 	WindowStart time.Time `gorm:"column:window_start;not null;index" json:"window_start"`
 	WindowEnd   time.Time `gorm:"column:window_end;not null;index" json:"window_end"`
 

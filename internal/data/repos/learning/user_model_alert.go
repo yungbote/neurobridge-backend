@@ -62,9 +62,9 @@ func (r *userModelAlertRepo) Upsert(dbc dbctx.Context, row *types.UserModelAlert
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "concept_id"}, {Name: "kind"}},
 			DoUpdates: clause.Assignments(map[string]any{
-				"severity":     gorm.Expr("EXCLUDED.severity"),
-				"score":        gorm.Expr("EXCLUDED.score"),
-				"details":      gorm.Expr("EXCLUDED.details"),
+				"severity":      gorm.Expr("EXCLUDED.severity"),
+				"score":         gorm.Expr("EXCLUDED.score"),
+				"details":       gorm.Expr("EXCLUDED.details"),
 				"first_seen_at": gorm.Expr("COALESCE(user_model_alert.first_seen_at, EXCLUDED.first_seen_at)"),
 				"last_seen_at":  gorm.Expr("EXCLUDED.last_seen_at"),
 				"occurrences":   gorm.Expr("user_model_alert.occurrences + EXCLUDED.occurrences"),

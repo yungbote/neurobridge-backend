@@ -78,6 +78,18 @@ var (
 
 	testletBetaPrior = clampRange(envutil.Float("USER_TESTLET_BETA_PRIOR", 1.0), 0.1, 10)
 	testletEmaAlpha  = clampRange(envutil.Float("USER_TESTLET_EMA_ALPHA", 0.18), 0.01, 0.8)
+
+	itemCalibLR       = clampRange(envutil.Float("USER_ITEM_CALIB_LR", 0.05), 0.001, 0.4)
+	itemCalibDiscMin  = clampRange(envutil.Float("USER_ITEM_CALIB_DISC_MIN", 0.2), 0.1, 1.0)
+	itemCalibDiscMax  = clampRange(envutil.Float("USER_ITEM_CALIB_DISC_MAX", 3.0), 1.0, 6.0)
+	itemCalibDiffMin  = clampRange(envutil.Float("USER_ITEM_CALIB_DIFF_MIN", -2.5), -6.0, -0.5)
+	itemCalibDiffMax  = clampRange(envutil.Float("USER_ITEM_CALIB_DIFF_MAX", 2.5), 0.5, 6.0)
+	itemCalibGuessMax = clampRange(envutil.Float("USER_ITEM_CALIB_GUESS_MAX", 0.5), 0.1, 0.7)
+
+	skillLR         = clampRange(envutil.Float("USER_SKILL_LR", 0.08), 0.005, 0.4)
+	skillSigmaDecay = clampRange(envutil.Float("USER_SKILL_SIGMA_DECAY", 0.06), 0.01, 0.4)
+	skillSigmaMin   = clampRange(envutil.Float("USER_SKILL_SIGMA_MIN", 0.15), 0.05, 1.0)
+	skillSigmaMax   = clampRange(envutil.Float("USER_SKILL_SIGMA_MAX", 3.0), 0.5, 6.0)
 )
 
 func ensureConceptState(prev *types.UserConceptState, userID uuid.UUID, conceptID uuid.UUID) *types.UserConceptState {
@@ -183,6 +195,10 @@ func applyQuestionAnsweredToState(st *types.UserConceptState, seenAt time.Time, 
 	if !isCorrect {
 		learnFactor = 0.55
 	}
+	evidenceStrength := clamp01(floatFromAny(data["evidence_strength"], 0))
+	if evidenceStrength > 0 {
+		learnFactor = learnFactor * (0.7 + 0.6*evidenceStrength)
+	}
 	pKnown = pKnown + (1.0-pKnown)*pLearn*learnFactor
 	pKnown = clamp01(pKnown)
 
@@ -194,6 +210,9 @@ func applyQuestionAnsweredToState(st *types.UserConceptState, seenAt time.Time, 
 	}
 	err = err - pCorrect
 	lr := 0.12 * (0.6 + 0.4*selfConf)
+	if evidenceStrength > 0 {
+		lr *= 0.6 + 0.6*evidenceStrength
+	}
 	if latencyMS > 0 && latencyMS > 12000 {
 		lr *= 0.85
 	}
@@ -270,7 +289,6 @@ func expectedCorrectnessForQuestion(st *types.UserConceptState, seenAt time.Time
 			BktPForget: ktBktForgetDefault,
 		}
 	}
-	prevM := clamp01(st.Mastery)
 	itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["item_type"])))
 	itemOptions := intFromAny(data["item_options"], 0)
 	itemGuess := clamp01(floatFromAny(data["item_guess"], 0))
@@ -299,6 +317,12 @@ func expectedCorrectnessForQuestion(st *types.UserConceptState, seenAt time.Time
 		itemDiff = 0
 	}
 	itemDiff = normalizeItemDifficulty(itemDiff)
+
+	if theta := floatFromAny(data["user_theta"], math.NaN()); !math.IsNaN(theta) {
+		return clamp01(irtProb(theta, itemDisc, itemDiff, itemGuess))
+	}
+
+	prevM := clamp01(st.Mastery)
 
 	_, _, _, pForget := ensureBktParams(st)
 	pKnown := prevM
@@ -359,6 +383,14 @@ func evidenceSignalForEvent(typ string, data map[string]any) (float64, float64) 
 		strength = 0.22
 		if conf == 0 {
 			conf = 0.6
+		}
+	}
+	if evStrength := clamp01(floatFromAny(data["evidence_strength"], 0)); evStrength > 0 {
+		strength = clamp01(strength * (0.5 + 0.8*evStrength))
+		if conf == 0 {
+			conf = evStrength
+		} else {
+			conf = clamp01(0.8*conf + 0.2*evStrength)
 		}
 	}
 	return clamp01(strength), clamp01(conf)
@@ -501,6 +533,265 @@ func applyHintUsedToState(st *types.UserConceptState, seenAt time.Time, data map
 	}
 }
 
+func ensureSkillState(prev *types.UserSkillState, userID uuid.UUID, conceptID uuid.UUID, thetaSeed float64) *types.UserSkillState {
+	if prev != nil {
+		return prev
+	}
+	if math.IsNaN(thetaSeed) {
+		thetaSeed = 0
+	}
+	return &types.UserSkillState{
+		ID:        uuid.New(),
+		UserID:    userID,
+		ConceptID: conceptID,
+		Theta:     clampRange(thetaSeed, -3.0, 3.0),
+		Sigma:     1.0,
+		Count:     0,
+	}
+}
+
+func itemParamsForData(data map[string]any) (float64, float64, float64) {
+	itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["item_type"])))
+	itemOptions := intFromAny(data["item_options"], 0)
+	itemGuess := clamp01(floatFromAny(data["item_guess"], 0))
+	if itemGuess <= 0 {
+		if itemOptions > 1 {
+			itemGuess = 1.0 / float64(itemOptions)
+		} else if itemType == "true_false" {
+			itemGuess = 0.5
+		}
+	}
+	if itemGuess <= 0 {
+		itemGuess = defaultBktGuess
+	}
+	itemGuess = clampRange(itemGuess, 0, itemCalibGuessMax)
+
+	itemDisc := floatFromAny(data["item_discrimination"], 1.0)
+	if itemDisc <= 0 {
+		itemDisc = 1.0
+	}
+	itemDisc = clampRange(itemDisc, itemCalibDiscMin, itemCalibDiscMax)
+
+	itemDiff := floatFromAny(data["item_difficulty"], math.NaN())
+	if math.IsNaN(itemDiff) {
+		itemDiff = floatFromAny(data["node_difficulty"], math.NaN())
+	}
+	if math.IsNaN(itemDiff) {
+		itemDiff = 0
+	}
+	itemDiff = normalizeItemDifficulty(itemDiff)
+	itemDiff = clampRange(itemDiff, itemCalibDiffMin, itemCalibDiffMax)
+	return itemGuess, itemDisc, itemDiff
+}
+
+func ensureItemCalibration(prev *types.ItemCalibration, itemID string, itemType string, conceptID *uuid.UUID, data map[string]any) *types.ItemCalibration {
+	if prev != nil {
+		return prev
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil
+	}
+	itemType = strings.TrimSpace(itemType)
+	if itemType == "" {
+		itemType = "question"
+	}
+	guess, disc, diff := itemParamsForData(data)
+	slip := clamp01(floatFromAny(data["item_slip"], 0))
+	row := &types.ItemCalibration{
+		ID:             uuid.New(),
+		ItemID:         itemID,
+		ItemType:       itemType,
+		ConceptID:      conceptID,
+		Difficulty:     diff,
+		Discrimination: disc,
+		Guess:          guess,
+		Slip:           slip,
+		Count:          0,
+		Correct:        0,
+	}
+	return row
+}
+
+func computeEvidenceStrength(data map[string]any, item *types.ItemCalibration) float64 {
+	conf := clamp01(floatFromAny(data["confidence"], 0))
+	if conf == 0 {
+		conf = clamp01(floatFromAny(data["grader_confidence"], 0))
+	}
+	if conf == 0 {
+		conf = clamp01(floatFromAny(data["grader_confidence_pct"], 0) / 100.0)
+	}
+	if conf == 0 {
+		conf = clamp01(floatFromAny(data["verdict_confidence"], 0))
+	}
+
+	guess, disc, _ := itemParamsForData(data)
+	if item != nil {
+		if item.Discrimination > 0 {
+			disc = item.Discrimination
+		}
+		if item.Guess > 0 {
+			guess = item.Guess
+		}
+	}
+
+	discRange := itemCalibDiscMax - itemCalibDiscMin
+	discNorm := 0.5
+	if discRange > 0 {
+		discNorm = clamp01((disc - itemCalibDiscMin) / discRange)
+	}
+	guessQuality := clamp01(1.0 - 1.4*guess)
+	if guessQuality < 0.2 {
+		guessQuality = 0.2
+	}
+
+	latencyMS := intFromAny(data["latency_ms"], 0)
+	latQuality := 0.7
+	if latencyMS > 0 {
+		switch {
+		case latencyMS < 800:
+			latQuality = 0.4
+		case latencyMS < 1500:
+			latQuality = 0.6
+		case latencyMS <= 12000:
+			latQuality = 1.0
+		case latencyMS <= 30000:
+			latQuality = 0.75
+		case latencyMS <= 60000:
+			latQuality = 0.5
+		default:
+			latQuality = 0.3
+		}
+	}
+
+	sampleQuality := 0.0
+	if item != nil && item.Count > 0 {
+		sampleQuality = clamp01(math.Sqrt(float64(item.Count) / 30.0))
+	}
+
+	strength := 0.2 +
+		0.25*conf +
+		0.20*discNorm +
+		0.15*latQuality +
+		0.15*sampleQuality +
+		0.05*guessQuality
+	return clamp01(strength)
+}
+
+func applyQuestionAnsweredToSkill(st *types.UserSkillState, isCorrect bool, seenAt time.Time, data map[string]any, evidenceStrength float64) {
+	if st == nil {
+		return
+	}
+	guess, disc, diff := itemParamsForData(data)
+	theta := st.Theta
+	if math.IsNaN(theta) {
+		theta = 0
+	}
+	y := 0.0
+	if isCorrect {
+		y = 1.0
+	}
+	s := sigmoid(disc * (theta - diff))
+	p := guess + (1.0-guess)*s
+	err := y - p
+	slope := s * (1.0 - s) * (1.0 - guess)
+	grad := err * disc * slope
+	lr := skillLR
+	if evidenceStrength > 0 {
+		lr *= 0.6 + 0.7*evidenceStrength
+	}
+	if st.Sigma > 0 {
+		lr *= clampRange(1.0-(0.4*st.Sigma), 0.35, 1.0)
+	}
+	theta = theta + lr*grad
+	st.Theta = clampRange(theta, -3.5, 3.5)
+	st.Count += 1
+
+	sigma := st.Sigma
+	if sigma <= 0 {
+		sigma = 1.0
+	}
+	decay := skillSigmaDecay * (0.4 + 0.6*clamp01(evidenceStrength))
+	sigma = sigma*(1.0-decay) + 0.08*math.Abs(err)
+	st.Sigma = clampRange(sigma, skillSigmaMin, skillSigmaMax)
+
+	if !seenAt.IsZero() {
+		t := seenAt.UTC()
+		st.LastEventAt = &t
+	}
+}
+
+func applyQuestionAnsweredToItemCalibration(item *types.ItemCalibration, theta float64, isCorrect bool, seenAt time.Time, data map[string]any, evidenceStrength float64) {
+	if item == nil {
+		return
+	}
+	if math.IsNaN(theta) {
+		theta = 0
+	}
+
+	guessTarget, _, _ := itemParamsForData(data)
+	if guessTarget > 0 {
+		if item.Guess <= 0 {
+			item.Guess = guessTarget
+		} else {
+			item.Guess = clampRange(0.9*item.Guess+0.1*guessTarget, 0, itemCalibGuessMax)
+		}
+	}
+	slipTarget := clamp01(floatFromAny(data["item_slip"], 0))
+	if slipTarget > 0 {
+		if item.Slip <= 0 {
+			item.Slip = slipTarget
+		} else {
+			item.Slip = clampRange(0.9*item.Slip+0.1*slipTarget, 0, 0.5)
+		}
+	}
+
+	disc := item.Discrimination
+	if disc <= 0 {
+		disc = 1.0
+	}
+	diff := item.Difficulty
+	guess := item.Guess
+	if guess <= 0 {
+		guess = guessTarget
+	}
+	guess = clampRange(guess, 0, itemCalibGuessMax)
+
+	y := 0.0
+	if isCorrect {
+		y = 1.0
+	}
+	s := sigmoid(disc * (theta - diff))
+	p := guess + (1.0-guess)*s
+	err := y - p
+
+	lr := itemCalibLR
+	if evidenceStrength > 0 {
+		lr *= 0.6 + 0.6*evidenceStrength
+	}
+	if item.Count > 0 {
+		lr *= 1.0 / math.Sqrt(1.0+(float64(item.Count)/10.0))
+	}
+
+	grad := err * s * (1.0 - s) * (1.0 - guess)
+	diff0 := diff
+	diff = diff + lr*(-disc)*grad
+	disc = disc + lr*(theta-diff0)*grad
+
+	item.Difficulty = clampRange(diff, itemCalibDiffMin, itemCalibDiffMax)
+	item.Discrimination = clampRange(disc, itemCalibDiscMin, itemCalibDiscMax)
+	item.Guess = clampRange(guess, 0, itemCalibGuessMax)
+
+	item.Count += 1
+	if isCorrect {
+		item.Correct += 1
+	}
+	if !seenAt.IsZero() {
+		t := seenAt.UTC()
+		item.LastEventAt = &t
+	}
+}
+
 // ---- helpers ----
 
 // extractUUIDsFromAny supports []any, []string, single string, etc.
@@ -555,6 +846,17 @@ func boolFromAny(v any, def bool) bool {
 		return t != 0
 	default:
 		return def
+	}
+}
+
+func stringFromAny(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case fmt.Stringer:
+		return strings.TrimSpace(t.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
 	}
 }
 
@@ -883,7 +1185,7 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-func applyIncorrectAnswerToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any) (bool, *types.UserMisconceptionInstance) {
+func applyIncorrectAnswerToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any, eventType string) (bool, *types.UserMisconceptionInstance) {
 	if model == nil {
 		return false, nil
 	}
@@ -907,10 +1209,10 @@ func applyIncorrectAnswerToModel(model *types.UserConceptModel, seenAt time.Time
 		OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
 		Confidence: conf,
 	}
-	support := loadSupportPointers([]byte(model.Support))
-	support, added := addSupportPointer(support, ptr, 20)
+	modelSupport := loadSupportPointers([]byte(model.Support))
+	modelSupport, added := addSupportPointer(modelSupport, ptr, 20)
 	if added {
-		model.Support = datatypes.JSON(mustJSON(support))
+		model.Support = datatypes.JSON(mustJSON(modelSupport))
 		t := seenAt.UTC()
 		model.LastStructuralAt = &t
 	}
@@ -929,8 +1231,78 @@ func applyIncorrectAnswerToModel(model *types.UserConceptModel, seenAt time.Time
 		mis.FirstSeenAt = &t
 		mis.LastSeenAt = &t
 	}
-	mis.Support = datatypes.JSON(mustJSON(ptr))
+
+	signature := inferMisconceptionSignature(eventType, data, "procedural_gap")
+	misSupport := types.DecodeMisconceptionSupport(mis.Support)
+	misSupport.SignatureType = signature
+	misSupport = types.MergeMisconceptionSupportPointer(misSupport, types.MisconceptionSupportPointer{
+		SourceType: ptr.SourceType,
+		SourceID:   ptr.SourceID,
+		OccurredAt: ptr.OccurredAt,
+		Confidence: ptr.Confidence,
+	}, 20)
+	if ctx := misconceptionContextFromData(data); ctx != "" {
+		misSupport = types.AddMisconceptionTriggerContext(misSupport, ctx, 12)
+	}
+	mis.Support = types.EncodeMisconceptionSupport(misSupport)
 	return added, mis
+}
+
+func inferMisconceptionSignature(eventType string, data map[string]any, fallback string) string {
+	if data != nil {
+		if v := strings.TrimSpace(stringFromAny(data["signature_type"])); v != "" {
+			return types.NormalizeMisconceptionSignature(v)
+		}
+	}
+	eventType = strings.TrimSpace(strings.ToLower(eventType))
+	polarity := strings.TrimSpace(strings.ToLower(stringFromAny(data["polarity"])))
+	scope := strings.TrimSpace(strings.ToLower(stringFromAny(data["scope"])))
+
+	if eventType == strings.ToLower(types.EventConceptClaimEvaluated) || eventType == "concept_claim_evaluated" {
+		if polarity == "confusion" {
+			return "frame_error"
+		}
+		if polarity == "confident_wrong" {
+			switch scope {
+			case "explanation", "assertion":
+				return "frame_error"
+			case "question", "attempt":
+				return "procedural_gap"
+			}
+			return "frame_error"
+		}
+	}
+	if eventType == strings.ToLower(types.EventHintUsed) || eventType == "hint_used" {
+		return "procedural_gap"
+	}
+	if boolFromAny(data["transfer_context"], false) || boolFromAny(data["transfer_failure"], false) {
+		return "transfer_failure"
+	}
+	if _, ok := data["transfer_success"]; ok {
+		if !boolFromAny(data["transfer_success"], false) {
+			return "transfer_failure"
+		}
+	}
+	if fallback != "" {
+		return types.NormalizeMisconceptionSignature(fallback)
+	}
+	return "unknown"
+}
+
+func misconceptionContextFromData(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(stringFromAny(data["question_id"])); v != "" {
+		return "question:" + v
+	}
+	if v := strings.TrimSpace(stringFromAny(data["block_id"])); v != "" {
+		return "block:" + v
+	}
+	if v := strings.TrimSpace(stringFromAny(data["message_id"])); v != "" {
+		return "message:" + v
+	}
+	return ""
 }
 
 func applyHintToModel(model *types.UserConceptModel, seenAt time.Time, data map[string]any) bool {

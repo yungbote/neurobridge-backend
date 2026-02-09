@@ -45,6 +45,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	const pageSize = 500
 	processed := 0
 	start := time.Now()
+	progressiveCandidates := map[uuid.UUID]progressiveDocCandidate{}
 
 	jc.Progress("scan", 1, "Scanning runtime events")
 
@@ -90,6 +91,21 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 					_ = json.Unmarshal(ev.Data, &data)
 				} else {
 					data = map[string]any{}
+				}
+				if data == nil {
+					data = map[string]any{}
+				}
+				if _, ok := data["event_id"]; !ok {
+					data["event_id"] = ev.ID.String()
+				}
+				if _, ok := data["event_type"]; !ok {
+					data["event_type"] = typ
+				}
+				if _, ok := data["session_id"]; !ok && ev.SessionID != uuid.Nil {
+					data["session_id"] = ev.SessionID.String()
+				}
+				if _, ok := data["occurred_at"]; !ok && !ev.OccurredAt.IsZero() {
+					data["occurred_at"] = ev.OccurredAt.UTC().Format(time.RFC3339)
 				}
 
 				pathID, nodeID, activityID := p.resolveContext(tdbc, ev)
@@ -155,6 +171,9 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 					if err := p.applyNodeRun(tdbc, userID, pathID, nodeID, typ, data, now); err != nil {
 						return err
 					}
+					if typ == types.EventNodeOpened {
+						_ = p.applyPrereqGate(tdbc, userID, pathID, nodeID, now)
+					}
 					if err := p.applyRuntimePlan(tdbc, userID, pathID, nodeID, typ, data, now); err != nil {
 						return err
 					}
@@ -162,6 +181,16 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 				if activityID != uuid.Nil {
 					if err := p.applyActivityRun(tdbc, userID, pathID, nodeID, activityID, typ, data, now); err != nil {
 						return err
+					}
+				}
+				if nodeID != uuid.Nil && shouldConsiderProgressiveDoc(typ) {
+					progressiveCandidates[pathID] = progressiveDocCandidate{
+						PathID:        pathID,
+						NodeID:        nodeID,
+						ProgressState: strings.TrimSpace(stringFromAny(data["progress_state"])),
+						ProgressConf:  floatFromAny(data["progress_confidence"], 0),
+						EventType:     typ,
+						EventAt:       now,
 					}
 				}
 
@@ -207,6 +236,16 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		}); err != nil {
 			jc.Fail("apply", err)
 			return nil
+		}
+
+		if len(progressiveCandidates) > 0 {
+			for _, cand := range progressiveCandidates {
+				p.maybeEnqueueDocProgressiveBuild(dbctx.Context{Ctx: jc.Ctx}, userID, cand)
+				p.maybeEnqueueDocProbeSelect(dbctx.Context{Ctx: jc.Ctx}, userID, cand)
+			}
+			for k := range progressiveCandidates {
+				delete(progressiveCandidates, k)
+			}
 		}
 
 		afterAt = pageLastAt

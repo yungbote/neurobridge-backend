@@ -11,6 +11,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/domain/learning/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/domain/materials"
 	"github.com/yungbote/neurobridge-backend/internal/domain/user"
+	"gorm.io/datatypes"
 )
 
 const (
@@ -61,8 +62,8 @@ const (
 	EventClientError = personalization.EventClientError
 	EventClientPerf  = personalization.EventClientPerf
 
-	EventConceptClaimEvaluated  = personalization.EventConceptClaimEvaluated
-	EventBridgeValidationNeeded = personalization.EventBridgeValidationNeeded
+	EventConceptClaimEvaluated     = personalization.EventConceptClaimEvaluated
+	EventBridgeValidationNeeded    = personalization.EventBridgeValidationNeeded
 	EventExperimentExposure        = personalization.EventExperimentExposure
 	EventExperimentGuardrailBreach = personalization.EventExperimentGuardrailBreach
 	EventEngagementFunnelStep      = personalization.EventEngagementFunnelStep
@@ -122,15 +123,47 @@ type UserConceptModel = personalization.UserConceptModel
 type UserConceptEdgeStat = personalization.UserConceptEdgeStat
 type UserConceptEvidence = personalization.UserConceptEvidence
 type UserConceptCalibration = personalization.UserConceptCalibration
+type ItemCalibration = personalization.ItemCalibration
 type UserModelAlert = personalization.UserModelAlert
 type UserMisconceptionInstance = personalization.UserMisconceptionInstance
+type MisconceptionCausalEdge = personalization.MisconceptionCausalEdge
+type MisconceptionSupport = personalization.MisconceptionSupport
+type MisconceptionSupportPointer = personalization.MisconceptionSupportPointer
 type UserStylePreference = personalization.UserStylePreference
 type UserTestletState = personalization.UserTestletState
+type UserSkillState = personalization.UserSkillState
 type UserEvent = personalization.UserEvent
 type UserEventCursor = personalization.UserEventCursor
 type UserGazeEvent = personalization.UserGazeEvent
 type UserGazeBlockStat = personalization.UserGazeBlockStat
 type UserProgressionEvent = personalization.UserProgressionEvent
+type UserBeliefSnapshot = personalization.UserBeliefSnapshot
+type InterventionPlan = personalization.InterventionPlan
+type ConceptReadinessSnapshot = personalization.ConceptReadinessSnapshot
+type PrereqGateDecision = personalization.PrereqGateDecision
+type MisconceptionResolutionState = personalization.MisconceptionResolutionState
+
+const MisconceptionSupportSchemaVersion = personalization.MisconceptionSupportSchemaVersion
+
+func NormalizeMisconceptionSignature(sig string) string {
+	return personalization.NormalizeMisconceptionSignature(sig)
+}
+
+func DecodeMisconceptionSupport(raw datatypes.JSON) personalization.MisconceptionSupport {
+	return personalization.DecodeMisconceptionSupport(raw)
+}
+
+func EncodeMisconceptionSupport(s personalization.MisconceptionSupport) datatypes.JSON {
+	return personalization.EncodeMisconceptionSupport(s)
+}
+
+func MergeMisconceptionSupportPointer(s personalization.MisconceptionSupport, ptr personalization.MisconceptionSupportPointer, max int) personalization.MisconceptionSupport {
+	return personalization.MergeMisconceptionSupportPointer(s, ptr, max)
+}
+
+func AddMisconceptionTriggerContext(s personalization.MisconceptionSupport, ctx string, max int) personalization.MisconceptionSupport {
+	return personalization.AddMisconceptionTriggerContext(s, ctx, max)
+}
 
 type Concept = core.Concept
 type ConceptRepresentation = core.ConceptRepresentation
@@ -170,6 +203,16 @@ type LearningNodeDocRevision = products.LearningNodeDocRevision
 type LearningNodeFigure = products.LearningNodeFigure
 type LearningNodeVideo = products.LearningNodeVideo
 type LearningDocGenerationRun = products.LearningDocGenerationRun
+type LearningNodeDocVariant = products.LearningNodeDocVariant
+type LearningNodeDocBlueprint = products.LearningNodeDocBlueprint
+type UserDocSignalSnapshot = products.UserDocSignalSnapshot
+type DocRetrievalPack = products.DocRetrievalPack
+type DocGenerationTrace = products.DocGenerationTrace
+type DocConstraintReport = products.DocConstraintReport
+type DocProbe = products.DocProbe
+type DocProbeOutcome = products.DocProbeOutcome
+type DocVariantExposure = products.DocVariantExposure
+type DocVariantOutcome = products.DocVariantOutcome
 type LearningDrillInstance = products.LearningDrillInstance
 type LearningArtifact = products.LearningArtifact
 type LibraryTaxonomyNode = products.LibraryTaxonomyNode

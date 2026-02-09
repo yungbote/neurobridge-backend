@@ -81,7 +81,7 @@ var fallbackStageDeps = map[string][]string{
 	"psu_build":         {"path_plan_build"},
 	"path_cover_render": {"path_plan_build"},
 
-	"node_doc_build": {"psu_build", "path_plan_build", "embed_chunks"},
+	"node_doc_build":     {"psu_build", "path_plan_build", "embed_chunks"},
 	"runtime_plan_build": {"node_doc_build"},
 }
 

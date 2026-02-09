@@ -381,12 +381,12 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 				if ptr.Confidence == 0 {
 					ptr.Confidence = clamp01(c.AttributionScore)
 				}
-				support := loadSupportPointers([]byte(model.Support))
-				support, added := addSupportPointer(support, ptr, 20)
+				modelSupport := loadSupportPointers([]byte(model.Support))
+				modelSupport, added := addSupportPointer(modelSupport, ptr, 20)
 				if !added {
 					continue
 				}
-				model.Support = mustJSON(support)
+				model.Support = mustJSON(modelSupport)
 				if model.ModelVersion <= 0 {
 					model.ModelVersion = 1
 				}
@@ -440,6 +440,8 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 							}
 						}
 					}
+					signature := inferStructureMisconceptionSignature(payload.Polarity, payload.Scope)
+					triggerContext := "message:" + msg.ID.String()
 					for _, mc := range payload.Misconceptions {
 						desc := strings.TrimSpace(mc.Description)
 						if desc == "" {
@@ -456,6 +458,22 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 						if ex != nil && ex.FirstSeenAt != nil {
 							firstSeen = ex.FirstSeenAt.UTC()
 						}
+						misSupport := types.DecodeMisconceptionSupport(datatypes.JSON(nil))
+						if ex != nil {
+							misSupport = types.DecodeMisconceptionSupport(ex.Support)
+						}
+						if misSupport.SignatureType == "" || misSupport.SignatureType == "unknown" {
+							misSupport.SignatureType = signature
+						}
+						misSupport = types.MergeMisconceptionSupportPointer(misSupport, types.MisconceptionSupportPointer{
+							SourceType: "chat_message",
+							SourceID:   supportID,
+							OccurredAt: seenAt.UTC().Format(time.RFC3339Nano),
+							Confidence: clamp01(ptr.Confidence),
+						}, 20)
+						if triggerContext != "" {
+							misSupport = types.AddMisconceptionTriggerContext(misSupport, triggerContext, 12)
+						}
 						row := &types.UserMisconceptionInstance{
 							UserID:             in.UserID,
 							CanonicalConceptID: cid,
@@ -465,7 +483,7 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 							Confidence:         conf,
 							FirstSeenAt:        &firstSeen,
 							LastSeenAt:         &ts,
-							Support:            mustJSON(ptr),
+							Support:            types.EncodeMisconceptionSupport(misSupport),
 						}
 						if ex != nil && ex.Confidence > conf {
 							row.Confidence = ex.Confidence
@@ -683,6 +701,25 @@ func tokenizeConceptText(s string) []string {
 		}
 	}
 	return dedupeStrings(out)
+}
+
+func inferStructureMisconceptionSignature(polarity, scope string) string {
+	pol := strings.TrimSpace(strings.ToLower(polarity))
+	sc := strings.TrimSpace(strings.ToLower(scope))
+	switch pol {
+	case "confusion":
+		return "frame_error"
+	case "confident_wrong":
+		switch sc {
+		case "explanation", "assertion":
+			return "frame_error"
+		case "question", "attempt":
+			return "procedural_gap"
+		default:
+			return "frame_error"
+		}
+	}
+	return "unknown"
 }
 
 func loadMisconceptionTaxonomy(raw datatypes.JSON) []misconceptionTaxon {

@@ -28,6 +28,8 @@ type RuntimeStateHandler struct {
 	misconRepo    repos.UserMisconceptionInstanceRepo
 	calibRepo     repos.UserConceptCalibrationRepo
 	alertRepo     repos.UserModelAlertRepo
+	readinessRepo repos.ConceptReadinessSnapshotRepo
+	gateRepo      repos.PrereqGateDecisionRepo
 }
 
 func NewRuntimeStateHandler(
@@ -41,6 +43,8 @@ func NewRuntimeStateHandler(
 	misconRepo repos.UserMisconceptionInstanceRepo,
 	calibRepo repos.UserConceptCalibrationRepo,
 	alertRepo repos.UserModelAlertRepo,
+	readinessRepo repos.ConceptReadinessSnapshotRepo,
+	gateRepo repos.PrereqGateDecisionRepo,
 ) *RuntimeStateHandler {
 	return &RuntimeStateHandler{
 		pathRuns:      pathRuns,
@@ -53,6 +57,8 @@ func NewRuntimeStateHandler(
 		misconRepo:    misconRepo,
 		calibRepo:     calibRepo,
 		alertRepo:     alertRepo,
+		readinessRepo: readinessRepo,
+		gateRepo:      gateRepo,
 	}
 }
 
@@ -88,6 +94,8 @@ func (h *RuntimeStateHandler) GetPathRuntime(c *gin.Context) {
 	var knowledgeContext any
 	var knowledgeCalibration any
 	var knowledgeAlerts any
+	var prereqGate any
+	var readinessSnapshot any
 	if pathRun != nil && pathRun.ActiveNodeID != nil && *pathRun.ActiveNodeID != uuid.Nil && h.pathNodes != nil {
 		if node, err := h.pathNodes.GetByID(dbc, *pathRun.ActiveNodeID); err == nil && node != nil {
 			var meta map[string]any
@@ -240,6 +248,18 @@ func (h *RuntimeStateHandler) GetPathRuntime(c *gin.Context) {
 			}
 		}
 	}
+	if pathRun != nil && pathRun.ActiveNodeID != nil && *pathRun.ActiveNodeID != uuid.Nil {
+		if h.gateRepo != nil {
+			if row, err := h.gateRepo.GetLatestByUserAndNode(dbc, rd.UserID, *pathRun.ActiveNodeID); err == nil && row != nil {
+				prereqGate = row
+			}
+		}
+		if h.readinessRepo != nil {
+			if row, err := h.readinessRepo.GetLatestByUserAndNode(dbc, rd.UserID, *pathRun.ActiveNodeID); err == nil && row != nil {
+				readinessSnapshot = row
+			}
+		}
+	}
 
 	response.RespondOK(c, gin.H{
 		"path_run":            pathRun,
@@ -248,6 +268,8 @@ func (h *RuntimeStateHandler) GetPathRuntime(c *gin.Context) {
 		"knowledge_context":   knowledgeContext,
 		"knowledge_calibration": knowledgeCalibration,
 		"knowledge_alerts":    knowledgeAlerts,
+		"prereq_gate":         prereqGate,
+		"readiness_snapshot":  readinessSnapshot,
 	})
 }
 

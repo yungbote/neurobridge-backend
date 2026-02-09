@@ -20,6 +20,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content/schema"
+	docgen "github.com/yungbote/neurobridge-backend/internal/modules/learning/docgen"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -75,12 +76,18 @@ type NodeDocBuildDeps struct {
 	DB  *gorm.DB
 	Log *logger.Logger
 
-	Path      repos.PathRepo
-	PathNodes repos.PathNodeRepo
-	NodeDocs  repos.LearningNodeDocRepo
-	Figures   repos.LearningNodeFigureRepo
-	Videos    repos.LearningNodeVideoRepo
-	GenRuns   repos.LearningDocGenerationRunRepo
+	Path              repos.PathRepo
+	PathNodes         repos.PathNodeRepo
+	NodeDocs          repos.LearningNodeDocRepo
+	DocVariants       repos.LearningNodeDocVariantRepo
+	Figures           repos.LearningNodeFigureRepo
+	Videos            repos.LearningNodeVideoRepo
+	GenRuns           repos.LearningDocGenerationRunRepo
+	Blueprints        repos.LearningNodeDocBlueprintRepo
+	RetrievalPacks    repos.DocRetrievalPackRepo
+	DocTraces         repos.DocGenerationTraceRepo
+	ConstraintReports repos.DocConstraintReportRepo
+	Revisions         repos.LearningNodeDocRevisionRepo
 
 	Files  repos.MaterialFileRepo
 	Chunks repos.MaterialChunkRepo
@@ -102,15 +109,22 @@ type NodeDocBuildDeps struct {
 }
 
 type NodeDocBuildInput struct {
-	OwnerUserID   uuid.UUID
-	MaterialSetID uuid.UUID
-	SagaID        uuid.UUID
-	PathID        uuid.UUID
-	MediaPatch    bool
-	NodeLimit     int
-	NodeSelect    string
-	MarkPending   bool
-	Report        func(stage string, pct int, message string)
+	OwnerUserID                uuid.UUID
+	MaterialSetID              uuid.UUID
+	SagaID                     uuid.UUID
+	PathID                     uuid.UUID
+	MediaPatch                 bool
+	NodeIDs                    []uuid.UUID
+	NodeLimit                  int
+	NodeSelect                 string
+	MarkPending                bool
+	VariantOnly                bool
+	VariantKind                string
+	VariantPolicyVersion       string
+	VariantSnapshotIDByNode    map[uuid.UUID]string
+	VariantPolicyVersionByNode map[uuid.UUID]string
+	OptionalSlotsByNode        map[uuid.UUID][]docgen.DocOptionalSlot
+	Report                     func(stage string, pct int, message string)
 }
 
 type NodeDocBuildOutput struct {
@@ -143,6 +157,9 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 	out := NodeDocBuildOutput{}
 	if deps.DB == nil || deps.Log == nil || deps.Path == nil || deps.PathNodes == nil || deps.NodeDocs == nil || deps.Files == nil || deps.Chunks == nil || deps.UserProfile == nil || deps.AI == nil || deps.Bootstrap == nil {
 		return out, fmt.Errorf("node_doc_build: missing deps")
+	}
+	if in.VariantOnly && deps.DocVariants == nil {
+		return out, fmt.Errorf("node_doc_build: missing doc_variants for variant_only")
 	}
 	if in.OwnerUserID == uuid.Nil {
 		return out, fmt.Errorf("node_doc_build: missing owner_user_id")
@@ -651,8 +668,8 @@ func NodeDocBuild(ctx context.Context, deps NodeDocBuildDeps, in NodeDocBuildInp
 		QueryText            string
 		QueryEmb             []float32
 	}
-	selectedNodes, pendingIDs := selectPathNodesForBuild(nodes, nodeKindByID, in.NodeLimit, in.NodeSelect)
-	if len(selectedNodes) == 0 {
+	selectedNodes, pendingIDs := selectPathNodesForBuild(nodes, nodeKindByID, in.NodeIDs, in.NodeLimit, in.NodeSelect)
+	if len(selectedNodes) == 0 && len(in.NodeIDs) == 0 {
 		selectedNodes = nodes
 		pendingIDs = map[uuid.UUID]bool{}
 	}
@@ -1698,6 +1715,57 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 
 			requireDiagrams := !diagramsDisabled && reqs.MinDiagrams > 0
 
+			var blueprint *docgen.DocBlueprintV1
+			if deps.Blueprints != nil {
+				bp, err := ensureNodeDocBlueprint(ctx, deps, infoByID[w.Node.ID], reqs)
+				if err != nil {
+					return err
+				}
+				blueprint = bp
+			}
+			optionalSlots := normalizeOptionalSlots(nil)
+			if in.OptionalSlotsByNode != nil {
+				optionalSlots = normalizeOptionalSlots(in.OptionalSlotsByNode[w.Node.ID])
+			}
+			if blueprint != nil {
+				optionalSlots = mergeOptionalSlots(blueprint.OptionalSlots, optionalSlots)
+				if len(optionalSlots) > 0 {
+					bp := *blueprint
+					bp.OptionalSlots = optionalSlots
+					blueprint = &bp
+				}
+			} else if len(optionalSlots) > 0 {
+				bp := buildDocBlueprint(infoByID[w.Node.ID], reqs)
+				bp.OptionalSlots = optionalSlots
+				blueprint = &bp
+			}
+
+			policyVersion := docgen.DocPolicyVersion()
+			blueprintVersion := docgen.DocBlueprintVersion()
+			blueprintJSON := "(none)"
+			if blueprint != nil {
+				if strings.TrimSpace(blueprint.BlueprintVersion) != "" {
+					blueprintVersion = strings.TrimSpace(blueprint.BlueprintVersion)
+				}
+				if raw, err := json.Marshal(blueprint); err == nil {
+					if canon, cerr := content.CanonicalizeJSON(raw); cerr == nil {
+						blueprintJSON = string(canon)
+					}
+				}
+			}
+
+			retrievalPack, retrievalPackJSON, err := ensureNodeDocRetrievalPack(ctx, deps, in.MaterialSetID, infoByID[w.Node.ID], blueprint, chunkIDs)
+			if err != nil {
+				return err
+			}
+			retrievalPackID := ""
+			if retrievalPack != nil {
+				retrievalPackID = strings.TrimSpace(retrievalPack.PackID)
+			}
+			if strings.TrimSpace(retrievalPackJSON) == "" {
+				retrievalPackJSON = "(none)"
+			}
+
 			intentForPrompt := strings.TrimSpace(pathIntentMD)
 			if intentForPrompt == "" {
 				intentForPrompt = "(none)"
@@ -1719,6 +1787,8 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				NodeNarrativeJSON:   nodeNarrativeJSON,
 				PatternContextJSON:  patternContextByNodeID[w.Node.ID],
 				NarrativeContext:    string(nctxJSON),
+				BlueprintVersion:    blueprintVersion,
+				RetrievalPackID:     retrievalPackID,
 				OutlineJSON:         string(outlineJSON),
 				SectionEvidenceJSON: string(sectionEvidenceJSON),
 				EquationsJSON:       equationsJSON,
@@ -1731,8 +1801,43 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				Assets:              nodeMediaFingerprint(figAssetsByNode[w.Node.ID], vidAssetsByNode[w.Node.ID], assetsJSON),
 				Requirements:        nodeDocRequirementsFingerprint(reqs, diagramsDisabled, requireDiagrams),
 				MediaPatch:          mediaPatchMode,
+				OptionalSlots:       optionalSlots,
 			})
-			if w.ExistingDoc != nil && strings.TrimSpace(w.ExistingDoc.SourcesHash) == inputHash {
+			variantSnapshotID := ""
+			variantPolicyVersion := strings.TrimSpace(in.VariantPolicyVersion)
+			variantKind := strings.TrimSpace(in.VariantKind)
+			if in.VariantSnapshotIDByNode != nil {
+				variantSnapshotID = strings.TrimSpace(in.VariantSnapshotIDByNode[w.Node.ID])
+			}
+			if in.VariantPolicyVersionByNode != nil {
+				if v := strings.TrimSpace(in.VariantPolicyVersionByNode[w.Node.ID]); v != "" {
+					variantPolicyVersion = v
+				}
+			}
+			if variantPolicyVersion == "" {
+				variantPolicyVersion = docgen.DocPolicyVersion()
+			}
+			if variantKind == "" {
+				variantKind = "progressive"
+			}
+			if in.VariantOnly {
+				if w.ExistingDoc == nil {
+					atomic.AddInt32(&existingCount, 1)
+					return nil
+				}
+				if variantSnapshotID == "" {
+					atomic.AddInt32(&existingCount, 1)
+					return nil
+				}
+				if deps.DocVariants != nil {
+					if row, err := deps.DocVariants.GetBySnapshotID(dbctx.Context{Ctx: ctx}, variantSnapshotID); err == nil && row != nil {
+						if strings.TrimSpace(row.SourcesHash) == inputHash {
+							atomic.AddInt32(&existingCount, 1)
+							return nil
+						}
+					}
+				}
+			} else if w.ExistingDoc != nil && strings.TrimSpace(w.ExistingDoc.SourcesHash) == inputHash {
 				atomic.AddInt32(&existingCount, 1)
 				return nil
 			}
@@ -1764,6 +1869,12 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 				diagramRuleLine = "- Include at least one diagram block (SVG preferred)."
 				diagramPrefRule = `- Prefer diagram.kind="svg" (simple, readable SVG).`
 			}
+			optionalSlotRuleLine := strings.Join([]string{
+				"- If BLUEPRINT_JSON.optional_slots is provided and non-empty, fill each slot with min_blocks to max_blocks blocks.",
+				`- For each slot block, set id="slot_<slot_id>_<n>" where n starts at 1.`,
+				"- For each slot block, use only allowed_block_kinds for that slot.",
+				"- If optional_slots is empty, do not create any block ids starting with \"slot_\".",
+			}, "\n\t\t")
 
 			system := fmt.Sprintf(`
 	MODE: STATIC_UNIT_DOC
@@ -1809,6 +1920,8 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 	Evidence usage:
 	- Use SECTION_EXCERPTS_JSON to ground each section; cite only chunk_ids relevant to that section.
 	- Use short quotes sparingly when they clarify; a quote callout (variant="quote") is allowed.
+	- If RETRIEVAL_PACK_JSON is provided, treat its claims/citations as canonical; do not introduce facts that contradict it.
+	- If BLUEPRINT_JSON is provided, obey its constraints and required claims.
 
 		Media rules (diagrams vs figures):
 		- "diagram" blocks are SVG/Mermaid and are best for precise, labeled, math-y visuals (flows, free-body diagrams, graphs).
@@ -1864,16 +1977,25 @@ PATTERN_CONTEXT_JSON (optional; path/module/lesson teaching patterns):
 		  - Include concept_keys (1–3) drawn from CONCEPT_KEYS for each flashcard.
 		  - Keep them tight (1–2 sentences each side).
 		  - For each flashcard, include trigger_after_block_ids: 1–3 earlier teaching block IDs.
-		- Heading levels must be 2, 3, or 4 (never use 1).
-		- Include a tip callout titled exactly "Worked example".
-		%s
-		- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
+			- Heading levels must be 2, 3, or 4 (never use 1).
+			- Include a tip callout titled exactly "Worked example".
+			%s
+			%s
+			- If MUST_CITE_CHUNK_IDS is provided, each listed chunk_id must appear at least once in citations.
 	- Every content block (everything except heading/divider/video/code) MUST include non-empty citations.
 	- Citations MUST reference ONLY the provided chunk_ids.
 	- Each citation is {chunk_id, quote (short), loc:{page,start,end}}. Use 0 for unknown locs.
 	- Use markdown in md fields; do not include raw HTML.
 	- If using a figure/video URL, it MUST come from AVAILABLE_MEDIA_ASSETS_JSON.
-		%s`, diagramRuleLine, diagramPrefRule)
+		%s`, diagramRuleLine, optionalSlotRuleLine, diagramPrefRule)
+
+			var constraintReport *docgen.DocConstraintReportV1
+			var constraintReportID string
+			var constraintReportJSON []byte
+			modelUsed := strings.TrimSpace(openAIModelFromEnv())
+			if modelUsed == "" {
+				modelUsed = "unknown"
+			}
 
 			var patchedDoc *content.NodeDocV1
 			if mediaPatchMode && w.ExistingDoc != nil && (hasGeneratedFigures || hasGeneratedVideos) {
@@ -1990,6 +2112,12 @@ OUTLINE_JSON (section headings + goals + bridges; follow exactly):
 SECTION_EXCERPTS_JSON (per section chunk_ids + excerpts; use for grounding):
 %s
 
+BLUEPRINT_JSON (constraints + required claims; must follow):
+%s
+
+RETRIEVAL_PACK_JSON (canonical claims + citations + deltas; use to ground claims):
+%s
+
 NARRATIVE_CONTEXT_JSON (prev/next summaries + module + graph hints):
 %s
 
@@ -2066,6 +2194,8 @@ Return ONLY JSON matching schema.`,
 					strings.TrimSpace(mediaRankJSON),
 					string(outlineJSON),
 					string(sectionEvidenceJSON),
+					blueprintJSON,
+					retrievalPackJSON,
 					string(nctxJSON),
 					equationsJSON,
 					w.UserKnowledgeJSON,
@@ -2100,11 +2230,15 @@ Return ONLY JSON matching schema.`,
 					generatedFigures,
 				) + feedback
 
+				promptPayload := strings.TrimSpace(system) + "\n\n" + strings.TrimSpace(user)
+				promptHash := content.HashBytes([]byte(promptPayload))
+
 				latency := 0
 				doc := content.NodeDocV1{}
 				var orderRepairMetrics map[string]any
 				patchedUsed := false
 				if patchedDoc != nil && attempt == 1 {
+					modelUsed = "media_patch"
 					doc = *patchedDoc
 					latency = int(time.Since(start).Milliseconds())
 					patchedUsed = true
@@ -2379,6 +2513,32 @@ Return ONLY JSON matching schema.`,
 						errs = append(errs, threadErrs...)
 					}
 				}
+				if blueprint != nil {
+					report := docgen.ValidateDocAgainstBlueprint(doc, *blueprint)
+					constraintReport = &report
+					if deps.ConstraintReports != nil {
+						reportJSON, _ := json.Marshal(report)
+						reportID := content.HashBytes([]byte(inputHash + "|" + string(reportJSON)))
+						constraintReportID = reportID
+						constraintReportJSON = reportJSON
+						row := &types.DocConstraintReport{
+							ReportID:       reportID,
+							SchemaVersion:  report.SchemaVersion,
+							Passed:         report.Passed,
+							ViolationCount: len(report.Violations),
+							ReportJSON:     datatypes.JSON(reportJSON),
+							CreatedAt:      time.Now().UTC(),
+						}
+						if err := deps.ConstraintReports.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil && deps.Log != nil {
+							deps.Log.Warn("node_doc_build: constraint report upsert failed", "error", err)
+						}
+					}
+					if !report.Passed {
+						for _, v := range report.Violations {
+							errs = append(errs, "blueprint violation: "+v.Code+" "+v.Message)
+						}
+					}
+				}
 				if len(errs) > 0 {
 					lastErrors = errs
 					if deps.GenRuns != nil {
@@ -2401,28 +2561,131 @@ Return ONLY JSON matching schema.`,
 				docText, _ := metrics["doc_text"].(string)
 				docText = content.SanitizeStringForPostgres(docText)
 
-				docID := uuid.New()
-				row := &types.LearningNodeDoc{
-					ID:            docID,
-					UserID:        in.OwnerUserID,
-					PathID:        pathID,
-					PathNodeID:    w.Node.ID,
-					SchemaVersion: 1,
-					DocJSON:       datatypes.JSON(canon),
-					DocText:       docText,
-					ContentHash:   contentHash,
-					SourcesHash:   sourcesHash,
-					CreatedAt:     time.Now().UTC(),
-					UpdatedAt:     time.Now().UTC(),
+				traceReport := constraintReport
+				if traceReport == nil {
+					traceReport = &docgen.DocConstraintReportV1{
+						SchemaVersion:  docgen.DocConstraintReportSchemaVersion,
+						Passed:         true,
+						Violations:     []docgen.DocConstraintViolation{},
+						FallbackReason: "blueprint_missing",
+						CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+					}
+				} else if strings.TrimSpace(traceReport.CheckedAt) == "" {
+					traceReport.CheckedAt = time.Now().UTC().Format(time.RFC3339)
 				}
-				if err := deps.NodeDocs.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
-					return err
+
+				var slotFills []docgen.DocSlotFill
+				if blueprint != nil {
+					slotFills = docgen.SlotFillsFromDoc(doc, *blueprint)
+				}
+
+				trace := docgen.DocGenerationTraceV1{
+					SchemaVersion:    docgen.DocGenerationTraceSchemaVersion,
+					PolicyVersion:    policyVersion,
+					Model:            modelUsed,
+					PromptHash:       promptHash,
+					RetrievalPackID:  retrievalPackID,
+					BlueprintVersion: blueprintVersion,
+					SlotFills:        slotFills,
+					ConstraintReport: *traceReport,
+					CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+				}
+				trace.TraceID = docgen.ComputeTraceID(trace)
+				traceJSON, _ := json.Marshal(trace)
+
+				var artifactID *uuid.UUID
+				now := time.Now().UTC()
+				if in.VariantOnly {
+					baseID := w.ExistingDoc.ID
+					row := &types.LearningNodeDocVariant{
+						UserID:          in.OwnerUserID,
+						PathID:          pathID,
+						PathNodeID:      w.Node.ID,
+						BaseDocID:       &baseID,
+						VariantKind:     variantKind,
+						PolicyVersion:   variantPolicyVersion,
+						SchemaVersion:   1,
+						SnapshotID:      variantSnapshotID,
+						RetrievalPackID: retrievalPackID,
+						TraceID:         trace.TraceID,
+						DocJSON:         datatypes.JSON(canon),
+						DocText:         docText,
+						ContentHash:     contentHash,
+						SourcesHash:     sourcesHash,
+						Status:          "active",
+						CreatedAt:       now,
+						UpdatedAt:       now,
+					}
+					if err := deps.DocVariants.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
+						return err
+					}
+				} else {
+					docID := uuid.New()
+					artifactID = &docID
+					row := &types.LearningNodeDoc{
+						ID:            docID,
+						UserID:        in.OwnerUserID,
+						PathID:        pathID,
+						PathNodeID:    w.Node.ID,
+						SchemaVersion: 1,
+						DocJSON:       datatypes.JSON(canon),
+						DocText:       docText,
+						ContentHash:   contentHash,
+						SourcesHash:   sourcesHash,
+						CreatedAt:     now,
+						UpdatedAt:     now,
+					}
+					if err := deps.NodeDocs.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
+						return err
+					}
 				}
 
 				if deps.GenRuns != nil {
 					_, _ = deps.GenRuns.Create(dbctx.Context{Ctx: ctx}, []*types.LearningDocGenerationRun{
-						makeGenRun("node_doc", &docID, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeDocPromptVersion, attempt, latency, nil, metrics),
+						makeGenRun("node_doc", artifactID, in.OwnerUserID, pathID, w.Node.ID, "succeeded", nodeDocPromptVersion, attempt, latency, nil, metrics),
 					})
+				}
+
+				if deps.DocTraces != nil {
+					row := &types.DocGenerationTrace{
+						TraceID:          trace.TraceID,
+						UserID:           in.OwnerUserID,
+						PathID:           pathID,
+						PathNodeID:       w.Node.ID,
+						PolicyVersion:    trace.PolicyVersion,
+						SchemaVersion:    trace.SchemaVersion,
+						Model:            trace.Model,
+						PromptHash:       trace.PromptHash,
+						RetrievalPackID:  trace.RetrievalPackID,
+						BlueprintVersion: trace.BlueprintVersion,
+						TraceJSON:        datatypes.JSON(traceJSON),
+						CreatedAt:        now,
+					}
+					if err := deps.DocTraces.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil && deps.Log != nil {
+						deps.Log.Warn("node_doc_build: trace upsert failed", "error", err)
+					}
+
+					if deps.ConstraintReports != nil && strings.TrimSpace(constraintReportID) != "" {
+						reportJSON := constraintReportJSON
+						if len(reportJSON) == 0 {
+							if b, err := json.Marshal(traceReport); err == nil {
+								reportJSON = b
+							}
+						}
+						if len(reportJSON) > 0 {
+							row := &types.DocConstraintReport{
+								ReportID:       constraintReportID,
+								TraceID:        trace.TraceID,
+								SchemaVersion:  traceReport.SchemaVersion,
+								Passed:         traceReport.Passed,
+								ViolationCount: len(traceReport.Violations),
+								ReportJSON:     datatypes.JSON(reportJSON),
+							}
+							if err := deps.ConstraintReports.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil && deps.Log != nil {
+								deps.Log.Warn("node_doc_build: trace constraint report update failed", "error", err)
+							}
+						}
+					}
 				}
 
 				if bcAny, ok := metrics["block_counts"]; ok && bcAny != nil {
@@ -2457,7 +2720,7 @@ Return ONLY JSON matching schema.`,
 	out.VideosWritten = int(atomic.LoadInt32(&videos))
 	out.TablesWritten = int(atomic.LoadInt32(&tables))
 
-	if in.MarkPending && len(selectedNodes) > 0 {
+	if in.MarkPending && !in.VariantOnly && len(selectedNodes) > 0 {
 		selectedIDs := make([]uuid.UUID, 0, len(selectedNodes))
 		for _, n := range selectedNodes {
 			if n != nil && n.ID != uuid.Nil {
@@ -2476,10 +2739,21 @@ Return ONLY JSON matching schema.`,
 		}
 		markReadyNodes(ctx, deps, selectedNodes, infoByID, readyIDs)
 		if len(nodes) > 0 {
+			readyCount := len(nodes) - len(pendingIDs)
+			if len(in.NodeIDs) > 0 && deps.NodeDocs != nil && len(nodeIDs) > 0 {
+				if rows, err := deps.NodeDocs.GetByPathNodeIDs(dbctx.Context{Ctx: ctx}, nodeIDs); err == nil {
+					readyCount = 0
+					for _, d := range rows {
+						if d != nil && d.PathNodeID != uuid.Nil {
+							readyCount++
+						}
+					}
+				}
+			}
 			updatePathMeta(ctx, deps, pathID, pathMeta, map[string]any{
 				"progressive_mode":        true,
 				"progressive_nodes_total": len(nodes),
-				"progressive_nodes_ready": len(nodes) - len(pendingIDs),
+				"progressive_nodes_ready": readyCount,
 			})
 		}
 	}
@@ -2504,6 +2778,8 @@ type nodeDocHashInput struct {
 	NodeNarrativeJSON   string
 	PatternContextJSON  string
 	NarrativeContext    string
+	BlueprintVersion    string
+	RetrievalPackID     string
 	OutlineJSON         string
 	SectionEvidenceJSON string
 	EquationsJSON       string
@@ -2516,6 +2792,7 @@ type nodeDocHashInput struct {
 	Assets              []map[string]any
 	Requirements        map[string]any
 	MediaPatch          bool
+	OptionalSlots       []docgen.DocOptionalSlot
 }
 
 func nodeDocInputHash(in nodeDocHashInput) string {
@@ -2543,6 +2820,8 @@ func nodeDocInputHash(in nodeDocHashInput) string {
 			"context_hash":    hashString(in.NarrativeContext),
 			"media_rank_hash": hashString(in.MediaRankJSON),
 		},
+		"blueprint_version":     strings.TrimSpace(in.BlueprintVersion),
+		"retrieval_pack_id":     strings.TrimSpace(in.RetrievalPackID),
 		"outline_hash":          hashString(in.OutlineJSON),
 		"section_evidence_hash": hashString(in.SectionEvidenceJSON),
 		"equations_hash":        hashString(in.EquationsJSON),
@@ -2554,6 +2833,9 @@ func nodeDocInputHash(in nodeDocHashInput) string {
 		"assets":                in.Assets,
 		"requirements":          in.Requirements,
 		"media_patch":           in.MediaPatch,
+	}
+	if len(in.OptionalSlots) > 0 {
+		payload["optional_slots"] = in.OptionalSlots
 	}
 	canon, err := content.CanonicalizeJSON(payload)
 	if err != nil {
@@ -2642,8 +2924,41 @@ func hashString(s string) string {
 	return content.HashBytes([]byte(s))
 }
 
-func selectPathNodesForBuild(nodes []*types.PathNode, nodeKindByID map[uuid.UUID]string, limit int, mode string) ([]*types.PathNode, map[uuid.UUID]bool) {
-	if limit <= 0 || len(nodes) == 0 {
+func selectPathNodesForBuild(nodes []*types.PathNode, nodeKindByID map[uuid.UUID]string, nodeIDs []uuid.UUID, limit int, mode string) ([]*types.PathNode, map[uuid.UUID]bool) {
+	if len(nodes) == 0 {
+		return nil, map[uuid.UUID]bool{}
+	}
+	if len(nodeIDs) > 0 {
+		allowed := map[uuid.UUID]bool{}
+		for _, id := range nodeIDs {
+			if id != uuid.Nil {
+				allowed[id] = true
+			}
+		}
+		selected := make([]*types.PathNode, 0, len(nodeIDs))
+		selectedIDs := map[uuid.UUID]bool{}
+		for _, n := range nodes {
+			if n == nil || n.ID == uuid.Nil {
+				continue
+			}
+			if !allowed[n.ID] {
+				continue
+			}
+			selected = append(selected, n)
+			selectedIDs[n.ID] = true
+		}
+		pending := map[uuid.UUID]bool{}
+		for _, n := range nodes {
+			if n == nil || n.ID == uuid.Nil {
+				continue
+			}
+			if !selectedIDs[n.ID] {
+				pending[n.ID] = true
+			}
+		}
+		return selected, pending
+	}
+	if limit <= 0 {
 		return nodes, map[uuid.UUID]bool{}
 	}
 	limit = clampIntCeiling(limit, 1, 0)
@@ -2771,4 +3086,675 @@ func updateNodeContentState(ctx context.Context, deps NodeDocBuildDeps, nodeID u
 		"content_state": strings.ToLower(strings.TrimSpace(state)),
 		"content_ready": strings.EqualFold(strings.TrimSpace(state), "ready"),
 	})
+}
+
+func ensureNodeDocBlueprint(ctx context.Context, deps NodeDocBuildDeps, info nodeInfo, reqs content.NodeDocRequirements) (*docgen.DocBlueprintV1, error) {
+	if deps.Blueprints == nil || info.Node == nil || info.Node.ID == uuid.Nil {
+		return nil, nil
+	}
+	version := docgen.DocBlueprintVersion()
+	existing, err := deps.Blueprints.GetByNodeAndVersion(dbctx.Context{Ctx: ctx}, info.Node.ID, version)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil && len(existing.BlueprintJSON) > 0 && string(existing.BlueprintJSON) != "null" {
+		var bp docgen.DocBlueprintV1
+		if err := json.Unmarshal(existing.BlueprintJSON, &bp); err == nil {
+			return &bp, nil
+		}
+	}
+
+	bp := buildDocBlueprint(info, reqs)
+	raw, _ := json.Marshal(bp)
+	canon, cErr := content.CanonicalizeJSON(raw)
+	if cErr != nil {
+		return nil, cErr
+	}
+	row := &types.LearningNodeDocBlueprint{
+		PathID:           info.Node.PathID,
+		PathNodeID:       info.Node.ID,
+		BlueprintVersion: bp.BlueprintVersion,
+		SchemaVersion:    bp.SchemaVersion,
+		BlueprintJSON:    datatypes.JSON(canon),
+		CreatedAt:        time.Now().UTC(),
+	}
+	if err := deps.Blueprints.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
+		return nil, err
+	}
+	return &bp, nil
+}
+
+const (
+	docRetrievalMaxClaims      = 120
+	docRetrievalMaxClaimSource = 6
+	docRetrievalMaxDeltas      = 8
+	docRetrievalMaxDeltaBlocks = 24
+)
+
+func ensureNodeDocRetrievalPack(
+	ctx context.Context,
+	deps NodeDocBuildDeps,
+	materialSetID uuid.UUID,
+	info nodeInfo,
+	blueprint *docgen.DocBlueprintV1,
+	chunkIDs []uuid.UUID,
+) (*docgen.DocRetrievalPackV1, string, error) {
+	pack, err := buildDocRetrievalPack(ctx, deps, materialSetID, info, blueprint, chunkIDs)
+	if err != nil {
+		return nil, "", err
+	}
+	if pack == nil {
+		return nil, "", nil
+	}
+	raw, _ := json.Marshal(pack)
+	canon, cErr := content.CanonicalizeJSON(raw)
+	if cErr != nil {
+		return nil, "", cErr
+	}
+	if deps.RetrievalPacks != nil && info.Node != nil && info.Node.ID != uuid.Nil {
+		row := &types.DocRetrievalPack{
+			PathID:           info.Node.PathID,
+			PathNodeID:       info.Node.ID,
+			PackID:           pack.PackID,
+			PolicyVersion:    pack.PolicyVersion,
+			BlueprintVersion: pack.BlueprintVersion,
+			SchemaVersion:    pack.SchemaVersion,
+			PackJSON:         datatypes.JSON(canon),
+			CreatedAt:        time.Now().UTC(),
+		}
+		if err := deps.RetrievalPacks.Upsert(dbctx.Context{Ctx: ctx}, row); err != nil {
+			return nil, "", err
+		}
+	}
+	return pack, string(canon), nil
+}
+
+func buildDocRetrievalPack(
+	ctx context.Context,
+	deps NodeDocBuildDeps,
+	materialSetID uuid.UUID,
+	info nodeInfo,
+	blueprint *docgen.DocBlueprintV1,
+	chunkIDs []uuid.UUID,
+) (*docgen.DocRetrievalPackV1, error) {
+	policyVersion := docgen.DocPolicyVersion()
+	blueprintVersion := docgen.DocBlueprintVersion()
+	if blueprint != nil && strings.TrimSpace(blueprint.BlueprintVersion) != "" {
+		blueprintVersion = strings.TrimSpace(blueprint.BlueprintVersion)
+	}
+
+	requiredClaimIDs := map[string]bool{}
+	if blueprint != nil {
+		for _, rc := range blueprint.RequiredClaims {
+			if id := strings.TrimSpace(rc.ClaimID); id != "" {
+				requiredClaimIDs[id] = true
+			}
+		}
+	}
+
+	claims, err := buildDocClaimEvidence(ctx, deps, materialSetID, info, chunkIDs, requiredClaimIDs)
+	if err != nil {
+		return nil, err
+	}
+	citations := buildDocCitations(chunkIDs)
+	deltas := buildDocDeltasFromRevisions(ctx, deps, info.Node, docRetrievalMaxDeltas)
+
+	pack := docgen.DocRetrievalPackV1{
+		SchemaVersion:    docgen.DocRetrievalPackSchemaVersion,
+		PackID:           "",
+		BlueprintVersion: blueprintVersion,
+		PolicyVersion:    policyVersion,
+		Claims:           claims,
+		Citations:        citations,
+		Deltas:           deltas,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+	}
+	pack.PackID = docgen.ComputeRetrievalPackID(pack)
+	return &pack, nil
+}
+
+func buildDocCitations(chunkIDs []uuid.UUID) []docgen.DocCitation {
+	ids := sortedUUIDStrings(chunkIDs)
+	out := make([]docgen.DocCitation, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		out = append(out, docgen.DocCitation{
+			CitationID: id,
+			ChunkID:    id,
+			SourceType: "material_chunk",
+		})
+	}
+	return out
+}
+
+func buildDocClaimEvidence(
+	ctx context.Context,
+	deps NodeDocBuildDeps,
+	materialSetID uuid.UUID,
+	info nodeInfo,
+	chunkIDs []uuid.UUID,
+	requiredClaimIDs map[string]bool,
+) ([]docgen.DocClaimEvidence, error) {
+	if deps.DB == nil || materialSetID == uuid.Nil {
+		return nil, nil
+	}
+	if !deps.DB.Migrator().HasTable(&types.MaterialChunkClaim{}) || !deps.DB.Migrator().HasTable(&types.MaterialClaim{}) {
+		return nil, nil
+	}
+
+	allowed := map[uuid.UUID]bool{}
+	for _, id := range chunkIDs {
+		if id != uuid.Nil {
+			allowed[id] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, nil
+	}
+	allowedIDs := make([]uuid.UUID, 0, len(allowed))
+	for id := range allowed {
+		allowedIDs = append(allowedIDs, id)
+	}
+
+	type chunkClaimRow struct {
+		MaterialChunkID uuid.UUID `gorm:"column:material_chunk_id"`
+		MaterialClaimID uuid.UUID `gorm:"column:material_claim_id"`
+	}
+	var edges []chunkClaimRow
+	if err := deps.DB.WithContext(ctx).
+		Table("material_chunk_claim").
+		Select("material_chunk_id, material_claim_id").
+		Where("material_chunk_id IN ?", allowedIDs).
+		Find(&edges).Error; err != nil {
+		return nil, err
+	}
+
+	claimToChunks := map[uuid.UUID][]uuid.UUID{}
+	for _, e := range edges {
+		if !allowed[e.MaterialChunkID] {
+			continue
+		}
+		claimToChunks[e.MaterialClaimID] = append(claimToChunks[e.MaterialClaimID], e.MaterialChunkID)
+	}
+
+	prereqKeys := dedupeStrings(info.PrereqKeys)
+	if len(prereqKeys) > 0 && deps.Concepts != nil && deps.DB.Migrator().HasTable(&types.MaterialClaimConcept{}) && info.Node != nil {
+		scopeID := info.Node.PathID
+		concepts, err := deps.Concepts.GetByScopeAndKeys(dbctx.Context{Ctx: ctx}, "path", &scopeID, prereqKeys)
+		if err == nil && len(concepts) > 0 {
+			conceptIDs := make([]uuid.UUID, 0, len(concepts))
+			for _, c := range concepts {
+				if c != nil && c.ID != uuid.Nil {
+					conceptIDs = append(conceptIDs, c.ID)
+				}
+			}
+			if len(conceptIDs) > 0 {
+				type claimConceptRow struct {
+					MaterialClaimID uuid.UUID `gorm:"column:material_claim_id"`
+				}
+				var claimRows []claimConceptRow
+				if err := deps.DB.WithContext(ctx).
+					Table("material_claim_concept").
+					Select("material_claim_id").
+					Where("concept_id IN ?", conceptIDs).
+					Find(&claimRows).Error; err == nil {
+					extraClaimIDs := make([]uuid.UUID, 0, len(claimRows))
+					seen := map[uuid.UUID]bool{}
+					for _, row := range claimRows {
+						id := row.MaterialClaimID
+						if id == uuid.Nil || seen[id] {
+							continue
+						}
+						seen[id] = true
+						if _, ok := claimToChunks[id]; ok {
+							continue
+						}
+						extraClaimIDs = append(extraClaimIDs, id)
+					}
+					if len(extraClaimIDs) > 0 {
+						var extraEdges []chunkClaimRow
+						if err := deps.DB.WithContext(ctx).
+							Table("material_chunk_claim").
+							Select("material_chunk_id, material_claim_id").
+							Where("material_claim_id IN ?", extraClaimIDs).
+							Find(&extraEdges).Error; err == nil {
+							for _, e := range extraEdges {
+								if !allowed[e.MaterialChunkID] {
+									continue
+								}
+								claimToChunks[e.MaterialClaimID] = append(claimToChunks[e.MaterialClaimID], e.MaterialChunkID)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(claimToChunks) == 0 {
+		return nil, nil
+	}
+
+	claimIDs := make([]uuid.UUID, 0, len(claimToChunks))
+	for id, chunks := range claimToChunks {
+		if id == uuid.Nil || len(chunks) == 0 {
+			continue
+		}
+		claimIDs = append(claimIDs, id)
+	}
+	sort.Slice(claimIDs, func(i, j int) bool {
+		return claimIDs[i].String() < claimIDs[j].String()
+	})
+	if len(claimIDs) > docRetrievalMaxClaims {
+		claimIDs = claimIDs[:docRetrievalMaxClaims]
+	}
+
+	var claims []*types.MaterialClaim
+	if err := deps.DB.WithContext(ctx).
+		Where("id IN ? AND material_set_id = ?", claimIDs, materialSetID).
+		Find(&claims).Error; err != nil {
+		return nil, err
+	}
+	claimByID := map[uuid.UUID]*types.MaterialClaim{}
+	for _, c := range claims {
+		if c != nil {
+			claimByID[c.ID] = c
+		}
+	}
+
+	out := make([]docgen.DocClaimEvidence, 0, len(claimIDs))
+	for _, id := range claimIDs {
+		claim := claimByID[id]
+		if claim == nil {
+			continue
+		}
+		chunks := claimToChunks[id]
+		if len(chunks) == 0 {
+			continue
+		}
+		sourceIDs := sortedUUIDStrings(chunks)
+		if len(sourceIDs) == 0 {
+			continue
+		}
+		if len(sourceIDs) > docRetrievalMaxClaimSource {
+			sourceIDs = sourceIDs[:docRetrievalMaxClaimSource]
+		}
+		conceptKeys := claimConceptKeys(claim.Metadata)
+		required := requiredClaimIDs[claim.ID.String()] || requiredClaimIDs[strings.TrimSpace(claim.Key)]
+		out = append(out, docgen.DocClaimEvidence{
+			ClaimID:     claim.ID.String(),
+			ConceptKeys: conceptKeys,
+			Text:        strings.TrimSpace(claim.Content),
+			SourceIDs:   sourceIDs,
+			CitationIDs: sourceIDs,
+			Required:    required,
+			Confidence:  claim.Confidence,
+		})
+	}
+
+	return out, nil
+}
+
+func buildDocDeltasFromRevisions(ctx context.Context, deps NodeDocBuildDeps, node *types.PathNode, max int) []docgen.DocDelta {
+	if max <= 0 || deps.Revisions == nil || node == nil || node.ID == uuid.Nil {
+		return nil
+	}
+	rows, err := deps.Revisions.ListByPathNodeID(dbctx.Context{Ctx: ctx}, node.ID, max*4)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+
+	grouped := map[uuid.UUID][]*types.LearningNodeDocRevision{}
+	order := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		if r == nil || r.DocID == uuid.Nil {
+			continue
+		}
+		if _, ok := grouped[r.DocID]; !ok {
+			order = append(order, r.DocID)
+		}
+		grouped[r.DocID] = append(grouped[r.DocID], r)
+	}
+
+	out := make([]docgen.DocDelta, 0, len(order))
+	for _, docID := range order {
+		group := grouped[docID]
+		if len(group) == 0 {
+			continue
+		}
+		opCounts := map[string]int{}
+		blockIDs := map[string]bool{}
+		for _, r := range group {
+			op := strings.ToLower(strings.TrimSpace(r.Operation))
+			if op != "" {
+				opCounts[op]++
+			}
+			if bid := strings.TrimSpace(r.BlockID); bid != "" {
+				blockIDs[bid] = true
+			}
+		}
+		ops := make([]string, 0, len(opCounts))
+		for op := range opCounts {
+			ops = append(ops, op)
+		}
+		sort.Strings(ops)
+		parts := make([]string, 0, len(ops))
+		for _, op := range ops {
+			parts = append(parts, fmt.Sprintf("%s:%d", op, opCounts[op]))
+		}
+		summary := fmt.Sprintf("revisions=%d", len(group))
+		if len(parts) > 0 {
+			summary = summary + " ops=" + strings.Join(parts, " ")
+		}
+
+		blockList := make([]string, 0, len(blockIDs))
+		for id := range blockIDs {
+			blockList = append(blockList, id)
+		}
+		sort.Strings(blockList)
+		if len(blockList) > docRetrievalMaxDeltaBlocks {
+			blockList = blockList[:docRetrievalMaxDeltaBlocks]
+		}
+
+		out = append(out, docgen.DocDelta{
+			SourceDocID:    docID.String(),
+			Summary:        summary,
+			BlocksAffected: blockList,
+		})
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+func claimConceptKeys(meta datatypes.JSON) []string {
+	if len(meta) == 0 || strings.TrimSpace(string(meta)) == "" || strings.TrimSpace(string(meta)) == "null" {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(meta, &m); err != nil {
+		return nil
+	}
+	raw := m["concept_keys"]
+	if raw == nil {
+		raw = m["conceptKeys"]
+	}
+	keys := dedupeStrings(stringSliceFromAny(raw))
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedUUIDStrings(ids []uuid.UUID) []string {
+	out := uuidStrings(ids)
+	sort.Strings(out)
+	return out
+}
+
+func buildDocBlueprint(info nodeInfo, reqs content.NodeDocRequirements) docgen.DocBlueprintV1 {
+	objectives := dedupeStrings(stringSliceFromAny(info.Meta["objectives"]))
+	if len(objectives) == 0 && strings.TrimSpace(info.Goal) != "" {
+		objectives = []string{strings.TrimSpace(info.Goal)}
+	}
+	allowedFrames := dedupeStrings(stringSliceFromAny(info.Meta["allowed_frames"]))
+	optionalSlots := optionalSlotsFromMeta(info.Meta)
+	requiredConcepts := dedupeStrings(append([]string{}, info.ConceptKeys...))
+	requiredConcepts = dedupeStrings(append(requiredConcepts, info.PrereqKeys...))
+
+	constraints := docgen.DocBlueprintConstraints{
+		MinBlocks:          minBlocksFromReqs(reqs),
+		MaxBlocks:          0,
+		MinQuickChecks:     reqs.MinQuickChecks,
+		MaxQuickChecks:     0,
+		MinFlashcards:      reqs.MinFlashcards,
+		MaxFlashcards:      0,
+		RequiredBlockKinds: requiredBlockKindsFromReqs(reqs),
+		ForbiddenPhrases:   []string{},
+	}
+
+	return docgen.DocBlueprintV1{
+		SchemaVersion:       docgen.DocBlueprintSchemaVersion,
+		BlueprintVersion:    docgen.DocBlueprintVersion(),
+		PathID:              info.Node.PathID.String(),
+		PathNodeID:          info.Node.ID.String(),
+		Objectives:          objectives,
+		RequiredConceptKeys: requiredConcepts,
+		RequiredClaims:      []docgen.DocClaimRef{},
+		OptionalSlots:       optionalSlots,
+		AllowedFrames:       allowedFrames,
+		Constraints:         constraints,
+		CreatedAt:           time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func optionalSlotsFromMeta(meta map[string]any) []docgen.DocOptionalSlot {
+	if meta == nil {
+		return nil
+	}
+	raw := meta["optional_slots"]
+	if raw == nil {
+		raw = meta["optionalSlots"]
+	}
+	if raw == nil {
+		return nil
+	}
+	slots := []docgen.DocOptionalSlot{}
+	switch v := raw.(type) {
+	case []docgen.DocOptionalSlot:
+		slots = append(slots, v...)
+	case []map[string]any:
+		for _, m := range v {
+			slots = append(slots, optionalSlotFromMap(m))
+		}
+	case []any:
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				slots = append(slots, optionalSlotFromMap(m))
+			}
+		}
+	case string:
+		s := strings.TrimSpace(v)
+		if s != "" {
+			var arr []map[string]any
+			if err := json.Unmarshal([]byte(s), &arr); err == nil {
+				for _, m := range arr {
+					slots = append(slots, optionalSlotFromMap(m))
+				}
+			}
+		}
+	}
+	return normalizeOptionalSlots(slots)
+}
+
+func optionalSlotFromMap(m map[string]any) docgen.DocOptionalSlot {
+	if m == nil {
+		return docgen.DocOptionalSlot{}
+	}
+	allowed := m["allowed_block_kinds"]
+	if allowed == nil {
+		allowed = m["allowedBlockKinds"]
+	}
+	keys := m["concept_keys"]
+	if keys == nil {
+		keys = m["conceptKeys"]
+	}
+	id := stringFromAny(m["slot_id"])
+	if id == "" {
+		id = stringFromAny(m["slotId"])
+	}
+	return docgen.DocOptionalSlot{
+		SlotID:            id,
+		Purpose:           stringFromAny(m["purpose"]),
+		MinBlocks:         intFromAny(m["min_blocks"], 0),
+		MaxBlocks:         intFromAny(m["max_blocks"], 0),
+		AllowedBlockKinds: stringSliceFromAny(allowed),
+		ConceptKeys:       stringSliceFromAny(keys),
+	}
+}
+
+func mergeOptionalSlots(base []docgen.DocOptionalSlot, override []docgen.DocOptionalSlot) []docgen.DocOptionalSlot {
+	base = normalizeOptionalSlots(base)
+	override = normalizeOptionalSlots(override)
+	if len(base) == 0 {
+		return override
+	}
+	if len(override) == 0 {
+		return base
+	}
+	out := make([]docgen.DocOptionalSlot, 0, len(base)+len(override))
+	index := map[string]int{}
+	for _, slot := range base {
+		index[slot.SlotID] = len(out)
+		out = append(out, slot)
+	}
+	for _, slot := range override {
+		if idx, ok := index[slot.SlotID]; ok {
+			out[idx] = slot
+			continue
+		}
+		index[slot.SlotID] = len(out)
+		out = append(out, slot)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
+}
+
+func normalizeOptionalSlots(slots []docgen.DocOptionalSlot) []docgen.DocOptionalSlot {
+	if len(slots) == 0 {
+		return nil
+	}
+	out := make([]docgen.DocOptionalSlot, 0, len(slots))
+	seen := map[string]bool{}
+	for _, slot := range slots {
+		id := strings.ToLower(strings.TrimSpace(slot.SlotID))
+		id = strings.ReplaceAll(id, " ", "_")
+		id = strings.Trim(id, "_")
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		minBlocks := slot.MinBlocks
+		maxBlocks := slot.MaxBlocks
+		if minBlocks < 0 {
+			minBlocks = 0
+		}
+		if maxBlocks < 0 {
+			maxBlocks = 0
+		}
+		if maxBlocks > 0 && minBlocks > maxBlocks {
+			maxBlocks = minBlocks
+		}
+		slot.SlotID = id
+		slot.MinBlocks = minBlocks
+		slot.MaxBlocks = maxBlocks
+		slot.AllowedBlockKinds = normalizeOptionalSlotKinds(slot.AllowedBlockKinds)
+		slot.ConceptKeys = normalizeOptionalSlotKeys(slot.ConceptKeys)
+		out = append(out, slot)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
+}
+
+func normalizeOptionalSlotKinds(kinds []string) []string {
+	if len(kinds) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		kk := strings.ToLower(strings.TrimSpace(k))
+		if kk == "" || seen[kk] {
+			continue
+		}
+		seen[kk] = true
+		out = append(out, kk)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeOptionalSlotKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		kk := strings.ToLower(strings.TrimSpace(k))
+		if kk == "" || seen[kk] {
+			continue
+		}
+		seen[kk] = true
+		out = append(out, kk)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func minBlocksFromReqs(req content.NodeDocRequirements) int {
+	min := 0
+	min += req.MinHeadings
+	min += req.MinParagraphs
+	min += req.MinCallouts
+	min += req.MinQuickChecks
+	min += req.MinFlashcards
+	min += req.MinDiagrams
+	min += req.MinTables
+	min += req.MinWhyItMatters
+	min += req.MinIntuition
+	min += req.MinMentalModels
+	min += req.MinPitfalls
+	min += req.MinSteps
+	min += req.MinChecklist
+	min += req.MinConnections
+	return min
+}
+
+func requiredBlockKindsFromReqs(req content.NodeDocRequirements) []string {
+	out := []string{}
+	if req.MinHeadings > 0 {
+		out = append(out, "heading")
+	}
+	if req.MinParagraphs > 0 {
+		out = append(out, "paragraph")
+	}
+	if req.MinCallouts > 0 {
+		out = append(out, "callout")
+	}
+	if req.MinQuickChecks > 0 {
+		out = append(out, "quick_check")
+	}
+	if req.MinFlashcards > 0 {
+		out = append(out, "flashcard")
+	}
+	if req.MinDiagrams > 0 {
+		out = append(out, "diagram")
+	}
+	if req.MinTables > 0 {
+		out = append(out, "table")
+	}
+	if req.MinWhyItMatters > 0 {
+		out = append(out, "why_it_matters")
+	}
+	if req.MinIntuition > 0 {
+		out = append(out, "intuition")
+	}
+	if req.MinMentalModels > 0 {
+		out = append(out, "mental_model")
+	}
+	if req.MinPitfalls > 0 {
+		out = append(out, "pitfalls")
+	}
+	if req.MinSteps > 0 {
+		out = append(out, "steps")
+	}
+	if req.MinChecklist > 0 {
+		out = append(out, "checklist")
+	}
+	if req.MinConnections > 0 {
+		out = append(out, "connections")
+	}
+	return out
 }

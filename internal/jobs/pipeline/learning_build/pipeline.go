@@ -165,6 +165,7 @@ func (p *Pipeline) runChild(jc *jobrt.Context, st *state, setID, sagaID, pathID,
 		p.enqueueChatPathIndex(ctx, pathID)
 		p.enqueueNodeAvatarRender(ctx, setID, pathID)
 		p.enqueueLibraryTaxonomyRoute(ctx, pathID)
+		p.enqueueNodeDocPrefetch(ctx, setID, pathID)
 		p.maybeAppendPathBuildReadyMessage(ctx, setID, pathID)
 		return nil
 	}
@@ -276,11 +277,16 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 
 		TeachingPatterns: p.inline.TeachingPatterns,
 
-		NodeDocs:  p.inline.NodeDocs,
-		Figures:   p.inline.NodeFigures,
-		Videos:    p.inline.NodeVideos,
-		GenRuns:   p.inline.DocGenRuns,
-		Artifacts: p.inline.Artifacts,
+		NodeDocs:          p.inline.NodeDocs,
+		Revisions:         p.inline.NodeDocRevisions,
+		Blueprints:        p.inline.NodeDocBlueprints,
+		Figures:           p.inline.NodeFigures,
+		Videos:            p.inline.NodeVideos,
+		GenRuns:           p.inline.DocGenRuns,
+		RetrievalPacks:    p.inline.DocRetrievalPacks,
+		DocTraces:         p.inline.DocGenerationTraces,
+		ConstraintReports: p.inline.DocConstraintReports,
+		Artifacts:         p.inline.Artifacts,
 
 		Assets: p.inline.Assets,
 
@@ -532,6 +538,7 @@ func (p *Pipeline) runInline(jc *jobrt.Context, st *state, setID, sagaID, pathID
 	p.enqueueChatPathIndex(jc, pathID)
 	p.enqueueNodeAvatarRender(jc, setID, pathID)
 	p.enqueueLibraryTaxonomyRoute(jc, pathID)
+	p.enqueueNodeDocPrefetch(jc, setID, pathID)
 	p.maybeAppendPathBuildReadyMessage(jc, setID, pathID)
 
 	jc.Succeed("done", map[string]any{
@@ -631,6 +638,15 @@ func (p *Pipeline) enqueueNodeAvatarRender(jc *jobrt.Context, setID uuid.UUID, p
 	entityID := setID
 	if _, err := p.jobs.Enqueue(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, "node_avatar_render", "material_set", &entityID, payload); err != nil {
 		p.log.Warn("Failed to enqueue node_avatar_render", "error", err, "material_set_id", setID.String())
+	}
+}
+
+func (p *Pipeline) enqueueNodeDocPrefetch(jc *jobrt.Context, setID uuid.UUID, pathID uuid.UUID) {
+	if p == nil || p.jobs == nil || jc == nil || jc.Job == nil || pathID == uuid.Nil || setID == uuid.Nil {
+		return
+	}
+	if _, _, err := p.jobs.EnqueueNodeDocPrefetchIfNeeded(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, jc.Job.OwnerUserID, pathID, setID, "learning_build"); err != nil {
+		p.log.Warn("Failed to enqueue node_doc_prefetch", "error", err, "path_id", pathID.String())
 	}
 }
 

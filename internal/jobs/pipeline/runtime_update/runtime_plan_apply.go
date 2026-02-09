@@ -60,15 +60,34 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	nrMeta := decodeJSONMap(nr.Metadata)
 	nrRuntime := mapFromAny(nrMeta["runtime"])
 
+	retestEnabled := deterministicRetestEnabled()
+	forceImmediatePrompt := false
+	if retestEnabled {
+		ensurePrereqRetestState(nrRuntime, now)
+	}
+	retestPending := false
+	if retestEnabled {
+		retest := retestStateFromAny(nrRuntime["prereq_retest"])
+		switch strings.ToLower(strings.TrimSpace(stringFromAny(retest["state"]))) {
+		case "need_probe", "need_bridge", "need_retest":
+			retestPending = true
+		}
+	}
+
 	blockID := strings.TrimSpace(stringFromAny(data["block_id"]))
 	if blockID == "" {
 		blockID = strings.TrimSpace(stringFromAny(data["question_id"]))
 	}
+	sessionID := strings.TrimSpace(stringFromAny(data["session_id"]))
 	progressState := strings.TrimSpace(stringFromAny(data["progress_state"]))
 	progressConf := floatFromAny(data["progress_confidence"], 0)
 	progressOk := progressEligible(progressState, progressConf)
 	progressSignal := progressState != "" || progressConf > 0
+	signalOK := shouldApplySignal(nrRuntime, data, now)
 	if progressSignal {
+		if !signalOK {
+			progressSignal = false
+		}
 		if p.metrics != nil {
 			p.metrics.ObserveRuntimeProgress(progressState, progressConf)
 		}
@@ -87,7 +106,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	// Update runtime counters from events.
 	blocksSeen := intFromAny(nrRuntime["blocks_seen"], 0)
 	lastBlockID := stringFromAny(nrRuntime["last_block_id"])
-	if typ == types.EventBlockViewed && blockID != "" && blockID != lastBlockID && progressOk {
+	if typ == types.EventBlockViewed && blockID != "" && blockID != lastBlockID && progressOk && signalOK {
 		blocksSeen++
 		nrRuntime["blocks_seen"] = blocksSeen
 		nrRuntime["last_block_id"] = blockID
@@ -95,7 +114,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	}
 
 	readBlocks := stringSliceFromAny(nrRuntime["read_blocks"])
-	if typ == types.EventBlockRead && blockID != "" && progressOk {
+	if typ == types.EventBlockRead && blockID != "" && progressOk && signalOK {
 		readBlocks = appendIfMissing(readBlocks, blockID)
 		nrRuntime["read_blocks"] = readBlocks
 		nrRuntime["last_read_block_id"] = blockID
@@ -150,7 +169,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	}
 
 	failStreak := intFromAny(nrRuntime["fail_streak"], 0)
-	if typ == types.EventQuestionAnswered {
+	if typ == types.EventQuestionAnswered && signalOK {
 		if isCorrect := boolFromAny(data["is_correct"]); isCorrect {
 			failStreak = 0
 		} else {
@@ -161,13 +180,103 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 
 	completedBlocks := stringSliceFromAny(nrRuntime["completed_blocks"])
 	shownBlocks := stringSliceFromAny(nrRuntime["shown_blocks"])
+	pending := runtimePromptFromMap(mapFromAny(prRuntime["runtime_prompt"]))
+
+	probeLoaded := false
+	probeByBlock := map[string]*types.DocProbe{}
+	loadProbes := func() {
+		if probeLoaded || p.docProbes == nil || userID == uuid.Nil || nodeID == uuid.Nil {
+			probeLoaded = true
+			return
+		}
+		if rows, err := p.docProbes.ListByUserAndNode(dbc, userID, nodeID); err == nil {
+			for _, row := range rows {
+				if row == nil || row.BlockID == "" {
+					continue
+				}
+				probeByBlock[row.BlockID] = row
+			}
+		}
+		probeLoaded = true
+	}
+	getProbe := func(blockID string) *types.DocProbe {
+		if strings.TrimSpace(blockID) == "" {
+			return nil
+		}
+		loadProbes()
+		return probeByBlock[blockID]
+	}
+	markProbeStatus := func(blockID string, status string, when time.Time) {
+		if p.docProbes == nil {
+			return
+		}
+		probe := getProbe(blockID)
+		if probe == nil {
+			return
+		}
+		switch status {
+		case "shown":
+			probe.Status = "shown"
+			probe.ShownCount = probe.ShownCount + 1
+			probe.ShownAt = &when
+		case "completed":
+			probe.Status = "completed"
+			probe.CompletedAt = &when
+		case "dismissed":
+			probe.Status = "dismissed"
+			probe.DismissedAt = &when
+		}
+		_ = p.docProbes.Upsert(dbc, probe)
+	}
+	recordProbeOutcome := func(blockID string, outcome string, isCorrect *bool, when time.Time) {
+		if p.docProbeOutcomes == nil {
+			return
+		}
+		probe := getProbe(blockID)
+		if probe == nil {
+			return
+		}
+		var eventID *uuid.UUID
+		if v := strings.TrimSpace(stringFromAny(data["event_id"])); v != "" {
+			if parsed, err := uuid.Parse(v); err == nil {
+				eventID = &parsed
+			}
+		}
+		latency := intFromAny(data["latency_ms"], 0)
+		if latency == 0 {
+			latency = intFromAny(data["duration_ms"], 0)
+		}
+		confidence := floatFromAny(data["confidence"], 0)
+		payload := map[string]any{}
+		if pending != nil {
+			payload["prompt_id"] = pending.ID
+			payload["prompt_type"] = pending.Type
+			payload["reason"] = pending.Reason
+		}
+		row := &types.DocProbeOutcome{
+			ProbeID:    probe.ID,
+			UserID:     userID,
+			PathID:     pathID,
+			PathNodeID: nodeID,
+			BlockID:    blockID,
+			EventID:    eventID,
+			EventType:  typ,
+			Outcome:    outcome,
+			IsCorrect:  isCorrect,
+			LatencyMS:  latency,
+			Confidence: confidence,
+			Payload:    datatypes.JSON(mustJSON(payload)),
+			CreatedAt:  when,
+		}
+		_ = p.docProbeOutcomes.Create(dbc, row)
+	}
 
 	// Resolve pending prompt (if any).
-	pending := runtimePromptFromMap(mapFromAny(prRuntime["runtime_prompt"]))
 	if pending != nil && strings.EqualFold(pending.Status, "pending") {
 		banditStoreMap, banditBlocks := banditStore(nrRuntime)
 		banditTouched := false
 		handled := false
+		probeOutcomeRecorded := false
 		if typ == types.EventRuntimePromptCompleted || typ == types.EventRuntimePromptDismissed {
 			if pid := stringFromAny(data["prompt_id"]); pid != "" && pid == pending.ID {
 				handled = true
@@ -193,12 +302,12 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 		}
 		if typ == types.EventQuestionAnswered && pending.Type == "quick_check" && pending.BlockID != "" && pending.BlockID == blockID {
-			if boolFromAny(data["is_correct"]) {
+			isCorrect := boolFromAny(data["is_correct"])
+			if isCorrect {
 				handled = true
 				completedBlocks = appendIfMissing(completedBlocks, pending.BlockID)
 			}
 			if p.metrics != nil {
-				isCorrect := boolFromAny(data["is_correct"])
 				p.metrics.IncQuickCheckAnswered(isCorrect)
 				if isCorrect {
 					p.metrics.IncRuntimePrompt("quick_check", "answered_correct")
@@ -208,12 +317,43 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 			stats := banditBlock(banditBlocks, pending.BlockID)
 			stats["attempts"] = intFromAny(stats["attempts"], 0) + 1
-			if boolFromAny(data["is_correct"]) {
+			if isCorrect {
 				stats["correct"] = intFromAny(stats["correct"], 0) + 1
 			}
 			banditTouched = true
+			if !isCorrect {
+				// Record incorrect probe attempt without clearing the probe.
+				if pending.BlockID != "" {
+					ok := isCorrect
+					recordProbeOutcome(pending.BlockID, "answered", &ok, now)
+					probeOutcomeRecorded = true
+				}
+			}
 		}
 		if handled {
+			if pending.BlockID != "" {
+				switch typ {
+				case types.EventRuntimePromptCompleted:
+					markProbeStatus(pending.BlockID, "completed", now)
+					if !probeOutcomeRecorded {
+						recordProbeOutcome(pending.BlockID, "completed", nil, now)
+						probeOutcomeRecorded = true
+					}
+				case types.EventRuntimePromptDismissed:
+					markProbeStatus(pending.BlockID, "dismissed", now)
+					if !probeOutcomeRecorded {
+						recordProbeOutcome(pending.BlockID, "dismissed", nil, now)
+						probeOutcomeRecorded = true
+					}
+				case types.EventQuestionAnswered:
+					isCorrect := boolFromAny(data["is_correct"])
+					markProbeStatus(pending.BlockID, "completed", now)
+					if !probeOutcomeRecorded {
+						recordProbeOutcome(pending.BlockID, "answered", &isCorrect, now)
+						probeOutcomeRecorded = true
+					}
+				}
+			}
 			if pending.DecisionTraceID != "" && p.traces != nil {
 				outcome := map[string]any{
 					"updated_at": now.Format(time.RFC3339),
@@ -245,6 +385,38 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 				}
 			}
 
+			if retestEnabled {
+				retest := retestStateFromAny(nrRuntime["prereq_retest"])
+				if pending.Reason == "prereq_retest" && typ == types.EventQuestionAnswered {
+					isCorrect := boolFromAny(data["is_correct"])
+					if isCorrect {
+						retest["state"] = "resolved"
+						retest["last_passed_at"] = now.Format(time.RFC3339)
+					} else {
+						retest["state"] = "need_bridge"
+						retest["failed_count"] = intFromAny(retest["failed_count"], 0) + 1
+						retest["last_failed_at"] = now.Format(time.RFC3339)
+						if len(pending.ConceptKeys) > 0 {
+							retest["concept_keys"] = pending.ConceptKeys
+						}
+						forceImmediatePrompt = true
+					}
+					if pending.BlockID != "" {
+						retest["last_block_id"] = pending.BlockID
+					}
+					nrRuntime["prereq_retest"] = retest
+				}
+				if pending.Reason == "prereq_bridge" && (typ == types.EventRuntimePromptCompleted || typ == types.EventRuntimePromptDismissed) {
+					retest["state"] = "need_retest"
+					retest["last_bridge_at"] = now.Format(time.RFC3339)
+					if len(pending.ConceptKeys) > 0 {
+						retest["concept_keys"] = pending.ConceptKeys
+					}
+					nrRuntime["prereq_retest"] = retest
+					forceImmediatePrompt = true
+				}
+			}
+
 			prRuntime["runtime_prompt"] = nil
 			prRuntime["last_prompt_at"] = now.Format(time.RFC3339)
 			if typ == types.EventRuntimePromptCompleted {
@@ -260,10 +432,14 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			nrMeta["runtime"] = nrRuntime
 			pr.Metadata = encodeJSONMap(prMeta)
 			nr.Metadata = encodeJSONMap(nrMeta)
-			_ = p.pathRuns.Upsert(dbc, pr)
-			_ = p.nodeRuns.Upsert(dbc, nr)
+			if !forceImmediatePrompt {
+				_ = p.pathRuns.Upsert(dbc, pr)
+				_ = p.nodeRuns.Upsert(dbc, nr)
+			}
 		}
-		return nil
+		if !forceImmediatePrompt {
+			return nil
+		}
 	}
 
 	// If already at prompt rate cap, skip.
@@ -274,7 +450,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		prRuntime["prompts_in_window"] = 0
 	}
 	promptsInWindow := intFromAny(prRuntime["prompts_in_window"], 0)
-	if policy.MaxPromptsPerHour > 0 && promptsInWindow >= policy.MaxPromptsPerHour {
+	if policy.MaxPromptsPerHour > 0 && promptsInWindow >= policy.MaxPromptsPerHour && !retestPending && !forceImmediatePrompt {
 		prMeta["runtime"] = prRuntime
 		pr.Metadata = encodeJSONMap(prMeta)
 		_ = p.pathRuns.Upsert(dbc, pr)
@@ -282,7 +458,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	}
 
 	lastPromptAt := timeFromAny(prRuntime["last_prompt_at"])
-	if lastPromptAt != nil && now.Sub(*lastPromptAt) < runtimePromptMinGapMinute*time.Minute {
+	if !forceImmediatePrompt && lastPromptAt != nil && now.Sub(*lastPromptAt) < runtimePromptMinGapMinute*time.Minute {
 		return nil
 	}
 
@@ -419,12 +595,17 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	var readiness readinessResult
 	readinessScore := 0.0
 	if needDoc && readinessRefresh {
-		readiness = computeReadiness(dbc, userID, pathID, doc, p.concepts, p.conStates, p.miscons)
+		readiness = computeReadiness(dbc, userID, pathID, doc, p.concepts, p.edges, p.conStates, p.miscons, now)
 		if readiness.Snapshot != nil {
 			readinessStatus = strings.ToLower(strings.TrimSpace(readiness.Snapshot.Status))
 			nrRuntime["readiness"] = readinessToMap(readiness.Snapshot)
 			readinessScore = readiness.Snapshot.Score
 		}
+	}
+
+	conceptByKey := readiness.ConceptByKey
+	if conceptByKey == nil {
+		conceptByKey = map[string]*types.Concept{}
 	}
 
 	if readinessStatus == "not_ready" && (progressOk || !progressSignal) {
@@ -465,11 +646,93 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		}
 	}
 
+	probeSet := map[string]bool{}
+	if p.docProbes != nil {
+		loadProbes()
+		for _, row := range probeByBlock {
+			if row == nil || row.BlockID == "" {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(row.Status)) {
+			case "planned", "shown":
+				probeSet[row.BlockID] = true
+			}
+		}
+	}
+	for _, b := range doc.Blocks {
+		if b == nil || !boolFromAny(b["probe"]) {
+			continue
+		}
+		id := strings.TrimSpace(stringFromAny(b["id"]))
+		if id != "" && !containsString(completedBlocks, id) && !containsString(shownBlocks, id) {
+			probeSet[id] = true
+		}
+	}
+	probeOnly := len(probeSet) > 0
+
 	blockIndex := map[string]int{}
 	for i, b := range doc.Blocks {
 		id := strings.TrimSpace(stringFromAny(b["id"]))
 		if id != "" {
 			blockIndex[id] = i
+		}
+	}
+
+	findBlock := func(id string) map[string]any {
+		if id == "" {
+			return nil
+		}
+		if idx, ok := blockIndex[id]; ok && idx >= 0 && idx < len(doc.Blocks) {
+			return doc.Blocks[idx]
+		}
+		for _, b := range doc.Blocks {
+			if strings.TrimSpace(stringFromAny(b["id"])) == id {
+				return b
+			}
+		}
+		return nil
+	}
+
+	if typ == types.EventQuestionAnswered && blockID != "" && p.misconRes != nil {
+		if block := findBlock(blockID); block != nil {
+			conceptIDs := extractConceptIDs(block, conceptByKey)
+			if len(conceptIDs) > 0 {
+				isCorrect := boolFromAny(data["is_correct"])
+				evidence := map[string]any{
+					"event_type": typ,
+					"block_id":   blockID,
+					"node_id":    nodeID.String(),
+					"correct":    isCorrect,
+				}
+				if qid := strings.TrimSpace(stringFromAny(data["question_id"])); qid != "" {
+					evidence["question_id"] = qid
+				}
+				if boolFromAny(data["transfer_success"]) {
+					evidence["transfer_success"] = true
+				}
+				p.updateMisconceptionResolution(dbc, userID, conceptIDs, isCorrect, now, evidence)
+			}
+		}
+	}
+	if typ == types.EventQuestionAnswered {
+		transferSuccess := boolFromAny(data["transfer_success"])
+		transferFailure := boolFromAny(data["transfer_failure"])
+		if boolFromAny(data["transfer_context"]) && !transferSuccess && !transferFailure {
+			if boolFromAny(data["is_correct"]) {
+				transferSuccess = true
+			} else {
+				transferFailure = true
+			}
+		}
+		if transferSuccess {
+			nrRuntime["transfer_successes"] = intFromAny(nrRuntime["transfer_successes"], 0) + 1
+			nrRuntime["last_transfer_at"] = now.Format(time.RFC3339)
+			nrRuntime["last_transfer_success"] = true
+		}
+		if transferFailure {
+			nrRuntime["transfer_failures"] = intFromAny(nrRuntime["transfer_failures"], 0) + 1
+			nrRuntime["last_transfer_at"] = now.Format(time.RFC3339)
+			nrRuntime["last_transfer_success"] = false
 		}
 	}
 
@@ -623,10 +886,6 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		totalShown += intFromAny(stats["shown"], 0)
 	}
 
-	conceptByKey := readiness.ConceptByKey
-	if conceptByKey == nil {
-		conceptByKey = map[string]*types.Concept{}
-	}
 	conceptState := readiness.ConceptState
 	if conceptState == nil {
 		conceptState = map[uuid.UUID]*types.UserConceptState{}
@@ -635,7 +894,64 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	if misconBy == nil {
 		misconBy = map[uuid.UUID]float64{}
 	}
+	weakKeySet := map[string]bool{}
+	dueKeySet := map[string]bool{}
+	if readiness.Snapshot != nil {
+		for _, k := range readiness.Snapshot.WeakConcepts {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				weakKeySet[k] = true
+			}
+		}
+		for _, k := range readiness.Snapshot.MisconceptionConcepts {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				weakKeySet[k] = true
+			}
+		}
+		for _, k := range readiness.Snapshot.DueReviewConcepts {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				dueKeySet[k] = true
+			}
+		}
+	}
+	if gate := mapFromAny(nrRuntime["prereq_gate"]); len(gate) > 0 {
+		for _, k := range stringSliceFromAny(gate["weak_concepts"]) {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				weakKeySet[k] = true
+			}
+		}
+		for _, k := range stringSliceFromAny(gate["misconception_concepts"]) {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				weakKeySet[k] = true
+			}
+		}
+		for _, k := range stringSliceFromAny(gate["due_review_concepts"]) {
+			k = strings.TrimSpace(strings.ToLower(k))
+			if k != "" {
+				dueKeySet[k] = true
+			}
+		}
+	}
 	counterfactualTrigger := counterfactualEnabled() && (failStreak >= counterfactualFailStreak() || len(misconBy) > 0)
+
+	retestState := retestStateFromAny(nrRuntime["prereq_retest"])
+	retestStateVal := strings.ToLower(strings.TrimSpace(stringFromAny(retestState["state"])))
+	retestKeys := normalizeRetestKeys(stringSliceFromAny(retestState["concept_keys"]))
+	if len(retestKeys) == 0 {
+		retestKeys = normalizeRetestKeys(prereqRetestKeysFromGate(mapFromAny(nrRuntime["prereq_gate"])))
+	}
+	retestKeySet := keySetFromList(retestKeys)
+	forceBridge := retestEnabled && retestStateVal == "need_bridge"
+	forceRetest := retestEnabled && (retestStateVal == "need_probe" || retestStateVal == "need_retest")
+	if forceBridge || forceRetest {
+		shouldQuick = shouldQuick || forceRetest
+		shouldFlash = shouldFlash || forceBridge
+		shouldBreak = false
+	}
 
 	buildCandidate := func(kind string, idx int, block map[string]any) (promptCandidate, bool) {
 		id := strings.TrimSpace(stringFromAny(block["id"]))
@@ -649,6 +965,13 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 				conceptKeys = appendIfMissing(conceptKeys, key)
 			}
 		}
+		if rawKeys := stringSliceFromAny(block["concept_keys"]); len(rawKeys) > 0 {
+			for _, k := range rawKeys {
+				conceptKeys = appendIfMissing(conceptKeys, k)
+			}
+		}
+		conceptKeys = normalizeRetestKeys(conceptKeys)
+		matchesRetest := len(retestKeySet) > 0 && hasOverlapRetest(conceptKeys, retestKeySet)
 		testletID := ""
 		testletType := ""
 		testletUnc := 0.0
@@ -660,7 +983,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 		}
 		infoGain := computeInfoGain(conceptIDs, conceptState)
-		if infoGain < banditMinInfoGain() && !counterfactualTrigger {
+		if infoGain < banditMinInfoGain() && !counterfactualTrigger && !matchesRetest {
 			return promptCandidate{}, false
 		}
 
@@ -703,6 +1026,34 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			boost := readinessPromptBoost() * 0.5
 			score += boost
 			scoreParts["readiness_boost"] = boost
+		}
+		if len(weakKeySet) > 0 && len(conceptKeys) > 0 {
+			overlap := false
+			for _, k := range conceptKeys {
+				if weakKeySet[strings.TrimSpace(strings.ToLower(k))] {
+					overlap = true
+					break
+				}
+			}
+			if overlap {
+				boost := readinessPromptBoost() * 0.5
+				score += boost
+				scoreParts["prereq_weak_boost"] = boost
+			}
+		}
+		if len(dueKeySet) > 0 && len(conceptKeys) > 0 {
+			overlap := false
+			for _, k := range conceptKeys {
+				if dueKeySet[strings.TrimSpace(strings.ToLower(k))] {
+					overlap = true
+					break
+				}
+			}
+			if overlap {
+				boost := readinessPromptBoost() * 0.25
+				score += boost
+				scoreParts["prereq_due_boost"] = boost
+			}
 		}
 		if counterfactual {
 			boost := counterfactualBoost()
@@ -755,6 +1106,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			Index:              idx,
 			ConceptIDs:         conceptIDs,
 			ConceptKeys:        conceptKeys,
+			PrereqMatch:        matchesRetest,
 			TestletID:          testletID,
 			TestletType:        testletType,
 			TestletUncertainty: testletUnc,
@@ -767,7 +1119,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		}, true
 	}
 
-	collectCandidates := func(kind string) []promptCandidate {
+	collectCandidates := func(kind string, allowNonProbe bool) []promptCandidate {
 		out := []promptCandidate{}
 		for i, b := range doc.Blocks {
 			if !strings.EqualFold(stringFromAny(b["type"]), kind) {
@@ -775,6 +1127,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 			id := strings.TrimSpace(stringFromAny(b["id"]))
 			if id == "" {
+				continue
+			}
+			if probeOnly && !probeSet[id] && !allowNonProbe {
 				continue
 			}
 			if containsString(completedBlocks, id) || containsString(shownBlocks, id) {
@@ -803,12 +1158,51 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		return &best
 	}
 
-	candidates := []promptCandidate{}
+	allowNonProbe := forceBridge || forceRetest
+	quickCandidates := []promptCandidate{}
+	flashCandidates := []promptCandidate{}
 	if shouldQuick {
-		candidates = append(candidates, collectCandidates("quick_check")...)
+		quickCandidates = collectCandidates("quick_check", allowNonProbe)
 	}
 	if shouldFlash {
-		candidates = append(candidates, collectCandidates("flashcard")...)
+		flashCandidates = collectCandidates("flashcard", allowNonProbe)
+	}
+
+	forcedReason := ""
+	candidates := []promptCandidate{}
+	if len(retestKeySet) > 0 && forceBridge {
+		for _, cand := range flashCandidates {
+			if cand.PrereqMatch {
+				candidates = append(candidates, cand)
+			}
+		}
+		if len(candidates) > 0 {
+			forcedReason = "prereq_bridge"
+		} else {
+			forceBridge = false
+			forceRetest = true
+		}
+	}
+	if len(retestKeySet) > 0 && forceRetest && len(candidates) == 0 {
+		for _, cand := range quickCandidates {
+			if cand.PrereqMatch {
+				candidates = append(candidates, cand)
+			}
+		}
+		if len(candidates) == 0 {
+			for _, cand := range flashCandidates {
+				if cand.PrereqMatch {
+					candidates = append(candidates, cand)
+				}
+			}
+		}
+		if len(candidates) > 0 {
+			forcedReason = "prereq_retest"
+		}
+	}
+	if len(candidates) == 0 {
+		candidates = append(candidates, quickCandidates...)
+		candidates = append(candidates, flashCandidates...)
 	}
 
 	policyKey := runtimeRLPolicyKey()
@@ -883,6 +1277,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 		}
 	}
+	if selected != nil && forcedReason != "" {
+		selected.Reason = forcedReason
+	}
 
 	var prompt runtimePrompt
 	switch {
@@ -901,6 +1298,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			Type:          selected.Kind,
 			NodeID:        nodeID.String(),
 			BlockID:       selected.BlockID,
+			ConceptKeys:   selected.ConceptKeys,
 			Status:        "pending",
 			Reason:        selected.Reason,
 			CreatedAt:     now.Format(time.RFC3339),
@@ -915,6 +1313,8 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	if prompt.ID == "" {
 		prMeta["runtime"] = prRuntime
 		nrMeta["runtime"] = nrRuntime
+		snapshotID, snapshot := p.maybeUpsertBeliefSnapshot(dbc, userID, pathID, nodeID, sessionID, doc, readiness, prRuntime, nrRuntime, now)
+		p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
 		pr.Metadata = encodeJSONMap(prMeta)
 		nr.Metadata = encodeJSONMap(nrMeta)
 		_ = p.pathRuns.Upsert(dbc, pr)
@@ -923,6 +1323,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	}
 	if p.metrics != nil {
 		p.metrics.IncRuntimePrompt(prompt.Type, "shown")
+	}
+	if selected != nil && (prompt.Type == "quick_check" || prompt.Type == "flashcard") {
+		markProbeStatus(prompt.BlockID, "shown", now)
 	}
 
 	if selected != nil && (prompt.Type == "quick_check" || prompt.Type == "flashcard") && p.traces != nil {
@@ -1034,6 +1437,18 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	nrRuntime["shown_blocks"] = shownBlocks
 	nrMeta["runtime"] = nrRuntime
 
+	snapshotID, snapshot := p.maybeUpsertBeliefSnapshot(dbc, userID, pathID, nodeID, sessionID, doc, readiness, prRuntime, nrRuntime, now)
+	p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
+
+	if p.metrics != nil {
+		total := floatFromAny(nrRuntime["flow_budget_total"], 0)
+		remaining := floatFromAny(nrRuntime["flow_budget_remaining"], 0)
+		spend := floatFromAny(nrRuntime["flow_disruption_spend"], 0)
+		if total > 0 {
+			p.metrics.ObserveConvergenceFlowBudget(total, remaining, spend)
+		}
+	}
+
 	pr.Metadata = encodeJSONMap(prMeta)
 	nr.Metadata = encodeJSONMap(nrMeta)
 	_ = p.pathRuns.Upsert(dbc, pr)
@@ -1071,6 +1486,94 @@ func appendIfMissing(list []string, v string) []string {
 func containsString(list []string, v string) bool {
 	for _, s := range list {
 		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+func ensurePrereqRetestState(runtime map[string]any, now time.Time) {
+	if runtime == nil {
+		return
+	}
+	gate := mapFromAny(runtime["prereq_gate"])
+	keys := normalizeRetestKeys(prereqRetestKeysFromGate(gate))
+	if len(keys) == 0 {
+		return
+	}
+	decision := strings.ToLower(strings.TrimSpace(stringFromAny(gate["decision"])))
+	status := strings.ToLower(strings.TrimSpace(stringFromAny(gate["status"])))
+	if decision != "soft_remediate" && decision != "blocked" && status != "not_ready" {
+		return
+	}
+	retest := retestStateFromAny(runtime["prereq_retest"])
+	state := strings.ToLower(strings.TrimSpace(stringFromAny(retest["state"])))
+	if state == "" || state == "resolved" {
+		state = "need_probe"
+	}
+	retest["state"] = state
+	retest["concept_keys"] = keys
+	retest["updated_at"] = now.UTC().Format(time.RFC3339)
+	runtime["prereq_retest"] = retest
+}
+
+func retestStateFromAny(v any) map[string]any {
+	if m := mapFromAny(v); m != nil {
+		return m
+	}
+	return map[string]any{}
+}
+
+func prereqRetestKeysFromGate(gate map[string]any) []string {
+	if gate == nil {
+		return nil
+	}
+	keys := []string{}
+	keys = append(keys, stringSliceFromAny(gate["weak_concepts"])...)
+	keys = append(keys, stringSliceFromAny(gate["misconception_concepts"])...)
+	keys = append(keys, stringSliceFromAny(gate["due_review_concepts"])...)
+	keys = append(keys, stringSliceFromAny(gate["prereq_concept_keys"])...)
+	return keys
+}
+
+func normalizeRetestKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		k = strings.TrimSpace(strings.ToLower(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func keySetFromList(keys []string) map[string]bool {
+	if len(keys) == 0 {
+		return map[string]bool{}
+	}
+	set := map[string]bool{}
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		set[k] = true
+	}
+	return set
+}
+
+func hasOverlapRetest(keys []string, set map[string]bool) bool {
+	if len(keys) == 0 || len(set) == 0 {
+		return false
+	}
+	for _, k := range keys {
+		if set[k] {
 			return true
 		}
 	}

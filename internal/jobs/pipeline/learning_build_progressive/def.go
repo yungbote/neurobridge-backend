@@ -55,15 +55,20 @@ type InlineDeps struct {
 	UserPrefs        repos.UserPersonalizationPrefsRepo
 	TeachingPatterns repos.TeachingPatternRepo
 
-	Path               repos.PathRepo
-	PathNodes          repos.PathNodeRepo
-	PathNodeActivities repos.PathNodeActivityRepo
-	NodeDocs           repos.LearningNodeDocRepo
-	NodeFigures        repos.LearningNodeFigureRepo
-	NodeVideos         repos.LearningNodeVideoRepo
-	DocGenRuns         repos.LearningDocGenerationRunRepo
-	Assets             repos.AssetRepo
-	Artifacts          repos.LearningArtifactRepo
+	Path                 repos.PathRepo
+	PathNodes            repos.PathNodeRepo
+	PathNodeActivities   repos.PathNodeActivityRepo
+	NodeDocs             repos.LearningNodeDocRepo
+	NodeDocRevisions     repos.LearningNodeDocRevisionRepo
+	NodeDocBlueprints    repos.LearningNodeDocBlueprintRepo
+	NodeFigures          repos.LearningNodeFigureRepo
+	NodeVideos           repos.LearningNodeVideoRepo
+	DocGenRuns           repos.LearningDocGenerationRunRepo
+	DocRetrievalPacks    repos.DocRetrievalPackRepo
+	DocGenerationTraces  repos.DocGenerationTraceRepo
+	DocConstraintReports repos.DocConstraintReportRepo
+	Assets               repos.AssetRepo
+	Artifacts            repos.LearningArtifactRepo
 
 	Activities        repos.ActivityRepo
 	Variants          repos.ActivityVariantRepo

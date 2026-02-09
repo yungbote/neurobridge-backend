@@ -37,16 +37,22 @@ type UserConceptModelRepo = learning.UserConceptModelRepo
 type UserConceptEdgeStatRepo = learning.UserConceptEdgeStatRepo
 type UserConceptEvidenceRepo = learning.UserConceptEvidenceRepo
 type UserConceptCalibrationRepo = learning.UserConceptCalibrationRepo
+type ItemCalibrationRepo = learning.ItemCalibrationRepo
 type UserModelAlertRepo = learning.UserModelAlertRepo
 type UserMisconceptionInstanceRepo = learning.UserMisconceptionInstanceRepo
+type MisconceptionCausalEdgeRepo = learning.MisconceptionCausalEdgeRepo
+type MisconceptionResolutionStateRepo = learning.MisconceptionResolutionStateRepo
 type UserStylePreferenceRepo = learning.UserStylePreferenceRepo
 type UserTestletStateRepo = learning.UserTestletStateRepo
+type UserSkillStateRepo = learning.UserSkillStateRepo
 type UserEventRepo = learning.UserEventRepo
 type UserEventCursorRepo = learning.UserEventCursorRepo
 type UserProgressionEventRepo = learning.UserProgressionEventRepo
 type UserGazeEventRepo = user.UserGazeEventRepo
 type UserGazeBlockStatRepo = user.UserGazeBlockStatRepo
 
+type UserBeliefSnapshotRepo = learning.UserBeliefSnapshotRepo
+type InterventionPlanRepo = learning.InterventionPlanRepo
 type ConceptRepo = learning.ConceptRepo
 type ConceptRepresentationRepo = learning.ConceptRepresentationRepo
 type ConceptMappingOverrideRepo = learning.ConceptMappingOverrideRepo
@@ -83,6 +89,18 @@ type LearningNodeDocRevisionRepo = learning.LearningNodeDocRevisionRepo
 type LearningNodeFigureRepo = learning.LearningNodeFigureRepo
 type LearningNodeVideoRepo = learning.LearningNodeVideoRepo
 type LearningDocGenerationRunRepo = learning.LearningDocGenerationRunRepo
+type LearningNodeDocBlueprintRepo = learning.LearningNodeDocBlueprintRepo
+type LearningNodeDocVariantRepo = learning.LearningNodeDocVariantRepo
+type UserDocSignalSnapshotRepo = learning.UserDocSignalSnapshotRepo
+type ConceptReadinessSnapshotRepo = learning.ConceptReadinessSnapshotRepo
+type PrereqGateDecisionRepo = learning.PrereqGateDecisionRepo
+type DocRetrievalPackRepo = learning.DocRetrievalPackRepo
+type DocGenerationTraceRepo = learning.DocGenerationTraceRepo
+type DocConstraintReportRepo = learning.DocConstraintReportRepo
+type DocProbeRepo = learning.DocProbeRepo
+type DocProbeOutcomeRepo = learning.DocProbeOutcomeRepo
+type DocVariantExposureRepo = learning.DocVariantExposureRepo
+type DocVariantOutcomeRepo = learning.DocVariantOutcomeRepo
 type LearningDrillInstanceRepo = learning.LearningDrillInstanceRepo
 type LearningArtifactRepo = learning.LearningArtifactRepo
 type LibraryTaxonomyNodeRepo = learning.LibraryTaxonomyNodeRepo
@@ -181,17 +199,26 @@ func NewUserConceptEvidenceRepo(db *gorm.DB, baseLog *logger.Logger) UserConcept
 func NewUserConceptCalibrationRepo(db *gorm.DB, baseLog *logger.Logger) UserConceptCalibrationRepo {
 	return learning.NewUserConceptCalibrationRepo(db, baseLog)
 }
+func NewItemCalibrationRepo(db *gorm.DB, baseLog *logger.Logger) ItemCalibrationRepo {
+	return learning.NewItemCalibrationRepo(db, baseLog)
+}
 func NewUserModelAlertRepo(db *gorm.DB, baseLog *logger.Logger) UserModelAlertRepo {
 	return learning.NewUserModelAlertRepo(db, baseLog)
 }
 func NewUserMisconceptionInstanceRepo(db *gorm.DB, baseLog *logger.Logger) UserMisconceptionInstanceRepo {
 	return learning.NewUserMisconceptionInstanceRepo(db, baseLog)
 }
+func NewMisconceptionResolutionStateRepo(db *gorm.DB, baseLog *logger.Logger) MisconceptionResolutionStateRepo {
+	return learning.NewMisconceptionResolutionStateRepo(db, baseLog)
+}
 func NewUserStylePreferenceRepo(db *gorm.DB, baseLog *logger.Logger) UserStylePreferenceRepo {
 	return learning.NewUserStylePreferenceRepo(db, baseLog)
 }
 func NewUserTestletStateRepo(db *gorm.DB, baseLog *logger.Logger) UserTestletStateRepo {
 	return learning.NewUserTestletStateRepo(db, baseLog)
+}
+func NewUserSkillStateRepo(db *gorm.DB, baseLog *logger.Logger) UserSkillStateRepo {
+	return learning.NewUserSkillStateRepo(db, baseLog)
 }
 func NewUserEventRepo(db *gorm.DB, baseLog *logger.Logger) UserEventRepo {
 	return learning.NewUserEventRepo(db, baseLog)
@@ -277,6 +304,9 @@ func NewLearningNodeDocRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDoc
 func NewLearningNodeDocRevisionRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocRevisionRepo {
 	return learning.NewLearningNodeDocRevisionRepo(db, baseLog)
 }
+func NewLearningNodeDocBlueprintRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocBlueprintRepo {
+	return learning.NewLearningNodeDocBlueprintRepo(db, baseLog)
+}
 func NewLearningNodeFigureRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeFigureRepo {
 	return learning.NewLearningNodeFigureRepo(db, baseLog)
 }
@@ -285,6 +315,45 @@ func NewLearningNodeVideoRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeV
 }
 func NewLearningDocGenerationRunRepo(db *gorm.DB, baseLog *logger.Logger) LearningDocGenerationRunRepo {
 	return learning.NewLearningDocGenerationRunRepo(db, baseLog)
+}
+func NewLearningNodeDocVariantRepo(db *gorm.DB, baseLog *logger.Logger) LearningNodeDocVariantRepo {
+	return learning.NewLearningNodeDocVariantRepo(db, baseLog)
+}
+func NewUserDocSignalSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) UserDocSignalSnapshotRepo {
+	return learning.NewUserDocSignalSnapshotRepo(db, baseLog)
+}
+func NewUserBeliefSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) UserBeliefSnapshotRepo {
+	return learning.NewUserBeliefSnapshotRepo(db, baseLog)
+}
+func NewInterventionPlanRepo(db *gorm.DB, baseLog *logger.Logger) InterventionPlanRepo {
+	return learning.NewInterventionPlanRepo(db, baseLog)
+}
+func NewConceptReadinessSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) ConceptReadinessSnapshotRepo {
+	return learning.NewConceptReadinessSnapshotRepo(db, baseLog)
+}
+func NewPrereqGateDecisionRepo(db *gorm.DB, baseLog *logger.Logger) PrereqGateDecisionRepo {
+	return learning.NewPrereqGateDecisionRepo(db, baseLog)
+}
+func NewDocRetrievalPackRepo(db *gorm.DB, baseLog *logger.Logger) DocRetrievalPackRepo {
+	return learning.NewDocRetrievalPackRepo(db, baseLog)
+}
+func NewDocGenerationTraceRepo(db *gorm.DB, baseLog *logger.Logger) DocGenerationTraceRepo {
+	return learning.NewDocGenerationTraceRepo(db, baseLog)
+}
+func NewDocConstraintReportRepo(db *gorm.DB, baseLog *logger.Logger) DocConstraintReportRepo {
+	return learning.NewDocConstraintReportRepo(db, baseLog)
+}
+func NewDocProbeRepo(db *gorm.DB, baseLog *logger.Logger) DocProbeRepo {
+	return learning.NewDocProbeRepo(db, baseLog)
+}
+func NewDocProbeOutcomeRepo(db *gorm.DB, baseLog *logger.Logger) DocProbeOutcomeRepo {
+	return learning.NewDocProbeOutcomeRepo(db, baseLog)
+}
+func NewDocVariantExposureRepo(db *gorm.DB, baseLog *logger.Logger) DocVariantExposureRepo {
+	return learning.NewDocVariantExposureRepo(db, baseLog)
+}
+func NewDocVariantOutcomeRepo(db *gorm.DB, baseLog *logger.Logger) DocVariantOutcomeRepo {
+	return learning.NewDocVariantOutcomeRepo(db, baseLog)
 }
 func NewLearningDrillInstanceRepo(db *gorm.DB, baseLog *logger.Logger) LearningDrillInstanceRepo {
 	return learning.NewLearningDrillInstanceRepo(db, baseLog)

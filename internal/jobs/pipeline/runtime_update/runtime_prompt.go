@@ -13,19 +13,20 @@ import (
 )
 
 type runtimePrompt struct {
-	ID              string  `json:"id"`
-	Type            string  `json:"type"`
-	NodeID          string  `json:"node_id,omitempty"`
-	BlockID         string  `json:"block_id,omitempty"`
-	Reason          string  `json:"reason,omitempty"`
-	Status          string  `json:"status,omitempty"`
-	CreatedAt       string  `json:"created_at,omitempty"`
-	DecisionTraceID string  `json:"decision_trace_id,omitempty"`
-	PolicyKey       string  `json:"policy_key,omitempty"`
-	PolicyMode      string  `json:"policy_mode,omitempty"`
-	PolicyVersion   int     `json:"policy_version,omitempty"`
-	BehaviorProb    float64 `json:"behavior_prob,omitempty"`
-	ShadowProb      float64 `json:"shadow_prob,omitempty"`
+	ID              string   `json:"id"`
+	Type            string   `json:"type"`
+	NodeID          string   `json:"node_id,omitempty"`
+	BlockID         string   `json:"block_id,omitempty"`
+	ConceptKeys     []string `json:"concept_keys,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	CreatedAt       string   `json:"created_at,omitempty"`
+	DecisionTraceID string   `json:"decision_trace_id,omitempty"`
+	PolicyKey       string   `json:"policy_key,omitempty"`
+	PolicyMode      string   `json:"policy_mode,omitempty"`
+	PolicyVersion   int      `json:"policy_version,omitempty"`
+	BehaviorProb    float64  `json:"behavior_prob,omitempty"`
+	ShadowProb      float64  `json:"shadow_prob,omitempty"`
 }
 
 type runtimePolicy struct {
@@ -360,6 +361,7 @@ func runtimePromptFromMap(m map[string]any) *runtimePrompt {
 		Type:            stringFromAny(m["type"]),
 		NodeID:          stringFromAny(m["node_id"]),
 		BlockID:         stringFromAny(m["block_id"]),
+		ConceptKeys:     stringSliceFromAny(m["concept_keys"]),
 		Reason:          stringFromAny(m["reason"]),
 		Status:          stringFromAny(m["status"]),
 		CreatedAt:       stringFromAny(m["created_at"]),
@@ -378,6 +380,7 @@ func runtimePromptToMap(p runtimePrompt) map[string]any {
 		"type":              p.Type,
 		"node_id":           p.NodeID,
 		"block_id":          p.BlockID,
+		"concept_keys":      p.ConceptKeys,
 		"reason":            p.Reason,
 		"status":            p.Status,
 		"created_at":        p.CreatedAt,

@@ -39,6 +39,8 @@ type UsecasesDeps struct {
 	Path               repos.PathRepo
 	PathNodes          repos.PathNodeRepo
 	PathNodeActivities repos.PathNodeActivityRepo
+	PathRuns           repos.PathRunRepo
+	NodeRuns           repos.NodeRunRepo
 
 	Concepts         repos.ConceptRepo
 	Evidence         repos.ConceptEvidenceRepo
@@ -59,13 +61,24 @@ type UsecasesDeps struct {
 
 	TeachingPatterns repos.TeachingPatternRepo
 
-	NodeDocs  repos.LearningNodeDocRepo
-	Figures   repos.LearningNodeFigureRepo
-	Videos    repos.LearningNodeVideoRepo
-	Revisions repos.LearningNodeDocRevisionRepo
-	GenRuns   repos.LearningDocGenerationRunRepo
-	Drills    repos.LearningDrillInstanceRepo
-	Artifacts repos.LearningArtifactRepo
+	NodeDocs            repos.LearningNodeDocRepo
+	DocVariants         repos.LearningNodeDocVariantRepo
+	Figures             repos.LearningNodeFigureRepo
+	Videos              repos.LearningNodeVideoRepo
+	Revisions           repos.LearningNodeDocRevisionRepo
+	GenRuns             repos.LearningDocGenerationRunRepo
+	Blueprints          repos.LearningNodeDocBlueprintRepo
+	RetrievalPacks      repos.DocRetrievalPackRepo
+	DocTraces           repos.DocGenerationTraceRepo
+	DocSignals          repos.UserDocSignalSnapshotRepo
+	InterventionPlans   repos.InterventionPlanRepo
+	ConstraintReports   repos.DocConstraintReportRepo
+	DocProbes           repos.DocProbeRepo
+	DocProbeOutcomes    repos.DocProbeOutcomeRepo
+	DocVariantExposures repos.DocVariantExposureRepo
+	DocVariantOutcomes  repos.DocVariantOutcomeRepo
+	Drills              repos.LearningDrillInstanceRepo
+	Artifacts           repos.LearningArtifactRepo
 
 	Assets repos.AssetRepo
 	ULI    repos.UserLibraryIndexRepo
@@ -79,12 +92,13 @@ type UsecasesDeps struct {
 	UserEventCursors repos.UserEventCursorRepo
 	VariantStats     repos.ActivityVariantStatRepo
 
-	ChainPriors    repos.ChainPriorRepo
-	CohortPriors   repos.CohortPriorRepo
-	CompletedUnits repos.UserCompletedUnitRepo
-	ConceptState   repos.UserConceptStateRepo
-	ConceptModel   repos.UserConceptModelRepo
-	MisconRepo     repos.UserMisconceptionInstanceRepo
+	ChainPriors      repos.ChainPriorRepo
+	CohortPriors     repos.CohortPriorRepo
+	CompletedUnits   repos.UserCompletedUnitRepo
+	ConceptState     repos.UserConceptStateRepo
+	ConceptModel     repos.UserConceptModelRepo
+	MisconRepo       repos.UserMisconceptionInstanceRepo
+	UserTestletState repos.UserTestletStateRepo
 
 	Sagas repos.SagaRunRepo
 
@@ -183,8 +197,18 @@ type (
 	NodeContentBuildInput  = steps.NodeContentBuildInput
 	NodeContentBuildOutput = steps.NodeContentBuildOutput
 
-	NodeDocBuildInput  = steps.NodeDocBuildInput
-	NodeDocBuildOutput = steps.NodeDocBuildOutput
+	NodeDocBuildInput             = steps.NodeDocBuildInput
+	NodeDocBuildOutput            = steps.NodeDocBuildOutput
+	NodeDocPrefetchInput          = steps.NodeDocPrefetchInput
+	NodeDocPrefetchOutput         = steps.NodeDocPrefetchOutput
+	NodeDocProgressiveBuildInput  = steps.NodeDocProgressiveBuildInput
+	NodeDocProgressiveBuildOutput = steps.NodeDocProgressiveBuildOutput
+
+	DocProbeSelectInput  = steps.DocProbeSelectInput
+	DocProbeSelectOutput = steps.DocProbeSelectOutput
+
+	DocVariantEvalInput  = steps.DocVariantEvalInput
+	DocVariantEvalOutput = steps.DocVariantEvalOutput
 
 	NodeDocPatchSelection     = steps.NodeDocPatchSelection
 	NodeDocPatchInput         = steps.NodeDocPatchInput
@@ -610,28 +634,137 @@ func (u Usecases) NodeContentBuild(ctx context.Context, in NodeContentBuildInput
 
 func (u Usecases) NodeDocBuild(ctx context.Context, in NodeDocBuildInput) (NodeDocBuildOutput, error) {
 	return steps.NodeDocBuild(ctx, steps.NodeDocBuildDeps{
-		DB:               u.deps.DB,
-		Log:              u.deps.Log,
-		Path:             u.deps.Path,
-		PathNodes:        u.deps.PathNodes,
-		NodeDocs:         u.deps.NodeDocs,
-		Figures:          u.deps.Figures,
-		Videos:           u.deps.Videos,
-		GenRuns:          u.deps.GenRuns,
-		Files:            u.deps.Files,
-		Chunks:           u.deps.Chunks,
-		UserProfile:      u.deps.UserProfile,
-		TeachingPatterns: u.deps.TeachingPatterns,
-		Concepts:         u.deps.Concepts,
-		ConceptState:     u.deps.ConceptState,
-		ConceptModel:     u.deps.ConceptModel,
-		MisconRepo:       u.deps.MisconRepo,
-		Edges:            u.deps.Edges,
-		AI:               u.deps.AI,
-		Vec:              u.deps.Vec,
-		Bucket:           u.deps.Bucket,
-		Bootstrap:        u.deps.Bootstrap,
+		DB:                u.deps.DB,
+		Log:               u.deps.Log,
+		Path:              u.deps.Path,
+		PathNodes:         u.deps.PathNodes,
+		NodeDocs:          u.deps.NodeDocs,
+		DocVariants:       u.deps.DocVariants,
+		Figures:           u.deps.Figures,
+		Videos:            u.deps.Videos,
+		GenRuns:           u.deps.GenRuns,
+		Blueprints:        u.deps.Blueprints,
+		RetrievalPacks:    u.deps.RetrievalPacks,
+		DocTraces:         u.deps.DocTraces,
+		ConstraintReports: u.deps.ConstraintReports,
+		Revisions:         u.deps.Revisions,
+		Files:             u.deps.Files,
+		Chunks:            u.deps.Chunks,
+		UserProfile:       u.deps.UserProfile,
+		TeachingPatterns:  u.deps.TeachingPatterns,
+		Concepts:          u.deps.Concepts,
+		ConceptState:      u.deps.ConceptState,
+		ConceptModel:      u.deps.ConceptModel,
+		MisconRepo:        u.deps.MisconRepo,
+		Edges:             u.deps.Edges,
+		AI:                u.deps.AI,
+		Vec:               u.deps.Vec,
+		Bucket:            u.deps.Bucket,
+		Bootstrap:         u.deps.Bootstrap,
 	}, steps.NodeDocBuildInput(in))
+}
+
+func (u Usecases) NodeDocPrefetch(ctx context.Context, in NodeDocPrefetchInput) (NodeDocPrefetchOutput, error) {
+	return steps.NodeDocPrefetch(ctx, steps.NodeDocPrefetchDeps{
+		NodeDocBuildDeps: steps.NodeDocBuildDeps{
+			DB:                u.deps.DB,
+			Log:               u.deps.Log,
+			Path:              u.deps.Path,
+			PathNodes:         u.deps.PathNodes,
+			NodeDocs:          u.deps.NodeDocs,
+			DocVariants:       u.deps.DocVariants,
+			Figures:           u.deps.Figures,
+			Videos:            u.deps.Videos,
+			GenRuns:           u.deps.GenRuns,
+			Blueprints:        u.deps.Blueprints,
+			RetrievalPacks:    u.deps.RetrievalPacks,
+			DocTraces:         u.deps.DocTraces,
+			ConstraintReports: u.deps.ConstraintReports,
+			Revisions:         u.deps.Revisions,
+			Files:             u.deps.Files,
+			Chunks:            u.deps.Chunks,
+			UserProfile:       u.deps.UserProfile,
+			TeachingPatterns:  u.deps.TeachingPatterns,
+			Concepts:          u.deps.Concepts,
+			ConceptState:      u.deps.ConceptState,
+			ConceptModel:      u.deps.ConceptModel,
+			MisconRepo:        u.deps.MisconRepo,
+			Edges:             u.deps.Edges,
+			AI:                u.deps.AI,
+			Vec:               u.deps.Vec,
+			Bucket:            u.deps.Bucket,
+			Bootstrap:         u.deps.Bootstrap,
+		},
+	}, steps.NodeDocPrefetchInput(in))
+}
+
+func (u Usecases) NodeDocProgressiveBuild(ctx context.Context, in NodeDocProgressiveBuildInput) (NodeDocProgressiveBuildOutput, error) {
+	return steps.NodeDocProgressiveBuild(ctx, steps.NodeDocProgressiveBuildDeps{
+		NodeDocBuildDeps: steps.NodeDocBuildDeps{
+			DB:                u.deps.DB,
+			Log:               u.deps.Log,
+			Path:              u.deps.Path,
+			PathNodes:         u.deps.PathNodes,
+			NodeDocs:          u.deps.NodeDocs,
+			DocVariants:       u.deps.DocVariants,
+			Figures:           u.deps.Figures,
+			Videos:            u.deps.Videos,
+			GenRuns:           u.deps.GenRuns,
+			Blueprints:        u.deps.Blueprints,
+			RetrievalPacks:    u.deps.RetrievalPacks,
+			DocTraces:         u.deps.DocTraces,
+			ConstraintReports: u.deps.ConstraintReports,
+			Revisions:         u.deps.Revisions,
+			Files:             u.deps.Files,
+			Chunks:            u.deps.Chunks,
+			UserProfile:       u.deps.UserProfile,
+			TeachingPatterns:  u.deps.TeachingPatterns,
+			Concepts:          u.deps.Concepts,
+			ConceptState:      u.deps.ConceptState,
+			ConceptModel:      u.deps.ConceptModel,
+			MisconRepo:        u.deps.MisconRepo,
+			Edges:             u.deps.Edges,
+			AI:                u.deps.AI,
+			Vec:               u.deps.Vec,
+			Bucket:            u.deps.Bucket,
+			Bootstrap:         u.deps.Bootstrap,
+		},
+		PathRuns:          u.deps.PathRuns,
+		NodeRuns:          u.deps.NodeRuns,
+		DocVariants:       u.deps.DocVariants,
+		SignalSnapshots:   u.deps.DocSignals,
+		InterventionPlans: u.deps.InterventionPlans,
+	}, steps.NodeDocProgressiveBuildInput(in))
+}
+
+func (u Usecases) DocProbeSelect(ctx context.Context, in DocProbeSelectInput) (DocProbeSelectOutput, error) {
+	return steps.DocProbeSelect(ctx, steps.DocProbeSelectDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Path:         u.deps.Path,
+		PathRuns:     u.deps.PathRuns,
+		PathNodes:    u.deps.PathNodes,
+		NodeDocs:     u.deps.NodeDocs,
+		DocVariants:  u.deps.DocVariants,
+		Concepts:     u.deps.Concepts,
+		ConceptState: u.deps.ConceptState,
+		MisconRepo:   u.deps.MisconRepo,
+		Testlets:     u.deps.UserTestletState,
+		DocProbes:    u.deps.DocProbes,
+		Bootstrap:    u.deps.Bootstrap,
+	}, steps.DocProbeSelectInput(in))
+}
+
+func (u Usecases) DocVariantEval(ctx context.Context, in DocVariantEvalInput) (DocVariantEvalOutput, error) {
+	return steps.DocVariantEval(ctx, steps.DocVariantEvalDeps{
+		DB:           u.deps.DB,
+		Log:          u.deps.Log,
+		Exposures:    u.deps.DocVariantExposures,
+		Outcomes:     u.deps.DocVariantOutcomes,
+		NodeRuns:     u.deps.NodeRuns,
+		ConceptState: u.deps.ConceptState,
+		Bootstrap:    u.deps.Bootstrap,
+	}, steps.DocVariantEvalInput(in))
 }
 
 func (u Usecases) NodeDocPatch(ctx context.Context, in NodeDocPatchInput) (NodeDocPatchOutput, error) {

@@ -31,8 +31,12 @@ type JobService interface {
 	EnqueueDebouncedUserModelUpdate(dbc dbctx.Context, userID uuid.UUID) (*types.JobRun, bool, error)
 	EnqueueUserModelUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueRuntimeUpdateIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueueNodeDocPrefetchIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueueNodeDocProgressiveBuildIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, anchorNodeID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueueDocProbeSelectIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, anchorNodeID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueProgressionCompactIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueVariantStatsRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
+	EnqueueDocVariantEvalIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueCompletedUnitRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueueCompletedUnitRefreshForPathIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
 	EnqueuePriorsRefreshIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error)
@@ -311,6 +315,123 @@ func (s *jobService) EnqueueRuntimeUpdateIfNeeded(dbc dbctx.Context, ownerUserID
 	return job, true, nil
 }
 
+func (s *jobService) EnqueueNodeDocPrefetchIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	if pathID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing path_id")
+	}
+	if materialSetID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing material_set_id")
+	}
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityID := pathID
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "node_doc_prefetch", "path", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger":         trigger,
+		"path_id":         pathID.String(),
+		"material_set_id": materialSetID.String(),
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "node_doc_prefetch", "path", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueueNodeDocProgressiveBuildIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, anchorNodeID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	if pathID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing path_id")
+	}
+	if materialSetID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing material_set_id")
+	}
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityID := pathID
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "node_doc_progressive_build", "path", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger":         trigger,
+		"path_id":         pathID.String(),
+		"material_set_id": materialSetID.String(),
+	}
+	if anchorNodeID != uuid.Nil {
+		payload["anchor_node_id"] = anchorNodeID.String()
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "node_doc_progressive_build", "path", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueueDocProbeSelectIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, pathID uuid.UUID, materialSetID uuid.UUID, anchorNodeID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	if pathID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing path_id")
+	}
+	if materialSetID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing material_set_id")
+	}
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	entityID := pathID
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "doc_probe_select", "path", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger":         trigger,
+		"path_id":         pathID.String(),
+		"material_set_id": materialSetID.String(),
+	}
+	if anchorNodeID != uuid.Nil {
+		payload["anchor_node_id"] = anchorNodeID.String()
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "doc_probe_select", "path", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
 func (s *jobService) EnqueueProgressionCompactIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
 	if ownerUserID == uuid.Nil {
 		return nil, false, fmt.Errorf("missing owner_user_id")
@@ -373,6 +494,40 @@ func (s *jobService) EnqueueVariantStatsRefreshIfNeeded(dbc dbctx.Context, owner
 		"material_set_id": materialSetID.String(),
 	}
 	job, err := s.Enqueue(repoCtx, ownerUserID, "variant_stats_refresh", "user", &entityID, payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return job, true, nil
+}
+
+func (s *jobService) EnqueueDocVariantEvalIfNeeded(dbc dbctx.Context, ownerUserID uuid.UUID, materialSetID uuid.UUID, trigger string) (*types.JobRun, bool, error) {
+	if ownerUserID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing owner_user_id")
+	}
+	if materialSetID == uuid.Nil {
+		return nil, false, fmt.Errorf("missing material_set_id")
+	}
+	transaction := dbc.Tx
+	if transaction == nil {
+		transaction = s.db
+	}
+
+	// Global consumer: one runnable job per user.
+	entityID := ownerUserID
+	repoCtx := dbctx.Context{Ctx: dbc.Ctx, Tx: transaction}
+	exists, err := s.repo.ExistsRunnable(repoCtx, ownerUserID, "doc_variant_eval", "user", &entityID)
+	if err != nil {
+		return nil, false, err
+	}
+	if exists {
+		return nil, false, nil
+	}
+
+	payload := map[string]any{
+		"trigger":         trigger,
+		"material_set_id": materialSetID.String(),
+	}
+	job, err := s.Enqueue(repoCtx, ownerUserID, "doc_variant_eval", "user", &entityID, payload)
 	if err != nil {
 		return nil, false, err
 	}

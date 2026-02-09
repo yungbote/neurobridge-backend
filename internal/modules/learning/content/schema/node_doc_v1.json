@@ -111,8 +111,10 @@
           "rows",
           "front_md",
           "back_md",
+          "concept_keys",
           "prompt_md",
-          "answer_md"
+          "answer_md",
+          "trigger_after_block_ids"
         ],
         "additionalProperties": false
       }

@@ -21,6 +21,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/concept_graph_patch_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/coverage_coherence_audit"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/doc_probe_select"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/doc_variant_eval"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/file_signature_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
@@ -36,6 +38,8 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_edit"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_edit_apply"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_patch"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_prefetch"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_doc_progressive_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_figures_render"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/node_videos_plan_build"
@@ -738,6 +742,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.LearningNodeFigure,
 		repos.LearningNodeVideo,
 		repos.DocGenerationRun,
+		repos.LearningNodeDocBlueprint,
+		repos.DocRetrievalPack,
+		repos.DocGenerationTrace,
+		repos.DocConstraintReport,
+		repos.LearningNodeDocRevision,
 		repos.MaterialFile,
 		repos.MaterialChunk,
 		repos.UserProfileVector,
@@ -752,6 +761,73 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(nodeDocs); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocPrefetch := node_doc_prefetch.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeFigure,
+		repos.LearningNodeVideo,
+		repos.DocGenerationRun,
+		repos.LearningNodeDocBlueprint,
+		repos.DocRetrievalPack,
+		repos.DocGenerationTrace,
+		repos.DocConstraintReport,
+		repos.LearningNodeDocRevision,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		repos.UserProfileVector,
+		repos.TeachingPattern,
+		repos.Concept,
+		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeDocPrefetch); err != nil {
+		return Services{}, err
+	}
+
+	nodeDocProgressive := node_doc_progressive_build.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathRun,
+		repos.NodeRun,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeDocVariant,
+		repos.UserDocSignalSnapshot,
+		repos.InterventionPlan,
+		repos.LearningNodeFigure,
+		repos.LearningNodeVideo,
+		repos.DocGenerationRun,
+		repos.LearningNodeDocBlueprint,
+		repos.DocRetrievalPack,
+		repos.DocGenerationTrace,
+		repos.DocConstraintReport,
+		repos.LearningNodeDocRevision,
+		repos.MaterialFile,
+		repos.MaterialChunk,
+		repos.UserProfileVector,
+		repos.TeachingPattern,
+		repos.Concept,
+		repos.UserConceptState,
+		repos.UserConceptModel,
+		repos.UserMisconception,
+		clients.OpenaiClient,
+		clients.PineconeVectorStore,
+		clients.GcpBucket,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(nodeDocProgressive); err != nil {
 		return Services{}, err
 	}
 
@@ -853,6 +929,25 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
+	docProbeSelect := doc_probe_select.New(
+		db,
+		log,
+		repos.Path,
+		repos.PathRun,
+		repos.PathNode,
+		repos.LearningNodeDoc,
+		repos.LearningNodeDocVariant,
+		repos.Concept,
+		repos.UserConceptState,
+		repos.UserMisconception,
+		repos.UserTestletState,
+		repos.DocProbe,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(docProbeSelect); err != nil {
+		return Services{}, err
+	}
+
 	runtimeUpdate := runtime_update.New(
 		db,
 		log,
@@ -868,9 +963,19 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.PathRunTransition,
 		repos.UserSessionState,
 		repos.Concept,
+		repos.ConceptEdge,
 		repos.UserConceptState,
+		repos.UserConceptModel,
 		repos.UserMisconception,
+		repos.MisconceptionCausalEdge,
+		repos.MisconceptionResolution,
+		repos.UserBeliefSnapshot,
+		repos.InterventionPlan,
+		repos.ConceptReadinessSnapshot,
+		repos.PrereqGateDecision,
 		repos.UserTestletState,
+		repos.DocProbe,
+		repos.DocProbeOutcome,
 		repos.DecisionTrace,
 		repos.ModelSnapshot,
 		repos.PolicyEvalSnapshot,
@@ -894,6 +999,19 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	variantStats := variant_stats_refresh.New(db, log, repos.UserEvent, repos.UserEventCursor, repos.ActivityVariant, repos.ActivityVariantStat, bootstrapSvc)
 	if err := jobRegistry.Register(variantStats); err != nil {
+		return Services{}, err
+	}
+
+	docVariantEval := doc_variant_eval.New(
+		db,
+		log,
+		repos.DocVariantExposure,
+		repos.DocVariantOutcome,
+		repos.NodeRun,
+		repos.UserConceptState,
+		bootstrapSvc,
+	)
+	if err := jobRegistry.Register(docVariantEval); err != nil {
 		return Services{}, err
 	}
 
@@ -982,15 +1100,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			UserPrefs:        repos.UserPersonalizationPrefs,
 			TeachingPatterns: repos.TeachingPattern,
 
-			Path:               repos.Path,
-			PathNodes:          repos.PathNode,
-			PathNodeActivities: repos.PathNodeActivity,
-			NodeDocs:           repos.LearningNodeDoc,
-			NodeFigures:        repos.LearningNodeFigure,
-			NodeVideos:         repos.LearningNodeVideo,
-			DocGenRuns:         repos.DocGenerationRun,
-			Assets:             repos.Asset,
-			Artifacts:          repos.LearningArtifact,
+			Path:                 repos.Path,
+			PathNodes:            repos.PathNode,
+			PathNodeActivities:   repos.PathNodeActivity,
+			NodeDocs:             repos.LearningNodeDoc,
+			NodeDocRevisions:     repos.LearningNodeDocRevision,
+			NodeDocBlueprints:    repos.LearningNodeDocBlueprint,
+			NodeFigures:          repos.LearningNodeFigure,
+			NodeVideos:           repos.LearningNodeVideo,
+			DocGenRuns:           repos.DocGenerationRun,
+			DocRetrievalPacks:    repos.DocRetrievalPack,
+			DocGenerationTraces:  repos.DocGenerationTrace,
+			DocConstraintReports: repos.DocConstraintReport,
+			Assets:               repos.Asset,
+			Artifacts:            repos.LearningArtifact,
 
 			Activities:        repos.Activity,
 			Variants:          repos.ActivityVariant,
@@ -1058,15 +1181,20 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			UserPrefs:        repos.UserPersonalizationPrefs,
 			TeachingPatterns: repos.TeachingPattern,
 
-			Path:               repos.Path,
-			PathNodes:          repos.PathNode,
-			PathNodeActivities: repos.PathNodeActivity,
-			NodeDocs:           repos.LearningNodeDoc,
-			NodeFigures:        repos.LearningNodeFigure,
-			NodeVideos:         repos.LearningNodeVideo,
-			DocGenRuns:         repos.DocGenerationRun,
-			Assets:             repos.Asset,
-			Artifacts:          repos.LearningArtifact,
+			Path:                 repos.Path,
+			PathNodes:            repos.PathNode,
+			PathNodeActivities:   repos.PathNodeActivity,
+			NodeDocs:             repos.LearningNodeDoc,
+			NodeDocRevisions:     repos.LearningNodeDocRevision,
+			NodeDocBlueprints:    repos.LearningNodeDocBlueprint,
+			NodeFigures:          repos.LearningNodeFigure,
+			NodeVideos:           repos.LearningNodeVideo,
+			DocGenRuns:           repos.DocGenerationRun,
+			DocRetrievalPacks:    repos.DocRetrievalPack,
+			DocGenerationTraces:  repos.DocGenerationTrace,
+			DocConstraintReports: repos.DocConstraintReport,
+			Assets:               repos.Asset,
+			Artifacts:            repos.LearningArtifact,
 
 			Activities:        repos.Activity,
 			Variants:          repos.ActivityVariant,
@@ -1101,11 +1229,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.UserConceptEdgeStat,
 		repos.UserConceptEvidence,
 		repos.UserConceptCalibration,
+		repos.ItemCalibration,
 		repos.UserModelAlert,
 		repos.UserMisconception,
+		repos.MisconceptionCausalEdge,
 		repos.UserStylePreference,
 		repos.ConceptClusterMember,
 		repos.UserTestletState,
+		repos.UserSkillState,
 		clients.Neo4j,
 		repos.JobRun,
 		jobService,

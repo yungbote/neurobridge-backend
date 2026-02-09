@@ -261,6 +261,25 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 			}
 
+			skillByConcept := map[uuid.UUID]*types.UserSkillState{}
+			if p.skillState != nil && len(touchedCanonical) > 0 {
+				ids := make([]uuid.UUID, 0, len(touchedCanonical))
+				for id := range touchedCanonical {
+					if id != uuid.Nil {
+						ids = append(ids, id)
+					}
+				}
+				sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+				if rows, err := p.skillState.ListByUserAndConceptIDs(tdbc, userID, ids); err == nil {
+					for _, r := range rows {
+						if r == nil || r.UserID == uuid.Nil || r.ConceptID == uuid.Nil {
+							continue
+						}
+						skillByConcept[r.ConceptID] = r
+					}
+				}
+			}
+
 			// Preload canonical concept rows for parent/cluster priors.
 			conceptByID := map[uuid.UUID]*types.Concept{}
 			if p.concepts != nil && len(touchedCanonical) > 0 {
@@ -382,12 +401,50 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 			}
 
+			// Preload item calibration parameters (question answered events).
+			itemIDs := []string{}
+			itemKeyTypes := map[string]map[string]bool{}
+			for _, it := range items {
+				if it.ev == nil {
+					continue
+				}
+				if strings.TrimSpace(it.ev.Type) != types.EventQuestionAnswered {
+					continue
+				}
+				iid := strings.TrimSpace(inferItemID(it.data))
+				ityp := strings.TrimSpace(inferItemType(it.data))
+				if iid == "" {
+					continue
+				}
+				itemIDs = append(itemIDs, iid)
+				if _, ok := itemKeyTypes[iid]; !ok {
+					itemKeyTypes[iid] = map[string]bool{}
+				}
+				itemKeyTypes[iid][ityp] = true
+			}
+			itemIDs = dedupeStrings(itemIDs)
+			itemCalibByKey := map[string]*types.ItemCalibration{}
+			if p.itemCalib != nil && len(itemIDs) > 0 {
+				if rows, err := p.itemCalib.ListByItemIDs(tdbc, itemIDs); err == nil {
+					for _, row := range rows {
+						if row == nil || strings.TrimSpace(row.ItemID) == "" {
+							continue
+						}
+						key := itemKey(row.ItemID, row.ItemType)
+						itemCalibByKey[key] = row
+					}
+				}
+			}
+
 			dirty := map[uuid.UUID]bool{}
 			dirtyModel := map[uuid.UUID]bool{}
 			misconRows := []*types.UserMisconceptionInstance{}
+			misconSignals := []misconSignal{}
 			questionAttempts := map[string]int{}
 			evidenceRows := []*types.UserConceptEvidence{}
 			testletDirty := map[string]*types.UserTestletState{}
+			itemCalibDirty := map[string]*types.ItemCalibration{}
+			skillDirty := map[uuid.UUID]*types.UserSkillState{}
 
 			type calibDelta struct {
 				count       int
@@ -447,14 +504,135 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 					if ev.ConceptID != nil && *ev.ConceptID != uuid.Nil && len(cids) == 0 {
 						cids = []uuid.UUID{*ev.ConceptID}
 					}
+					ccIDs := make([]uuid.UUID, 0, len(cids))
 					for _, rawID := range cids {
 						cc := canonicalByRaw[rawID]
-						if cc == uuid.Nil {
-							continue
+						if cc != uuid.Nil {
+							ccIDs = append(ccIDs, cc)
 						}
+					}
+					ccIDs = dedupeUUIDs(ccIDs)
+					if !isCorrect && len(ccIDs) > 0 {
+						sig := inferMisconceptionSignature(typ, it.data, "procedural_gap")
+						conf := clamp01(floatFromAny(it.data["grader_confidence"], floatFromAny(it.data["confidence"], 0.6)))
+						if conf == 0 {
+							conf = 0.6
+						}
+						sourceID := strings.TrimSpace(fmt.Sprint(it.data["client_event_id"]))
+						if sourceID == "" {
+							sourceID = ev.ID.String()
+						}
+						for _, cc := range ccIDs {
+							if cc == uuid.Nil {
+								continue
+							}
+							misconSignals = append(misconSignals, misconSignal{
+								ConceptID:     cc,
+								SeenAt:        seenAt,
+								Confidence:    conf,
+								SourceID:      sourceID,
+								SignatureType: sig,
+							})
+						}
+					}
+
+					itemID := strings.TrimSpace(inferItemID(it.data))
+					itemType := strings.TrimSpace(inferItemType(it.data))
+					itemKey := itemKey(itemID, itemType)
+					var itemCalib *types.ItemCalibration
+					if p.itemCalib != nil && itemID != "" {
+						itemCalib = itemCalibByKey[itemKey]
+						if itemCalib == nil {
+							var conceptID *uuid.UUID
+							if len(ccIDs) > 0 {
+								cc := ccIDs[0]
+								conceptID = &cc
+							}
+							itemCalib = ensureItemCalibration(nil, itemID, itemType, conceptID, it.data)
+							if itemCalib != nil {
+								itemCalibByKey[itemKey] = itemCalib
+							}
+						} else if itemCalib.ConceptID == nil && len(ccIDs) > 0 {
+							cc := ccIDs[0]
+							itemCalib.ConceptID = &cc
+						}
+						if itemCalib != nil {
+							it.data["item_calib_count"] = itemCalib.Count
+							it.data["item_calib_correct"] = itemCalib.Correct
+							if itemCalib.Count >= 3 {
+								it.data["item_difficulty"] = itemCalib.Difficulty
+								it.data["item_discrimination"] = itemCalib.Discrimination
+								if itemCalib.Guess > 0 {
+									it.data["item_guess"] = itemCalib.Guess
+								}
+								if itemCalib.Slip > 0 {
+									it.data["item_slip"] = itemCalib.Slip
+								}
+							}
+						}
+					}
+
+					theta := math.NaN()
+					sigma := math.NaN()
+					if len(ccIDs) > 0 {
+						sum := 0.0
+						sigmaSum := 0.0
+						count := 0
+						for _, cc := range ccIDs {
+							if sk := skillByConcept[cc]; sk != nil {
+								sum += sk.Theta
+								if sk.Sigma > 0 {
+									sigmaSum += sk.Sigma
+								} else {
+									sigmaSum += 1.0
+								}
+								count++
+								continue
+							}
+							if st := stateByConcept[cc]; st != nil {
+								sum += logit(clamp01(st.Mastery))
+								sigmaSum += 1.0
+								count++
+							}
+						}
+						if count > 0 {
+							theta = sum / float64(count)
+							sigma = sigmaSum / float64(count)
+						}
+					}
+					if !math.IsNaN(theta) {
+						it.data["user_theta"] = theta
+					}
+					if !math.IsNaN(sigma) {
+						it.data["user_sigma"] = sigma
+					}
+
+					evidenceStrength := clamp01(floatFromAny(it.data["evidence_strength"], 0))
+					if evidenceStrength == 0 {
+						evidenceStrength = computeEvidenceStrength(it.data, itemCalib)
+					}
+					if evidenceStrength > 0 {
+						it.data["evidence_strength"] = evidenceStrength
+					}
+
+					for _, cc := range ccIDs {
 						st := ensureConceptState(stateByConcept[cc], userID, cc)
 						prevM := st.Mastery
 						prevC := st.Confidence
+						conceptTheta := logit(clamp01(prevM))
+						conceptSigma := 1.0
+						if p.skillState != nil {
+							skill := ensureSkillState(skillByConcept[cc], userID, cc, logit(clamp01(prevM)))
+							conceptTheta = skill.Theta
+							if skill.Sigma > 0 {
+								conceptSigma = skill.Sigma
+							}
+							applyQuestionAnsweredToSkill(skill, isCorrect, seenAt, it.data, evidenceStrength)
+							skillByConcept[cc] = skill
+							skillDirty[cc] = skill
+						}
+						it.data["user_theta"] = conceptTheta
+						it.data["user_sigma"] = conceptSigma
 						expectedCorrect := expectedCorrectnessForQuestion(st, seenAt, it.data)
 						applyQuestionAnsweredToState(st, seenAt, it.data)
 						stateByConcept[cc] = st
@@ -510,7 +688,7 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						// Structural signal: incorrect answers -> misconception candidate
 						if !boolFromAny(it.data["is_correct"], false) && p.conceptModel != nil {
 							model := ensureConceptModel(modelByConcept[cc], userID, cc)
-							if updated, mis := applyIncorrectAnswerToModel(model, seenAt, it.data); updated {
+							if updated, mis := applyIncorrectAnswerToModel(model, seenAt, it.data, typ); updated {
 								modelByConcept[cc] = model
 								dirtyModel[cc] = true
 								incorrectSignals++
@@ -530,6 +708,10 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 								structuralUpdates++
 							}
 						}
+					}
+					if itemCalib != nil {
+						applyQuestionAnsweredToItemCalibration(itemCalib, theta, isCorrect, seenAt, it.data, evidenceStrength)
+						itemCalibDirty[itemKey] = itemCalib
 					}
 
 				case types.EventConceptClaimEvaluated:
@@ -1190,6 +1372,36 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 			}
 
+			// Persist updated user skill states (IRT theta/sigma).
+			if p.skillState != nil && len(skillDirty) > 0 {
+				ids := make([]uuid.UUID, 0, len(skillDirty))
+				for id := range skillDirty {
+					if id != uuid.Nil {
+						ids = append(ids, id)
+					}
+				}
+				sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+				for _, id := range ids {
+					if row := skillDirty[id]; row != nil {
+						_ = p.skillState.Upsert(tdbc, row)
+					}
+				}
+			}
+
+			// Persist item calibration updates.
+			if p.itemCalib != nil && len(itemCalibDirty) > 0 {
+				keys := make([]string, 0, len(itemCalibDirty))
+				for k := range itemCalibDirty {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					if row := itemCalibDirty[k]; row != nil {
+						_ = p.itemCalib.Upsert(tdbc, row)
+					}
+				}
+			}
+
 			// Persist updated structural models.
 			if p.conceptModel != nil && len(dirtyModel) > 0 {
 				ids := make([]uuid.UUID, 0, len(dirtyModel))
@@ -1213,6 +1425,10 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						_ = p.misconRepo.Upsert(tdbc, row)
 					}
 				}
+			}
+
+			if len(misconSignals) > 0 {
+				p.maybeUpsertMisconceptionCausalEdges(tdbc, userID, misconSignals, misconRows, now)
 			}
 
 			// Persist testlet states (adaptive testing).
@@ -1336,15 +1552,15 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 						if existingAlert := alertsByConcept[id]; existingAlert != nil {
 							resolvedAt := now
 							_ = p.alertRepo.Upsert(tdbc, &types.UserModelAlert{
-								ID:         uuid.New(),
-								UserID:     userID,
-								ConceptID:  id,
-								Kind:       "calibration_drift",
-								Severity:   "info",
-								Score:      0,
-								Details:    datatypes.JSON(mustJSON(details)),
-								LastSeenAt: &now,
-								ResolvedAt: &resolvedAt,
+								ID:          uuid.New(),
+								UserID:      userID,
+								ConceptID:   id,
+								Kind:        "calibration_drift",
+								Severity:    "info",
+								Score:       0,
+								Details:     datatypes.JSON(mustJSON(details)),
+								LastSeenAt:  &now,
+								ResolvedAt:  &resolvedAt,
 								Occurrences: 0,
 							})
 						}
@@ -1353,14 +1569,14 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 
 					score := math.Max(math.Max(gap, avgAbsErr), avgBrier)
 					_ = p.alertRepo.Upsert(tdbc, &types.UserModelAlert{
-						ID:         uuid.New(),
-						UserID:     userID,
-						ConceptID:  id,
-						Kind:       "calibration_drift",
-						Severity:   severity,
-						Score:      score,
-						Details:    datatypes.JSON(mustJSON(details)),
-						LastSeenAt: &now,
+						ID:          uuid.New(),
+						UserID:      userID,
+						ConceptID:   id,
+						Kind:        "calibration_drift",
+						Severity:    severity,
+						Score:       score,
+						Details:     datatypes.JSON(mustJSON(details)),
+						LastSeenAt:  &now,
 						Occurrences: 1,
 					})
 				}
@@ -1511,6 +1727,39 @@ func inferTestletType(data map[string]any) string {
 		return "question"
 	}
 	for _, key := range []string{"testlet_type", "prompt_type", "item_type", "activity_kind", "block_type"} {
+		if v := strings.TrimSpace(fmt.Sprint(data[key])); v != "" && v != "<nil>" {
+			return strings.ToLower(v)
+		}
+	}
+	return "question"
+}
+
+func itemKey(id string, typ string) string {
+	id = strings.TrimSpace(id)
+	typ = strings.TrimSpace(typ)
+	if typ == "" {
+		typ = "question"
+	}
+	return fmt.Sprintf("%s|%s", id, strings.ToLower(typ))
+}
+
+func inferItemID(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	for _, key := range []string{"item_id", "question_id", "assessment_id", "block_id", "testlet_id"} {
+		if v := strings.TrimSpace(fmt.Sprint(data[key])); v != "" && v != "<nil>" {
+			return v
+		}
+	}
+	return ""
+}
+
+func inferItemType(data map[string]any) string {
+	if data == nil {
+		return "question"
+	}
+	for _, key := range []string{"item_type", "question_type", "testlet_type", "prompt_type", "block_type"} {
 		if v := strings.TrimSpace(fmt.Sprint(data[key])); v != "" && v != "<nil>" {
 			return strings.ToLower(v)
 		}

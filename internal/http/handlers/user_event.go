@@ -34,6 +34,9 @@ type ingestEventsRequest struct {
 func isMeaningfulEventType(t string) bool {
 	switch t {
 	case
+		// navigation
+		"path_opened",
+		"path_node_opened",
 		// lifecycle / progress
 		"activity_started",
 		"activity_completed",
@@ -176,6 +179,9 @@ func (h *EventHandler) Ingest(c *gin.Context) {
 				}
 				if _, ok, _ := h.jobs.EnqueueVariantStatsRefreshIfNeeded(dbc, rd.UserID, anySetID, trigger); ok {
 					enqueuedJobs["variant_stats_refresh"]++
+				}
+				if _, ok, _ := h.jobs.EnqueueDocVariantEvalIfNeeded(dbc, rd.UserID, anySetID, trigger); ok {
+					enqueuedJobs["doc_variant_eval"]++
 				}
 			}
 
