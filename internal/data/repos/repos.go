@@ -208,6 +208,9 @@ func NewUserModelAlertRepo(db *gorm.DB, baseLog *logger.Logger) UserModelAlertRe
 func NewUserMisconceptionInstanceRepo(db *gorm.DB, baseLog *logger.Logger) UserMisconceptionInstanceRepo {
 	return learning.NewUserMisconceptionInstanceRepo(db, baseLog)
 }
+func NewMisconceptionCausalEdgeRepo(db *gorm.DB, baseLog *logger.Logger) MisconceptionCausalEdgeRepo {
+	return learning.NewMisconceptionCausalEdgeRepo(db, baseLog)
+}
 func NewMisconceptionResolutionStateRepo(db *gorm.DB, baseLog *logger.Logger) MisconceptionResolutionStateRepo {
 	return learning.NewMisconceptionResolutionStateRepo(db, baseLog)
 }

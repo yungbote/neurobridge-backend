@@ -1427,9 +1427,9 @@ func (p *Pipeline) Run(ctx *jobrt.Context) error {
 				}
 			}
 
-			if len(misconSignals) > 0 {
-				p.maybeUpsertMisconceptionCausalEdges(tdbc, userID, misconSignals, misconRows, now)
-			}
+				if len(misconSignals) > 0 {
+					p.maybeUpsertMisconceptionCausalEdges(tdbc, userID, misconSignals, misconRows, time.Now().UTC())
+				}
 
 			// Persist testlet states (adaptive testing).
 			if p.testletState != nil && len(testletDirty) > 0 {
