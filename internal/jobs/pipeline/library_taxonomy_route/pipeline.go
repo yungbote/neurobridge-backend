@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	librarymod "github.com/yungbote/neurobridge-backend/internal/modules/library"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -57,6 +58,45 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 				enqueuedRefine = true
 			}
 		}
+	}
+
+	meta := map[string]any{
+		"job_run_id":               jc.Job.ID.String(),
+		"owner_user_id":            jc.Job.OwnerUserID.String(),
+		"user_id":                  out.UserID.String(),
+		"path_id":                  out.PathID.String(),
+		"facets_processed":         out.FacetsProcessed,
+		"nodes_created":            out.NodesCreated,
+		"edges_upserted":           out.EdgesUpserted,
+		"members_upserted":         out.MembersUpserted,
+		"assigned_to_inbox_facets": out.AssignedToInboxFacets,
+		"should_enqueue_refine":    out.ShouldEnqueueRefine,
+		"enqueued_refine":          enqueuedRefine,
+	}
+	inputs := map[string]any{
+		"path_id": pathID.String(),
+	}
+	chosen := map[string]any{
+		"nodes_created":  out.NodesCreated,
+		"edges_upserted": out.EdgesUpserted,
+	}
+	userID := jc.Job.OwnerUserID
+	_, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+		DecisionType:  p.Type(),
+		DecisionPhase: "build",
+		DecisionMode:  "deterministic",
+		UserID:        &userID,
+		PathID:        &out.PathID,
+		Inputs:        inputs,
+		Chosen:        chosen,
+		Metadata:      meta,
+		Payload:       jc.Payload(),
+		Validate:      true,
+		RequireTrace:  true,
+	})
+	if traceErr != nil {
+		jc.Fail("structural_trace", traceErr)
+		return nil
 	}
 
 	jc.Succeed("done", map[string]any{

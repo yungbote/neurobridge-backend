@@ -63,6 +63,10 @@ func AutoMigrateAll(db *gorm.DB) error {
 		&types.UserLibraryIndex{},
 		&types.CohortPrior{},
 		&types.DecisionTrace{},
+		&types.StructuralDecisionTrace{},
+		&types.GraphVersion{},
+		&types.StructuralDriftMetric{},
+		&types.RollbackEvent{},
 		&types.ModelSnapshot{},
 		&types.PolicyEvalSnapshot{},
 		// Chain identity + Prios + Completion

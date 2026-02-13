@@ -48,6 +48,9 @@ type SLOEvaluator struct {
 	workerSuccessTarget     float64
 	pipelineSuccessTarget   float64
 	runtimeCompletionTarget float64
+	traceCompletenessTarget float64
+	validationLatencyTarget float64
+	rollbackTimeTarget      float64
 
 	apiTotal        *rollingSum
 	apiError        *rollingSum
@@ -58,6 +61,12 @@ type SLOEvaluator struct {
 	buildError      *rollingSum
 	promptShown     *rollingSum
 	promptCompleted *rollingSum
+	traceAttempted  *rollingSum
+	traceWritten    *rollingSum
+	validationTotal *rollingSum
+	validationSlow  *rollingSum
+	rollbackTotal   *rollingSum
+	rollbackSlow    *rollingSum
 
 	prevApiTotal        float64
 	prevApiError        float64
@@ -68,6 +77,12 @@ type SLOEvaluator struct {
 	prevBuildError      float64
 	prevPromptShown     float64
 	prevPromptCompleted float64
+	prevTraceAttempted  float64
+	prevTraceWritten    float64
+	prevValidationTotal float64
+	prevValidationSlow  float64
+	prevRollbackTotal   float64
+	prevRollbackSlow    float64
 
 	alertWebhook     string
 	alertOwner       string
@@ -117,6 +132,9 @@ func newSLOEvaluator(m *Metrics, log *logger.Logger) *SLOEvaluator {
 		workerSuccessTarget:     clamp01(parseFloat("SLO_WORKER_SUCCESS_TARGET", 0.98)),
 		pipelineSuccessTarget:   clamp01(parseFloat("SLO_PIPELINE_SUCCESS_TARGET", 0.98)),
 		runtimeCompletionTarget: clamp01(parseFloat("SLO_RUNTIME_COMPLETION_TARGET", 0.7)),
+		traceCompletenessTarget: clamp01(parseFloat("SLO_TRACE_COMPLETENESS_TARGET", 0.995)),
+		validationLatencyTarget: clamp01(parseFloat("SLO_VALIDATION_LATENCY_TARGET", 0.95)),
+		rollbackTimeTarget:      clamp01(parseFloat("SLO_ROLLBACK_TIME_TARGET", 0.95)),
 		apiTotal:                newRollingSum(size),
 		apiError:                newRollingSum(size),
 		apiGood:                 newRollingSum(size),
@@ -126,6 +144,12 @@ func newSLOEvaluator(m *Metrics, log *logger.Logger) *SLOEvaluator {
 		buildError:              newRollingSum(size),
 		promptShown:             newRollingSum(size),
 		promptCompleted:         newRollingSum(size),
+		traceAttempted:          newRollingSum(size),
+		traceWritten:            newRollingSum(size),
+		validationTotal:         newRollingSum(size),
+		validationSlow:          newRollingSum(size),
+		rollbackTotal:           newRollingSum(size),
+		rollbackSlow:            newRollingSum(size),
 		alertWebhook:            strings.TrimSpace(getEnv("SLO_ALERT_WEBHOOK_URL")),
 		alertOwner:              strings.TrimSpace(getEnv("SLO_ALERT_OWNER")),
 		alertRunbook:            strings.TrimSpace(getEnv("SLO_ALERT_RUNBOOK_URL")),
@@ -162,6 +186,12 @@ func (e *SLOEvaluator) evaluate() {
 	buildError := e.metrics.buildStageError.Value()
 	promptShown := e.metrics.runtimePromptShown.Value()
 	promptCompleted := e.metrics.runtimePromptCompleted.Value()
+	traceAttempted := e.metrics.traceAttemptedTotal.Value()
+	traceWritten := e.metrics.traceWrittenTotal.Value()
+	validationTotal := e.metrics.structuralValidationTotal.Value()
+	validationSlow := e.metrics.structuralValidationSlow.Value()
+	rollbackTotal := e.metrics.rollbackTotal.Value()
+	rollbackSlow := e.metrics.rollbackSlow.Value()
 
 	apiDeltaTotal := delta(apiTotal, e.prevApiTotal)
 	apiDeltaError := delta(apiError, e.prevApiError)
@@ -172,6 +202,12 @@ func (e *SLOEvaluator) evaluate() {
 	buildDeltaError := delta(buildError, e.prevBuildError)
 	promptDeltaShown := delta(promptShown, e.prevPromptShown)
 	promptDeltaCompleted := delta(promptCompleted, e.prevPromptCompleted)
+	traceDeltaAttempted := delta(traceAttempted, e.prevTraceAttempted)
+	traceDeltaWritten := delta(traceWritten, e.prevTraceWritten)
+	validationDeltaTotal := delta(validationTotal, e.prevValidationTotal)
+	validationDeltaSlow := delta(validationSlow, e.prevValidationSlow)
+	rollbackDeltaTotal := delta(rollbackTotal, e.prevRollbackTotal)
+	rollbackDeltaSlow := delta(rollbackSlow, e.prevRollbackSlow)
 
 	e.prevApiTotal = apiTotal
 	e.prevApiError = apiError
@@ -182,6 +218,12 @@ func (e *SLOEvaluator) evaluate() {
 	e.prevBuildError = buildError
 	e.prevPromptShown = promptShown
 	e.prevPromptCompleted = promptCompleted
+	e.prevTraceAttempted = traceAttempted
+	e.prevTraceWritten = traceWritten
+	e.prevValidationTotal = validationTotal
+	e.prevValidationSlow = validationSlow
+	e.prevRollbackTotal = rollbackTotal
+	e.prevRollbackSlow = rollbackSlow
 
 	e.apiTotal.add(apiDeltaTotal)
 	e.apiError.add(apiDeltaError)
@@ -192,12 +234,21 @@ func (e *SLOEvaluator) evaluate() {
 	e.buildError.add(buildDeltaError)
 	e.promptShown.add(promptDeltaShown)
 	e.promptCompleted.add(promptDeltaCompleted)
+	e.traceAttempted.add(traceDeltaAttempted)
+	e.traceWritten.add(traceDeltaWritten)
+	e.validationTotal.add(validationDeltaTotal)
+	e.validationSlow.add(validationDeltaSlow)
+	e.rollbackTotal.add(rollbackDeltaTotal)
+	e.rollbackSlow.add(rollbackDeltaSlow)
 
 	e.evalSLO("api_availability", e.apiTotal.total, e.apiError.total, e.apiAvailTarget)
 	e.evalSLO("api_latency", e.apiTotal.total, e.apiTotal.total-e.apiGood.total, e.apiLatencyTarget)
 	e.evalSLO("worker_success", e.workerTotal.total, e.workerError.total, e.workerSuccessTarget)
 	e.evalSLO("pipeline_success", e.buildTotal.total, e.buildError.total, e.pipelineSuccessTarget)
 	e.evalSLO("runtime_prompt_completion", e.promptShown.total, e.promptShown.total-e.promptCompleted.total, e.runtimeCompletionTarget)
+	e.evalSLO("trace_completeness", e.traceAttempted.total, e.traceAttempted.total-e.traceWritten.total, e.traceCompletenessTarget)
+	e.evalSLO("structural_validation_latency", e.validationTotal.total, e.validationSlow.total, e.validationLatencyTarget)
+	e.evalSLO("rollback_time", e.rollbackTotal.total, e.rollbackSlow.total, e.rollbackTimeTarget)
 }
 
 func (e *SLOEvaluator) evalSLO(name string, total float64, bad float64, target float64) {

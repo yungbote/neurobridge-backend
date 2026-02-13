@@ -15,6 +15,7 @@ type Pipeline struct {
 	ai       openai.Client
 	threads  repos.ChatThreadRepo
 	messages repos.ChatMessageRepo
+	turns    repos.ChatTurnRepo
 	state    repos.ChatThreadStateRepo
 	concepts repos.ConceptRepo
 	model    repos.UserConceptModelRepo
@@ -29,6 +30,7 @@ func New(
 	ai openai.Client,
 	threads repos.ChatThreadRepo,
 	messages repos.ChatMessageRepo,
+	turns repos.ChatTurnRepo,
 	state repos.ChatThreadStateRepo,
 	concepts repos.ConceptRepo,
 	model repos.UserConceptModelRepo,
@@ -42,6 +44,7 @@ func New(
 		ai:       ai,
 		threads:  threads,
 		messages: messages,
+		turns:    turns,
 		state:    state,
 		concepts: concepts,
 		model:    model,

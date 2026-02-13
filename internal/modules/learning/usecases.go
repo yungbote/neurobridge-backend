@@ -8,6 +8,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	ingestion "github.com/yungbote/neurobridge-backend/internal/modules/learning/ingestion/pipeline"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/steps"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
@@ -104,11 +105,13 @@ type UsecasesDeps struct {
 
 	Threads     repos.ChatThreadRepo
 	Messages    repos.ChatMessageRepo
+	Turns       repos.ChatTurnRepo
 	ThreadState repos.ChatThreadStateRepo
 	Notify      services.ChatNotifier
 
 	Saga      services.SagaService
 	Bootstrap services.LearningBuildBootstrapService
+	Metrics   *observability.Metrics
 }
 
 type Usecases struct {
@@ -247,6 +250,15 @@ type (
 
 	StructureBackfillInput  = steps.StructureBackfillInput
 	StructureBackfillOutput = steps.StructureBackfillOutput
+
+	StructuralTraceBackfillInput  = steps.StructuralTraceBackfillInput
+	StructuralTraceBackfillOutput = steps.StructuralTraceBackfillOutput
+
+	TraceCompactInput  = steps.TraceCompactInput
+	TraceCompactOutput = steps.TraceCompactOutput
+
+	TraceLoadTestInput  = steps.TraceLoadTestInput
+	TraceLoadTestOutput = steps.TraceLoadTestOutput
 )
 
 func (u Usecases) WebResourcesSeed(ctx context.Context, in WebResourcesSeedInput) (WebResourcesSeedOutput, error) {
@@ -945,6 +957,7 @@ func (u Usecases) StructureExtract(ctx context.Context, in StructureExtractInput
 		Log:          u.deps.Log,
 		Threads:      u.deps.Threads,
 		Messages:     u.deps.Messages,
+		Turns:        u.deps.Turns,
 		State:        u.deps.ThreadState,
 		Concepts:     u.deps.Concepts,
 		ConceptModel: u.deps.ConceptModel,
@@ -966,4 +979,26 @@ func (u Usecases) StructureBackfill(ctx context.Context, in StructureBackfillInp
 		ConceptState: u.deps.ConceptState,
 		ConceptModel: u.deps.ConceptModel,
 	}, steps.StructureBackfillInput(in))
+}
+
+func (u Usecases) StructuralTraceBackfill(ctx context.Context, in StructuralTraceBackfillInput) (StructuralTraceBackfillOutput, error) {
+	return steps.StructuralTraceBackfill(ctx, steps.StructuralTraceBackfillDeps{
+		DB:  u.deps.DB,
+		Log: u.deps.Log,
+	}, steps.StructuralTraceBackfillInput(in))
+}
+
+func (u Usecases) TraceCompact(ctx context.Context, in TraceCompactInput) (TraceCompactOutput, error) {
+	return steps.TraceCompact(ctx, steps.TraceCompactDeps{
+		DB:  u.deps.DB,
+		Log: u.deps.Log,
+	}, steps.TraceCompactInput(in))
+}
+
+func (u Usecases) TraceLoadTest(ctx context.Context, in TraceLoadTestInput) (TraceLoadTestOutput, error) {
+	return steps.TraceLoadTest(ctx, steps.TraceLoadTestDeps{
+		DB:      u.deps.DB,
+		Log:     u.deps.Log,
+		Metrics: u.deps.Metrics,
+	}, steps.TraceLoadTestInput(in))
 }

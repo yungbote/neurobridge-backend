@@ -12,23 +12,25 @@ import (
 )
 
 type Pipeline struct {
-	db        *gorm.DB
-	log       *logger.Logger
-	files     repos.MaterialFileRepo
-	fileSigs  repos.MaterialFileSignatureRepo
-	chunks    repos.MaterialChunkRepo
-	path      repos.PathRepo
-	concepts  repos.ConceptRepo
-	reps      repos.ConceptRepresentationRepo
-	overrides repos.ConceptMappingOverrideRepo
-	evidence  repos.ConceptEvidenceRepo
-	edges     repos.ConceptEdgeRepo
-	graph     *neo4jdb.Client
-	ai        openai.Client
-	vec       pinecone.VectorStore
-	saga      services.SagaService
-	bootstrap services.LearningBuildBootstrapService
-	artifacts repos.LearningArtifactRepo
+	db               *gorm.DB
+	log              *logger.Logger
+	files            repos.MaterialFileRepo
+	fileSigs         repos.MaterialFileSignatureRepo
+	chunks           repos.MaterialChunkRepo
+	path             repos.PathRepo
+	concepts         repos.ConceptRepo
+	reps             repos.ConceptRepresentationRepo
+	overrides        repos.ConceptMappingOverrideRepo
+	evidence         repos.ConceptEvidenceRepo
+	edges            repos.ConceptEdgeRepo
+	graph            *neo4jdb.Client
+	ai               openai.Client
+	vec              pinecone.VectorStore
+	saga             services.SagaService
+	bootstrap        services.LearningBuildBootstrapService
+	artifacts        repos.LearningArtifactRepo
+	graphVersions    repos.GraphVersionRepo
+	structuralTraces repos.StructuralDecisionTraceRepo
 }
 
 func New(
@@ -49,25 +51,29 @@ func New(
 	saga services.SagaService,
 	bootstrap services.LearningBuildBootstrapService,
 	artifacts repos.LearningArtifactRepo,
+	graphVersions repos.GraphVersionRepo,
+	structuralTraces repos.StructuralDecisionTraceRepo,
 ) *Pipeline {
 	return &Pipeline{
-		db:        db,
-		log:       baseLog.With("job", "concept_graph_patch_build"),
-		files:     files,
-		fileSigs:  fileSigs,
-		chunks:    chunks,
-		path:      path,
-		concepts:  concepts,
-		reps:      reps,
-		overrides: overrides,
-		evidence:  evidence,
-		edges:     edges,
-		graph:     graph,
-		ai:        ai,
-		vec:       vec,
-		saga:      saga,
-		bootstrap: bootstrap,
-		artifacts: artifacts,
+		db:               db,
+		log:              baseLog.With("job", "concept_graph_patch_build"),
+		files:            files,
+		fileSigs:         fileSigs,
+		chunks:           chunks,
+		path:             path,
+		concepts:         concepts,
+		reps:             reps,
+		overrides:        overrides,
+		evidence:         evidence,
+		edges:            edges,
+		graph:            graph,
+		ai:               ai,
+		vec:              vec,
+		saga:             saga,
+		bootstrap:        bootstrap,
+		artifacts:        artifacts,
+		graphVersions:    graphVersions,
+		structuralTraces: structuralTraces,
 	}
 }
 

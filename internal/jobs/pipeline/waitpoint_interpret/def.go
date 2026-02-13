@@ -24,8 +24,10 @@ type Pipeline struct {
 	jobRuns repos.JobRunRepo
 	jobs    services.JobService
 
-	path repos.PathRepo
+	path  repos.PathRepo
 	prefs repos.UserPersonalizationPrefsRepo
+
+	traces repos.DecisionTraceRepo
 
 	notify services.ChatNotifier
 }
@@ -41,6 +43,7 @@ func New(
 	jobs services.JobService,
 	path repos.PathRepo,
 	prefs repos.UserPersonalizationPrefsRepo,
+	traces repos.DecisionTraceRepo,
 	notify services.ChatNotifier,
 ) *Pipeline {
 	return &Pipeline{
@@ -54,6 +57,7 @@ func New(
 		jobs:     jobs,
 		path:     path,
 		prefs:    prefs,
+		traces:   traces,
 		notify:   notify,
 	}
 }
@@ -61,11 +65,3 @@ func New(
 func (p *Pipeline) Type() string {
 	return "waitpoint_interpret"
 }
-
-
-
-
-
-
-
-

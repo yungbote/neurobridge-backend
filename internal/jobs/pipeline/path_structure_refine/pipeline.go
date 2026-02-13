@@ -18,6 +18,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -56,7 +57,47 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	pathID, _ := jc.PayloadUUID("path_id")
+	var pathPtr *uuid.UUID
+	if pathID != uuid.Nil {
+		pathPtr = &pathID
+	}
+	recordTrace := func(mode string, extra map[string]any, validate bool) error {
+		meta := map[string]any{
+			"job_run_id":    jc.Job.ID.String(),
+			"owner_user_id": jc.Job.OwnerUserID.String(),
+			"path_id":       pathID.String(),
+			"mode":          mode,
+		}
+		for k, v := range extra {
+			meta[k] = v
+		}
+		inputs := map[string]any{
+			"path_id": pathID.String(),
+		}
+		chosen := map[string]any{
+			"mode": mode,
+		}
+		userID := jc.Job.OwnerUserID
+		_, err := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+			DecisionType:  p.Type(),
+			DecisionPhase: "build",
+			DecisionMode:  "deterministic",
+			UserID:        &userID,
+			PathID:        pathPtr,
+			Inputs:        inputs,
+			Chosen:        chosen,
+			Metadata:      meta,
+			Payload:       jc.Payload(),
+			Validate:      validate,
+			RequireTrace:  true,
+		})
+		return err
+	}
 	if pathID == uuid.Nil {
+		if err := recordTrace("no_path", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "no_path"})
 		return nil
 	}
@@ -69,11 +110,19 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 	if row == nil || row.ID == uuid.Nil || row.UserID == nil || *row.UserID != jc.Job.OwnerUserID {
+		if err := recordTrace("path_not_found", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "path_not_found"})
 		return nil
 	}
 	if row.ParentPathID == nil || *row.ParentPathID == uuid.Nil {
 		// Not a subpath => nothing to refine.
+		if err := recordTrace("no_parent", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "no_parent"})
 		return nil
 	}
@@ -102,6 +151,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		active = append(active, sp)
 	}
 	if len(active) < 2 {
+		if err := recordTrace("insufficient_siblings", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "insufficient_siblings"})
 		return nil
 	}
@@ -157,6 +210,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		withGraph = append(withGraph, sp)
 	}
 	if len(withGraph) < 2 {
+		if err := recordTrace("waiting_for_more_graphs", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "waiting_for_more_graphs"})
 		return nil
 	}
@@ -186,6 +243,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 	if prog == nil || prog.ID == uuid.Nil || prog.UserID == nil || *prog.UserID != jc.Job.OwnerUserID {
+		if err := recordTrace("program_not_found", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{"mode": "program_not_found"})
 		return nil
 	}
@@ -197,6 +258,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	prevRef := mapFromAny(progMeta["structure_refinement_v1"])
 	if prevRef != nil {
 		if prevSig := strings.TrimSpace(fmt.Sprint(prevRef["signature"])); prevSig != "" && prevSig == signature {
+			if err := recordTrace("unchanged", map[string]any{"signature": signature}, false); err != nil {
+				jc.Fail("structural_trace", err)
+				return nil
+			}
 			jc.Succeed("done", map[string]any{"mode": "unchanged", "signature": signature})
 			return nil
 		}
@@ -247,6 +312,15 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 				}
 			}
 		}
+	}
+
+	if err := recordTrace("refined", map[string]any{
+		"program_id": programID.String(),
+		"signature":  signature,
+		"pair_count": len(pairs),
+	}, true); err != nil {
+		jc.Fail("invariant_validation", err)
+		return nil
 	}
 
 	jc.Succeed("done", map[string]any{

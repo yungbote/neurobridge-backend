@@ -23,6 +23,8 @@ type Pipeline struct {
 	jobRuns  repos.JobRunRepo
 	jobs     services.JobService
 
+	traces repos.DecisionTraceRepo
+
 	notify services.ChatNotifier
 }
 
@@ -35,6 +37,7 @@ func New(
 	turns repos.ChatTurnRepo,
 	jobRuns repos.JobRunRepo,
 	jobs services.JobService,
+	traces repos.DecisionTraceRepo,
 	notify services.ChatNotifier,
 ) *Pipeline {
 	return &Pipeline{
@@ -46,6 +49,7 @@ func New(
 		turns:    turns,
 		jobRuns:  jobRuns,
 		jobs:     jobs,
+		traces:   traces,
 		notify:   notify,
 	}
 }

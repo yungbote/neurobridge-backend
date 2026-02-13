@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -27,6 +28,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Log:          p.log,
 		Threads:      p.threads,
 		Messages:     p.messages,
+		Turns:        p.turns,
 		ThreadState:  p.state,
 		Concepts:     p.concepts,
 		ConceptModel: p.model,
@@ -40,6 +42,39 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	if err != nil {
 		jc.Fail("structure_extract", err)
+		return nil
+	}
+
+	meta := map[string]any{
+		"job_run_id":    jc.Job.ID.String(),
+		"owner_user_id": jc.Job.OwnerUserID.String(),
+		"thread_id":     threadID.String(),
+		"processed":     out.Processed,
+		"max_seq":       out.MaxSeq,
+	}
+	inputs := map[string]any{
+		"thread_id":  threadID.String(),
+		"message_id": msgID.String(),
+	}
+	chosen := map[string]any{
+		"processed": out.Processed,
+		"max_seq":   out.MaxSeq,
+	}
+	userID := jc.Job.OwnerUserID
+	_, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+		DecisionType:  p.Type(),
+		DecisionPhase: "build",
+		DecisionMode:  "deterministic",
+		UserID:        &userID,
+		Inputs:        inputs,
+		Chosen:        chosen,
+		Metadata:      meta,
+		Payload:       jc.Payload(),
+		Validate:      false,
+		RequireTrace:  true,
+	})
+	if traceErr != nil {
+		jc.Fail("structural_trace", traceErr)
 		return nil
 	}
 

@@ -26,6 +26,7 @@ type StructureExtractDeps struct {
 	Log          *logger.Logger
 	Threads      repos.ChatThreadRepo
 	Messages     repos.ChatMessageRepo
+	Turns        repos.ChatTurnRepo
 	State        repos.ChatThreadStateRepo
 	Concepts     repos.ConceptRepo
 	ConceptModel repos.UserConceptModelRepo
@@ -166,6 +167,23 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 			continue
 		}
 		bySeq[m.Seq] = m
+	}
+
+	turnByMessageID := map[uuid.UUID]*types.ChatTurn{}
+	lookupTurn := func(messageID uuid.UUID) *types.ChatTurn {
+		if messageID == uuid.Nil || deps.Turns == nil {
+			return nil
+		}
+		if cached, ok := turnByMessageID[messageID]; ok {
+			return cached
+		}
+		turn, err := deps.Turns.GetByUserMessageID(dbc, in.UserID, thread.ID, messageID)
+		if err != nil || turn == nil || turn.ID == uuid.Nil {
+			turnByMessageID[messageID] = nil
+			return nil
+		}
+		turnByMessageID[messageID] = turn
+		return turn
 	}
 
 	concepts, err := deps.Concepts.GetByScope(dbc, "path", thread.PathID)
@@ -522,6 +540,13 @@ func StructureExtract(ctx context.Context, deps StructureExtractDeps, in Structu
 						"signal_strength":   signal,
 						"thread_id":         thread.ID.String(),
 						"message_id":        msg.ID.String(),
+					}
+					if turn := lookupTurn(msg.ID); turn != nil && turn.ID != uuid.Nil {
+						data["chat_turn_id"] = turn.ID.String()
+						data["retrieval_trace_id"] = turn.ID.String()
+						if turn.AssistantMessageID != uuid.Nil {
+							data["assistant_message_id"] = turn.AssistantMessageID.String()
+						}
 					}
 					if hasTruth {
 						data["is_correct"] = isCorrect

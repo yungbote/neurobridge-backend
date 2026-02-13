@@ -11,6 +11,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/rollback"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/services"
@@ -20,46 +21,48 @@ import (
 Job worker is the execution engine for the SQL-backed job queue.
 
 High-level responsiblities:
-	- Poll the job_run table for runnable jobs (via JobRunRepo.ClaimNextRunnable)
-	- Claim a job with a DB-level lock/lease so only one worker runs it at a time
-	- Dispatch the job to a handler registered by job_type (runtime.Registry)
-	- Wrap handler execution with:
-		- heartbeats (stale-running detection)
-		- panic recovery (fail the job instead of crashing the worker)
-		- a safety-net error -> Fail (pipelines usually Fail themselves)
+  - Poll the job_run table for runnable jobs (via JobRunRepo.ClaimNextRunnable)
+  - Claim a job with a DB-level lock/lease so only one worker runs it at a time
+  - Dispatch the job to a handler registered by job_type (runtime.Registry)
+  - Wrap handler execution with:
+  - heartbeats (stale-running detection)
+  - panic recovery (fail the job instead of crashing the worker)
+  - a safety-net error -> Fail (pipelines usually Fail themselves)
+
 Idea:
+
 	The worker is infrastructure. It should know nothing of business logic.
 	All business logic lives in job handlers (pipelines), which only interact through runtime.Context.
 
 Concurrency:
-	- Start() spawns N goroutines
-	- Each goroutine runs runLoop() forever
-	- The DB claim operation (ClaimNextRunnable) prevents double execution across goroutines/processes
+  - Start() spawns N goroutines
+  - Each goroutine runs runLoop() forever
+  - The DB claim operation (ClaimNextRunnable) prevents double execution across goroutines/processes
 
 Heartbeats:
-	- Long jobs must update a heartbeat so they are not considered stuck
-	- If the process dies, the heartbeat stops and the job becomes reclaimable after a stale threshold
+  - Long jobs must update a heartbeat so they are not considered stuck
+  - If the process dies, the heartbeat stops and the job becomes reclaimable after a stale threshold
 
 locks are cleared on completion:
-	- Both success and failure release the lease (locked_at=nil), allowing retries or new jobs to proceed
+  - Both success and failure release the lease (locked_at=nil), allowing retries or new jobs to proceed
 
 worker ticks every second:
-	- Small polling interval keeps latency low for queued jobs without busy spinning
+  - Small polling interval keeps latency low for queued jobs without busy spinning
 */
 type Worker struct {
-	db       *gorm.DB // DB handle used by repo methods
-	log      *logger.Logger	// structured logging
-	repo     repos.JobRunRepo // scheduler + state writer for job_run rows
-	registry *runtime.Registry // job_type -> handler mapping
+	db       *gorm.DB             // DB handle used by repo methods
+	log      *logger.Logger       // structured logging
+	repo     repos.JobRunRepo     // scheduler + state writer for job_run rows
+	registry *runtime.Registry    // job_type -> handler mapping
 	notify   services.JobNotifier // side channel events (SSE)
 }
 
 /*
 NewWorker wires the worker with its infrastructure dependencies.
 This is intentionally thin wiring:
-	- repo decides what's runnable and manages claims/leases
-	- registry decides which handler runs a job_type
-	- notify emits progress/done/failed events
+  - repo decides what's runnable and manages claims/leases
+  - registry decides which handler runs a job_type
+  - notify emits progress/done/failed events
 */
 func NewWorker(db *gorm.DB, baseLog *logger.Logger, repo repos.JobRunRepo, registry *runtime.Registry, notify services.JobNotifier) *Worker {
 	return &Worker{
@@ -77,6 +80,7 @@ It reads WORKER_CONCURRENCY (default 4) and spawns that many goroutines.
 Each goroutine ryuns an independent runLoop() that claims and executes jobs.
 
 Invariant:
+
 	Even with many goroutines, a given job should only be executed by one worker at a time,
 	enforced by the repo's claim/lease mechanism.
 */
@@ -96,18 +100,19 @@ func (w *Worker) Start(ctx context.Context) {
 /*
 runLoop is the core scheduler loop.
 Behavior:
-	- Every tick, try to claim a runnable job (ClaimNextRunnable).
-	- If none exists, do nothing and wait for the next tick.
-	- If claimed, dispatch to the handler registered for job.JobType.
-	- Wrap execution with:
-		- heartbeat goroutine *updates job heartbeat periodically*
-		- panic recovery *convert panic to job failure*
-		- safety net: if handler returns error, mark failed
+  - Every tick, try to claim a runnable job (ClaimNextRunnable).
+  - If none exists, do nothing and wait for the next tick.
+  - If claimed, dispatch to the handler registered for job.JobType.
+  - Wrap execution with:
+  - heartbeat goroutine *updates job heartbeat periodically*
+  - panic recovery *convert panic to job failure*
+  - safety net: if handler returns error, mark failed
+
 Retry semantics:
-	- The worker does not 'retry' by re-calling the handler in process
-	- Instead, a failed job remains in DB with attempts/last_error timestamps,
-	  and the claim query decides when it is runnable again based on retryDelay/maxAttempts
-	- This makes retries durable across process restarts
+  - The worker does not 'retry' by re-calling the handler in process
+  - Instead, a failed job remains in DB with attempts/last_error timestamps,
+    and the claim query decides when it is runnable again based on retryDelay/maxAttempts
+  - This makes retries durable across process restarts
 */
 func (w *Worker) runLoop(ctx context.Context, workerID int) {
 	ticker := time.NewTicker(1 * time.Second)
@@ -134,6 +139,21 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 
 			h, ok := w.registry.Get(job.JobType)
 			jc := runtime.NewContext(ctx, w.db, job, w.repo, w.notify)
+
+			if rollback.BlockedJobType(job.JobType) {
+				if freeze, err := rollback.FreezeActive(ctx, w.db); err == nil && freeze.Active {
+					rollback.PauseJob(ctx, w.repo, job, "Paused: structural rollback active")
+					w.log.Info("Job paused for structural rollback",
+						"worker_id", workerID,
+						"job_id", job.ID,
+						"job_type", job.JobType,
+						"rollback_event_id", freeze.EventID,
+						"graph_version_from", freeze.From,
+						"graph_version_to", freeze.To,
+					)
+					continue
+				}
+			}
 
 			if !ok {
 				w.log.Warn("No handler registered for job_type",
@@ -173,8 +193,9 @@ func (w *Worker) runLoop(ctx context.Context, workerID int) {
 /*
 startHeartbeat spawns a goroutine that periodically updates job_run.heartbeat_at.
 Purpose:
-	- Prevent false 'stale running' detection for long-running handlers
-	- Allow stuck jobs to be reclaimed if the process crashes (heartbeats stop)
+  - Prevent false 'stale running' detection for long-running handlers
+  - Allow stuck jobs to be reclaimed if the process crashes (heartbeats stop)
+
 returns a stop function that must be called to terminate the heartbeat goroutine.
 */
 func (w *Worker) startHeartbeat(ctx context.Context, jobID uuid.UUID) func() {

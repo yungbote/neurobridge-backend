@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -73,6 +74,48 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	if strings.EqualFold(strings.TrimSpace(out.Status), "waiting_user") {
+		meta := map[string]any{
+			"job_run_id":         jc.Job.ID.String(),
+			"owner_user_id":      jc.Job.OwnerUserID.String(),
+			"material_set_id":    setID.String(),
+			"path_id":            out.PathID.String(),
+			"status":             out.Status,
+			"paths_before":       out.PathsBefore,
+			"paths_after":        out.PathsAfter,
+			"files_considered":   out.FilesConsidered,
+			"confidence":         out.Confidence,
+			"needs_confirmation": out.NeedsConfirmation,
+		}
+		inputs := map[string]any{
+			"material_set_id":    setID.String(),
+			"path_id":            pathID.String(),
+			"thread_id":          threadID.String(),
+			"wait_for_user":      waitForUser,
+			"confirm_externally": confirmExternally,
+		}
+		chosen := map[string]any{
+			"status": out.Status,
+		}
+		userID := jc.Job.OwnerUserID
+		_, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+			DecisionType:  p.Type(),
+			DecisionPhase: "build",
+			DecisionMode:  "deterministic",
+			UserID:        &userID,
+			PathID:        &out.PathID,
+			MaterialSetID: &setID,
+			Inputs:        inputs,
+			Chosen:        chosen,
+			Metadata:      meta,
+			Payload:       jc.Payload(),
+			Validate:      false,
+			RequireTrace:  true,
+		})
+		if traceErr != nil {
+			jc.Fail("structural_trace", traceErr)
+			return nil
+		}
+
 		filesForWaitpoint := []map[string]any{}
 		if p.files != nil {
 			rows, _ := p.files.GetByMaterialSetIDs(
@@ -155,6 +198,50 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	if out.Meta != nil {
 		options = out.Meta["options"]
 	}
+	meta := map[string]any{
+		"job_run_id":         jc.Job.ID.String(),
+		"owner_user_id":      jc.Job.OwnerUserID.String(),
+		"material_set_id":    setID.String(),
+		"path_id":            out.PathID.String(),
+		"status":             out.Status,
+		"paths_before":       out.PathsBefore,
+		"paths_after":        out.PathsAfter,
+		"files_considered":   out.FilesConsidered,
+		"confidence":         out.Confidence,
+		"needs_confirmation": out.NeedsConfirmation,
+	}
+	inputs := map[string]any{
+		"material_set_id":    setID.String(),
+		"path_id":            pathID.String(),
+		"thread_id":          threadID.String(),
+		"wait_for_user":      waitForUser,
+		"confirm_externally": confirmExternally,
+	}
+	chosen := map[string]any{
+		"status":       out.Status,
+		"paths_before": out.PathsBefore,
+		"paths_after":  out.PathsAfter,
+	}
+	userID := jc.Job.OwnerUserID
+	_, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+		DecisionType:  p.Type(),
+		DecisionPhase: "build",
+		DecisionMode:  "deterministic",
+		UserID:        &userID,
+		PathID:        &out.PathID,
+		MaterialSetID: &setID,
+		Inputs:        inputs,
+		Chosen:        chosen,
+		Metadata:      meta,
+		Payload:       jc.Payload(),
+		Validate:      true,
+		RequireTrace:  true,
+	})
+	if traceErr != nil {
+		jc.Fail("invariant_validation", traceErr)
+		return nil
+	}
+
 	jc.Succeed("done", map[string]any{
 		"material_set_id":    setID.String(),
 		"path_id":            pathID.String(),

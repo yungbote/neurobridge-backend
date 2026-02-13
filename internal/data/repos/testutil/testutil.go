@@ -133,6 +133,11 @@ func autoMigrateAll(db *gorm.DB) error {
 		&types.DocProbeOutcome{},
 		&types.DocVariantExposure{},
 		&types.DocVariantOutcome{},
+		&types.DecisionTrace{},
+		&types.StructuralDecisionTrace{},
+		&types.GraphVersion{},
+		&types.StructuralDriftMetric{},
+		&types.RollbackEvent{},
 
 		&types.LearningProfile{},
 		&types.TopicMastery{},

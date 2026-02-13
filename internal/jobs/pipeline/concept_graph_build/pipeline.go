@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
@@ -112,6 +113,55 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	meta := map[string]any{
+		"job_run_id":       jc.Job.ID.String(),
+		"owner_user_id":    jc.Job.OwnerUserID.String(),
+		"material_set_id":  setID.String(),
+		"path_id":          out.PathID.String(),
+		"concepts_made":    out.ConceptsMade,
+		"edges_made":       out.EdgesMade,
+		"pinecone_batches": out.PineconeBatches,
+		"mode":             mode,
+	}
+	inputs := map[string]any{
+		"material_set_id": setID.String(),
+		"saga_id":         sagaID.String(),
+		"path_id":         out.PathID.String(),
+		"mode":            mode,
+	}
+	chosen := map[string]any{
+		"concepts_made":    out.ConceptsMade,
+		"edges_made":       out.EdgesMade,
+		"pinecone_batches": out.PineconeBatches,
+	}
+	userID := jc.Job.OwnerUserID
+	traceRes, err := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{
+		DB:           p.db,
+		Log:          p.log,
+		GraphVersion: p.graphVersions,
+		TraceWriter:  p.structuralTraces,
+	}, structuraltrace.TraceInput{
+		DecisionType:      p.Type(),
+		DecisionPhase:     "build",
+		DecisionMode:      "deterministic",
+		UserID:            &userID,
+		PathID:            &out.PathID,
+		MaterialSetID:     &setID,
+		SagaID:            &sagaID,
+		Inputs:            inputs,
+		Chosen:            chosen,
+		Metadata:          meta,
+		Payload:           jc.Payload(),
+		Validate:          true,
+		RequireTrace:      true,
+		WriteGraphVersion: true,
+	})
+	if err != nil {
+		jc.Fail("invariant_validation", err)
+		return nil
+	}
+	graphVersion := traceRes.GraphVersion
+
 	jc.Succeed("done", map[string]any{
 		"material_set_id":  setID.String(),
 		"saga_id":          sagaID.String(),
@@ -119,6 +169,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"concepts_made":    out.ConceptsMade,
 		"edges_made":       out.EdgesMade,
 		"pinecone_batches": out.PineconeBatches,
+		"graph_version":    graphVersion,
 	})
 	return nil
 }

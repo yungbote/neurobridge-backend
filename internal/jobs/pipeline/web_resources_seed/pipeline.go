@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
@@ -67,7 +68,83 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	if strings.EqualFold(strings.TrimSpace(out.Status), "waiting_user") {
+		meta := map[string]any{
+			"job_run_id":      jc.Job.ID.String(),
+			"owner_user_id":   jc.Job.OwnerUserID.String(),
+			"material_set_id": setID.String(),
+			"path_id":         out.PathID.String(),
+			"status":          out.Status,
+		}
+		inputs := map[string]any{
+			"material_set_id": setID.String(),
+			"saga_id":         sagaID.String(),
+			"path_id":         out.PathID.String(),
+			"thread_id":       threadID.String(),
+		}
+		chosen := map[string]any{
+			"status": out.Status,
+		}
+		userID := jc.Job.OwnerUserID
+		if _, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+			DecisionType:  p.Type(),
+			DecisionPhase: "build",
+			DecisionMode:  "deterministic",
+			UserID:        &userID,
+			PathID:        &out.PathID,
+			MaterialSetID: &setID,
+			SagaID:        &sagaID,
+			Inputs:        inputs,
+			Chosen:        chosen,
+			Metadata:      meta,
+			Payload:       jc.Payload(),
+			Validate:      false,
+			RequireTrace:  true,
+		}); traceErr != nil {
+			jc.Fail("structural_trace", traceErr)
+			return nil
+		}
 		pauseForUser(jc, setID, sagaID, out)
+		return nil
+	}
+
+	meta := map[string]any{
+		"job_run_id":        jc.Job.ID.String(),
+		"owner_user_id":     jc.Job.OwnerUserID.String(),
+		"material_set_id":   setID.String(),
+		"path_id":           out.PathID.String(),
+		"skipped":           out.Skipped,
+		"files_created":     out.FilesCreated,
+		"resources_planned": out.ResourcesPlanned,
+		"resources_fetched": out.ResourcesFetched,
+	}
+	inputs := map[string]any{
+		"material_set_id": setID.String(),
+		"saga_id":         sagaID.String(),
+		"path_id":         out.PathID.String(),
+		"thread_id":       threadID.String(),
+	}
+	chosen := map[string]any{
+		"files_created":     out.FilesCreated,
+		"resources_planned": out.ResourcesPlanned,
+		"resources_fetched": out.ResourcesFetched,
+	}
+	userID := jc.Job.OwnerUserID
+	if _, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+		DecisionType:  p.Type(),
+		DecisionPhase: "build",
+		DecisionMode:  "deterministic",
+		UserID:        &userID,
+		PathID:        &out.PathID,
+		MaterialSetID: &setID,
+		SagaID:        &sagaID,
+		Inputs:        inputs,
+		Chosen:        chosen,
+		Metadata:      meta,
+		Payload:       jc.Payload(),
+		Validate:      true,
+		RequireTrace:  true,
+	}); traceErr != nil {
+		jc.Fail("structural_trace", traceErr)
 		return nil
 	}
 

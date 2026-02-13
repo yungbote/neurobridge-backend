@@ -77,6 +77,10 @@ type ConceptEvidenceRepo = learning.ConceptEvidenceRepo
 type CohortPriorRepo = learning.CohortPriorRepo
 type ActivityVariantStatRepo = learning.ActivityVariantStatRepo
 type DecisionTraceRepo = learning.DecisionTraceRepo
+type StructuralDecisionTraceRepo = learning.StructuralDecisionTraceRepo
+type GraphVersionRepo = learning.GraphVersionRepo
+type StructuralDriftMetricRepo = learning.StructuralDriftMetricRepo
+type RollbackEventRepo = learning.RollbackEventRepo
 type ModelSnapshotRepo = learning.ModelSnapshotRepo
 type PolicyEvalSnapshotRepo = learning.PolicyEvalSnapshotRepo
 type UserLibraryIndexRepo = learning.UserLibraryIndexRepo
@@ -415,6 +419,18 @@ func NewActivityVariantStatRepo(db *gorm.DB, baseLog *logger.Logger) ActivityVar
 
 func NewDecisionTraceRepo(db *gorm.DB, baseLog *logger.Logger) DecisionTraceRepo {
 	return learning.NewDecisionTraceRepo(db, baseLog)
+}
+func NewStructuralDecisionTraceRepo(db *gorm.DB, baseLog *logger.Logger) StructuralDecisionTraceRepo {
+	return learning.NewStructuralDecisionTraceRepo(db, baseLog)
+}
+func NewGraphVersionRepo(db *gorm.DB, baseLog *logger.Logger) GraphVersionRepo {
+	return learning.NewGraphVersionRepo(db, baseLog)
+}
+func NewStructuralDriftMetricRepo(db *gorm.DB, baseLog *logger.Logger) StructuralDriftMetricRepo {
+	return learning.NewStructuralDriftMetricRepo(db, baseLog)
+}
+func NewRollbackEventRepo(db *gorm.DB, baseLog *logger.Logger) RollbackEventRepo {
+	return learning.NewRollbackEventRepo(db, baseLog)
 }
 func NewModelSnapshotRepo(db *gorm.DB, baseLog *logger.Logger) ModelSnapshotRepo {
 	return learning.NewModelSnapshotRepo(db, baseLog)

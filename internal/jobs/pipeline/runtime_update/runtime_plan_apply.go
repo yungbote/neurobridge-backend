@@ -1314,7 +1314,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		prMeta["runtime"] = prRuntime
 		nrMeta["runtime"] = nrRuntime
 		snapshotID, snapshot := p.maybeUpsertBeliefSnapshot(dbc, userID, pathID, nodeID, sessionID, doc, readiness, prRuntime, nrRuntime, now)
-		p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
+		_, _ = p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
 		pr.Metadata = encodeJSONMap(prMeta)
 		nr.Metadata = encodeJSONMap(nrMeta)
 		_ = p.pathRuns.Upsert(dbc, pr)
@@ -1389,17 +1389,29 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 
 		pathIDCopy := pathID
 		trace := &types.DecisionTrace{
-			ID:           traceID,
-			UserID:       userID,
-			OccurredAt:   now,
-			DecisionType: "runtime_prompt",
-			PathID:       &pathIDCopy,
-			Inputs:       datatypes.JSON(mustJSON(inputs)),
-			Candidates:   datatypes.JSON(mustJSON(candPayload)),
-			Chosen:       datatypes.JSON(mustJSON(chosenPayload)),
+			ID:            traceID,
+			UserID:        userID,
+			OccurredAt:    now,
+			DecisionType:  "runtime_prompt",
+			DecisionPhase: "runtime",
+			DecisionMode:  "deterministic",
+			PathID:        &pathIDCopy,
+			Inputs:        datatypes.JSON(mustJSON(inputs)),
+			Candidates:    datatypes.JSON(mustJSON(candPayload)),
+			Chosen:        datatypes.JSON(mustJSON(chosenPayload)),
+		}
+		if p.metrics != nil {
+			p.metrics.IncTraceAttempted("decision")
 		}
 		if _, err := p.traces.Create(dbc, []*types.DecisionTrace{trace}); err != nil {
+			if p.metrics != nil {
+				p.metrics.IncTraceFailed("decision")
+			}
 			p.log.Debug("decision trace create failed", "error", err.Error())
+		} else {
+			if p.metrics != nil {
+				p.metrics.IncTraceWritten("decision")
+			}
 		}
 	}
 
@@ -1438,7 +1450,31 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	nrMeta["runtime"] = nrRuntime
 
 	snapshotID, snapshot := p.maybeUpsertBeliefSnapshot(dbc, userID, pathID, nodeID, sessionID, doc, readiness, prRuntime, nrRuntime, now)
-	p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
+	planID, planActions := p.maybeUpsertInterventionPlan(dbc, userID, pathID, nodeID, snapshotID, snapshot, readiness, prRuntime, nrRuntime, now)
+	if prompt.DecisionTraceID != "" && planID != "" && p.traces != nil {
+		if link := matchInterventionPlanAction(planID, planActions, prompt.Reason); link != nil {
+			updates := map[string]any{
+				"intervention_plan_id": link.PlanID,
+			}
+			if link.ActionID != "" {
+				updates["intervention_plan_action_id"] = link.ActionID
+				updates["intervention_plan_action_type"] = link.ActionType
+				updates["intervention_plan_action_slot"] = link.ActionSlot
+				updates["intervention_plan_action_reason"] = link.ActionReason
+				updates["intervention_plan_action_priority"] = link.ActionPriority
+			}
+			_ = updateDecisionTraceOutcome(dbc, p.traces, prompt.DecisionTraceID, updates)
+			if traceID, err := uuid.Parse(prompt.DecisionTraceID); err == nil {
+				fields := map[string]any{
+					"intervention_plan_id": link.PlanID,
+				}
+				if link.ActionID != "" {
+					fields["intervention_plan_action_id"] = link.ActionID
+				}
+				_ = p.traces.UpdateFields(dbc, traceID, fields)
+			}
+		}
+	}
 
 	if p.metrics != nil {
 		total := floatFromAny(nrRuntime["flow_budget_total"], 0)

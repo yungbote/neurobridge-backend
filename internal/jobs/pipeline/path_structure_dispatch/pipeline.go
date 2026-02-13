@@ -14,18 +14,19 @@ import (
 	"gorm.io/gorm/clause"
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
 type intakePathGroup struct {
-	ID              string
-	Title           string
-	Goal            string
-	Notes           string
-	CoreFileIDs     []string
-	SupportFileIDs  []string
-	FileIDs         []string
+	ID             string
+	Title          string
+	Goal           string
+	Notes          string
+	CoreFileIDs    []string
+	SupportFileIDs []string
+	FileIDs        []string
 }
 
 func (p *Pipeline) Run(jc *jobrt.Context) error {
@@ -60,6 +61,42 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	recordTrace := func(mode string, extra map[string]any, validate bool) error {
+		meta := map[string]any{
+			"job_run_id":      jc.Job.ID.String(),
+			"owner_user_id":   jc.Job.OwnerUserID.String(),
+			"material_set_id": setID.String(),
+			"path_id":         parentPathID.String(),
+			"mode":            mode,
+		}
+		for k, v := range extra {
+			meta[k] = v
+		}
+		inputs := map[string]any{
+			"material_set_id": setID.String(),
+			"path_id":         parentPathID.String(),
+		}
+		chosen := map[string]any{
+			"mode": mode,
+		}
+		userID := jc.Job.OwnerUserID
+		_, err := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+			DecisionType:  p.Type(),
+			DecisionPhase: "build",
+			DecisionMode:  "deterministic",
+			UserID:        &userID,
+			PathID:        &parentPathID,
+			MaterialSetID: &setID,
+			Inputs:        inputs,
+			Chosen:        chosen,
+			Metadata:      meta,
+			Payload:       jc.Payload(),
+			Validate:      validate,
+			RequireTrace:  true,
+		})
+		return err
+	}
+
 	// Parse intake from path.metadata (written by path_intake).
 	meta := map[string]any{}
 	if len(parent.Metadata) > 0 && strings.TrimSpace(string(parent.Metadata)) != "" && strings.TrimSpace(string(parent.Metadata)) != "null" {
@@ -67,6 +104,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 	intake := mapFromAny(meta["intake"])
 	if intake == nil {
+		if err := recordTrace("no_intake", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{
 			"material_set_id": setID.String(),
 			"path_id":         parentPathID.String(),
@@ -77,6 +118,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	paths := sliceAny(intake["paths"])
 	if len(paths) <= 1 {
+		if err := recordTrace("single_path", nil, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{
 			"material_set_id": setID.String(),
 			"path_id":         parentPathID.String(),
@@ -85,6 +130,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 	if !boolFromAny(intake["paths_confirmed"]) {
+		if err := recordTrace("single_path", map[string]any{"reason": "paths_not_confirmed"}, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{
 			"material_set_id": setID.String(),
 			"path_id":         parentPathID.String(),
@@ -168,6 +217,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	if len(groups) == 0 {
+		if err := recordTrace("single_path", map[string]any{"reason": "no_valid_groups"}, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{
 			"material_set_id": setID.String(),
 			"path_id":         parentPathID.String(),
@@ -201,6 +254,10 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 
 	if len(groups) <= 1 {
+		if err := recordTrace("single_path", map[string]any{"reason": "single_group_after_normalization"}, false); err != nil {
+			jc.Fail("structural_trace", err)
+			return nil
+		}
 		jc.Succeed("done", map[string]any{
 			"material_set_id": setID.String(),
 			"path_id":         parentPathID.String(),
@@ -294,12 +351,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 
 	splitPaths := []map[string]any{
 		{
-			"path_id":          parentPathID.String(),
-			"path_group_id":    primaryGroup.ID,
-			"title":            primaryGroup.Title,
-			"goal":             primaryGroup.Goal,
-			"file_ids":         primaryGroup.FileIDs,
-			"material_set_id":  setID.String(),
+			"path_id":         parentPathID.String(),
+			"path_group_id":   primaryGroup.ID,
+			"title":           primaryGroup.Title,
+			"goal":            primaryGroup.Goal,
+			"file_ids":        primaryGroup.FileIDs,
+			"material_set_id": setID.String(),
 		},
 	}
 
@@ -386,12 +443,12 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 					"notes":            group.Notes,
 				},
 			},
-			"primary_path_id":     group.ID,
-			"combined_goal":       stringsOr(group.Goal, stringsOr(group.Title, "Learn the uploaded materials")),
+			"primary_path_id":      group.ID,
+			"combined_goal":        stringsOr(group.Goal, stringsOr(group.Title, "Learn the uploaded materials")),
 			"audience_level_guess": strings.TrimSpace(stringFromAny(intake["audience_level_guess"])),
-			"confidence":          0.9,
-			"needs_clarification": false,
-			"paths_confirmed":     true,
+			"confidence":           0.9,
+			"needs_clarification":  false,
+			"paths_confirmed":      true,
 		}
 		if li := intake["learning_intent"]; li != nil {
 			groupIntake["learning_intent"] = li
@@ -464,7 +521,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 			}
 		} else {
 			update := map[string]interface{}{
-				"metadata": datatypes.JSON(mustJSON(groupMeta)),
+				"metadata":   datatypes.JSON(mustJSON(groupMeta)),
 				"updated_at": now,
 			}
 			if existingPath.MaterialSetID == nil || *existingPath.MaterialSetID == uuid.Nil {
@@ -527,6 +584,14 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	}
 	parentMetaFinal, _ := json.Marshal(parentMeta)
 	_ = p.path.UpdateFields(dbc, parentPathID, map[string]interface{}{"metadata": datatypes.JSON(parentMetaFinal)})
+
+	if err := recordTrace("paths_split", map[string]any{
+		"primary_group": primaryGroup.ID,
+		"split_paths":   splitPaths,
+	}, true); err != nil {
+		jc.Fail("invariant_validation", err)
+		return nil
+	}
 
 	jc.Succeed("done", map[string]any{
 		"material_set_id": setID.String(),

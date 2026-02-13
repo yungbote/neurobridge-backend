@@ -73,6 +73,10 @@ type Repos struct {
 	ActivityRun               repos.ActivityRunRepo
 	PathRunTransition         repos.PathRunTransitionRepo
 	DecisionTrace             repos.DecisionTraceRepo
+	StructuralDecisionTrace   repos.StructuralDecisionTraceRepo
+	GraphVersion              repos.GraphVersionRepo
+	StructuralDriftMetric     repos.StructuralDriftMetricRepo
+	RollbackEvent             repos.RollbackEventRepo
 	TeachingPattern           repos.TeachingPatternRepo
 	UserCompletedUnit         repos.UserCompletedUnitRepo
 	UserLibraryIndex          repos.UserLibraryIndexRepo
@@ -184,6 +188,10 @@ func wireRepos(db *gorm.DB, log *logger.Logger) Repos {
 		ActivityRun:               repos.NewActivityRunRepo(db, log),
 		PathRunTransition:         repos.NewPathRunTransitionRepo(db, log),
 		DecisionTrace:             repos.NewDecisionTraceRepo(db, log),
+		StructuralDecisionTrace:   repos.NewStructuralDecisionTraceRepo(db, log),
+		GraphVersion:              repos.NewGraphVersionRepo(db, log),
+		StructuralDriftMetric:     repos.NewStructuralDriftMetricRepo(db, log),
+		RollbackEvent:             repos.NewRollbackEventRepo(db, log),
 		TeachingPattern:           repos.NewTeachingPatternRepo(db, log),
 		UserCompletedUnit:         repos.NewUserCompletedUnitRepo(db, log),
 		UserLibraryIndex:          repos.NewUserLibraryIndexRepo(db, log),

@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structuraltrace"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
 	learningmod "github.com/yungbote/neurobridge-backend/internal/modules/learning"
 )
@@ -39,6 +40,39 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 	})
 	if err != nil {
 		jc.Fail("promote", err)
+		return nil
+	}
+
+	meta := map[string]any{
+		"job_run_id":    jc.Job.ID.String(),
+		"owner_user_id": jc.Job.OwnerUserID.String(),
+		"user_id":       userID.String(),
+		"candidates":    out.Candidates,
+		"considered":    out.Considered,
+		"promoted":      out.Promoted,
+		"demoted":       out.Demoted,
+	}
+	inputs := map[string]any{
+		"user_id": userID.String(),
+	}
+	chosen := map[string]any{
+		"promoted": out.Promoted,
+		"demoted":  out.Demoted,
+	}
+	_, traceErr := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{DB: p.db, Log: p.log}, structuraltrace.TraceInput{
+		DecisionType:  p.Type(),
+		DecisionPhase: "build",
+		DecisionMode:  "deterministic",
+		UserID:        &userID,
+		Inputs:        inputs,
+		Chosen:        chosen,
+		Metadata:      meta,
+		Payload:       jc.Payload(),
+		Validate:      false,
+		RequireTrace:  true,
+	})
+	if traceErr != nil {
+		jc.Fail("structural_trace", traceErr)
 		return nil
 	}
 

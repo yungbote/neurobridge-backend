@@ -25,6 +25,7 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/doc_variant_eval"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/embed_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/file_signature_build"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/graph_version_rollback"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/ingest_chunks"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/learning_build_progressive"
@@ -60,9 +61,13 @@ import (
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/runtime_plan_build"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/runtime_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/saga_cleanup"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structural_drift_monitor"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structural_trace_backfill"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_backfill"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/structure_extract"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/teaching_patterns_seed"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/trace_compact"
+	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/trace_load_test"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_model_update"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/user_profile_refresh"
 	"github.com/yungbote/neurobridge-backend/internal/jobs/pipeline/variant_stats_refresh"
@@ -256,6 +261,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.StructureExtractAI,
 		repos.ChatThread,
 		repos.ChatMessage,
+		repos.ChatTurn,
 		repos.ChatThreadState,
 		repos.Concept,
 		repos.UserConceptModel,
@@ -332,6 +338,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		jobService,
 		repos.Path,
 		repos.UserPersonalizationPrefs,
+		repos.DecisionTrace,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(waitpointInterpret); err != nil {
@@ -347,6 +354,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		repos.ChatTurn,
 		repos.JobRun,
 		jobService,
+		repos.DecisionTrace,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(chatWaitpointInterpret); err != nil {
@@ -419,12 +427,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact, repos.GraphVersion, repos.StructuralDecisionTrace)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
 		return Services{}, err
 	}
 
-	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact, repos.GraphVersion, repos.StructuralDecisionTrace)
 	if err := jobRegistry.Register(conceptGraphPatch); err != nil {
 		return Services{}, err
 	}
@@ -989,6 +997,31 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	policyEval := policy_eval_refresh.New(db, log, repos.DecisionTrace, repos.PolicyEvalSnapshot)
 	if err := jobRegistry.Register(policyEval); err != nil {
+		return Services{}, err
+	}
+
+	driftMonitor := structural_drift_monitor.New(db, log, repos.StructuralDriftMetric, repos.RollbackEvent)
+	if err := jobRegistry.Register(driftMonitor); err != nil {
+		return Services{}, err
+	}
+
+	traceBackfill := structural_trace_backfill.New(db, log)
+	if err := jobRegistry.Register(traceBackfill); err != nil {
+		return Services{}, err
+	}
+
+	traceCompact := trace_compact.New(db, log)
+	if err := jobRegistry.Register(traceCompact); err != nil {
+		return Services{}, err
+	}
+
+	graphRollback := graph_version_rollback.New(db, log, repos.GraphVersion, repos.RollbackEvent, repos.JobRun, jobService)
+	if err := jobRegistry.Register(graphRollback); err != nil {
+		return Services{}, err
+	}
+
+	traceLoadTest := trace_load_test.New(db, log, metrics)
+	if err := jobRegistry.Register(traceLoadTest); err != nil {
 		return Services{}, err
 	}
 

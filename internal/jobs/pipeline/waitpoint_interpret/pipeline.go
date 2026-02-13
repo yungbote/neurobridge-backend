@@ -13,6 +13,7 @@ import (
 
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	jobrt "github.com/yungbote/neurobridge-backend/internal/jobs/runtime"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/waitpoint"
 	waitcfg "github.com/yungbote/neurobridge-backend/internal/waitpoint/configs"
@@ -233,6 +234,37 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		return nil
 	}
 
+	if p.traces != nil {
+		if trace := buildWaitpointDecisionTrace(
+			"user_waitpoint",
+			userID,
+			threadID,
+			&userMsg,
+			build,
+			child,
+			env,
+			decision,
+			cr,
+			p.Type(),
+		); trace != nil {
+			if metrics := observability.Current(); metrics != nil {
+				metrics.IncTraceAttempted("decision")
+			}
+			if _, err := p.traces.Create(dbctx.Context{Ctx: jc.Ctx, Tx: jc.DB}, []*types.DecisionTrace{trace}); err != nil {
+				if metrics := observability.Current(); metrics != nil {
+					metrics.IncTraceFailed("decision")
+				}
+				if p.log != nil {
+					p.log.Debug("decision trace create failed", "error", err.Error())
+				}
+			} else {
+				if metrics := observability.Current(); metrics != nil {
+					metrics.IncTraceWritten("decision")
+				}
+			}
+		}
+	}
+
 	// Update interpreter state
 	env.State.Version = 1
 	env.State.LastUserMessageID = userMsg.ID.String()
@@ -332,6 +364,177 @@ func pausedStageFromJobStage(stage string) string {
 		return strings.TrimSpace(strings.TrimPrefix(s, "waiting_user_"))
 	}
 	return ""
+}
+
+func buildWaitpointDecisionTrace(
+	scope string,
+	userID uuid.UUID,
+	threadID uuid.UUID,
+	userMsg *types.ChatMessage,
+	parent *types.JobRun,
+	child *types.JobRun,
+	env *jobrt.WaitpointEnvelope,
+	decision waitpoint.Decision,
+	cr waitpoint.ClassifierResult,
+	pipeline string,
+) *types.DecisionTrace {
+	if userID == uuid.Nil || threadID == uuid.Nil || env == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	inputs := map[string]any{
+		"pipeline":        pipeline,
+		"scope":           scope,
+		"thread_id":       threadID.String(),
+		"waitpoint_kind":  strings.TrimSpace(env.Waitpoint.Kind),
+		"waitpoint_step":  strings.TrimSpace(env.Waitpoint.Step),
+		"waitpoint_block": env.Waitpoint.Blocking,
+	}
+	if userMsg != nil {
+		inputs["user_message_id"] = userMsg.ID.String()
+		inputs["user_message_seq"] = userMsg.Seq
+	}
+	if parent != nil {
+		inputs["parent_job_id"] = parent.ID.String()
+		inputs["parent_job_type"] = parent.JobType
+		inputs["parent_job_stage"] = parent.Stage
+	}
+	if child != nil {
+		inputs["child_job_id"] = child.ID.String()
+		inputs["child_job_type"] = child.JobType
+		inputs["child_job_stage"] = child.Stage
+	}
+	if env.Data != nil {
+		if v := env.Data["path_id"]; v != nil {
+			inputs["path_id"] = strings.TrimSpace(fmt.Sprint(v))
+		}
+		if v := env.Data["path_node_id"]; v != nil {
+			inputs["path_node_id"] = strings.TrimSpace(fmt.Sprint(v))
+		}
+		if v := env.Data["options"]; v != nil {
+			inputs["options_present"] = true
+		}
+	}
+
+	candidates := waitpointCandidates(env)
+
+	chosen := map[string]any{
+		"decision":   decision.Kind,
+		"case":       cr.Case,
+		"confidence": cr.Confidence,
+	}
+	if cr.Selected != "" {
+		chosen["selected_mode"] = cr.Selected
+	}
+	if cr.CommitType != "" {
+		chosen["commit_type"] = cr.CommitType
+	}
+	if cr.ConfirmedAction != "" {
+		chosen["confirmed_action"] = cr.ConfirmedAction
+	}
+	if cr.Reason != "" {
+		chosen["reason"] = cr.Reason
+	}
+	if decision.Selection != nil {
+		chosen["selection"] = decision.Selection
+	}
+	if strings.TrimSpace(decision.AssistantMessage) != "" {
+		chosen["assistant_message"] = decision.AssistantMessage
+	}
+	if strings.TrimSpace(decision.ConfirmMessage) != "" {
+		chosen["confirm_message"] = decision.ConfirmMessage
+	}
+	chosen["enqueue_chat_respond"] = decision.EnqueueChatRespond
+
+	pathID := uuid.Nil
+	if env.Data != nil {
+		pathID = parseUUIDFromAny(env.Data["path_id"])
+	}
+	var pathPtr *uuid.UUID
+	if pathID != uuid.Nil {
+		pathPtr = &pathID
+	}
+
+	trace := &types.DecisionTrace{
+		ID:            uuid.New(),
+		UserID:        userID,
+		OccurredAt:    now,
+		DecisionType:  "waitpoint_interpret",
+		DecisionPhase: "runtime",
+		DecisionMode:  "stochastic",
+		PathID:        pathPtr,
+		Inputs:        datatypes.JSON(mustJSON(inputs)),
+		Candidates:    datatypes.JSON(mustJSON(candidates)),
+		Chosen:        datatypes.JSON(mustJSON(chosen)),
+	}
+	return trace
+}
+
+func waitpointCandidates(env *jobrt.WaitpointEnvelope) []map[string]any {
+	if env == nil {
+		return nil
+	}
+	out := []map[string]any{}
+	for _, act := range env.Waitpoint.Actions {
+		if strings.TrimSpace(act.ID) == "" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"kind":    "action",
+			"id":      act.ID,
+			"label":   act.Label,
+			"token":   act.Token,
+			"variant": act.Variant,
+		})
+	}
+	if env.Data != nil {
+		if raw := env.Data["options"]; raw != nil {
+			switch t := raw.(type) {
+			case []any:
+				for _, opt := range t {
+					out = append(out, map[string]any{
+						"kind":  "option",
+						"value": opt,
+					})
+				}
+			case []map[string]any:
+				for _, opt := range t {
+					out = append(out, map[string]any{
+						"kind":  "option",
+						"value": opt,
+					})
+				}
+			}
+		}
+	}
+	return out
+}
+
+func parseUUIDFromAny(v any) uuid.UUID {
+	switch t := v.(type) {
+	case uuid.UUID:
+		return t
+	case string:
+		if id, err := uuid.Parse(strings.TrimSpace(t)); err == nil {
+			return id
+		}
+	case []byte:
+		if id, err := uuid.Parse(strings.TrimSpace(string(t))); err == nil {
+			return id
+		}
+	default:
+		if s := strings.TrimSpace(fmt.Sprint(v)); s != "" {
+			if id, err := uuid.Parse(s); err == nil {
+				return id
+			}
+		}
+	}
+	return uuid.Nil
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func (p *Pipeline) findPausedWaitpointChild(

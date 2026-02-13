@@ -16,6 +16,7 @@ import (
 type DecisionTraceRepo interface {
 	Create(dbc dbctx.Context, rows []*types.DecisionTrace) ([]*types.DecisionTrace, error)
 	UpdateChosen(dbc dbctx.Context, id uuid.UUID, chosen datatypes.JSON) error
+	UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]any) error
 
 	GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.DecisionTrace, error)
 	ListByUser(dbc dbctx.Context, userID uuid.UUID, limit int) ([]*types.DecisionTrace, error)
@@ -57,6 +58,20 @@ func (r *decisionTraceRepo) UpdateChosen(dbc dbctx.Context, id uuid.UUID, chosen
 		Model(&types.DecisionTrace{}).
 		Where("id = ?", id).
 		Update("chosen", chosen).Error
+}
+
+func (r *decisionTraceRepo) UpdateFields(dbc dbctx.Context, id uuid.UUID, updates map[string]any) error {
+	t := dbc.Tx
+	if t == nil {
+		t = r.db
+	}
+	if id == uuid.Nil || updates == nil || len(updates) == 0 {
+		return nil
+	}
+	return t.WithContext(dbc.Ctx).
+		Model(&types.DecisionTrace{}).
+		Where("id = ?", id).
+		Updates(updates).Error
 }
 
 func (r *decisionTraceRepo) GetByIDs(dbc dbctx.Context, ids []uuid.UUID) ([]*types.DecisionTrace, error) {

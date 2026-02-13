@@ -19,54 +19,71 @@ import (
 )
 
 type Metrics struct {
-	apiRequests            *CounterVec
-	apiLatency             *HistogramVec
-	apiInflight            *Gauge
-	apiReqTotal            *Counter
-	apiReqError            *Counter
-	apiReqGood             *Counter
-	llmRequests            *CounterVec
-	llmLatency             *HistogramVec
-	llmTokens              *CounterVec
-	llmCost                *CounterVec
-	dataQuality            *CounterVec
-	clientPerf             *HistogramVec
-	clientError            *CounterVec
-	activityTime           *HistogramVec
-	buildStage             *HistogramVec
-	buildStageCt           *CounterVec
-	buildStageTotal        *Counter
-	buildStageError        *Counter
-	triggerTotal           *CounterVec
-	promptTotal            *CounterVec
-	runtimePromptShown     *Counter
-	runtimePromptCompleted *Counter
-	runtimeProgressState   *CounterVec
-	runtimeProgressConf    *HistogramVec
-	qcAnswered             *CounterVec
-	experimentExposure     *CounterVec
-	experimentGuardrail    *CounterVec
-	engagementFunnel       *CounterVec
-	costTotal              *CounterVec
-	securityEvents         *CounterVec
-	convergenceReadiness   *CounterVec
-	convergenceReadinessScore *HistogramVec
-	convergenceMisconActive *HistogramVec
-	convergenceCoverageDebt *HistogramVec
-	convergenceGateDecision *CounterVec
+	apiRequests                 *CounterVec
+	apiLatency                  *HistogramVec
+	apiInflight                 *Gauge
+	apiReqTotal                 *Counter
+	apiReqError                 *Counter
+	apiReqGood                  *Counter
+	llmRequests                 *CounterVec
+	llmLatency                  *HistogramVec
+	llmTokens                   *CounterVec
+	llmCost                     *CounterVec
+	dataQuality                 *CounterVec
+	clientPerf                  *HistogramVec
+	clientError                 *CounterVec
+	activityTime                *HistogramVec
+	buildStage                  *HistogramVec
+	buildStageCt                *CounterVec
+	buildStageTotal             *Counter
+	buildStageError             *Counter
+	triggerTotal                *CounterVec
+	promptTotal                 *CounterVec
+	runtimePromptShown          *Counter
+	runtimePromptCompleted      *Counter
+	runtimeProgressState        *CounterVec
+	runtimeProgressConf         *HistogramVec
+	qcAnswered                  *CounterVec
+	experimentExposure          *CounterVec
+	experimentGuardrail         *CounterVec
+	engagementFunnel            *CounterVec
+	costTotal                   *CounterVec
+	securityEvents              *CounterVec
+	convergenceReadiness        *CounterVec
+	convergenceReadinessScore   *HistogramVec
+	convergenceMisconActive     *HistogramVec
+	convergenceCoverageDebt     *HistogramVec
+	convergenceGateDecision     *CounterVec
 	convergenceMisconResolution *CounterVec
-	convergenceFlowRemaining *HistogramVec
-	convergenceFlowSpend *HistogramVec
-	queueDepth             *GaugeVec
-	pgStats                *GaugeVec
-	redisUp                *Gauge
-	redisPing              *Gauge
-	sloCompliance          *GaugeVec
-	sloBudget              *GaugeVec
-	sloBurn                *GaugeVec
-	sloLatencyThreshold    float64
-	workerTotal            *Counter
-	workerError            *Counter
+	convergenceFlowRemaining    *HistogramVec
+	convergenceFlowSpend        *HistogramVec
+	queueDepth                  *GaugeVec
+	pgStats                     *GaugeVec
+	redisUp                     *Gauge
+	redisPing                   *Gauge
+	sloCompliance               *GaugeVec
+	sloBudget                   *GaugeVec
+	sloBurn                     *GaugeVec
+	sloLatencyThreshold         float64
+	validationLatencyThreshold  float64
+	rollbackLatencyThreshold    float64
+	workerTotal                 *Counter
+	workerError                 *Counter
+
+	traceAttemptedTotal *Counter
+	traceWrittenTotal   *Counter
+	traceFailedTotal    *Counter
+	traceAttempted      *CounterVec
+	traceWritten        *CounterVec
+	traceFailed         *CounterVec
+
+	structuralValidationTotal   *Counter
+	structuralValidationSlow    *Counter
+	structuralValidationLatency *HistogramVec
+
+	rollbackTotal    *Counter
+	rollbackSlow     *Counter
+	rollbackDuration *HistogramVec
 }
 
 var (
@@ -87,10 +104,10 @@ func Current() *Metrics {
 }
 
 var (
-	llmTelemetryOnce       sync.Once
-	llmTelemetryOn         bool
-	llmCostInputPer1KUSD   float64
-	llmCostOutputPer1KUSD  float64
+	llmTelemetryOnce      sync.Once
+	llmTelemetryOn        bool
+	llmCostInputPer1KUSD  float64
+	llmCostOutputPer1KUSD float64
 )
 
 func llmTelemetryEnabled() bool {
@@ -157,6 +174,18 @@ func Init(log *logger.Logger) *Metrics {
 		if v := strings.TrimSpace(os.Getenv("SLO_API_LATENCY_THRESHOLD_SECONDS")); v != "" {
 			if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
 				latencyThreshold = f
+			}
+		}
+		validationThreshold := 2.0
+		if v := strings.TrimSpace(os.Getenv("SLO_VALIDATION_LATENCY_THRESHOLD_SECONDS")); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+				validationThreshold = f
+			}
+		}
+		rollbackThreshold := 900.0
+		if v := strings.TrimSpace(os.Getenv("SLO_ROLLBACK_TIME_THRESHOLD_SECONDS")); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+				rollbackThreshold = f
 			}
 		}
 		instance = &Metrics{
@@ -301,16 +330,40 @@ func Init(log *logger.Logger) *Metrics {
 				[]string{},
 				[]float64{0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1},
 			),
-			queueDepth:          NewGaugeVec("nb_job_queue_depth", "Job queue depth by status.", []string{"status"}),
-			pgStats:             NewGaugeVec("nb_postgres_stats", "Postgres connection stats.", []string{"metric"}),
-			redisUp:             NewGauge("nb_redis_up", "Redis connectivity (1=up, 0=down)."),
-			redisPing:           NewGauge("nb_redis_ping_seconds", "Redis ping latency in seconds."),
-			sloCompliance:       NewGaugeVec("nb_slo_compliance", "SLO compliance (SLI) over window.", []string{"slo", "window"}),
-			sloBudget:           NewGaugeVec("nb_slo_error_budget_remaining", "Error budget remaining (0-1).", []string{"slo", "window"}),
-			sloBurn:             NewGaugeVec("nb_slo_burn_rate", "Error budget burn rate.", []string{"slo", "window"}),
-			sloLatencyThreshold: latencyThreshold,
-			workerTotal:         NewCounter("nb_worker_activity_total", "Total worker activities."),
-			workerError:         NewCounter("nb_worker_activity_error_total", "Total worker activities with failure status."),
+			queueDepth:                 NewGaugeVec("nb_job_queue_depth", "Job queue depth by status.", []string{"status"}),
+			pgStats:                    NewGaugeVec("nb_postgres_stats", "Postgres connection stats.", []string{"metric"}),
+			redisUp:                    NewGauge("nb_redis_up", "Redis connectivity (1=up, 0=down)."),
+			redisPing:                  NewGauge("nb_redis_ping_seconds", "Redis ping latency in seconds."),
+			sloCompliance:              NewGaugeVec("nb_slo_compliance", "SLO compliance (SLI) over window.", []string{"slo", "window"}),
+			sloBudget:                  NewGaugeVec("nb_slo_error_budget_remaining", "Error budget remaining (0-1).", []string{"slo", "window"}),
+			sloBurn:                    NewGaugeVec("nb_slo_burn_rate", "Error budget burn rate.", []string{"slo", "window"}),
+			sloLatencyThreshold:        latencyThreshold,
+			validationLatencyThreshold: validationThreshold,
+			rollbackLatencyThreshold:   rollbackThreshold,
+			workerTotal:                NewCounter("nb_worker_activity_total", "Total worker activities."),
+			workerError:                NewCounter("nb_worker_activity_error_total", "Total worker activities with failure status."),
+			traceAttemptedTotal:        NewCounter("nb_trace_attempted_total", "Total trace writes attempted."),
+			traceWrittenTotal:          NewCounter("nb_trace_written_total", "Total trace writes written."),
+			traceFailedTotal:           NewCounter("nb_trace_failed_total", "Total trace writes failed."),
+			traceAttempted:             NewCounterVec("nb_trace_attempted_by_kind_total", "Trace writes attempted by kind.", []string{"kind"}),
+			traceWritten:               NewCounterVec("nb_trace_written_by_kind_total", "Trace writes written by kind.", []string{"kind"}),
+			traceFailed:                NewCounterVec("nb_trace_failed_by_kind_total", "Trace writes failed by kind.", []string{"kind"}),
+			structuralValidationTotal:  NewCounter("nb_structural_validation_total", "Structural invariant validations performed."),
+			structuralValidationSlow:   NewCounter("nb_structural_validation_slow_total", "Structural invariant validations over latency threshold."),
+			structuralValidationLatency: NewHistogramVec(
+				"nb_structural_validation_duration_seconds",
+				"Structural invariant validation duration in seconds.",
+				[]string{"status"},
+				[]float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60},
+			),
+			rollbackTotal: NewCounter("nb_graph_rollback_total", "Total graph rollback executions."),
+			rollbackSlow:  NewCounter("nb_graph_rollback_slow_total", "Graph rollbacks over latency threshold."),
+			rollbackDuration: NewHistogramVec(
+				"nb_graph_rollback_duration_seconds",
+				"Graph rollback duration in seconds.",
+				[]string{"status"},
+				[]float64{10, 30, 60, 120, 300, 600, 900, 1800, 3600},
+			),
 		}
 		if log != nil {
 			log.Info("Observability metrics enabled")
@@ -495,6 +548,42 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	if err := m.sloBurn.WritePrometheus(w); err != nil {
 		return err
 	}
+	if err := m.traceAttemptedTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.traceWrittenTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.traceFailedTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.traceAttempted.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.traceWritten.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.traceFailed.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.structuralValidationTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.structuralValidationSlow.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.structuralValidationLatency.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.rollbackTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.rollbackSlow.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.rollbackDuration.WritePrometheus(w); err != nil {
+		return err
+	}
 	if err := m.workerTotal.WritePrometheus(w); err != nil {
 		return err
 	}
@@ -583,6 +672,77 @@ func (m *Metrics) ObserveLearningBuildStage(pipeline, stage, status string, dur 
 	if dur > 0 {
 		m.buildStage.Observe(dur.Seconds(), pipeline, stage, status)
 	}
+}
+
+func (m *Metrics) IncTraceAttempted(kind string) {
+	if m == nil {
+		return
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	m.traceAttemptedTotal.Inc()
+	m.traceAttempted.Inc(kind)
+}
+
+func (m *Metrics) IncTraceWritten(kind string) {
+	if m == nil {
+		return
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	m.traceWrittenTotal.Inc()
+	m.traceWritten.Inc(kind)
+}
+
+func (m *Metrics) IncTraceFailed(kind string) {
+	if m == nil {
+		return
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	m.traceFailedTotal.Inc()
+	m.traceFailed.Inc(kind)
+}
+
+func (m *Metrics) ObserveStructuralValidation(dur time.Duration, status string) {
+	if m == nil {
+		return
+	}
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	secs := dur.Seconds()
+	if secs < 0 {
+		secs = 0
+	}
+	m.structuralValidationTotal.Inc()
+	if m.validationLatencyThreshold > 0 && secs > m.validationLatencyThreshold {
+		m.structuralValidationSlow.Inc()
+	}
+	m.structuralValidationLatency.Observe(secs, status)
+}
+
+func (m *Metrics) ObserveRollback(duration time.Duration, status string) {
+	if m == nil {
+		return
+	}
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	secs := duration.Seconds()
+	if secs < 0 {
+		secs = 0
+	}
+	m.rollbackTotal.Inc()
+	if m.rollbackLatencyThreshold > 0 && secs > m.rollbackLatencyThreshold {
+		m.rollbackSlow.Inc()
+	}
+	m.rollbackDuration.Observe(secs, status)
 }
 
 func (m *Metrics) IncRuntimeTrigger(trigger, eventType string) {

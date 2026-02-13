@@ -33,21 +33,21 @@ func (p *Pipeline) maybeUpsertInterventionPlan(
 	prRuntime map[string]any,
 	nrRuntime map[string]any,
 	now time.Time,
-) {
+) (string, []map[string]any) {
 	if !interventionPlannerEnabled() || p.plans == nil {
-		return
+		return "", nil
 	}
 	if p.db != nil && !hasTable(p.db, &types.InterventionPlan{}) {
-		return
+		return "", nil
 	}
 	if userID == uuid.Nil || pathID == uuid.Nil || nodeID == uuid.Nil {
-		return
+		return "", nil
 	}
 	if strings.TrimSpace(snapshotID) == "" {
-		return
+		return "", nil
 	}
 	if snapshot == nil {
-		return
+		return "", nil
 	}
 
 	var causalEdges []*types.MisconceptionCausalEdge
@@ -62,11 +62,11 @@ func (p *Pipeline) maybeUpsertInterventionPlan(
 
 	plan := buildInterventionPlan(snapshotID, snapshot, readiness, prRuntime, nrRuntime, causalEdges, now)
 	if plan == nil {
-		return
+		return "", nil
 	}
 	planID := computeInterventionPlanID(plan)
 	if planID == "" {
-		return
+		return "", nil
 	}
 	plan["plan_id"] = planID
 
@@ -80,6 +80,9 @@ func (p *Pipeline) maybeUpsertInterventionPlan(
 			}
 		}
 	}
+
+	actions = ensureInterventionActionIDs(planID, actions)
+	plan["actions"] = actions
 
 	constraints := map[string]any{}
 	if m, ok := plan["constraints"].(map[string]any); ok {
@@ -104,6 +107,7 @@ func (p *Pipeline) maybeUpsertInterventionPlan(
 		CreatedAt:           now.UTC(),
 	}
 	_ = p.plans.Upsert(dbc, row)
+	return planID, actions
 }
 
 func buildInterventionPlan(
@@ -294,12 +298,92 @@ func computeInterventionPlanID(plan map[string]any) string {
 		if k == "created_at" || k == "plan_id" {
 			continue
 		}
+		if k == "actions" {
+			clone[k] = stripInterventionActionIDs(v)
+			continue
+		}
 		clone[k] = v
 	}
 	b, _ := json.Marshal(clone)
 	h := fnv.New64a()
 	_, _ = h.Write(b)
 	return fmt.Sprintf("plan_%x", h.Sum64())
+}
+
+func stripInterventionActionIDs(raw any) []map[string]any {
+	actions := []map[string]any{}
+	switch t := raw.(type) {
+	case []map[string]any:
+		for _, item := range t {
+			if item == nil {
+				continue
+			}
+			clone := map[string]any{}
+			for k, v := range item {
+				if strings.EqualFold(strings.TrimSpace(k), "action_id") {
+					continue
+				}
+				clone[k] = v
+			}
+			actions = append(actions, clone)
+		}
+	case []any:
+		for _, item := range t {
+			m, ok := item.(map[string]any)
+			if !ok || m == nil {
+				continue
+			}
+			clone := map[string]any{}
+			for k, v := range m {
+				if strings.EqualFold(strings.TrimSpace(k), "action_id") {
+					continue
+				}
+				clone[k] = v
+			}
+			actions = append(actions, clone)
+		}
+	}
+	return actions
+}
+
+func ensureInterventionActionIDs(planID string, actions []map[string]any) []map[string]any {
+	if planID == "" || len(actions) == 0 {
+		return actions
+	}
+	out := make([]map[string]any, 0, len(actions))
+	for _, action := range actions {
+		if action == nil {
+			continue
+		}
+		id := strings.TrimSpace(stringFromAny(action["action_id"]))
+		if id == "" {
+			id = computeInterventionActionID(planID, action)
+		}
+		action["action_id"] = id
+		out = append(out, action)
+	}
+	return out
+}
+
+func computeInterventionActionID(planID string, action map[string]any) string {
+	if planID == "" || action == nil {
+		return ""
+	}
+	clone := map[string]any{}
+	for k, v := range action {
+		if strings.EqualFold(strings.TrimSpace(k), "action_id") {
+			continue
+		}
+		clone[k] = v
+	}
+	payload := map[string]any{
+		"plan_id": planID,
+		"action":  clone,
+	}
+	b, _ := json.Marshal(payload)
+	h := fnv.New64a()
+	_, _ = h.Write(b)
+	return fmt.Sprintf("ipa_%x", h.Sum64())
 }
 
 func planMisconceptionKeys(snapshot map[string]any, causalEdges []*types.MisconceptionCausalEdge) []string {
