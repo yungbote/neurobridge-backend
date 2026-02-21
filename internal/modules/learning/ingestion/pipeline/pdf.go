@@ -97,7 +97,12 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	docAIProcessor := gcp.ProcessorName(s.ex.DocAIProjectID, s.ex.DocAILocation, s.ex.DocAIProcessorID, s.ex.DocAIProcessorVer)
 	batchAttempted := false
 	var docAIBatchErr error
-	if pdfPageCount > 200 && s.ex.DocAI != nil && s.ex.Bucket != nil && s.ex.MaterialBucketName != "" {
+	emulatorMode := s.ex.IsObjectStorageEmulatorMode()
+	if pdfPageCount > 200 && emulatorMode && s.ex.DocAI != nil {
+		warnings = append(warnings, "docai batch disabled in gcs_emulator mode; using bytes processing fallback")
+		diag["docai_batch_policy"] = "disabled_in_gcs_emulator"
+	}
+	if pdfPageCount > 200 && !emulatorMode && s.ex.DocAI != nil && s.ex.Bucket != nil && s.ex.MaterialBucketName != "" {
 		batchAttempted = true
 		inputKey := fmt.Sprintf("extraction/docai/input/%s/%s/source.pdf", mf.MaterialSetID.String(), mf.ID.String())
 		outputPrefix := fmt.Sprintf("extraction/docai/output/%s/%s/", mf.MaterialSetID.String(), mf.ID.String())
@@ -260,10 +265,17 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 			diag["text_signal_reason"] = "missing_docai_pages"
 		}
 	}
+	visionBytesFallback := false
 	if textWeak {
-		if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
+		if s.ex.Vision == nil {
+			warnings = append(warnings, "vision OCR fallback skipped (vision provider unavailable)")
+		} else if emulatorMode {
+			visionBytesFallback = true
+			diag["vision_policy"] = "bytes_fallback_in_gcs_emulator"
+			warnings = append(warnings, "vision async OCR via gs:// disabled in gcs_emulator mode; using per-page image OCR fallback")
+		} else if s.ex.VisionOutputPrefix == "" || s.ex.MaterialBucketName == "" {
 			warnings = append(warnings, "vision OCR fallback skipped (missing VISION_OCR_OUTPUT_PREFIX or MATERIAL_GCS_BUCKET_NAME)")
-		} else if s.ex.Vision != nil {
+		} else {
 			var (
 				gcsURI       string
 				visionSource string
@@ -324,6 +336,12 @@ func (s *service) handlePDF(ctx context.Context, mf *types.MaterialFile, pdfPath
 	extractor.MergeDiag(diag, renderDiag)
 	if err := ctx.Err(); err != nil {
 		return segs, assets, warnings, diag, err
+	}
+	if visionBytesFallback {
+		visionSegs, visionWarn, visionDiag := s.ocrRenderedPDFPagesWithVisionBytes(ctx, pageImages)
+		segs = append(segs, visionSegs...)
+		warnings = append(warnings, visionWarn...)
+		extractor.MergeDiag(diag, visionDiag)
 	}
 
 	if s.ex.Caption == nil {
@@ -643,6 +661,129 @@ func (s *service) renderPDFPagesToGCS(ctx context.Context, mf *types.MaterialFil
 
 	diag["pages_rendered"] = len(pageAssets)
 	return pageAssets, pageAssets, warnings, diag
+}
+
+func assetRefPageNumber(a AssetRef) int {
+	if a.Metadata == nil {
+		return 0
+	}
+	switch t := a.Metadata["page"].(type) {
+	case int:
+		if t > 0 {
+			return t
+		}
+	case int64:
+		if t > 0 {
+			return int(t)
+		}
+	case float64:
+		if t > 0 {
+			return int(t)
+		}
+	case float32:
+		if t > 0 {
+			return int(t)
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func (s *service) ocrRenderedPDFPagesWithVisionBytes(ctx context.Context, pageImages []AssetRef) ([]Segment, []string, map[string]any) {
+	diag := map[string]any{
+		"vision_fallback_mode": "ocr_image_bytes",
+	}
+	warnings := []string{}
+	if s.ex == nil || s.ex.Vision == nil {
+		return nil, append(warnings, "vision OCR fallback skipped (vision provider unavailable)"), diag
+	}
+	if s.ex.Bucket == nil {
+		return nil, append(warnings, "vision OCR fallback skipped (bucket service unavailable)"), diag
+	}
+	if len(pageImages) == 0 {
+		diag["vision_bytes_pages_attempted"] = 0
+		return nil, append(warnings, "vision OCR fallback skipped (no rendered page images available)"), diag
+	}
+
+	segs := make([]Segment, 0, len(pageImages))
+	processed := 0
+	for i, pageAsset := range pageImages {
+		if err := ctx.Err(); err != nil {
+			warnings = append(warnings, "vision OCR fallback canceled: "+err.Error())
+			break
+		}
+
+		pageKey := strings.TrimSpace(pageAsset.Key)
+		if pageKey == "" {
+			continue
+		}
+		pageNum := assetRefPageNumber(pageAsset)
+		if pageNum <= 0 {
+			pageNum = i + 1
+		}
+
+		rc, err := s.ex.Bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, pageKey)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("vision OCR fallback download failed (page=%d): %v", pageNum, err))
+			continue
+		}
+		b, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("vision OCR fallback read failed (page=%d): %v", pageNum, err))
+			continue
+		}
+		if len(b) == 0 {
+			warnings = append(warnings, fmt.Sprintf("vision OCR fallback skipped empty page image (page=%d)", pageNum))
+			continue
+		}
+
+		res, err := s.ex.Vision.OCRImageBytes(ctx, b, "image/png")
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("vision OCR fallback failed (page=%d): %v", pageNum, err))
+			continue
+		}
+		processed++
+		if res == nil {
+			continue
+		}
+		if len(res.Segments) > 0 {
+			for _, sg := range res.Segments {
+				sgCopy := sg
+				if sgCopy.Metadata == nil {
+					sgCopy.Metadata = map[string]any{}
+				}
+				pn := pageNum
+				sgCopy.Page = &pn
+				sgCopy.Metadata["kind"] = "ocr_text"
+				sgCopy.Metadata["provider"] = "gcp_vision"
+				sgCopy.Metadata["ocr_source"] = "rendered_pdf_page_image"
+				segs = append(segs, sgCopy)
+			}
+			continue
+		}
+
+		if txt := strings.TrimSpace(res.PrimaryText); txt != "" {
+			pn := pageNum
+			segs = append(segs, Segment{
+				Text: txt,
+				Page: &pn,
+				Metadata: map[string]any{
+					"kind":       "ocr_text",
+					"provider":   "gcp_vision",
+					"ocr_source": "rendered_pdf_page_image",
+				},
+			})
+		}
+	}
+
+	diag["vision_bytes_pages_attempted"] = len(pageImages)
+	diag["vision_bytes_pages_processed"] = processed
+	diag["vision_bytes_segments"] = len(segs)
+	return segs, warnings, diag
 }
 
 func clampIntCeiling(v, min, ceiling int) int {

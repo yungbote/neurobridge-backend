@@ -47,6 +47,33 @@ type MaterialHandler struct {
 	userLibraryIndex repos.UserLibraryIndexRepo
 }
 
+type MaterialHandlerRepoDeps struct {
+	MaterialFiles    repos.MaterialFileRepo
+	MaterialAssets   repos.MaterialAssetRepo
+	UserLibraryIndex repos.UserLibraryIndexRepo
+}
+
+type MaterialHandlerDeps struct {
+	Log      *logger.Logger
+	Workflow services.WorkflowService
+	SSEHub   *realtime.SSEHub
+	Bucket   gcp.BucketService
+	Repos    MaterialHandlerRepoDeps
+}
+
+func NewMaterialHandlerWithDeps(deps MaterialHandlerDeps) *MaterialHandler {
+	return &MaterialHandler{
+		log:              deps.Log.With("handler", "MaterialHandler"),
+		workflow:         deps.Workflow,
+		sseHub:           deps.SSEHub,
+		bucket:           deps.Bucket,
+		materialFiles:    deps.Repos.MaterialFiles,
+		materialAssets:   deps.Repos.MaterialAssets,
+		userLibraryIndex: deps.Repos.UserLibraryIndex,
+	}
+}
+
+// NewMaterialHandler is kept as a compatibility shim while callers migrate to typed deps.
 func NewMaterialHandler(
 	log *logger.Logger,
 	workflow services.WorkflowService,
@@ -56,15 +83,17 @@ func NewMaterialHandler(
 	materialAssets repos.MaterialAssetRepo,
 	userLibraryIndex repos.UserLibraryIndexRepo,
 ) *MaterialHandler {
-	return &MaterialHandler{
-		log:              log.With("handler", "MaterialHandler"),
-		workflow:         workflow,
-		sseHub:           sseHub,
-		bucket:           bucket,
-		materialFiles:    materialFiles,
-		materialAssets:   materialAssets,
-		userLibraryIndex: userLibraryIndex,
-	}
+	return NewMaterialHandlerWithDeps(MaterialHandlerDeps{
+		Log:      log,
+		Workflow: workflow,
+		SSEHub:   sseHub,
+		Bucket:   bucket,
+		Repos: MaterialHandlerRepoDeps{
+			MaterialFiles:    materialFiles,
+			MaterialAssets:   materialAssets,
+			UserLibraryIndex: userLibraryIndex,
+		},
+	})
 }
 
 func (h *MaterialHandler) UploadMaterials(c *gin.Context) {
@@ -209,6 +238,7 @@ func (h *MaterialHandler) ListUserMaterialFiles(c *gin.Context) {
 		response.RespondError(c, http.StatusInternalServerError, "load_files_failed", err)
 		return
 	}
+	normalizeMaterialFileURLs(h.bucket, files)
 
 	response.RespondOK(c, gin.H{"files": files})
 }

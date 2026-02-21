@@ -26,6 +26,11 @@ func (s *service) handleVideo(ctx context.Context, mf *types.MaterialFile, video
 	}
 
 	if s.ex.VideoAI != nil && s.ex.MaterialBucketName != "" {
+		if s.ex.IsObjectStorageEmulatorMode() {
+			diag["videoai_policy"] = "enabled_in_gcs_emulator"
+		} else {
+			diag["videoai_policy"] = "enabled"
+		}
 		gcsURI := fmt.Sprintf("gs://%s/%s", s.ex.MaterialBucketName, mf.StorageKey)
 		vres, err := s.ex.VideoAI.AnnotateVideoGCS(ctx, gcsURI, gcp.VideoAIConfig{
 			LanguageCode:               "en-US",

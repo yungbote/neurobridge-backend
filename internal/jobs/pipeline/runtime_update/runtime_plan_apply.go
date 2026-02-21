@@ -26,6 +26,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 		typ == types.EventBlockRead ||
 		typ == types.EventScrollDepth ||
 		typ == types.EventQuestionAnswered ||
+		typ == types.EventNodeOpened ||
 		typ == types.EventRuntimePromptCompleted ||
 		typ == types.EventRuntimePromptDismissed ||
 		typ == types.EventActivityCompleted ||
@@ -106,6 +107,11 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 	// Update runtime counters from events.
 	blocksSeen := intFromAny(nrRuntime["blocks_seen"], 0)
 	lastBlockID := stringFromAny(nrRuntime["last_block_id"])
+	viewedBlocks := stringSliceFromAny(nrRuntime["viewed_blocks"])
+	if typ == types.EventBlockViewed && blockID != "" && progressOk && signalOK {
+		viewedBlocks = appendIfMissing(viewedBlocks, blockID)
+		nrRuntime["viewed_blocks"] = viewedBlocks
+	}
 	if typ == types.EventBlockViewed && blockID != "" && blockID != lastBlockID && progressOk && signalOK {
 		blocksSeen++
 		nrRuntime["blocks_seen"] = blocksSeen
@@ -743,12 +749,30 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			readSet[s] = true
 		}
 	}
+	viewedSet := map[string]bool{}
+	for _, id := range viewedBlocks {
+		s := strings.TrimSpace(id)
+		if s != "" {
+			viewedSet[s] = true
+		}
+	}
 	lastReadIndex := -1
+	lastEngagedIndex := -1
 	if len(readSet) > 0 {
 		for i, b := range doc.Blocks {
 			id := strings.TrimSpace(stringFromAny(b["id"]))
 			if id != "" && readSet[id] {
 				lastReadIndex = i
+			}
+			if id != "" && (readSet[id] || viewedSet[id]) {
+				lastEngagedIndex = i
+			}
+		}
+	} else if len(viewedSet) > 0 {
+		for i, b := range doc.Blocks {
+			id := strings.TrimSpace(stringFromAny(b["id"]))
+			if id != "" && viewedSet[id] {
+				lastEngagedIndex = i
 			}
 		}
 	}
@@ -856,7 +880,11 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			triggers = inferTriggerIDs(block, idx)
 		}
 		if len(triggers) == 0 {
-			if lastReadIndex >= 0 && idx > lastReadIndex {
+			engagedIdx := lastEngagedIndex
+			if engagedIdx < 0 {
+				engagedIdx = lastReadIndex
+			}
+			if engagedIdx >= 0 && idx > engagedIdx {
 				return false
 			}
 			return true
@@ -872,7 +900,7 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			if blockIdx > idx {
 				return false
 			}
-			if !readSet[id] {
+			if !readSet[id] && !viewedSet[id] {
 				return false
 			}
 		}
@@ -983,8 +1011,15 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 			}
 		}
 		infoGain := computeInfoGain(conceptIDs, conceptState)
+		infoGainFallback := false
 		if infoGain < banditMinInfoGain() && !counterfactualTrigger && !matchesRetest {
-			return promptCandidate{}, false
+			// Keep cadence working when docs lack concept bindings for interactive blocks.
+			if len(conceptIDs) == 0 {
+				infoGain = banditMinInfoGain()
+				infoGainFallback = true
+			} else {
+				return promptCandidate{}, false
+			}
 		}
 
 		counterfactual := false
@@ -1004,6 +1039,9 @@ func (p *Pipeline) applyRuntimePlan(dbc dbctx.Context, userID uuid.UUID, pathID 
 
 		score := infoGain
 		scoreParts := map[string]float64{"info_gain": infoGain}
+		if infoGainFallback {
+			scoreParts["info_gain_fallback"] = 1
+		}
 		if banditEnabled() {
 			explore := 0.0
 			if totalShown > 0 {

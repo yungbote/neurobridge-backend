@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -18,6 +19,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/index"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/prompts"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/validation"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	pc "github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
@@ -33,6 +35,14 @@ type ConceptGraphPatchBuildInput struct {
 }
 
 type ConceptGraphPatchBuildOutput = ConceptGraphBuildOutput
+
+type conceptGraphPatchInvariantError struct {
+	Report validation.InvariantReport
+}
+
+func (e *conceptGraphPatchInvariantError) Error() string {
+	return "concept_graph_patch_build: structural invariants failed"
+}
 
 func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in ConceptGraphPatchBuildInput) (ConceptGraphPatchBuildOutput, error) {
 	out := ConceptGraphPatchBuildOutput{}
@@ -712,6 +722,14 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 			out.EdgesMade++
 		}
 
+		// Guardrail: never commit a patch that violates structural invariants.
+		if envBool("CONCEPT_GRAPH_PATCH_PRECOMMIT_VALIDATE", true) {
+			report := validation.ValidateStructuralInvariants(ctx, tx, pathID)
+			if report.Status == "fail" || report.Status == "error" {
+				return &conceptGraphPatchInvariantError{Report: report}
+			}
+		}
+
 		if deps.Vec != nil {
 			for start := 0; start < len(rows); start += pineconeBatchSize {
 				end := start + pineconeBatchSize
@@ -727,7 +745,7 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {
@@ -739,6 +757,39 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 		return nil
 	})
 	if txErr != nil {
+		var invErr *conceptGraphPatchInvariantError
+		if errors.As(txErr, &invErr) {
+			failures := invariantFailureSummaries(invErr.Report)
+			if deps.Log != nil {
+				deps.Log.Warn(
+					"concept_graph_patch_build: patch rolled back due structural invariants; continuing with existing graph",
+					"path_id", pathID.String(),
+					"invariant_status", invErr.Report.Status,
+					"failures", failures,
+				)
+			}
+			out.ConceptsMade = 0
+			out.EdgesMade = 0
+			out.PineconeBatches = 0
+			if patchInputHash != "" && deps.Artifacts != nil && artifactCacheEnabled() {
+				_ = artifactCacheUpsert(ctx, deps.Artifacts, &types.LearningArtifact{
+					OwnerUserID:   in.OwnerUserID,
+					MaterialSetID: in.MaterialSetID,
+					PathID:        pathID,
+					ArtifactType:  "concept_graph_patch_build",
+					InputHash:     patchInputHash,
+					Version:       artifactHashVersion,
+					Metadata: marshalMeta(map[string]any{
+						"skipped":                 true,
+						"skipped_due_invariants":  true,
+						"invariant_status":        invErr.Report.Status,
+						"invariant_failure_count": len(failures),
+						"invariant_failures":      failures,
+					}),
+				})
+			}
+			return out, nil
+		}
 		return out, txErr
 	}
 
@@ -871,4 +922,30 @@ func ConceptGraphPatchBuild(ctx context.Context, deps ConceptGraphBuildDeps, in 
 	}
 
 	return out, nil
+}
+
+func invariantFailureSummaries(report validation.InvariantReport) []string {
+	if len(report.Checks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(report.Checks))
+	for _, c := range report.Checks {
+		status := strings.ToLower(strings.TrimSpace(c.Status))
+		if status == "" || status == "pass" {
+			continue
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			name = "unknown_invariant"
+		}
+		label := name
+		if c.Count > 0 {
+			label = fmt.Sprintf("%s:%d", name, c.Count)
+		} else if msg := strings.TrimSpace(c.Error); msg != "" {
+			label = fmt.Sprintf("%s:%s", name, msg)
+		}
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
 }

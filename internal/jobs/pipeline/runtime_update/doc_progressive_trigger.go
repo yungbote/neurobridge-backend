@@ -145,17 +145,7 @@ func (p *Pipeline) maybeEnqueueDocProgressiveBuild(dbc dbctx.Context, userID uui
 	}
 	if !progressOk && anchorID != uuid.Nil && p.nodeRuns != nil {
 		if nr, err := p.nodeRuns.GetByUserAndNodeID(dbc, userID, anchorID); err == nil && nr != nil {
-			if nr.State == runtime.NodeRunCompleted {
-				progressOk = true
-			} else {
-				meta := decodeJSONMap(nr.Metadata)
-				rt := mapFromAny(meta["runtime"])
-				state := strings.TrimSpace(stringFromAny(rt["last_progress_state"]))
-				conf := floatFromAny(rt["last_progress_confidence"], 0)
-				if (state != "" || conf > 0) && progressEligible(state, conf) {
-					progressOk = true
-				}
-			}
+			progressOk = progressiveReadyFromNodeRun(nr)
 		}
 	}
 	if !progressOk {
@@ -206,17 +196,7 @@ func (p *Pipeline) maybeEnqueueDocProbeSelect(dbc dbctx.Context, userID uuid.UUI
 	}
 	if !progressOk && anchorID != uuid.Nil && p.nodeRuns != nil {
 		if nr, err := p.nodeRuns.GetByUserAndNodeID(dbc, userID, anchorID); err == nil && nr != nil {
-			if nr.State == runtime.NodeRunCompleted {
-				progressOk = true
-			} else {
-				meta := decodeJSONMap(nr.Metadata)
-				rt := mapFromAny(meta["runtime"])
-				state := strings.TrimSpace(stringFromAny(rt["last_progress_state"]))
-				conf := floatFromAny(rt["last_progress_confidence"], 0)
-				if (state != "" || conf > 0) && progressEligible(state, conf) {
-					progressOk = true
-				}
-			}
+			progressOk = progressiveReadyFromNodeRun(nr)
 		}
 	}
 	if !progressOk {
@@ -227,4 +207,40 @@ func (p *Pipeline) maybeEnqueueDocProbeSelect(dbc dbctx.Context, userID uuid.UUI
 	if err != nil && p.log != nil {
 		p.log.Warn("Failed to enqueue doc_probe_select", "error", err, "path_id", cand.PathID.String())
 	}
+}
+
+func progressiveReadyFromNodeRun(nr *types.NodeRun) bool {
+	if nr == nil {
+		return false
+	}
+	if nr.State == runtime.NodeRunCompleted {
+		return true
+	}
+	meta := decodeJSONMap(nr.Metadata)
+	rt := mapFromAny(meta["runtime"])
+	if len(rt) == 0 {
+		return false
+	}
+
+	state := strings.TrimSpace(stringFromAny(rt["last_progress_state"]))
+	conf := floatFromAny(rt["last_progress_confidence"], 0)
+	if (state != "" || conf > 0) && progressEligible(state, conf) {
+		return true
+	}
+
+	readiness := mapFromAny(rt["readiness"])
+	readinessStatus := strings.ToLower(strings.TrimSpace(stringFromAny(readiness["status"])))
+	readinessScore := floatFromAny(readiness["score"], 0)
+	if readinessStatus == "ready" || (readinessScore > 0 && readinessScore >= readinessReadyMin()) {
+		return true
+	}
+
+	readCount := len(stringSliceFromAny(rt["read_blocks"]))
+	viewedCount := len(stringSliceFromAny(rt["viewed_blocks"]))
+	completedCount := len(stringSliceFromAny(rt["completed_blocks"]))
+	if completedCount >= 1 && (readCount >= 2 || viewedCount >= 3) {
+		return true
+	}
+
+	return false
 }

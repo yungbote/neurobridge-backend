@@ -45,6 +45,7 @@ type Extractor struct {
 	Caption openai.Caption
 
 	// env-backed settings
+	ObjectStorageMode  gcp.ObjectStorageMode
 	MaterialBucketName string
 	VisionOutputPrefix string
 	DocAIProjectID     string
@@ -81,6 +82,10 @@ func New(
 	videoAI gcp.Video,
 	caption openai.Caption,
 ) *Extractor {
+	storageMode := gcp.ObjectStorageModeGCS
+	if storageCfg, err := gcp.ResolveObjectStorageConfigFromEnv(); err == nil {
+		storageMode = storageCfg.Mode
+	}
 	maxPDFPagesRender := envIntAllowZero("INGEST_PDF_MAX_PAGES_RENDER", 200)
 	if maxPDFPagesRender < 0 {
 		maxPDFPagesRender = 0
@@ -105,6 +110,7 @@ func New(
 		VideoAI: videoAI,
 		Caption: caption,
 
+		ObjectStorageMode:  storageMode,
 		MaterialBucketName: strings.TrimSpace(os.Getenv("MATERIAL_GCS_BUCKET_NAME")),
 		VisionOutputPrefix: strings.TrimSpace(os.Getenv("VISION_OCR_OUTPUT_PREFIX")),
 		DocAIProjectID:     strings.TrimSpace(os.Getenv("GCP_PROJECT_ID")),
@@ -127,6 +133,17 @@ func New(
 		VideoFrameIntervalSec: 2.0,
 		VideoSceneThreshold:   0.0,
 	}
+}
+
+func (e *Extractor) IsObjectStorageEmulatorMode() bool {
+	return e != nil && gcp.IsEmulatorObjectStorageMode(e.ObjectStorageMode)
+}
+
+func (e *Extractor) ShouldAttemptVideoAIGCS() bool {
+	if e == nil || e.VideoAI == nil {
+		return false
+	}
+	return true
 }
 
 func envIntAllowZero(key string, def int) int {
@@ -165,6 +182,29 @@ func (e *Extractor) TryDocAI(ctx context.Context, mimeType, storageKey string) (
 	}
 	if e.DocAIProjectID == "" || e.DocAIProcessorID == "" || e.DocAILocation == "" {
 		return nil, fmt.Errorf("missing docai env (GCP_PROJECT_ID, DOCUMENTAI_LOCATION, DOCUMENTAI_PROCESSOR_ID)")
+	}
+	if e.IsObjectStorageEmulatorMode() {
+		if e.Bucket == nil {
+			return nil, fmt.Errorf("bucket service nil; required for docai bytes fallback in emulator mode")
+		}
+		rc, err := e.Bucket.DownloadFile(ctx, gcp.BucketCategoryMaterial, storageKey)
+		if err != nil {
+			return nil, fmt.Errorf("docai bytes fallback download failed: %w", err)
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("docai bytes fallback read failed: %w", err)
+		}
+		return e.DocAI.ProcessBytes(ctx, gcp.DocAIProcessBytesRequest{
+			ProjectID:        e.DocAIProjectID,
+			Location:         e.DocAILocation,
+			ProcessorID:      e.DocAIProcessorID,
+			ProcessorVersion: e.DocAIProcessorVer,
+			MimeType:         mimeType,
+			Data:             b,
+			FieldMask:        nil,
+		})
 	}
 	if e.MaterialBucketName == "" {
 		return nil, fmt.Errorf("missing MATERIAL_GCS_BUCKET_NAME for docai gs:// calls")

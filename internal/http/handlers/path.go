@@ -169,6 +169,7 @@ func (h *PathHandler) GetPath(c *gin.Context) {
 		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
 		return
 	}
+	normalizePathAvatarURLs(h.bucket, row)
 
 	dto := &pathWithJob{Path: row}
 	if h.jobs != nil && row.JobID != nil && *row.JobID != uuid.Nil {
@@ -235,6 +236,7 @@ func (h *PathHandler) ViewPath(c *gin.Context) {
 		response.RespondError(c, http.StatusNotFound, "path_not_found", nil)
 		return
 	}
+	normalizePathAvatarURLs(h.bucket, row)
 
 	dto := &pathWithJob{Path: row}
 	if h.jobs != nil && row.JobID != nil && *row.JobID != uuid.Nil {
@@ -319,6 +321,7 @@ func (h *PathHandler) GeneratePathCover(c *gin.Context) {
 		response.RespondError(c, http.StatusInternalServerError, "load_path_failed", err)
 		return
 	}
+	normalizePathAvatarURLs(h.bucket, updated)
 
 	dto := &pathWithJob{Path: updated}
 	response.RespondOK(c, gin.H{"path": dto, "cover": out})
@@ -383,6 +386,7 @@ func (h *PathHandler) ListPathMaterials(c *gin.Context) {
 		response.RespondError(c, http.StatusInternalServerError, "load_files_failed", err)
 		return
 	}
+	normalizeMaterialFileURLs(h.bucket, files)
 
 	// If this path has an intake material filter allowlist (e.g., subpaths), apply it.
 	if allow := materialFileAllowlistFromPathMetaJSON(pathRow.Metadata); len(allow) > 0 {
@@ -407,6 +411,7 @@ func (h *PathHandler) ListPathMaterials(c *gin.Context) {
 			return
 		}
 		assets = rows
+		normalizeMaterialAssetURLs(h.bucket, assets)
 		for _, a := range rows {
 			if a == nil || a.MaterialFileID == uuid.Nil {
 				continue
@@ -454,6 +459,9 @@ func (h *PathHandler) ListPathNodes(c *gin.Context) {
 		h.log.Error("ListPathNodes failed (load nodes)", "error", err, "path_id", pathID)
 		response.RespondError(c, http.StatusInternalServerError, "load_nodes_failed", err)
 		return
+	}
+	for _, n := range nodes {
+		normalizePathNodeAvatarURLs(h.bucket, n)
 	}
 	response.RespondOK(c, gin.H{"nodes": nodes})
 }

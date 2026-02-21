@@ -38,6 +38,35 @@ type LibraryHandler struct {
 	snapshots  repos.LibraryTaxonomySnapshotRepo
 }
 
+type LibraryHandlerRepoDeps struct {
+	Nodes      repos.LibraryTaxonomyNodeRepo
+	Edges      repos.LibraryTaxonomyEdgeRepo
+	Membership repos.LibraryTaxonomyMembershipRepo
+	State      repos.LibraryTaxonomyStateRepo
+	Snapshots  repos.LibraryTaxonomySnapshotRepo
+}
+
+type LibraryHandlerDeps struct {
+	Log     *logger.Logger
+	DB      *gorm.DB
+	Library librarymod.Usecases
+	Repos   LibraryHandlerRepoDeps
+}
+
+func NewLibraryHandlerWithDeps(deps LibraryHandlerDeps) *LibraryHandler {
+	return &LibraryHandler{
+		log:        deps.Log.With("handler", "LibraryHandler"),
+		db:         deps.DB,
+		library:    deps.Library,
+		nodes:      deps.Repos.Nodes,
+		edges:      deps.Repos.Edges,
+		membership: deps.Repos.Membership,
+		state:      deps.Repos.State,
+		snapshots:  deps.Repos.Snapshots,
+	}
+}
+
+// NewLibraryHandler is kept as a compatibility shim while callers migrate to typed deps.
 func NewLibraryHandler(
 	log *logger.Logger,
 	db *gorm.DB,
@@ -48,16 +77,18 @@ func NewLibraryHandler(
 	state repos.LibraryTaxonomyStateRepo,
 	snapshots repos.LibraryTaxonomySnapshotRepo,
 ) *LibraryHandler {
-	return &LibraryHandler{
-		log:        log.With("handler", "LibraryHandler"),
-		db:         db,
-		library:    library,
-		nodes:      nodes,
-		edges:      edges,
-		membership: membership,
-		state:      state,
-		snapshots:  snapshots,
-	}
+	return NewLibraryHandlerWithDeps(LibraryHandlerDeps{
+		Log:     log,
+		DB:      db,
+		Library: library,
+		Repos: LibraryHandlerRepoDeps{
+			Nodes:      nodes,
+			Edges:      edges,
+			Membership: membership,
+			State:      state,
+			Snapshots:  snapshots,
+		},
+	})
 }
 
 // GET /api/library/taxonomy

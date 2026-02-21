@@ -2,9 +2,13 @@ package gcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,11 +55,25 @@ type ObjectAttrs struct {
 type bucketService struct {
 	log            *logger.Logger
 	storageClient  *storage.Client
+	storageMode    ObjectStorageMode
+	emulatorHost   string
 	avatarBucket   bucketConfig
 	materialBucket bucketConfig
+	publicBaseURL  string
 }
 
 func NewBucketService(log *logger.Logger) (BucketService, error) {
+	storageCfg, err := ResolveObjectStorageConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("resolve object storage config: %w", err)
+	}
+	return NewBucketServiceWithConfig(log, storageCfg)
+}
+
+func NewBucketServiceWithConfig(log *logger.Logger, storageCfg ObjectStorageConfig) (BucketService, error) {
+	if err := ValidateObjectStorageConfig(storageCfg); err != nil {
+		return nil, fmt.Errorf("validate object storage config: %w", err)
+	}
 	serviceLog := log.With("service", "BucketService")
 
 	avatarBucketName := os.Getenv("AVATAR_GCS_BUCKET_NAME")
@@ -69,18 +87,34 @@ func NewBucketService(log *logger.Logger) (BucketService, error) {
 
 	avatarCDN := os.Getenv("AVATAR_CDN_DOMAIN")
 	materialCDN := os.Getenv("MATERIAL_CDN_DOMAIN")
+	publicBaseURL, publicBaseSource, err := resolveObjectStoragePublicBaseURL(storageCfg)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx := context.Background()
-	opts := ClientOptionsFromEnv()
-	opts = append(opts, option.WithScopes(storage.ScopeReadWrite))
-	stClient, err := storage.NewClient(ctx, opts...)
+	stClient, err := newStorageClientForMode(ctx, storageCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage client: %w", err)
 	}
 
+	modeSource := storageCfg.ModeSource()
+	serviceLog.Info(
+		"Object storage initialized",
+		"mode", storageCfg.Mode,
+		"mode_source", modeSource,
+		"emulator_host", storageCfg.EmulatorHost,
+		"public_base_source", publicBaseSource,
+		"public_base_url", publicBaseURL,
+		"avatar_bucket", avatarBucketName,
+		"material_bucket", materialBucketName,
+	)
+
 	return &bucketService{
 		log:           serviceLog,
 		storageClient: stClient,
+		storageMode:   storageCfg.Mode,
+		emulatorHost:  strings.TrimRight(strings.TrimSpace(storageCfg.EmulatorHost), "/"),
 		avatarBucket: bucketConfig{
 			name:      avatarBucketName,
 			cdnDomain: avatarCDN,
@@ -89,7 +123,49 @@ func NewBucketService(log *logger.Logger) (BucketService, error) {
 			name:      materialBucketName,
 			cdnDomain: materialCDN,
 		},
+		publicBaseURL: publicBaseURL,
 	}, nil
+}
+
+func newStorageClientForMode(ctx context.Context, storageCfg ObjectStorageConfig) (*storage.Client, error) {
+	switch storageCfg.Mode {
+	case ObjectStorageModeGCS:
+		opts := ClientOptionsFromEnv()
+		opts = append(opts, option.WithScopes(storage.ScopeReadWrite))
+		return storage.NewClient(ctx, opts...)
+	case ObjectStorageModeGCSEmulator:
+		endpoint := strings.TrimRight(strings.TrimSpace(storageCfg.EmulatorHost), "/")
+		_ = os.Setenv("STORAGE_EMULATOR_HOST", endpoint)
+		opts := []option.ClientOption{
+			option.WithoutAuthentication(),
+		}
+		return storage.NewClient(ctx, opts...)
+	default:
+		return nil, &ObjectStorageConfigError{
+			Code: ObjectStorageConfigErrorInvalidMode,
+			Mode: string(storageCfg.Mode),
+		}
+	}
+}
+
+func resolveObjectStoragePublicBaseURL(storageCfg ObjectStorageConfig) (baseURL string, source string, err error) {
+	raw := strings.TrimSpace(os.Getenv("OBJECT_STORAGE_PUBLIC_BASE_URL"))
+	if raw != "" {
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+			return "", "", fmt.Errorf(
+				"invalid OBJECT_STORAGE_PUBLIC_BASE_URL=%q; expected absolute URL like http://localhost:4443",
+				raw,
+			)
+		}
+		return strings.TrimRight(raw, "/"), "object_storage_public_base_url", nil
+	}
+
+	if storageCfg.IsEmulatorMode() {
+		return strings.TrimRight(strings.TrimSpace(storageCfg.EmulatorHost), "/"), "storage_emulator_host", nil
+	}
+
+	return "", "gcs_default", nil
 }
 
 func (bs *bucketService) getBucketConfig(category BucketCategory) (bucketConfig, error) {
@@ -238,10 +314,35 @@ func (bs *bucketService) GetPublicURL(category BucketCategory, key string) strin
 	if err != nil {
 		return key
 	}
+	key = strings.TrimLeft(strings.TrimSpace(key), "/")
 	if cfg.cdnDomain != "" {
 		return fmt.Sprintf("https://%s/%s", cfg.cdnDomain, key)
 	}
+	if bs.storageMode == ObjectStorageModeGCSEmulator {
+		if u := bs.publicEmulatorObjectMediaURL(cfg.name, key); u != "" {
+			return u
+		}
+	}
+	if bs.publicBaseURL != "" {
+		return fmt.Sprintf("%s/%s/%s", bs.publicBaseURL, cfg.name, key)
+	}
 	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", cfg.name, key)
+}
+
+func (bs *bucketService) publicEmulatorObjectMediaURL(bucket, key string) string {
+	base := strings.TrimRight(strings.TrimSpace(bs.publicBaseURL), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(bs.emulatorHost), "/")
+	}
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s/storage/v1/b/%s/o/%s?alt=media",
+		base,
+		url.PathEscape(bucket),
+		url.PathEscape(key),
+	)
 }
 
 // IMPORTANT FIX:
@@ -261,10 +362,52 @@ func (r *readCloserWithCancel) Close() error {
 	return err
 }
 
+func (bs *bucketService) isEmulatorMode() bool {
+	return bs != nil && IsEmulatorObjectStorageMode(bs.storageMode) && strings.TrimSpace(bs.emulatorHost) != ""
+}
+
+func (bs *bucketService) emulatorObjectMediaURL(bucket, key string) string {
+	return fmt.Sprintf(
+		"%s/storage/v1/b/%s/o/%s?alt=media",
+		strings.TrimRight(strings.TrimSpace(bs.emulatorHost), "/"),
+		url.PathEscape(bucket),
+		url.PathEscape(key),
+	)
+}
+
+func (bs *bucketService) emulatorObjectMetaURL(bucket, key string) string {
+	return fmt.Sprintf(
+		"%s/storage/v1/b/%s/o/%s",
+		strings.TrimRight(strings.TrimSpace(bs.emulatorHost), "/"),
+		url.PathEscape(bucket),
+		url.PathEscape(key),
+	)
+}
+
 func (bs *bucketService) DownloadFile(ctx context.Context, category BucketCategory, key string) (io.ReadCloser, error) {
 	cfg, err := bs.getBucketConfig(category)
 	if err != nil {
 		return nil, err
+	}
+	if bs.isEmulatorMode() {
+		ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		req, err := http.NewRequestWithContext(ctx2, http.MethodGet, bs.emulatorObjectMediaURL(cfg.name, key), nil)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed creating emulator download request: %w", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed emulator download request: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("emulator download failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return &readCloserWithCancel{ReadCloser: resp.Body, cancel: cancel}, nil
 	}
 	// Create a context that stays alive for the life of the reader.
 	// Cancel only after the reader is closed.
@@ -284,6 +427,37 @@ func (bs *bucketService) OpenRangeReader(ctx context.Context, category BucketCat
 	if err != nil {
 		return nil, err
 	}
+	if bs.isEmulatorMode() {
+		ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		req, err := http.NewRequestWithContext(ctx2, http.MethodGet, bs.emulatorObjectMediaURL(cfg.name, key), nil)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed creating emulator range request: %w", err)
+		}
+		if offset > 0 || length != 0 {
+			var rangeHeader string
+			if length > 0 {
+				end := offset + length - 1
+				rangeHeader = fmt.Sprintf("bytes=%d-%d", offset, end)
+			} else {
+				rangeHeader = fmt.Sprintf("bytes=%d-", offset)
+			}
+			req.Header.Set("Range", rangeHeader)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed emulator range request: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("emulator range read failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return &readCloserWithCancel{ReadCloser: resp.Body, cancel: cancel}, nil
+	}
 	ctx2, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	r, err := bs.storageClient.Bucket(cfg.name).Object(key).NewRangeReader(ctx2, offset, length)
 	if err != nil {
@@ -297,6 +471,47 @@ func (bs *bucketService) GetObjectAttrs(ctx context.Context, category BucketCate
 	cfg, err := bs.getBucketConfig(category)
 	if err != nil {
 		return nil, err
+	}
+	if bs.isEmulatorMode() {
+		ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx2, http.MethodGet, bs.emulatorObjectMetaURL(cfg.name, key), nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed creating emulator attrs request: %w", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed emulator attrs request: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			return nil, fmt.Errorf("emulator attrs failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+
+		var payload struct {
+			Size        string `json:"size"`
+			ContentType string `json:"contentType"`
+			Updated     string `json:"updated"`
+			ETag        string `json:"etag"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return nil, fmt.Errorf("decode emulator attrs: %w", err)
+		}
+		size, _ := strconv.ParseInt(strings.TrimSpace(payload.Size), 10, 64)
+		updated := time.Time{}
+		if ts := strings.TrimSpace(payload.Updated); ts != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
+				updated = parsed
+			}
+		}
+		return &ObjectAttrs{
+			Size:        size,
+			ContentType: payload.ContentType,
+			Updated:     updated,
+			ETag:        payload.ETag,
+		}, nil
 	}
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

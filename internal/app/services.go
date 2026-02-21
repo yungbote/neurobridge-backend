@@ -125,12 +125,12 @@ type Services struct {
 func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseHub *realtime.SSEHub, clients Clients, metrics *observability.Metrics) (Services, error) {
 	log.Info("Wiring services...")
 
-	avatarService, err := services.NewAvatarService(db, log, repos.User, clients.GcpBucket, clients.OpenaiClient)
+	avatarService, err := services.NewAvatarService(db, log, repos.Auth.User, clients.GcpBucket, clients.OpenaiClient)
 	if err != nil {
 		return Services{}, fmt.Errorf("init avatar service: %w", err)
 	}
 
-	fileService := services.NewFileService(db, log, clients.GcpBucket, repos.MaterialFile)
+	fileService := services.NewFileService(db, log, clients.GcpBucket, repos.Materials.MaterialFile)
 
 	oidcVerifier, err := services.NewOIDCVerifier(nil, cfg.GoogleOIDCClientID, cfg.AppleOIDCClientID)
 	if err != nil {
@@ -139,11 +139,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	authService := services.NewAuthService(
 		db, log,
-		repos.User,
+		repos.Auth.User,
 		avatarService,
-		repos.UserToken,
-		repos.UserIdentity,
-		repos.OAuthNonce,
+		repos.Auth.UserToken,
+		repos.Auth.UserIdentity,
+		repos.Auth.OAuthNonce,
 		oidcVerifier,
 		cfg.JWTSecretKey,
 		cfg.AccessTokenTTL,
@@ -151,11 +151,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		cfg.NonceRefreshTTL,
 	)
 
-	userService := services.NewUserService(db, log, repos.User, repos.UserPersonalizationPrefs, avatarService)
-	materialService := services.NewMaterialService(db, log, repos.MaterialSet, repos.MaterialFile, fileService)
-	eventService := services.NewEventService(db, log, repos.UserEvent)
-	sessionStateService := services.NewSessionStateService(db, log, repos.UserSessionState)
-	gazeService := services.NewGazeService(log, repos.UserGazeEvent, repos.UserGazeBlockStat, repos.UserPersonalizationPrefs)
+	userService := services.NewUserService(db, log, repos.Auth.User, repos.Users.UserPersonalizationPrefs, avatarService)
+	materialService := services.NewMaterialService(db, log, repos.Materials.MaterialSet, repos.Materials.MaterialFile, fileService)
+	eventService := services.NewEventService(db, log, repos.Events.UserEvent)
+	sessionStateService := services.NewSessionStateService(db, log, repos.Users.UserSessionState)
+	gazeService := services.NewGazeService(log, repos.Users.UserGazeEvent, repos.Users.UserGazeBlockStat, repos.Users.UserPersonalizationPrefs)
 
 	runServer := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_SERVER")), "true")
 	runWorker := strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_WORKER")), "true")
@@ -175,21 +175,21 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	jobNotifier := services.NewJobNotifier(emitter)
 	tc := clients.Temporal
 	tcfg := temporalx.LoadConfig()
-	jobService := services.NewJobService(db, log, repos.JobRun, jobNotifier, tc, tcfg.TaskQueue)
+	jobService := services.NewJobService(db, log, repos.Jobs.JobRun, jobNotifier, tc, tcfg.TaskQueue)
 
 	// Shared bootstrap service (used by workflows + learning pipelines).
-	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Path, repos.UserLibraryIndex)
+	bootstrapSvc := services.NewLearningBuildBootstrapService(db, log, repos.Paths.Path, repos.Library.UserLibraryIndex)
 
-	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Path, repos.ChatThread, repos.ChatMessage)
+	workflow := services.NewWorkflowService(db, log, materialService, jobService, bootstrapSvc, repos.Paths.Path, repos.Chat.ChatThread, repos.Chat.ChatMessage)
 	chatNotifier := services.NewChatNotifier(emitter)
 	runtimeNotifier := services.NewRuntimeNotifier(emitter)
 
 	extractor := ingestion.NewContentExtractionService(
 		db,
 		log,
-		repos.MaterialChunk,
-		repos.MaterialFile,
-		repos.MaterialAsset,
+		repos.Materials.MaterialChunk,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialAsset,
 		clients.GcpBucket,
 		clients.LMTools,
 		clients.GcpDocument,
@@ -210,22 +210,23 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatThreadState,
-		repos.ChatSummaryNode,
-		repos.ChatDoc,
-		repos.ChatTurn,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.Concept,
-		repos.ConceptEdge,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
-		repos.UserSessionState,
-		repos.JobRun,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatThreadState,
+		repos.Chat.ChatSummaryNode,
+		repos.Chat.Thread,
+		repos.Chat.ChatDoc,
+		repos.Chat.ChatTurn,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.Concepts.Concept,
+		repos.Concepts.ConceptEdge,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
+		repos.Users.UserSessionState,
+		repos.Jobs.JobRun,
 		jobService,
 		chatNotifier,
 	)
@@ -239,16 +240,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.Neo4j,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatThreadState,
-		repos.ChatSummaryNode,
-		repos.ChatDoc,
-		repos.ChatMemoryItem,
-		repos.ChatEntity,
-		repos.ChatEdge,
-		repos.ChatClaim,
-		repos.JobRun,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatThreadState,
+		repos.Chat.ChatSummaryNode,
+		repos.Chat.ChatDoc,
+		repos.Chat.ChatMemoryItem,
+		repos.Chat.ChatEntity,
+		repos.Chat.ChatEdge,
+		repos.Chat.ChatClaim,
+		repos.Jobs.JobRun,
 		jobService,
 	)
 	if err := jobRegistry.Register(chatMaintain); err != nil {
@@ -259,14 +260,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.StructureExtractAI,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatTurn,
-		repos.ChatThreadState,
-		repos.Concept,
-		repos.UserConceptModel,
-		repos.UserMisconception,
-		repos.UserEvent,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatTurn,
+		repos.Chat.ChatThreadState,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
+		repos.Events.UserEvent,
 		jobService,
 	)
 	if err := jobRegistry.Register(structureExtract); err != nil {
@@ -277,7 +278,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.PineconeVectorStore,
-		repos.JobRun,
+		repos.Jobs.JobRun,
 		jobService,
 	)
 	if err := jobRegistry.Register(chatRebuild); err != nil {
@@ -298,16 +299,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
-		repos.ChatDoc,
-		repos.Path,
-		repos.PathNode,
-		repos.PathNodeActivity,
-		repos.Activity,
-		repos.Concept,
-		repos.LearningNodeDoc,
-		repos.UserLibraryIndex,
-		repos.MaterialFile,
-		repos.MaterialSetSummary,
+		repos.Chat.ChatDoc,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Paths.PathNodeActivity,
+		repos.Activities.Activity,
+		repos.Concepts.Concept,
+		repos.DocGen.LearningNodeDoc,
+		repos.Library.UserLibraryIndex,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialSetSummary,
 	)
 	if err := jobRegistry.Register(chatPathIndex); err != nil {
 		return Services{}, err
@@ -318,10 +319,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
-		repos.ChatDoc,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
+		repos.Chat.ChatDoc,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
 	)
 	if err := jobRegistry.Register(chatPathNodeIndex); err != nil {
 		return Services{}, err
@@ -331,14 +332,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.OpenaiClient,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatTurn,
-		repos.JobRun,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatTurn,
+		repos.Jobs.JobRun,
 		jobService,
-		repos.Path,
-		repos.UserPersonalizationPrefs,
-		repos.DecisionTrace,
+		repos.Paths.Path,
+		repos.Users.UserPersonalizationPrefs,
+		repos.Runtime.DecisionTrace,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(waitpointInterpret); err != nil {
@@ -349,12 +350,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		clients.OpenaiClient,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatTurn,
-		repos.JobRun,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatTurn,
+		repos.Jobs.JobRun,
 		jobService,
-		repos.DecisionTrace,
+		repos.Runtime.DecisionTrace,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(chatWaitpointInterpret); err != nil {
@@ -364,8 +365,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	waitpointStage := waitpoint_stage.New(
 		db,
 		log,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(waitpointStage); err != nil {
@@ -373,7 +374,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	}
 
 	// Shared learning_build services (durable saga + path bootstrap).
-	sagaSvc := services.NewSagaService(db, log, repos.SagaRun, repos.SagaAction, clients.GcpBucket, clients.PineconeVectorStore)
+	sagaSvc := services.NewSagaService(
+		db,
+		log,
+		repos.Jobs.SagaRun,
+		repos.Jobs.SagaAction,
+		repos.Jobs.Saga,
+		clients.GcpBucket,
+		clients.PineconeVectorStore,
+		cfg.VectorProvider,
+	)
 
 	// --------------------
 	// Learning build (Path-centric) pipelines
@@ -381,11 +391,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	webResourcesSeed := web_resources_seed.New(
 		db,
 		log,
-		repos.MaterialFile,
-		repos.Path,
+		repos.Materials.MaterialFile,
+		repos.Paths.Path,
 		clients.GcpBucket,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 		clients.OpenaiClient,
 		sagaSvc,
@@ -395,7 +405,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	ingestChunks := ingest_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, extractor, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	ingestChunks := ingest_chunks.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialChunk, extractor, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact)
 	if err := jobRegistry.Register(ingestChunks); err != nil {
 		return Services{}, err
 	}
@@ -403,41 +413,41 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	fileSignatureBuild := file_signature_build.New(
 		db,
 		log,
-		repos.MaterialFile,
-		repos.MaterialFileSignature,
-		repos.MaterialFileSection,
-		repos.MaterialChunk,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialFileSignature,
+		repos.Materials.MaterialFileSection,
+		repos.Materials.MaterialChunk,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		sagaSvc,
 		bootstrapSvc,
-		repos.LearningArtifact,
+		repos.Materials.LearningArtifact,
 	)
 	if err := jobRegistry.Register(fileSignatureBuild); err != nil {
 		return Services{}, err
 	}
 
-	embedChunks := embed_chunks.New(db, log, repos.MaterialFile, repos.MaterialChunk, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	embedChunks := embed_chunks.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialChunk, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(embedChunks); err != nil {
 		return Services{}, err
 	}
 
-	materialSummarize := material_set_summarize.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.MaterialSetSummary, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	materialSummarize := material_set_summarize.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialChunk, repos.Materials.MaterialSetSummary, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact)
 	if err := jobRegistry.Register(materialSummarize); err != nil {
 		return Services{}, err
 	}
 
-	conceptGraph := concept_graph_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact, repos.GraphVersion, repos.StructuralDecisionTrace)
+	conceptGraph := concept_graph_build.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialFileSignature, repos.Materials.MaterialChunk, repos.Paths.Path, repos.Concepts.Concept, repos.Concepts.ConceptRepresentation, repos.Concepts.ConceptMappingOverride, repos.Concepts.ConceptEvidence, repos.Concepts.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact, repos.Concepts.GraphVersion, repos.Concepts.StructuralDecisionTrace)
 	if err := jobRegistry.Register(conceptGraph); err != nil {
 		return Services{}, err
 	}
 
-	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.MaterialFile, repos.MaterialFileSignature, repos.MaterialChunk, repos.Path, repos.Concept, repos.ConceptRepresentation, repos.ConceptMappingOverride, repos.ConceptEvidence, repos.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact, repos.GraphVersion, repos.StructuralDecisionTrace)
+	conceptGraphPatch := concept_graph_patch_build.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialFileSignature, repos.Materials.MaterialChunk, repos.Paths.Path, repos.Concepts.Concept, repos.Concepts.ConceptRepresentation, repos.Concepts.ConceptMappingOverride, repos.Concepts.ConceptEvidence, repos.Concepts.ConceptEdge, clients.Neo4j, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact, repos.Concepts.GraphVersion, repos.Concepts.StructuralDecisionTrace)
 	if err := jobRegistry.Register(conceptGraphPatch); err != nil {
 		return Services{}, err
 	}
 
-	conceptBridge := concept_bridge_build.New(db, log, repos.Concept, repos.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, bootstrapSvc)
+	conceptBridge := concept_bridge_build.New(db, log, repos.Concepts.Concept, repos.Concepts.ConceptEdge, clients.OpenaiClient, clients.PineconeVectorStore, bootstrapSvc)
 	if err := jobRegistry.Register(conceptBridge); err != nil {
 		return Services{}, err
 	}
@@ -445,41 +455,41 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	materialSignal := material_signal_build.New(
 		db,
 		log,
-		repos.MaterialFile,
-		repos.MaterialFileSignature,
-		repos.MaterialFileSection,
-		repos.MaterialChunk,
-		repos.Concept,
-		repos.MaterialSet,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialFileSignature,
+		repos.Materials.MaterialFileSection,
+		repos.Materials.MaterialChunk,
+		repos.Concepts.Concept,
+		repos.Materials.MaterialSet,
 		clients.OpenaiClient,
 		bootstrapSvc,
-		repos.LearningArtifact,
+		repos.Materials.LearningArtifact,
 	)
 	if err := jobRegistry.Register(materialSignal); err != nil {
 		return Services{}, err
 	}
 
-	materialKG := material_kg_build.New(db, log, repos.MaterialFile, repos.MaterialChunk, repos.Path, repos.Concept, clients.Neo4j, clients.OpenaiClient, sagaSvc, bootstrapSvc)
+	materialKG := material_kg_build.New(db, log, repos.Materials.MaterialFile, repos.Materials.MaterialChunk, repos.Paths.Path, repos.Concepts.Concept, clients.Neo4j, clients.OpenaiClient, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(materialKG); err != nil {
 		return Services{}, err
 	}
 
-	conceptCluster := concept_cluster_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	conceptCluster := concept_cluster_build.New(db, log, repos.Concepts.Concept, repos.Concepts.ConceptCluster, repos.Concepts.ConceptClusterMember, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact)
 	if err := jobRegistry.Register(conceptCluster); err != nil {
 		return Services{}, err
 	}
 
-	chainSignatures := chain_signature_build.New(db, log, repos.Concept, repos.ConceptCluster, repos.ConceptClusterMember, repos.ConceptEdge, repos.ChainSignature, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.LearningArtifact)
+	chainSignatures := chain_signature_build.New(db, log, repos.Concepts.Concept, repos.Concepts.ConceptCluster, repos.Concepts.ConceptClusterMember, repos.Concepts.ConceptEdge, repos.Concepts.ChainSignature, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc, repos.Materials.LearningArtifact)
 	if err := jobRegistry.Register(chainSignatures); err != nil {
 		return Services{}, err
 	}
 
-	userProfileRefresh := user_profile_refresh.New(db, log, repos.UserStylePreference, repos.UserProgressionEvent, repos.UserProfileVector, repos.UserPersonalizationPrefs, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	userProfileRefresh := user_profile_refresh.New(db, log, repos.Learning.UserStylePreference, repos.Events.UserProgressionEvent, repos.Users.UserProfileVector, repos.Users.UserPersonalizationPrefs, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(userProfileRefresh); err != nil {
 		return Services{}, err
 	}
 
-	teachingPatterns := teaching_patterns_seed.New(db, log, repos.TeachingPattern, repos.UserProfileVector, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
+	teachingPatterns := teaching_patterns_seed.New(db, log, repos.Activities.TeachingPattern, repos.Users.UserProfileVector, clients.OpenaiClient, clients.PineconeVectorStore, sagaSvc, bootstrapSvc)
 	if err := jobRegistry.Register(teachingPatterns); err != nil {
 		return Services{}, err
 	}
@@ -487,14 +497,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	pathIntake := path_intake.New(
 		db,
 		log,
-		repos.MaterialFile,
-		repos.MaterialFileSignature,
-		repos.MaterialChunk,
-		repos.MaterialSetSummary,
-		repos.Path,
-		repos.UserPersonalizationPrefs,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialFileSignature,
+		repos.Materials.MaterialChunk,
+		repos.Materials.MaterialSetSummary,
+		repos.Paths.Path,
+		repos.Users.UserPersonalizationPrefs,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		clients.OpenaiClient,
 		chatNotifier,
 		bootstrapSvc,
@@ -506,12 +516,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	pathGroupingRefine := path_grouping_refine.New(
 		db,
 		log,
-		repos.Path,
-		repos.MaterialFile,
-		repos.MaterialFileSignature,
-		repos.UserPersonalizationPrefs,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Paths.Path,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialFileSignature,
+		repos.Users.UserPersonalizationPrefs,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(pathGroupingRefine); err != nil {
@@ -522,12 +532,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		jobService,
-		repos.JobRun,
-		repos.Path,
-		repos.MaterialFile,
-		repos.MaterialSet,
-		repos.MaterialSetFile,
-		repos.UserLibraryIndex,
+		repos.Jobs.JobRun,
+		repos.Paths.Path,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialSet,
+		repos.Materials.MaterialSetFile,
+		repos.Library.UserLibraryIndex,
 	)
 	if err := jobRegistry.Register(pathStructureDispatch); err != nil {
 		return Services{}, err
@@ -536,18 +546,18 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	pathStructureRefine := path_structure_refine.New(
 		db,
 		log,
-		repos.Path,
-		repos.Concept,
-		repos.MaterialFile,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Paths.Path,
+		repos.Concepts.Concept,
+		repos.Materials.MaterialFile,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 	)
 	if err := jobRegistry.Register(pathStructureRefine); err != nil {
 		return Services{}, err
 	}
 
-	pathPlan := path_plan_build.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.ConceptRepresentation, repos.ConceptEdge, repos.MaterialSetSummary, repos.UserProfileVector, repos.UserConceptState, repos.UserConceptModel, repos.UserMisconception, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
+	pathPlan := path_plan_build.New(db, log, repos.Paths.Path, repos.Paths.PathNode, repos.Concepts.Concept, repos.Concepts.ConceptRepresentation, repos.Concepts.ConceptEdge, repos.Materials.MaterialSetSummary, repos.Users.UserProfileVector, repos.Learning.UserConceptState, repos.Learning.UserConceptModel, repos.Learning.UserMisconception, clients.Neo4j, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(pathPlan); err != nil {
 		return Services{}, err
 	}
@@ -555,12 +565,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	runtimePlan := runtime_plan_build.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.MaterialSetSummary,
-		repos.UserProfileVector,
-		repos.UserProgressionEvent,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.Materials.MaterialSetSummary,
+		repos.Users.UserProfileVector,
+		repos.Events.UserProgressionEvent,
 		clients.OpenaiClient,
 		bootstrapSvc,
 	)
@@ -571,9 +581,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	psuBuild := psu_build.New(
 		db,
 		log,
-		repos.PathNode,
-		repos.Concept,
-		repos.PathStructuralUnit,
+		repos.Paths.PathNode,
+		repos.Concepts.Concept,
+		repos.Paths.PathStructuralUnit,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(psuBuild); err != nil {
@@ -583,13 +593,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	psuPromote := psu_promote.New(
 		db,
 		log,
-		repos.UserEvent,
-		repos.PathStructuralUnit,
-		repos.Concept,
-		repos.ConceptEdge,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
+		repos.Events.UserEvent,
+		repos.Paths.PathStructuralUnit,
+		repos.Concepts.Concept,
+		repos.Concepts.ConceptEdge,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
 		clients.StructureExtractAI,
 	)
 	if err := jobRegistry.Register(psuPromote); err != nil {
@@ -599,13 +609,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	structureBackfill := structure_backfill.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.Concept,
-		repos.PathStructuralUnit,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Concepts.Concept,
+		repos.Paths.PathStructuralUnit,
 		bootstrapSvc,
-		repos.UserConceptState,
-		repos.UserConceptModel,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
 	)
 	if err := jobRegistry.Register(structureBackfill); err != nil {
 		return Services{}, err
@@ -617,16 +627,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		clients.OpenaiClient,
 		clients.Neo4j,
 		jobService,
-		repos.JobRun,
-		repos.Path,
-		repos.PathNode,
-		repos.ConceptCluster,
-		repos.LibraryTaxonomyNode,
-		repos.LibraryTaxonomyEdge,
-		repos.LibraryTaxonomyMember,
-		repos.LibraryTaxonomyState,
-		repos.LibraryTaxonomySnapshot,
-		repos.LibraryPathEmbedding,
+		repos.Jobs.JobRun,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Concepts.ConceptCluster,
+		repos.Library.LibraryTaxonomyNode,
+		repos.Library.LibraryTaxonomyEdge,
+		repos.Library.LibraryTaxonomyMember,
+		repos.Library.LibraryTaxonomyState,
+		repos.Library.LibraryTaxonomySnapshot,
+		repos.Library.LibraryPathEmbedding,
 	)
 	if err := jobRegistry.Register(libraryTaxonomyRoute); err != nil {
 		return Services{}, err
@@ -637,15 +647,15 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		log,
 		clients.OpenaiClient,
 		clients.Neo4j,
-		repos.Path,
-		repos.PathNode,
-		repos.ConceptCluster,
-		repos.LibraryTaxonomyNode,
-		repos.LibraryTaxonomyEdge,
-		repos.LibraryTaxonomyMember,
-		repos.LibraryTaxonomyState,
-		repos.LibraryTaxonomySnapshot,
-		repos.LibraryPathEmbedding,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Concepts.ConceptCluster,
+		repos.Library.LibraryTaxonomyNode,
+		repos.Library.LibraryTaxonomyEdge,
+		repos.Library.LibraryTaxonomyMember,
+		repos.Library.LibraryTaxonomyState,
+		repos.Library.LibraryTaxonomySnapshot,
+		repos.Library.LibraryPathEmbedding,
 	)
 	if err := jobRegistry.Register(libraryTaxonomyRefine); err != nil {
 		return Services{}, err
@@ -654,8 +664,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	pathCoverRender := path_cover_render.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
 		avatarService,
 		bootstrapSvc,
 	)
@@ -666,8 +676,8 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeAvatarRender := node_avatar_render.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
 		avatarService,
 		bootstrapSvc,
 	)
@@ -678,12 +688,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeFiguresPlan := node_figures_plan_build.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeFigure,
-		repos.DocGenerationRun,
-		repos.MaterialFile,
-		repos.MaterialChunk,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.DocGenerationRun,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		bootstrapSvc,
@@ -695,11 +705,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeFiguresRender := node_figures_render.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeFigure,
-		repos.Asset,
-		repos.DocGenerationRun,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeFigure,
+		repos.Materials.Asset,
+		repos.DocGen.DocGenerationRun,
 		clients.OpenaiClient,
 		clients.GcpBucket,
 		bootstrapSvc,
@@ -711,12 +721,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeVideosPlan := node_videos_plan_build.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeVideo,
-		repos.DocGenerationRun,
-		repos.MaterialFile,
-		repos.MaterialChunk,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeVideo,
+		repos.DocGen.DocGenerationRun,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		bootstrapSvc,
@@ -728,11 +738,11 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeVideosRender := node_videos_render.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeVideo,
-		repos.Asset,
-		repos.DocGenerationRun,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeVideo,
+		repos.Materials.Asset,
+		repos.DocGen.DocGenerationRun,
 		clients.OpenaiClient,
 		clients.GcpBucket,
 		bootstrapSvc,
@@ -744,25 +754,25 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocs := node_doc_build.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeFigure,
-		repos.LearningNodeVideo,
-		repos.DocGenerationRun,
-		repos.LearningNodeDocBlueprint,
-		repos.DocRetrievalPack,
-		repos.DocGenerationTrace,
-		repos.DocConstraintReport,
-		repos.LearningNodeDocRevision,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserProfileVector,
-		repos.TeachingPattern,
-		repos.Concept,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.LearningNodeVideo,
+		repos.DocGen.DocGenerationRun,
+		repos.DocGen.LearningNodeDocBlueprint,
+		repos.DocGen.DocRetrievalPack,
+		repos.DocGen.DocGenerationTrace,
+		repos.DocGen.DocConstraintReport,
+		repos.DocGen.LearningNodeDocRevision,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Users.UserProfileVector,
+		repos.Activities.TeachingPattern,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -775,25 +785,25 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocPrefetch := node_doc_prefetch.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeFigure,
-		repos.LearningNodeVideo,
-		repos.DocGenerationRun,
-		repos.LearningNodeDocBlueprint,
-		repos.DocRetrievalPack,
-		repos.DocGenerationTrace,
-		repos.DocConstraintReport,
-		repos.LearningNodeDocRevision,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserProfileVector,
-		repos.TeachingPattern,
-		repos.Concept,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.LearningNodeVideo,
+		repos.DocGen.DocGenerationRun,
+		repos.DocGen.LearningNodeDocBlueprint,
+		repos.DocGen.DocRetrievalPack,
+		repos.DocGen.DocGenerationTrace,
+		repos.DocGen.DocConstraintReport,
+		repos.DocGen.LearningNodeDocRevision,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Users.UserProfileVector,
+		repos.Activities.TeachingPattern,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -806,30 +816,30 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocProgressive := node_doc_progressive_build.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathRun,
-		repos.NodeRun,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeDocVariant,
-		repos.UserDocSignalSnapshot,
-		repos.InterventionPlan,
-		repos.LearningNodeFigure,
-		repos.LearningNodeVideo,
-		repos.DocGenerationRun,
-		repos.LearningNodeDocBlueprint,
-		repos.DocRetrievalPack,
-		repos.DocGenerationTrace,
-		repos.DocConstraintReport,
-		repos.LearningNodeDocRevision,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserProfileVector,
-		repos.TeachingPattern,
-		repos.Concept,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
+		repos.Paths.Path,
+		repos.Paths.PathRun,
+		repos.Paths.NodeRun,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeDocVariant,
+		repos.DocGen.UserDocSignalSnapshot,
+		repos.Learning.InterventionPlan,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.LearningNodeVideo,
+		repos.DocGen.DocGenerationRun,
+		repos.DocGen.LearningNodeDocBlueprint,
+		repos.DocGen.DocRetrievalPack,
+		repos.DocGen.DocGenerationTrace,
+		repos.DocGen.DocConstraintReport,
+		repos.DocGen.LearningNodeDocRevision,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Users.UserProfileVector,
+		repos.Activities.TeachingPattern,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -843,16 +853,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		jobService,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeFigure,
-		repos.LearningNodeVideo,
-		repos.LearningNodeDocRevision,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserLibraryIndex,
-		repos.Asset,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.LearningNodeVideo,
+		repos.DocGen.LearningNodeDocRevision,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Library.UserLibraryIndex,
+		repos.Materials.Asset,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -864,17 +874,17 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocEdit := node_doc_edit.New(
 		db,
 		log,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.Path,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeFigure,
-		repos.LearningNodeVideo,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserLibraryIndex,
-		repos.Asset,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeFigure,
+		repos.DocGen.LearningNodeVideo,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Library.UserLibraryIndex,
+		repos.Materials.Asset,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
 		clients.GcpBucket,
@@ -887,12 +897,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	nodeDocEditApply := node_doc_edit_apply.New(
 		db,
 		log,
-		repos.JobRun,
+		repos.Jobs.JobRun,
 		jobService,
-		repos.ChatThread,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeDocRevision,
+		repos.Chat.ChatThread,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeDocRevision,
 	)
 	if err := jobRegistry.Register(nodeDocEditApply); err != nil {
 		return Services{}, err
@@ -901,21 +911,21 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	realizeActivities := realize_activities.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathNode,
-		repos.PathNodeActivity,
-		repos.Activity,
-		repos.ActivityVariant,
-		repos.ActivityConcept,
-		repos.ActivityCitation,
-		repos.Concept,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
-		repos.MaterialFile,
-		repos.MaterialChunk,
-		repos.UserProfileVector,
-		repos.TeachingPattern,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Paths.PathNodeActivity,
+		repos.Activities.Activity,
+		repos.Activities.ActivityVariant,
+		repos.Activities.ActivityConcept,
+		repos.Activities.ActivityCitation,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
+		repos.Materials.MaterialFile,
+		repos.Materials.MaterialChunk,
+		repos.Users.UserProfileVector,
+		repos.Activities.TeachingPattern,
 		clients.Neo4j,
 		clients.OpenaiClient,
 		clients.PineconeVectorStore,
@@ -927,12 +937,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	coverageAudit := coverage_coherence_audit.New(db, log, repos.Path, repos.PathNode, repos.Concept, repos.Activity, repos.ActivityVariant, clients.OpenaiClient, bootstrapSvc)
+	coverageAudit := coverage_coherence_audit.New(db, log, repos.Paths.Path, repos.Paths.PathNode, repos.Concepts.Concept, repos.Activities.Activity, repos.Activities.ActivityVariant, clients.OpenaiClient, bootstrapSvc)
 	if err := jobRegistry.Register(coverageAudit); err != nil {
 		return Services{}, err
 	}
 
-	progressionCompact := progression_compact.New(db, log, repos.UserEvent, repos.UserEventCursor, repos.UserProgressionEvent, bootstrapSvc)
+	progressionCompact := progression_compact.New(db, log, repos.Events.UserEvent, repos.Events.UserEventCursor, repos.Events.UserProgressionEvent, bootstrapSvc)
 	if err := jobRegistry.Register(progressionCompact); err != nil {
 		return Services{}, err
 	}
@@ -940,16 +950,16 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	docProbeSelect := doc_probe_select.New(
 		db,
 		log,
-		repos.Path,
-		repos.PathRun,
-		repos.PathNode,
-		repos.LearningNodeDoc,
-		repos.LearningNodeDocVariant,
-		repos.Concept,
-		repos.UserConceptState,
-		repos.UserMisconception,
-		repos.UserTestletState,
-		repos.DocProbe,
+		repos.Paths.Path,
+		repos.Paths.PathRun,
+		repos.Paths.PathNode,
+		repos.DocGen.LearningNodeDoc,
+		repos.DocGen.LearningNodeDocVariant,
+		repos.Concepts.Concept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserMisconception,
+		repos.Learning.UserTestletState,
+		repos.DocGen.DocProbe,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(docProbeSelect); err != nil {
@@ -959,34 +969,34 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	runtimeUpdate := runtime_update.New(
 		db,
 		log,
-		repos.UserEvent,
-		repos.UserEventCursor,
-		repos.Path,
-		repos.PathNode,
-		repos.PathNodeActivity,
-		repos.LearningNodeDoc,
-		repos.PathRun,
-		repos.NodeRun,
-		repos.ActivityRun,
-		repos.PathRunTransition,
-		repos.UserSessionState,
-		repos.Concept,
-		repos.ConceptEdge,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserMisconception,
-		repos.MisconceptionCausalEdge,
-		repos.MisconceptionResolution,
-		repos.UserBeliefSnapshot,
-		repos.InterventionPlan,
-		repos.ConceptReadinessSnapshot,
-		repos.PrereqGateDecision,
-		repos.UserTestletState,
-		repos.DocProbe,
-		repos.DocProbeOutcome,
-		repos.DecisionTrace,
-		repos.ModelSnapshot,
-		repos.PolicyEvalSnapshot,
+		repos.Events.UserEvent,
+		repos.Events.UserEventCursor,
+		repos.Paths.Path,
+		repos.Paths.PathNode,
+		repos.Paths.PathNodeActivity,
+		repos.DocGen.LearningNodeDoc,
+		repos.Paths.PathRun,
+		repos.Paths.NodeRun,
+		repos.Paths.ActivityRun,
+		repos.Paths.PathRunTransition,
+		repos.Users.UserSessionState,
+		repos.Concepts.Concept,
+		repos.Concepts.ConceptEdge,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserMisconception,
+		repos.Learning.MisconceptionCausalEdge,
+		repos.Learning.MisconceptionResolution,
+		repos.Learning.UserBeliefSnapshot,
+		repos.Learning.InterventionPlan,
+		repos.Learning.ConceptReadinessSnapshot,
+		repos.Learning.PrereqGateDecision,
+		repos.Learning.UserTestletState,
+		repos.DocGen.DocProbe,
+		repos.DocGen.DocProbeOutcome,
+		repos.Runtime.DecisionTrace,
+		repos.Runtime.ModelSnapshot,
+		repos.Runtime.PolicyEvalSnapshot,
 		jobService,
 		runtimeNotifier,
 		metrics,
@@ -995,12 +1005,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	policyEval := policy_eval_refresh.New(db, log, repos.DecisionTrace, repos.PolicyEvalSnapshot)
+	policyEval := policy_eval_refresh.New(db, log, repos.Runtime.DecisionTrace, repos.Runtime.PolicyEvalSnapshot)
 	if err := jobRegistry.Register(policyEval); err != nil {
 		return Services{}, err
 	}
 
-	driftMonitor := structural_drift_monitor.New(db, log, repos.StructuralDriftMetric, repos.RollbackEvent)
+	driftMonitor := structural_drift_monitor.New(db, log, repos.Concepts.StructuralDriftMetric, repos.Concepts.RollbackEvent)
 	if err := jobRegistry.Register(driftMonitor); err != nil {
 		return Services{}, err
 	}
@@ -1015,7 +1025,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	graphRollback := graph_version_rollback.New(db, log, repos.GraphVersion, repos.RollbackEvent, repos.JobRun, jobService)
+	graphRollback := graph_version_rollback.New(db, log, repos.Concepts.GraphVersion, repos.Concepts.RollbackEvent, repos.Jobs.JobRun, jobService)
 	if err := jobRegistry.Register(graphRollback); err != nil {
 		return Services{}, err
 	}
@@ -1025,12 +1035,12 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	policyTrain := policy_model_train.New(db, log, repos.DecisionTrace, repos.ModelSnapshot)
+	policyTrain := policy_model_train.New(db, log, repos.Runtime.DecisionTrace, repos.Runtime.ModelSnapshot)
 	if err := jobRegistry.Register(policyTrain); err != nil {
 		return Services{}, err
 	}
 
-	variantStats := variant_stats_refresh.New(db, log, repos.UserEvent, repos.UserEventCursor, repos.ActivityVariant, repos.ActivityVariantStat, bootstrapSvc)
+	variantStats := variant_stats_refresh.New(db, log, repos.Events.UserEvent, repos.Events.UserEventCursor, repos.Activities.ActivityVariant, repos.Activities.ActivityVariantStat, bootstrapSvc)
 	if err := jobRegistry.Register(variantStats); err != nil {
 		return Services{}, err
 	}
@@ -1038,10 +1048,10 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	docVariantEval := doc_variant_eval.New(
 		db,
 		log,
-		repos.DocVariantExposure,
-		repos.DocVariantOutcome,
-		repos.NodeRun,
-		repos.UserConceptState,
+		repos.DocGen.DocVariantExposure,
+		repos.DocGen.DocVariantOutcome,
+		repos.Paths.NodeRun,
+		repos.Learning.UserConceptState,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(docVariantEval); err != nil {
@@ -1051,14 +1061,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	priors := priors_refresh.New(
 		db,
 		log,
-		repos.Activity,
-		repos.ActivityVariant,
-		repos.ActivityVariantStat,
-		repos.ChainSignature,
-		repos.Concept,
-		repos.ActivityConcept,
-		repos.ChainPrior,
-		repos.CohortPrior,
+		repos.Activities.Activity,
+		repos.Activities.ActivityVariant,
+		repos.Activities.ActivityVariantStat,
+		repos.Concepts.ChainSignature,
+		repos.Concepts.Concept,
+		repos.Activities.ActivityConcept,
+		repos.Concepts.ChainPrior,
+		repos.Concepts.CohortPrior,
 		bootstrapSvc,
 	)
 	if err := jobRegistry.Register(priors); err != nil {
@@ -1068,13 +1078,13 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	completedUnits := completed_unit_refresh.New(
 		db,
 		log,
-		repos.UserCompletedUnit,
-		repos.UserProgressionEvent,
-		repos.Concept,
-		repos.Activity,
-		repos.ActivityConcept,
-		repos.ChainSignature,
-		repos.UserConceptState,
+		repos.Activities.UserCompletedUnit,
+		repos.Events.UserProgressionEvent,
+		repos.Concepts.Concept,
+		repos.Activities.Activity,
+		repos.Activities.ActivityConcept,
+		repos.Concepts.ChainSignature,
+		repos.Learning.UserConceptState,
 		clients.Neo4j,
 		bootstrapSvc,
 	)
@@ -1082,7 +1092,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		return Services{}, err
 	}
 
-	sagaCleanup := saga_cleanup.New(db, log, repos.SagaRun, sagaSvc, clients.GcpBucket)
+	sagaCleanup := saga_cleanup.New(db, log, repos.Jobs.SagaRun, sagaSvc, clients.GcpBucket)
 	if err := jobRegistry.Register(sagaCleanup); err != nil {
 		return Services{}, err
 	}
@@ -1091,9 +1101,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		jobService,
-		repos.Path,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Paths.Path,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 		sagaSvc,
 		bootstrapSvc,
@@ -1105,62 +1115,62 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Bucket:  clients.GcpBucket,
 			Avatar:  avatarService,
 
-			Files:        repos.MaterialFile,
-			FileSigs:     repos.MaterialFileSignature,
-			FileSections: repos.MaterialFileSection,
-			Chunks:       repos.MaterialChunk,
-			MaterialSets: repos.MaterialSet,
-			Summaries:    repos.MaterialSetSummary,
+			Files:        repos.Materials.MaterialFile,
+			FileSigs:     repos.Materials.MaterialFileSignature,
+			FileSections: repos.Materials.MaterialFileSection,
+			Chunks:       repos.Materials.MaterialChunk,
+			MaterialSets: repos.Materials.MaterialSet,
+			Summaries:    repos.Materials.MaterialSetSummary,
 
-			Concepts:         repos.Concept,
-			ConceptReps:      repos.ConceptRepresentation,
-			MappingOverrides: repos.ConceptMappingOverride,
-			Evidence:         repos.ConceptEvidence,
-			Edges:            repos.ConceptEdge,
+			Concepts:         repos.Concepts.Concept,
+			ConceptReps:      repos.Concepts.ConceptRepresentation,
+			MappingOverrides: repos.Concepts.ConceptMappingOverride,
+			Evidence:         repos.Concepts.ConceptEvidence,
+			Edges:            repos.Concepts.ConceptEdge,
 
-			Clusters: repos.ConceptCluster,
-			Members:  repos.ConceptClusterMember,
+			Clusters: repos.Concepts.ConceptCluster,
+			Members:  repos.Concepts.ConceptClusterMember,
 
-			ChainSignatures:     repos.ChainSignature,
-			PathStructuralUnits: repos.PathStructuralUnit,
+			ChainSignatures:     repos.Concepts.ChainSignature,
+			PathStructuralUnits: repos.Paths.PathStructuralUnit,
 
-			StylePrefs:       repos.UserStylePreference,
-			ConceptState:     repos.UserConceptState,
-			ConceptModel:     repos.UserConceptModel,
-			MisconRepo:       repos.UserMisconception,
-			ProgEvents:       repos.UserProgressionEvent,
-			UserProfile:      repos.UserProfileVector,
-			UserPrefs:        repos.UserPersonalizationPrefs,
-			TeachingPatterns: repos.TeachingPattern,
+			StylePrefs:       repos.Learning.UserStylePreference,
+			ConceptState:     repos.Learning.UserConceptState,
+			ConceptModel:     repos.Learning.UserConceptModel,
+			MisconRepo:       repos.Learning.UserMisconception,
+			ProgEvents:       repos.Events.UserProgressionEvent,
+			UserProfile:      repos.Users.UserProfileVector,
+			UserPrefs:        repos.Users.UserPersonalizationPrefs,
+			TeachingPatterns: repos.Activities.TeachingPattern,
 
-			Path:                 repos.Path,
-			PathNodes:            repos.PathNode,
-			PathNodeActivities:   repos.PathNodeActivity,
-			NodeDocs:             repos.LearningNodeDoc,
-			NodeDocRevisions:     repos.LearningNodeDocRevision,
-			NodeDocBlueprints:    repos.LearningNodeDocBlueprint,
-			NodeFigures:          repos.LearningNodeFigure,
-			NodeVideos:           repos.LearningNodeVideo,
-			DocGenRuns:           repos.DocGenerationRun,
-			DocRetrievalPacks:    repos.DocRetrievalPack,
-			DocGenerationTraces:  repos.DocGenerationTrace,
-			DocConstraintReports: repos.DocConstraintReport,
-			Assets:               repos.Asset,
-			Artifacts:            repos.LearningArtifact,
+			Path:                 repos.Paths.Path,
+			PathNodes:            repos.Paths.PathNode,
+			PathNodeActivities:   repos.Paths.PathNodeActivity,
+			NodeDocs:             repos.DocGen.LearningNodeDoc,
+			NodeDocRevisions:     repos.DocGen.LearningNodeDocRevision,
+			NodeDocBlueprints:    repos.DocGen.LearningNodeDocBlueprint,
+			NodeFigures:          repos.DocGen.LearningNodeFigure,
+			NodeVideos:           repos.DocGen.LearningNodeVideo,
+			DocGenRuns:           repos.DocGen.DocGenerationRun,
+			DocRetrievalPacks:    repos.DocGen.DocRetrievalPack,
+			DocGenerationTraces:  repos.DocGen.DocGenerationTrace,
+			DocConstraintReports: repos.DocGen.DocConstraintReport,
+			Assets:               repos.Materials.Asset,
+			Artifacts:            repos.Materials.LearningArtifact,
 
-			Activities:        repos.Activity,
-			Variants:          repos.ActivityVariant,
-			ActivityConcepts:  repos.ActivityConcept,
-			ActivityCitations: repos.ActivityCitation,
+			Activities:        repos.Activities.Activity,
+			Variants:          repos.Activities.ActivityVariant,
+			ActivityConcepts:  repos.Activities.ActivityConcept,
+			ActivityCitations: repos.Activities.ActivityCitation,
 
-			UserEvents:            repos.UserEvent,
-			UserEventCursors:      repos.UserEventCursor,
-			UserProgressionEvents: repos.UserProgressionEvent,
-			VariantStats:          repos.ActivityVariantStat,
+			UserEvents:            repos.Events.UserEvent,
+			UserEventCursors:      repos.Events.UserEventCursor,
+			UserProgressionEvents: repos.Events.UserProgressionEvent,
+			VariantStats:          repos.Activities.ActivityVariantStat,
 
-			ChainPriors:    repos.ChainPrior,
-			CohortPriors:   repos.CohortPrior,
-			CompletedUnits: repos.UserCompletedUnit,
+			ChainPriors:    repos.Concepts.ChainPrior,
+			CohortPriors:   repos.Concepts.CohortPrior,
+			CompletedUnits: repos.Activities.UserCompletedUnit,
 		},
 		metrics,
 	)
@@ -1172,9 +1182,9 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 		db,
 		log,
 		jobService,
-		repos.Path,
-		repos.ChatThread,
-		repos.ChatMessage,
+		repos.Paths.Path,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
 		chatNotifier,
 		sagaSvc,
 		bootstrapSvc,
@@ -1186,62 +1196,62 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 			Bucket:  clients.GcpBucket,
 			Avatar:  avatarService,
 
-			Files:        repos.MaterialFile,
-			FileSigs:     repos.MaterialFileSignature,
-			FileSections: repos.MaterialFileSection,
-			Chunks:       repos.MaterialChunk,
-			MaterialSets: repos.MaterialSet,
-			Summaries:    repos.MaterialSetSummary,
+			Files:        repos.Materials.MaterialFile,
+			FileSigs:     repos.Materials.MaterialFileSignature,
+			FileSections: repos.Materials.MaterialFileSection,
+			Chunks:       repos.Materials.MaterialChunk,
+			MaterialSets: repos.Materials.MaterialSet,
+			Summaries:    repos.Materials.MaterialSetSummary,
 
-			Concepts:         repos.Concept,
-			ConceptReps:      repos.ConceptRepresentation,
-			MappingOverrides: repos.ConceptMappingOverride,
-			Evidence:         repos.ConceptEvidence,
-			Edges:            repos.ConceptEdge,
+			Concepts:         repos.Concepts.Concept,
+			ConceptReps:      repos.Concepts.ConceptRepresentation,
+			MappingOverrides: repos.Concepts.ConceptMappingOverride,
+			Evidence:         repos.Concepts.ConceptEvidence,
+			Edges:            repos.Concepts.ConceptEdge,
 
-			Clusters: repos.ConceptCluster,
-			Members:  repos.ConceptClusterMember,
+			Clusters: repos.Concepts.ConceptCluster,
+			Members:  repos.Concepts.ConceptClusterMember,
 
-			ChainSignatures:     repos.ChainSignature,
-			PathStructuralUnits: repos.PathStructuralUnit,
+			ChainSignatures:     repos.Concepts.ChainSignature,
+			PathStructuralUnits: repos.Paths.PathStructuralUnit,
 
-			StylePrefs:       repos.UserStylePreference,
-			ConceptState:     repos.UserConceptState,
-			ConceptModel:     repos.UserConceptModel,
-			MisconRepo:       repos.UserMisconception,
-			ProgEvents:       repos.UserProgressionEvent,
-			UserProfile:      repos.UserProfileVector,
-			UserPrefs:        repos.UserPersonalizationPrefs,
-			TeachingPatterns: repos.TeachingPattern,
+			StylePrefs:       repos.Learning.UserStylePreference,
+			ConceptState:     repos.Learning.UserConceptState,
+			ConceptModel:     repos.Learning.UserConceptModel,
+			MisconRepo:       repos.Learning.UserMisconception,
+			ProgEvents:       repos.Events.UserProgressionEvent,
+			UserProfile:      repos.Users.UserProfileVector,
+			UserPrefs:        repos.Users.UserPersonalizationPrefs,
+			TeachingPatterns: repos.Activities.TeachingPattern,
 
-			Path:                 repos.Path,
-			PathNodes:            repos.PathNode,
-			PathNodeActivities:   repos.PathNodeActivity,
-			NodeDocs:             repos.LearningNodeDoc,
-			NodeDocRevisions:     repos.LearningNodeDocRevision,
-			NodeDocBlueprints:    repos.LearningNodeDocBlueprint,
-			NodeFigures:          repos.LearningNodeFigure,
-			NodeVideos:           repos.LearningNodeVideo,
-			DocGenRuns:           repos.DocGenerationRun,
-			DocRetrievalPacks:    repos.DocRetrievalPack,
-			DocGenerationTraces:  repos.DocGenerationTrace,
-			DocConstraintReports: repos.DocConstraintReport,
-			Assets:               repos.Asset,
-			Artifacts:            repos.LearningArtifact,
+			Path:                 repos.Paths.Path,
+			PathNodes:            repos.Paths.PathNode,
+			PathNodeActivities:   repos.Paths.PathNodeActivity,
+			NodeDocs:             repos.DocGen.LearningNodeDoc,
+			NodeDocRevisions:     repos.DocGen.LearningNodeDocRevision,
+			NodeDocBlueprints:    repos.DocGen.LearningNodeDocBlueprint,
+			NodeFigures:          repos.DocGen.LearningNodeFigure,
+			NodeVideos:           repos.DocGen.LearningNodeVideo,
+			DocGenRuns:           repos.DocGen.DocGenerationRun,
+			DocRetrievalPacks:    repos.DocGen.DocRetrievalPack,
+			DocGenerationTraces:  repos.DocGen.DocGenerationTrace,
+			DocConstraintReports: repos.DocGen.DocConstraintReport,
+			Assets:               repos.Materials.Asset,
+			Artifacts:            repos.Materials.LearningArtifact,
 
-			Activities:        repos.Activity,
-			Variants:          repos.ActivityVariant,
-			ActivityConcepts:  repos.ActivityConcept,
-			ActivityCitations: repos.ActivityCitation,
+			Activities:        repos.Activities.Activity,
+			Variants:          repos.Activities.ActivityVariant,
+			ActivityConcepts:  repos.Activities.ActivityConcept,
+			ActivityCitations: repos.Activities.ActivityCitation,
 
-			UserEvents:            repos.UserEvent,
-			UserEventCursors:      repos.UserEventCursor,
-			UserProgressionEvents: repos.UserProgressionEvent,
-			VariantStats:          repos.ActivityVariantStat,
+			UserEvents:            repos.Events.UserEvent,
+			UserEventCursors:      repos.Events.UserEventCursor,
+			UserProgressionEvents: repos.Events.UserProgressionEvent,
+			VariantStats:          repos.Activities.ActivityVariantStat,
 
-			ChainPriors:    repos.ChainPrior,
-			CohortPriors:   repos.CohortPrior,
-			CompletedUnits: repos.UserCompletedUnit,
+			ChainPriors:    repos.Concepts.ChainPrior,
+			CohortPriors:   repos.Concepts.CohortPrior,
+			CompletedUnits: repos.Activities.UserCompletedUnit,
 		},
 		metrics,
 	)
@@ -1252,26 +1262,26 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	userModel := user_model_update.New(
 		db,
 		log,
-		repos.UserEvent,
-		repos.UserEventCursor,
-		repos.Concept,
-		repos.ConceptEdge,
-		repos.ActivityConcept,
-		repos.UserConceptState,
-		repos.UserConceptModel,
-		repos.UserConceptEdgeStat,
-		repos.UserConceptEvidence,
-		repos.UserConceptCalibration,
-		repos.ItemCalibration,
-		repos.UserModelAlert,
-		repos.UserMisconception,
-		repos.MisconceptionCausalEdge,
-		repos.UserStylePreference,
-		repos.ConceptClusterMember,
-		repos.UserTestletState,
-		repos.UserSkillState,
+		repos.Events.UserEvent,
+		repos.Events.UserEventCursor,
+		repos.Concepts.Concept,
+		repos.Concepts.ConceptEdge,
+		repos.Activities.ActivityConcept,
+		repos.Learning.UserConceptState,
+		repos.Learning.UserConceptModel,
+		repos.Learning.UserConceptEdgeStat,
+		repos.Learning.UserConceptEvidence,
+		repos.Learning.UserConceptCalibration,
+		repos.Learning.ItemCalibration,
+		repos.Learning.UserModelAlert,
+		repos.Learning.UserMisconception,
+		repos.Learning.MisconceptionCausalEdge,
+		repos.Learning.UserStylePreference,
+		repos.Concepts.ConceptClusterMember,
+		repos.Learning.UserTestletState,
+		repos.Learning.UserSkillState,
 		clients.Neo4j,
-		repos.JobRun,
+		repos.Jobs.JobRun,
 		jobService,
 	)
 	if err := jobRegistry.Register(userModel); err != nil {
@@ -1280,7 +1290,7 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 
 	var temporalRunner *temporalworker.Runner
 	if runWorker {
-		w, err := temporalworker.NewRunner(log, clients.Temporal, db, repos.JobRun, jobRegistry, jobNotifier, metrics)
+		w, err := temporalworker.NewRunner(log, clients.Temporal, db, repos.Jobs.JobRun, jobRegistry, jobNotifier, metrics)
 		if err != nil {
 			return Services{}, fmt.Errorf("init temporal worker: %w", err)
 		}
@@ -1290,14 +1300,14 @@ func wireServices(db *gorm.DB, log *logger.Logger, cfg Config, repos Repos, sseH
 	chatService := services.NewChatService(
 		db,
 		log,
-		repos.Path,
-		repos.JobRun,
+		repos.Paths.Path,
+		repos.Jobs.JobRun,
 		jobService,
-		repos.ChatThread,
-		repos.ChatMessage,
-		repos.ChatTurn,
+		repos.Chat.ChatThread,
+		repos.Chat.ChatMessage,
+		repos.Chat.ChatTurn,
 		chatNotifier,
-		repos.UserSessionState,
+		repos.Users.UserSessionState,
 	)
 
 	return Services{

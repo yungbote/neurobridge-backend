@@ -210,7 +210,7 @@ func ConceptClusterBuild(ctx context.Context, deps ConceptClusterBuildDeps, in C
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {

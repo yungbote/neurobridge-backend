@@ -34,110 +34,154 @@ type Handlers struct {
 	Job      *httpH.JobHandler
 }
 
-func wireHandlers(log *logger.Logger, db *gorm.DB, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
+func wireHandlers(log *logger.Logger, db *gorm.DB, cfg Config, services Services, repos Repos, clients Clients, sseHub *realtime.SSEHub) Handlers {
 	log.Info("Wiring handlers...")
 	learningUC := learningmod.New(learningmod.UsecasesDeps{
 		DB:           db,
 		Log:          log.With("module", "learning"),
 		AI:           clients.OpenaiClient,
 		Avatar:       services.Avatar,
-		Path:         repos.Path,
-		PathNodes:    repos.PathNode,
-		NodeDocs:     repos.LearningNodeDoc,
-		Concepts:     repos.Concept,
-		Chunks:       repos.MaterialChunk,
-		Drills:       repos.DrillInstance,
-		GenRuns:      repos.DocGenerationRun,
-		ConceptState: repos.UserConceptState,
+		Path:         repos.Paths.Path,
+		PathNodes:    repos.Paths.PathNode,
+		NodeDocs:     repos.DocGen.LearningNodeDoc,
+		Concepts:     repos.Concepts.Concept,
+		Chunks:       repos.Materials.MaterialChunk,
+		Drills:       repos.Materials.DrillInstance,
+		GenRuns:      repos.DocGen.DocGenerationRun,
+		ConceptState: repos.Learning.UserConceptState,
 	})
 	libraryUC := librarymod.New(librarymod.UsecasesDeps{
 		DB:         db,
 		Log:        log.With("module", "library"),
 		Jobs:       services.JobService,
-		JobRuns:    repos.JobRun,
-		TaxNodes:   repos.LibraryTaxonomyNode,
-		TaxEdges:   repos.LibraryTaxonomyEdge,
-		Membership: repos.LibraryTaxonomyMember,
-		State:      repos.LibraryTaxonomyState,
-		Snapshots:  repos.LibraryTaxonomySnapshot,
+		JobRuns:    repos.Jobs.JobRun,
+		TaxNodes:   repos.Library.LibraryTaxonomyNode,
+		TaxEdges:   repos.Library.LibraryTaxonomyEdge,
+		Membership: repos.Library.LibraryTaxonomyMember,
+		State:      repos.Library.LibraryTaxonomyState,
+		Snapshots:  repos.Library.LibraryTaxonomySnapshot,
 	})
+
+	runtimeHandler := httpH.NewRuntimeStateHandlerWithDeps(httpH.RuntimeStateHandlerDeps{
+		Runs: httpH.RuntimeStateRunRepos{
+			PathRuns: repos.Paths.PathRun,
+			NodeRuns: repos.Paths.NodeRun,
+			ActRuns:  repos.Paths.ActivityRun,
+		},
+		Learning: httpH.RuntimeStateLearningRepos{
+			PathNodes:     repos.Paths.PathNode,
+			Concepts:      repos.Concepts.Concept,
+			ConceptStates: repos.Learning.UserConceptState,
+			ConceptModels: repos.Learning.UserConceptModel,
+			MisconRepo:    repos.Learning.UserMisconception,
+			CalibRepo:     repos.Learning.UserConceptCalibration,
+			AlertRepo:     repos.Learning.UserModelAlert,
+			ReadinessRepo: repos.Learning.ConceptReadinessSnapshot,
+			GateRepo:      repos.Learning.PrereqGateDecision,
+		},
+	})
+
+	materialHandler := httpH.NewMaterialHandlerWithDeps(httpH.MaterialHandlerDeps{
+		Log:      log,
+		Workflow: services.Workflow,
+		SSEHub:   sseHub,
+		Bucket:   clients.GcpBucket,
+		Repos: httpH.MaterialHandlerRepoDeps{
+			MaterialFiles:    repos.Materials.MaterialFile,
+			MaterialAssets:   repos.Materials.MaterialAsset,
+			UserLibraryIndex: repos.Library.UserLibraryIndex,
+		},
+	})
+
+	libraryHandler := httpH.NewLibraryHandlerWithDeps(httpH.LibraryHandlerDeps{
+		Log:     log,
+		DB:      db,
+		Library: libraryUC,
+		Repos: httpH.LibraryHandlerRepoDeps{
+			Nodes:      repos.Library.LibraryTaxonomyNode,
+			Edges:      repos.Library.LibraryTaxonomyEdge,
+			Membership: repos.Library.LibraryTaxonomyMember,
+			State:      repos.Library.LibraryTaxonomyState,
+			Snapshots:  repos.Library.LibraryTaxonomySnapshot,
+		},
+	})
+
+	pathHandler := httpH.NewPathHandlerWithDeps(httpH.PathHandlerDeps{
+		Log: log,
+		DB:  db,
+		Path: httpH.PathHandlerPathRepos{
+			Path:             repos.Paths.Path,
+			PathNodes:        repos.Paths.PathNode,
+			PathNodeActivity: repos.Paths.PathNodeActivity,
+		},
+		Content: httpH.PathHandlerContentRepos{
+			Activities:         repos.Activities.Activity,
+			NodeDocs:           repos.DocGen.LearningNodeDoc,
+			DocRevisions:       repos.DocGen.LearningNodeDocRevision,
+			DocVariants:        repos.DocGen.LearningNodeDocVariant,
+			DocVariantExposure: repos.DocGen.DocVariantExposure,
+			Chunks:             repos.Materials.MaterialChunk,
+			MaterialSets:       repos.Materials.MaterialSet,
+			MaterialFiles:      repos.Materials.MaterialFile,
+			MaterialAssets:     repos.Materials.MaterialAsset,
+			UserLibraryIndex:   repos.Library.UserLibraryIndex,
+			Assets:             repos.Materials.Asset,
+		},
+		Learning: httpH.PathHandlerLearningRepos{
+			Concepts:     repos.Concepts.Concept,
+			Edges:        repos.Concepts.ConceptEdge,
+			ConceptState: repos.Learning.UserConceptState,
+			PolicyEval:   repos.Runtime.PolicyEvalSnapshot,
+			PrereqGates:  repos.Learning.PrereqGateDecision,
+		},
+		Services: httpH.PathHandlerServices{
+			Jobs:     repos.Jobs.JobRun,
+			JobSvc:   services.JobService,
+			Events:   services.Events,
+			Avatar:   services.Avatar,
+			Learning: learningUC,
+			Bucket:   clients.GcpBucket,
+		},
+	})
+
+	activityHandler := httpH.NewActivityHandlerWithDeps(httpH.ActivityHandlerDeps{
+		Log: log,
+		Repos: httpH.ActivityHandlerRepoDeps{
+			Path:             repos.Paths.Path,
+			PathNodes:        repos.Paths.PathNode,
+			PathNodeActivity: repos.Paths.PathNodeActivity,
+			Activities:       repos.Activities.Activity,
+		},
+	})
+
+	eventHandler := httpH.NewEventHandlerWithDeps(httpH.EventHandlerDeps{
+		Events: services.Events,
+		Jobs:   services.JobService,
+		Repos: httpH.EventHandlerRepoDeps{
+			UserLibraryIndex: repos.Library.UserLibraryIndex,
+			Path:             repos.Paths.Path,
+		},
+	})
+
 	return Handlers{
-		Health:  httpH.NewHealthHandler(),
-		Auth:    httpH.NewAuthHandler(services.Auth),
-		User:    httpH.NewUserHandler(services.User, sseHub),
-		Session: httpH.NewSessionStateHandler(services.SessionState),
-		Runtime: httpH.NewRuntimeStateHandler(
-			repos.PathRun,
-			repos.NodeRun,
-			repos.ActivityRun,
-			repos.PathNode,
-			repos.Concept,
-			repos.UserConceptState,
-			repos.UserConceptModel,
-			repos.UserMisconception,
-			repos.UserConceptCalibration,
-			repos.UserModelAlert,
-			repos.ConceptReadinessSnapshot,
-			repos.PrereqGateDecision,
-		),
+		Health:   httpH.NewHealthHandler(),
+		Auth:     httpH.NewAuthHandler(services.Auth),
+		User:     httpH.NewUserHandler(services.User, sseHub, clients.GcpBucket),
+		Session:  httpH.NewSessionStateHandler(services.SessionState),
+		Runtime:  runtimeHandler,
 		Realtime: httpH.NewRealtimeHandler(log, sseHub),
-		Material: httpH.NewMaterialHandler(
-			log,
-			services.Workflow,
-			sseHub,
-			clients.GcpBucket,
-			repos.MaterialFile,
-			repos.MaterialAsset,
-			repos.UserLibraryIndex,
-		),
-		Chat: httpH.NewChatHandler(services.Chat),
-		Library: httpH.NewLibraryHandler(
-			log,
-			db,
-			libraryUC,
-			repos.LibraryTaxonomyNode,
-			repos.LibraryTaxonomyEdge,
-			repos.LibraryTaxonomyMember,
-			repos.LibraryTaxonomyState,
-			repos.LibraryTaxonomySnapshot,
-		),
-		Path: httpH.NewPathHandler(
-			log,
-			db,
-			repos.Path,
-			repos.PathNode,
-			repos.PathNodeActivity,
-			repos.Activity,
-			repos.LearningNodeDoc,
-			repos.LearningNodeDocRevision,
-			repos.LearningNodeDocVariant,
-			repos.DocVariantExposure,
-			repos.MaterialChunk,
-			repos.MaterialSet,
-			repos.MaterialFile,
-			repos.MaterialAsset,
-			repos.UserLibraryIndex,
-			repos.Concept,
-			repos.ConceptEdge,
-			repos.UserConceptState,
-			repos.PolicyEvalSnapshot,
-			repos.PrereqGateDecision,
-			repos.Asset,
-			repos.JobRun,
-			services.JobService,
-			services.Events,
-			services.Avatar,
-			learningUC,
-			clients.GcpBucket,
-		),
-		Activity: httpH.NewActivityHandler(log, repos.Path, repos.PathNode, repos.PathNodeActivity, repos.Activity),
-		Event:    httpH.NewEventHandler(services.Events, services.JobService, repos.UserLibraryIndex, repos.Path),
+		Material: materialHandler,
+		Chat:     httpH.NewChatHandler(services.Chat),
+		Library:  libraryHandler,
+		Path:     pathHandler,
+		Activity: activityHandler,
+		Event:    eventHandler,
 		Gaze:     httpH.NewGazeHandler(services.Gaze),
 		Job:      httpH.NewJobHandler(services.JobService),
 	}
 }
 
-func wireRouter(log *logger.Logger, handlers Handlers, middleware Middleware, metrics *observability.Metrics) *gin.Engine {
+func wireRouter(log *logger.Logger, cfg Config, handlers Handlers, middleware Middleware, metrics *observability.Metrics) *gin.Engine {
 	r := http.NewRouter(http.RouterConfig{
 		HealthHandler:   handlers.Health,
 		AuthHandler:     handlers.Auth,
@@ -164,7 +208,7 @@ func wireRouter(log *logger.Logger, handlers Handlers, middleware Middleware, me
 	return r
 }
 
-func wireMiddleware(log *logger.Logger, services Services) Middleware {
+func wireMiddleware(log *logger.Logger, services Services, cfg Config) Middleware {
 	log.Info("Wiring middleware...")
 	return Middleware{
 		Auth: httpMW.NewAuthMiddleware(log, services.Auth),

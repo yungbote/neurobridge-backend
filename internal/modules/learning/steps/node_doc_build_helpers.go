@@ -16,6 +16,7 @@ import (
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content"
 	"github.com/yungbote/neurobridge-backend/internal/modules/learning/content/schema"
+	"github.com/yungbote/neurobridge-backend/internal/modules/learning/docgen"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 )
 
@@ -411,6 +412,23 @@ func nodeDocRequirementsForTemplate(nodeKind string, docTemplate string) content
 				req.MinDiagrams = 1
 			}
 		}
+	}
+
+	// Hard floor: every generated lesson should have interactive retrieval opportunities.
+	minQuickChecks := envIntAllowZero("NODE_DOC_INTERACTIVE_MIN_QUICK_CHECKS", 2)
+	if minQuickChecks < 0 {
+		minQuickChecks = 0
+	}
+	if req.MinQuickChecks < minQuickChecks {
+		req.MinQuickChecks = minQuickChecks
+	}
+
+	minFlashcards := envIntAllowZero("NODE_DOC_INTERACTIVE_MIN_FLASHCARDS", 1)
+	if minFlashcards < 0 {
+		minFlashcards = 0
+	}
+	if req.MinFlashcards < minFlashcards {
+		req.MinFlashcards = minFlashcards
 	}
 
 	return req
@@ -1420,8 +1438,39 @@ func ensureNodeDocMeetsMinima(doc content.NodeDocV1, req content.NodeDocRequirem
 		bc["callout"]++
 		changed = true
 	}
+	conceptKeys := make([]any, 0, len(doc.ConceptKeys))
+	for _, k := range doc.ConceptKeys {
+		s := strings.TrimSpace(k)
+		if s == "" {
+			continue
+		}
+		conceptKeys = append(conceptKeys, s)
+		if len(conceptKeys) >= 3 {
+			break
+		}
+	}
+	firstTeachingTrigger := func() []any {
+		for _, b := range doc.Blocks {
+			if b == nil {
+				continue
+			}
+			id := strings.TrimSpace(stringFromAny(b["id"]))
+			if id == "" {
+				continue
+			}
+			t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+			switch t {
+			case "", "quick_check", "flashcard", "heading", "divider", "objectives", "prerequisites", "key_takeaways", "glossary":
+				continue
+			default:
+				return []any{id}
+			}
+		}
+		return nil
+	}
 	for req.MinQuickChecks > 0 && bc["quick_check"] < req.MinQuickChecks {
-		doc.Blocks = append(doc.Blocks, map[string]any{
+		block := map[string]any{
+			"id":        "auto_qc_" + uuid.New().String(),
 			"type":      "quick_check",
 			"kind":      "short_answer",
 			"prompt_md": "Write a one-sentence paraphrase of the key definition or rule from the cited excerpt, without adding new claims.",
@@ -1429,18 +1478,32 @@ func ensureNodeDocMeetsMinima(doc content.NodeDocV1, req content.NodeDocRequirem
 			"answer_id": "",
 			"answer_md": "A correct answer restates the cited line faithfully in plain language and preserves the same conditions/assumptions.",
 			"citations": citations(),
-		})
+		}
+		if len(conceptKeys) > 0 {
+			block["concept_keys"] = conceptKeys
+		}
+		if triggerAfter := firstTeachingTrigger(); len(triggerAfter) > 0 {
+			block["trigger_after_block_ids"] = triggerAfter
+		}
+		doc.Blocks = insertAfterFirstBodyBlock(doc.Blocks, block)
 		bc["quick_check"]++
 		changed = true
 	}
 	for req.MinFlashcards > 0 && bc["flashcard"] < req.MinFlashcards {
-		doc.Blocks = append(doc.Blocks, map[string]any{
+		block := map[string]any{
+			"id":           "auto_fc_" + uuid.New().String(),
 			"type":         "flashcard",
 			"front_md":     "State the key term or idea in your own words.",
 			"back_md":      "A good answer captures the term and its role, plus one defining detail from the cited excerpt.",
-			"concept_keys": []any{},
 			"citations":    citations(),
-		})
+		}
+		if len(conceptKeys) > 0 {
+			block["concept_keys"] = conceptKeys
+		}
+		if triggerAfter := firstTeachingTrigger(); len(triggerAfter) > 0 {
+			block["trigger_after_block_ids"] = triggerAfter
+		}
+		doc.Blocks = insertAfterFirstBodyBlock(doc.Blocks, block)
 		bc["flashcard"]++
 		changed = true
 	}
@@ -1556,6 +1619,14 @@ func ensureNodeDocMeetsMinima(doc content.NodeDocV1, req content.NodeDocRequirem
 	return doc, changed
 }
 
+func ensureNodeDocInteractiveMinima(doc content.NodeDocV1, req content.NodeDocRequirements, allowedChunkIDs map[string]bool, chunkByID map[uuid.UUID]*types.MaterialChunk, fallbackChunkIDs []uuid.UUID) (content.NodeDocV1, bool) {
+	interactiveReq := content.NodeDocRequirements{
+		MinQuickChecks: req.MinQuickChecks,
+		MinFlashcards:  req.MinFlashcards,
+	}
+	return ensureNodeDocMeetsMinima(doc, interactiveReq, allowedChunkIDs, chunkByID, fallbackChunkIDs)
+}
+
 // ensureNodeDocConceptualMinima is a strict-mode-safe patch: only adds required conceptual blocks
 // (why_it_matters / intuition / mental_model / pitfalls) without touching structural minima.
 func ensureNodeDocConceptualMinima(doc content.NodeDocV1, req content.NodeDocRequirements, allowedChunkIDs map[string]bool, chunkByID map[uuid.UUID]*types.MaterialChunk, fallbackChunkIDs []uuid.UUID) (content.NodeDocV1, bool) {
@@ -1649,6 +1720,137 @@ func ensureNodeDocConceptualMinima(doc content.NodeDocV1, req content.NodeDocReq
 	}
 
 	return doc, changed
+}
+
+func ensureNodeDocBlueprintObjectives(doc content.NodeDocV1, blueprint docgen.DocBlueprintV1) (content.NodeDocV1, []string, bool) {
+	report := docgen.ValidateDocAgainstBlueprint(doc, blueprint)
+	missing := missingBlueprintObjectives(report, blueprint)
+	if len(missing) == 0 {
+		return doc, nil, false
+	}
+
+	toAnyStrings := func(in []string) []any {
+		out := make([]any, 0, len(in))
+		for _, s := range in {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+
+	for i := range doc.Blocks {
+		b := doc.Blocks[i]
+		if !strings.EqualFold(strings.TrimSpace(stringFromAny(b["type"])), "objectives") {
+			continue
+		}
+		items := dedupeStrings(stringSliceFromAny(b["items_md"]))
+		seen := map[string]bool{}
+		for _, item := range items {
+			key := strings.ToLower(strings.TrimSpace(item))
+			if key != "" {
+				seen[key] = true
+			}
+		}
+		added := make([]string, 0, len(missing))
+		for _, objective := range missing {
+			objective = strings.TrimSpace(objective)
+			if objective == "" {
+				continue
+			}
+			key := strings.ToLower(objective)
+			if seen[key] {
+				continue
+			}
+			items = append(items, objective)
+			seen[key] = true
+			added = append(added, objective)
+		}
+		changed := false
+		if strings.TrimSpace(stringFromAny(b["title"])) == "" {
+			b["title"] = "Objectives"
+			changed = true
+		}
+		if len(added) > 0 {
+			b["items_md"] = toAnyStrings(items)
+			changed = true
+		}
+		if !changed {
+			return doc, nil, false
+		}
+		doc.Blocks[i] = b
+		return doc, added, true
+	}
+
+	block := map[string]any{
+		"id":       "auto_objectives_" + uuid.New().String(),
+		"type":     "objectives",
+		"title":    "Objectives",
+		"items_md": toAnyStrings(missing),
+	}
+	insertAt := 0
+	for insertAt < len(doc.Blocks) {
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(doc.Blocks[insertAt]["type"])))
+		if t != "heading" {
+			break
+		}
+		insertAt++
+	}
+	out := make([]map[string]any, 0, len(doc.Blocks)+1)
+	out = append(out, doc.Blocks[:insertAt]...)
+	out = append(out, block)
+	out = append(out, doc.Blocks[insertAt:]...)
+	doc.Blocks = out
+	return doc, missing, true
+}
+
+func missingBlueprintObjectives(report docgen.DocConstraintReportV1, blueprint docgen.DocBlueprintV1) []string {
+	if len(report.Violations) == 0 {
+		return nil
+	}
+	byObjectiveLower := map[string]string{}
+	for _, objective := range blueprint.Objectives {
+		objective = strings.TrimSpace(objective)
+		if objective == "" {
+			continue
+		}
+		byObjectiveLower[strings.ToLower(objective)] = objective
+	}
+
+	missing := make([]string, 0)
+	hasMissingObjectiveViolation := false
+	const prefix = "missing objective:"
+	for _, v := range report.Violations {
+		if !strings.EqualFold(strings.TrimSpace(v.Code), "missing_objective") {
+			continue
+		}
+		hasMissingObjectiveViolation = true
+		msg := strings.TrimSpace(v.Message)
+		if msg == "" {
+			continue
+		}
+		lower := strings.ToLower(msg)
+		if strings.HasPrefix(lower, prefix) {
+			msg = strings.TrimSpace(msg[len(prefix):])
+		}
+		if msg == "" {
+			continue
+		}
+		if canonical, ok := byObjectiveLower[strings.ToLower(msg)]; ok {
+			msg = canonical
+		}
+		missing = append(missing, msg)
+	}
+	missing = dedupeStrings(missing)
+	if len(missing) > 0 {
+		return missing
+	}
+	if hasMissingObjectiveViolation {
+		return dedupeStrings(blueprint.Objectives)
+	}
+	return nil
 }
 
 func nodeDocPaddingTextWithOffset(minWords int, offset int) string {

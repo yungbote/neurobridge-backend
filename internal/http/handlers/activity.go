@@ -22,6 +22,29 @@ type ActivityHandler struct {
 	activities       repos.ActivityRepo
 }
 
+type ActivityHandlerRepoDeps struct {
+	Path             repos.PathRepo
+	PathNodes        repos.PathNodeRepo
+	PathNodeActivity repos.PathNodeActivityRepo
+	Activities       repos.ActivityRepo
+}
+
+type ActivityHandlerDeps struct {
+	Log   *logger.Logger
+	Repos ActivityHandlerRepoDeps
+}
+
+func NewActivityHandlerWithDeps(deps ActivityHandlerDeps) *ActivityHandler {
+	return &ActivityHandler{
+		log:              deps.Log.With("handler", "ActivityHandler"),
+		path:             deps.Repos.Path,
+		pathNodes:        deps.Repos.PathNodes,
+		pathNodeActivity: deps.Repos.PathNodeActivity,
+		activities:       deps.Repos.Activities,
+	}
+}
+
+// NewActivityHandler is kept as a compatibility shim while callers migrate to typed deps.
 func NewActivityHandler(
 	log *logger.Logger,
 	path repos.PathRepo,
@@ -29,13 +52,15 @@ func NewActivityHandler(
 	pathNodeActivity repos.PathNodeActivityRepo,
 	activities repos.ActivityRepo,
 ) *ActivityHandler {
-	return &ActivityHandler{
-		log:              log.With("handler", "ActivityHandler"),
-		path:             path,
-		pathNodes:        pathNodes,
-		pathNodeActivity: pathNodeActivity,
-		activities:       activities,
-	}
+	return NewActivityHandlerWithDeps(ActivityHandlerDeps{
+		Log: log,
+		Repos: ActivityHandlerRepoDeps{
+			Path:             path,
+			PathNodes:        pathNodes,
+			PathNodeActivity: pathNodeActivity,
+			Activities:       activities,
+		},
+	})
 }
 
 // GET /api/activities/:id

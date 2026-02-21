@@ -32,6 +32,47 @@ type RuntimeStateHandler struct {
 	gateRepo      repos.PrereqGateDecisionRepo
 }
 
+type RuntimeStateRunRepos struct {
+	PathRuns repos.PathRunRepo
+	NodeRuns repos.NodeRunRepo
+	ActRuns  repos.ActivityRunRepo
+}
+
+type RuntimeStateLearningRepos struct {
+	PathNodes     repos.PathNodeRepo
+	Concepts      repos.ConceptRepo
+	ConceptStates repos.UserConceptStateRepo
+	ConceptModels repos.UserConceptModelRepo
+	MisconRepo    repos.UserMisconceptionInstanceRepo
+	CalibRepo     repos.UserConceptCalibrationRepo
+	AlertRepo     repos.UserModelAlertRepo
+	ReadinessRepo repos.ConceptReadinessSnapshotRepo
+	GateRepo      repos.PrereqGateDecisionRepo
+}
+
+type RuntimeStateHandlerDeps struct {
+	Runs     RuntimeStateRunRepos
+	Learning RuntimeStateLearningRepos
+}
+
+func NewRuntimeStateHandlerWithDeps(deps RuntimeStateHandlerDeps) *RuntimeStateHandler {
+	return &RuntimeStateHandler{
+		pathRuns:      deps.Runs.PathRuns,
+		nodeRuns:      deps.Runs.NodeRuns,
+		actRuns:       deps.Runs.ActRuns,
+		pathNodes:     deps.Learning.PathNodes,
+		concepts:      deps.Learning.Concepts,
+		conceptStates: deps.Learning.ConceptStates,
+		conceptModels: deps.Learning.ConceptModels,
+		misconRepo:    deps.Learning.MisconRepo,
+		calibRepo:     deps.Learning.CalibRepo,
+		alertRepo:     deps.Learning.AlertRepo,
+		readinessRepo: deps.Learning.ReadinessRepo,
+		gateRepo:      deps.Learning.GateRepo,
+	}
+}
+
+// NewRuntimeStateHandler is kept as a compatibility shim while callers migrate to typed deps.
 func NewRuntimeStateHandler(
 	pathRuns repos.PathRunRepo,
 	nodeRuns repos.NodeRunRepo,
@@ -46,20 +87,24 @@ func NewRuntimeStateHandler(
 	readinessRepo repos.ConceptReadinessSnapshotRepo,
 	gateRepo repos.PrereqGateDecisionRepo,
 ) *RuntimeStateHandler {
-	return &RuntimeStateHandler{
-		pathRuns:      pathRuns,
-		nodeRuns:      nodeRuns,
-		actRuns:       actRuns,
-		pathNodes:     pathNodes,
-		concepts:      concepts,
-		conceptStates: conceptStates,
-		conceptModels: conceptModels,
-		misconRepo:    misconRepo,
-		calibRepo:     calibRepo,
-		alertRepo:     alertRepo,
-		readinessRepo: readinessRepo,
-		gateRepo:      gateRepo,
-	}
+	return NewRuntimeStateHandlerWithDeps(RuntimeStateHandlerDeps{
+		Runs: RuntimeStateRunRepos{
+			PathRuns: pathRuns,
+			NodeRuns: nodeRuns,
+			ActRuns:  actRuns,
+		},
+		Learning: RuntimeStateLearningRepos{
+			PathNodes:     pathNodes,
+			Concepts:      concepts,
+			ConceptStates: conceptStates,
+			ConceptModels: conceptModels,
+			MisconRepo:    misconRepo,
+			CalibRepo:     calibRepo,
+			AlertRepo:     alertRepo,
+			ReadinessRepo: readinessRepo,
+			GateRepo:      gateRepo,
+		},
+	})
 }
 
 // GET /api/paths/:id/runtime
@@ -262,14 +307,14 @@ func (h *RuntimeStateHandler) GetPathRuntime(c *gin.Context) {
 	}
 
 	response.RespondOK(c, gin.H{
-		"path_run":            pathRun,
-		"node_run":            nodeRun,
-		"activity_run":        activityRun,
-		"knowledge_context":   knowledgeContext,
+		"path_run":              pathRun,
+		"node_run":              nodeRun,
+		"activity_run":          activityRun,
+		"knowledge_context":     knowledgeContext,
 		"knowledge_calibration": knowledgeCalibration,
-		"knowledge_alerts":    knowledgeAlerts,
-		"prereq_gate":         prereqGate,
-		"readiness_snapshot":  readinessSnapshot,
+		"knowledge_alerts":      knowledgeAlerts,
+		"prereq_gate":           prereqGate,
+		"readiness_snapshot":    readinessSnapshot,
 	})
 }
 

@@ -21,12 +21,12 @@ const (
 	SSEEventUserThemeChanged  SSEEvent = "UserThemeChanged"
 	SSEEventUserPrefsChanged  SSEEvent = "UserPersonalizationChanged"
 
-	SSEEventJobCreated   SSEEvent = "JobCreated"
-	SSEEventJobProgress  SSEEvent = "JobProgress"
-	SSEEventJobFailed    SSEEvent = "JobFailed"
-	SSEEventJobDone      SSEEvent = "JobDone"
-	SSEEventJobCanceled  SSEEvent = "JobCanceled"
-	SSEEventJobRestarted SSEEvent = "JobRestarted"
+	SSEEventJobCreated             SSEEvent = "JobCreated"
+	SSEEventJobProgress            SSEEvent = "JobProgress"
+	SSEEventJobFailed              SSEEvent = "JobFailed"
+	SSEEventJobDone                SSEEvent = "JobDone"
+	SSEEventJobCanceled            SSEEvent = "JobCanceled"
+	SSEEventJobRestarted           SSEEvent = "JobRestarted"
 
 	SSEEventChatThreadCreated  SSEEvent = "ChatThreadCreated"
 	SSEEventChatMessageCreated SSEEvent = "ChatMessageCreated"

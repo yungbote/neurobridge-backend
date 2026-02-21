@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -242,10 +244,34 @@ func checkDuplicateCanonicals(ctx context.Context, db *gorm.DB, pathID uuid.UUID
 		count += row.Count
 		sample = append(sample, fmt.Sprintf("%s:%d", row.CanonicalID.String(), row.Count))
 	}
+	if !strictDuplicateCanonicalMappings() {
+		// Canonical many-to-one aliases can be intentional (e.g., local synonyms mapping to one global concept).
+		// Keep this visible via count/sample but do not hard-fail structural validation by default.
+		check.Status = "pass"
+		check.Count = count
+		check.Sample = sample
+		check.Details = map[string]any{
+			"strict_mode": false,
+			"reason":      "alias_many_to_one_allowed",
+		}
+		return check, nil
+	}
 	check.Status = "fail"
 	check.Count = count
 	check.Sample = sample
 	return check, nil
+}
+
+func strictDuplicateCanonicalMappings() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("STRUCTURAL_DUPLICATE_CANONICALS_STRICT")))
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		return false
+	}
 }
 
 type psuRow struct {

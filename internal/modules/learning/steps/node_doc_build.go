@@ -2386,6 +2386,12 @@ Return ONLY JSON matching schema.`,
 				if deduped, hit := content.DedupNodeDocV1(doc); len(hit) > 0 {
 					doc = deduped
 				}
+				// Always enforce interactive minima, even when strict narrative mode is enabled.
+				// This guarantees every generated lesson retains at least the configured
+				// quick-check/flashcard floor for runtime prompting.
+				if patched, changed := ensureNodeDocInteractiveMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
+					doc = patched
+				}
 				// Best-effort padding for near-miss minima (e.g., missing one paragraph).
 				// This prevents hard failures on small structural omissions without weakening validation.
 				if !strictNarrative {
@@ -2396,6 +2402,16 @@ Return ONLY JSON matching schema.`,
 				if strictNarrative {
 					if patched, changed := ensureNodeDocConceptualMinima(doc, reqs, allowedChunkIDs, chunkByID, chunkIDs); changed {
 						doc = patched
+					}
+				}
+				var blueprintObjectiveAutofix map[string]any
+				if blueprint != nil {
+					if patched, added, changed := ensureNodeDocBlueprintObjectives(doc, *blueprint); changed {
+						doc = patched
+						blueprintObjectiveAutofix = map[string]any{
+							"added_count": len(added),
+							"added":       added,
+						}
 					}
 				}
 				if withIDs, changed := content.EnsureNodeDocBlockIDs(doc); changed {
@@ -2484,6 +2500,12 @@ Return ONLY JSON matching schema.`,
 				}
 				if threadingInjected {
 					metrics["threading_injected"] = true
+				}
+				if len(blueprintObjectiveAutofix) > 0 {
+					if metrics == nil {
+						metrics = map[string]any{}
+					}
+					metrics["blueprint_objective_autofix"] = blueprintObjectiveAutofix
 				}
 				// Coverage enforcement: ensure assigned must-cite chunk IDs actually appear in citations.
 				if len(mustCiteIDsAllowed) > 0 {

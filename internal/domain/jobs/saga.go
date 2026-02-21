@@ -32,7 +32,7 @@ type SagaAction struct {
 	SagaID uuid.UUID `gorm:"type:uuid;not null;index:idx_saga_action_saga_seq,unique,priority:1;index" json:"saga_id"`
 	Seq    int64     `gorm:"column:seq;type:bigint;not null;index:idx_saga_action_saga_seq,unique,priority:2;index" json:"seq"`
 
-	// gcs_delete_key|gcs_delete_prefix|pinecone_delete_ids|...
+	// gcs_delete_key|gcs_delete_prefix|vector_delete_ids|pinecone_delete_ids(legacy)|...
 	Kind string `gorm:"column:kind;not null;index" json:"kind"`
 
 	Payload datatypes.JSON `gorm:"column:payload;type:jsonb" json:"payload"`

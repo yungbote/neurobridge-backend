@@ -1,0 +1,83 @@
+name: Backend CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "scripts/check_repo_boundaries.sh"
+      - "scripts/check_aggregate_guardrails.sh"
+      - "scripts/smoke_storage_emulator_mode.sh"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "scripts/check_repo_boundaries.sh"
+      - "scripts/check_aggregate_guardrails.sh"
+      - "scripts/smoke_storage_emulator_mode.sh"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-gcs-default:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Repo boundary guard
+        run: ./scripts/check_repo_boundaries.sh
+
+      - name: Aggregate guardrails
+        run: ./scripts/check_aggregate_guardrails.sh
+
+      - name: Go test
+        run: go test ./...
+
+  test-gcs-emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start fake-gcs emulator
+        run: |
+          docker rm -f ci-fake-gcs >/dev/null 2>&1 || true
+          docker run -d --name ci-fake-gcs -p 4443:4443 \
+            fsouza/fake-gcs-server:latest \
+            -scheme http -host 0.0.0.0 -port 4443 -backend memory
+
+      - name: Wait for fake-gcs
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:4443/storage/v1/b?project=local-dev" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "fake-gcs did not become ready in time" >&2
+          exit 1
+
+      - name: Run emulator-mode tests
+        env:
+          NB_RUN_GCS_EMULATOR_INTEGRATION: "true"
+          NB_GCS_EMULATOR_HOST: "http://127.0.0.1:4443"
+        run: |
+          go test ./internal/platform/gcp -count=1
+          go test ./internal/app ./internal/modules/learning/ingestion/extractor ./internal/modules/learning/ingestion/pipeline -count=1
+
+      - name: Stop fake-gcs emulator
+        if: always()
+        run: docker rm -f ci-fake-gcs >/dev/null 2>&1 || true

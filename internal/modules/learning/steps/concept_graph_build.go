@@ -1656,7 +1656,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 			out.EdgesMade++
 		}
 
-		// Append Pinecone compensations for all concept vectors (if configured).
+		// Append vector-store compensations for all concept vectors (if configured).
 		if deps.Vec != nil {
 			for start := 0; start < len(rows); start += pineconeBatchSize {
 				end := start + pineconeBatchSize
@@ -1672,7 +1672,7 @@ func ConceptGraphBuild(ctx context.Context, deps ConceptGraphBuildDeps, in Conce
 				if len(ids) == 0 {
 					continue
 				}
-				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       ids,
 				}); err != nil {

@@ -23,8 +23,36 @@ type EventHandler struct {
 	path   repos.PathRepo
 }
 
+type EventHandlerRepoDeps struct {
+	UserLibraryIndex repos.UserLibraryIndexRepo
+	Path             repos.PathRepo
+}
+
+type EventHandlerDeps struct {
+	Events services.EventService
+	Jobs   services.JobService
+	Repos  EventHandlerRepoDeps
+}
+
+func NewEventHandlerWithDeps(deps EventHandlerDeps) *EventHandler {
+	return &EventHandler{
+		events: deps.Events,
+		jobs:   deps.Jobs,
+		index:  deps.Repos.UserLibraryIndex,
+		path:   deps.Repos.Path,
+	}
+}
+
+// NewEventHandler is kept as a compatibility shim while callers migrate to typed deps.
 func NewEventHandler(events services.EventService, jobs services.JobService, index repos.UserLibraryIndexRepo, path repos.PathRepo) *EventHandler {
-	return &EventHandler{events: events, jobs: jobs, index: index, path: path}
+	return NewEventHandlerWithDeps(EventHandlerDeps{
+		Events: events,
+		Jobs:   jobs,
+		Repos: EventHandlerRepoDeps{
+			UserLibraryIndex: index,
+			Path:             path,
+		},
+	})
 }
 
 type ingestEventsRequest struct {

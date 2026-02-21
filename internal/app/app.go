@@ -49,7 +49,11 @@ func New() (*App, error) {
 	}
 
 	log.Info("Loading environment variables...")
-	cfg := LoadConfig(log)
+	cfg, err := LoadConfig(log)
+	if err != nil {
+		log.Sync()
+		return nil, fmt.Errorf("load config: %w", err)
+	}
 
 	prompts.RegisterAll()
 
@@ -77,7 +81,7 @@ func New() (*App, error) {
 
 	reposet := wireRepos(theDB, log)
 
-	clientSet, err := wireClients(log)
+	clientSet, err := wireClients(log, cfg)
 	if err != nil {
 		log.Sync()
 		return nil, err
@@ -90,9 +94,9 @@ func New() (*App, error) {
 		return nil, err
 	}
 
-	handlerset := wireHandlers(log, theDB, serviceset, reposet, clientSet, ssehub)
-	middleware := wireMiddleware(log, serviceset)
-	router := wireRouter(log, handlerset, middleware, metrics)
+	handlerset := wireHandlers(log, theDB, cfg, serviceset, reposet, clientSet, ssehub)
+	middleware := wireMiddleware(log, serviceset, cfg)
+	router := wireRouter(log, cfg, handlerset, middleware, metrics)
 
 	return &App{
 		Log:      log,
@@ -200,7 +204,7 @@ func (a *App) Close() {
 }
 
 func (a *App) seedTeachingPatternsOnStartup(ctx context.Context) {
-	if a == nil || a.DB == nil || a.Log == nil || a.Repos.TeachingPattern == nil || a.Clients.OpenaiClient == nil {
+	if a == nil || a.DB == nil || a.Log == nil || a.Repos.Activities.TeachingPattern == nil || a.Clients.OpenaiClient == nil {
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("TEACHING_PATTERNS_SEED_ON_STARTUP")), "true") &&
@@ -213,7 +217,7 @@ func (a *App) seedTeachingPatternsOnStartup(ctx context.Context) {
 			minCount = n
 		}
 	}
-	if n, err := a.Repos.TeachingPattern.Count(dbctx.Context{Ctx: ctx}); err == nil && n >= minCount {
+	if n, err := a.Repos.Activities.TeachingPattern.Count(dbctx.Context{Ctx: ctx}); err == nil && n >= minCount {
 		return
 	}
 
@@ -236,7 +240,7 @@ func (a *App) seedTeachingPatternsOnStartup(ctx context.Context) {
 	_, err := steps.SeedTeachingPatternsFromDoc(seedCtx, steps.TeachingPatternsSeedDeps{
 		DB:       a.DB,
 		Log:      a.Log,
-		Patterns: a.Repos.TeachingPattern,
+		Patterns: a.Repos.Activities.TeachingPattern,
 		AI:       a.Clients.OpenaiClient,
 		Vec:      a.Clients.PineconeVectorStore,
 	}, profileDoc, uuid.Nil)

@@ -69,7 +69,11 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 		return
 	}
 	if docRow == nil || len(docRow.DocJSON) == 0 || string(docRow.DocJSON) == "null" {
-		response.RespondError(c, http.StatusNotFound, "doc_not_found", nil)
+		status := h.ensureNodeDocOnDemand(c.Request.Context(), rd.UserID, node, pathRow)
+		c.JSON(http.StatusAccepted, gin.H{
+			"doc":        nil,
+			"doc_status": status,
+		})
 		return
 	}
 
@@ -80,8 +84,18 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 	}
 
 	baseContentHash := docRow.ContentHash
-	if withIDs, changed := content.EnsureNodeDocBlockIDs(baseDoc); changed {
-		baseDoc = withIDs
+	baseDocPatched := baseDoc
+	baseDocChanged := false
+	if withIDs, changed := content.EnsureNodeDocBlockIDs(baseDocPatched); changed {
+		baseDocPatched = withIDs
+		baseDocChanged = true
+	}
+	if withFallback, changed := ensureNodeDocInteractiveFallback(baseDocPatched); changed {
+		baseDocPatched = withFallback
+		baseDocChanged = true
+	}
+	if baseDocChanged {
+		baseDoc = baseDocPatched
 		if rawDoc, err := json.Marshal(baseDoc); err == nil {
 			if canon, cErr := content.CanonicalizeJSON(rawDoc); cErr == nil {
 				now := time.Now().UTC()
@@ -226,11 +240,188 @@ func (h *PathHandler) GetPathNodeDoc(c *gin.Context) {
 			servedDoc = patched
 		}
 	}
-
 	response.RespondOK(c, gin.H{
 		"doc":         servedDoc,
 		"prereq_gate": prereqGate,
 	})
+}
+
+func ensureNodeDocInteractiveFallback(doc content.NodeDocV1) (content.NodeDocV1, bool) {
+	if len(doc.Blocks) == 0 {
+		return doc, false
+	}
+
+	qcCount := 0
+	fcCount := 0
+	for _, block := range doc.Blocks {
+		if block == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(stringFromAny(block["type"]))) {
+		case "quick_check":
+			qcCount++
+		case "flashcard":
+			fcCount++
+		}
+	}
+	if qcCount > 0 && fcCount > 0 {
+		return doc, false
+	}
+
+	conceptKeys := make([]any, 0, 3)
+	for _, k := range doc.ConceptKeys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		conceptKeys = append(conceptKeys, k)
+		if len(conceptKeys) >= 3 {
+			break
+		}
+	}
+
+	triggerAfter := []any{}
+	for _, block := range doc.Blocks {
+		if block == nil {
+			continue
+		}
+		id := strings.TrimSpace(stringFromAny(block["id"]))
+		if id == "" {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(block["type"])))
+		switch t {
+		case "", "quick_check", "flashcard", "heading", "divider", "objectives", "prerequisites", "key_takeaways", "glossary":
+			continue
+		default:
+			triggerAfter = []any{id}
+			break
+		}
+		if len(triggerAfter) > 0 {
+			break
+		}
+	}
+
+	citations := firstNodeDocCitationFallback(doc)
+	changed := false
+	if qcCount == 0 {
+		block := map[string]any{
+			"id":        "fallback_quick_check_1",
+			"type":      "quick_check",
+			"kind":      "short_answer",
+			"prompt_md": "In one sentence, explain the key idea from this lesson in your own words.",
+			"options":   []any{},
+			"answer_id": "",
+			"answer_md": "A strong answer accurately restates the core idea and preserves the same assumptions or boundaries.",
+		}
+		if len(conceptKeys) > 0 {
+			block["concept_keys"] = conceptKeys
+		}
+		if len(triggerAfter) > 0 {
+			block["trigger_after_block_ids"] = triggerAfter
+		}
+		if len(citations) > 0 {
+			block["citations"] = citations
+		}
+		doc.Blocks = insertNodeDocFallbackAfterBody(doc.Blocks, block)
+		changed = true
+	}
+	if fcCount == 0 {
+		block := map[string]any{
+			"id":       "fallback_flashcard_1",
+			"type":     "flashcard",
+			"front_md": "State the key term or idea from this lesson.",
+			"back_md":  "Include what it means and one practical cue for when to apply it.",
+		}
+		if len(conceptKeys) > 0 {
+			block["concept_keys"] = conceptKeys
+		}
+		if len(triggerAfter) > 0 {
+			block["trigger_after_block_ids"] = triggerAfter
+		}
+		if len(citations) > 0 {
+			block["citations"] = citations
+		}
+		doc.Blocks = insertNodeDocFallbackAfterBody(doc.Blocks, block)
+		changed = true
+	}
+
+	if withIDs, idsChanged := content.EnsureNodeDocBlockIDs(doc); idsChanged {
+		doc = withIDs
+		changed = true
+	}
+	return doc, changed
+}
+
+func firstNodeDocCitationFallback(doc content.NodeDocV1) []any {
+	for _, block := range doc.Blocks {
+		if block == nil {
+			continue
+		}
+		citations, ok := block["citations"].([]any)
+		if !ok || len(citations) == 0 {
+			continue
+		}
+		out := make([]any, 0, len(citations))
+		for _, raw := range citations {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			chunkID := strings.TrimSpace(stringFromAny(m["chunk_id"]))
+			if chunkID == "" {
+				continue
+			}
+			ref := map[string]any{"chunk_id": chunkID}
+			if quote := strings.TrimSpace(stringFromAny(m["quote"])); quote != "" {
+				ref["quote"] = quote
+			}
+			if loc, ok := m["loc"].(map[string]any); ok && len(loc) > 0 {
+				ref["loc"] = loc
+			}
+			out = append(out, ref)
+			if len(out) >= 2 {
+				break
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
+}
+
+func insertNodeDocFallbackAfterBody(blocks []map[string]any, block map[string]any) []map[string]any {
+	if block == nil {
+		return blocks
+	}
+	if len(blocks) == 0 {
+		return []map[string]any{block}
+	}
+
+	insertAt := len(blocks)
+	for i, b := range blocks {
+		if b == nil {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(stringFromAny(b["type"])))
+		switch t {
+		case "", "heading", "objectives", "prerequisites", "key_takeaways", "glossary", "divider":
+			continue
+		default:
+			insertAt = i + 1
+			break
+		}
+		if insertAt != len(blocks) {
+			break
+		}
+	}
+
+	out := make([]map[string]any, 0, len(blocks)+1)
+	out = append(out, blocks[:insertAt]...)
+	out = append(out, block)
+	out = append(out, blocks[insertAt:]...)
+	return out
 }
 
 type docVariantBaseline struct {
@@ -240,6 +431,282 @@ type docVariantBaseline struct {
 	Confidence           float64 `json:"confidence,omitempty"`
 	EpistemicUncertainty float64 `json:"epistemic_uncertainty,omitempty"`
 	AleatoricUncertainty float64 `json:"aleatoric_uncertainty,omitempty"`
+}
+
+type nodeDocJobStatus struct {
+	JobType   string `json:"job_type"`
+	JobID     string `json:"job_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Stage     string `json:"stage,omitempty"`
+	Progress  int    `json:"progress,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Triggered bool   `json:"triggered,omitempty"`
+}
+
+type nodeDocStatus struct {
+	State         string             `json:"state"`
+	Reason        string             `json:"reason,omitempty"`
+	PathID        string             `json:"path_id,omitempty"`
+	PathNodeID    string             `json:"path_node_id,omitempty"`
+	MaterialSetID string             `json:"material_set_id,omitempty"`
+	Jobs          []nodeDocJobStatus `json:"jobs,omitempty"`
+}
+
+func (h *PathHandler) ensureNodeDocOnDemand(ctx context.Context, userID uuid.UUID, node *types.PathNode, pathRow *types.Path) nodeDocStatus {
+	status := nodeDocStatus{
+		State:      "pending",
+		Reason:     "on_demand_enqueue",
+		PathID:     nodePathIDString(node),
+		PathNodeID: nodeIDString(node),
+		Jobs:       []nodeDocJobStatus{},
+	}
+	if h == nil || node == nil || node.ID == uuid.Nil || node.PathID == uuid.Nil || userID == uuid.Nil {
+		status.State = "unavailable"
+		status.Reason = "invalid_node_context"
+		return status
+	}
+	if h.jobSvc == nil || h.jobs == nil {
+		status.State = "unavailable"
+		status.Reason = "job_service_unavailable"
+		return status
+	}
+
+	materialSetID := resolvePathMaterialSetID(pathRow, nil)
+	if materialSetID == uuid.Nil && h.userLibraryIndex != nil {
+		if idx, err := h.userLibraryIndex.GetByUserAndPathID(dbctx.Context{Ctx: ctx}, userID, node.PathID); err == nil && idx != nil {
+			materialSetID = resolvePathMaterialSetID(pathRow, idx)
+		}
+	}
+	if materialSetID == uuid.Nil {
+		status.State = "unavailable"
+		status.Reason = "material_set_missing"
+		return status
+	}
+	status.MaterialSetID = materialSetID.String()
+
+	hasChunks, chunkErr := h.materialSetHasChunks(ctx, materialSetID)
+	if chunkErr != nil {
+		if h.log != nil {
+			h.log.Warn("GetPathNodeDoc on-demand chunk probe failed", "error", chunkErr, "path_id", node.PathID.String(), "material_set_id", materialSetID.String())
+		}
+	}
+	if !hasChunks {
+		status.State = "pending"
+		status.Reason = "material_ingestion_pending"
+		return status
+	}
+
+	const enqueueCooldown = 20 * time.Second
+	type enqueueSpec struct {
+		jobType  string
+		enqueue  func() (*types.JobRun, bool, error)
+		latest   *types.JobRun
+		trigger  bool
+		err      error
+		statuses []nodeDocJobStatus
+	}
+
+	specs := []enqueueSpec{
+		{
+			jobType: "node_doc_prefetch",
+			enqueue: func() (*types.JobRun, bool, error) {
+				return h.jobSvc.EnqueueNodeDocPrefetchIfNeeded(dbctx.Context{Ctx: ctx}, userID, node.PathID, materialSetID, "path_node_doc_on_demand")
+			},
+		},
+		{
+			jobType: "node_doc_progressive_build",
+			enqueue: func() (*types.JobRun, bool, error) {
+				return h.jobSvc.EnqueueNodeDocProgressiveBuildIfNeeded(dbctx.Context{Ctx: ctx}, userID, node.PathID, materialSetID, node.ID, "path_node_doc_on_demand")
+			},
+		},
+		{
+			jobType: "doc_probe_select",
+			enqueue: func() (*types.JobRun, bool, error) {
+				return h.jobSvc.EnqueueDocProbeSelectIfNeeded(dbctx.Context{Ctx: ctx}, userID, node.PathID, materialSetID, node.ID, "path_node_doc_on_demand")
+			},
+		},
+	}
+
+	queuedOrRunning := false
+	anyTriggered := false
+	anyErr := false
+
+	for i := range specs {
+		latest, err := h.jobs.GetLatestByEntity(dbctx.Context{Ctx: ctx}, userID, "path", node.PathID, specs[i].jobType)
+		if err != nil {
+			if h.log != nil {
+				h.log.Warn("GetPathNodeDoc on-demand latest job lookup failed", "error", err, "path_id", node.PathID.String(), "job_type", specs[i].jobType)
+			}
+		}
+		specs[i].latest = latest
+		latestStatus := nodeDocJobStatus{
+			JobType: specs[i].jobType,
+		}
+		if latest != nil {
+			latestStatus.JobID = latest.ID.String()
+			latestStatus.Status = strings.TrimSpace(strings.ToLower(latest.Status))
+			latestStatus.Stage = strings.TrimSpace(latest.Stage)
+			latestStatus.Progress = latest.Progress
+			latestStatus.Message = strings.TrimSpace(latest.Message)
+			latestStatus.Error = strings.TrimSpace(latest.Error)
+			if isRunnableJobStatus(latestStatus.Status) {
+				queuedOrRunning = true
+			}
+		}
+		specs[i].statuses = append(specs[i].statuses, latestStatus)
+		if latest != nil && isRecentTerminalJob(latest, enqueueCooldown) {
+			continue
+		}
+		specs[i].trigger = true
+	}
+
+	for i := range specs {
+		latest := specs[i].latest
+		if latest != nil && isRunnableJobStatus(strings.TrimSpace(strings.ToLower(latest.Status))) {
+			continue
+		}
+		if !specs[i].trigger {
+			continue
+		}
+		job, created, err := specs[i].enqueue()
+		if err != nil {
+			specs[i].err = err
+			anyErr = true
+			if h.log != nil {
+				h.log.Warn("GetPathNodeDoc on-demand enqueue failed", "error", err, "path_id", node.PathID.String(), "path_node_id", node.ID.String(), "job_type", specs[i].jobType)
+			}
+			continue
+		}
+		if created && job != nil {
+			queuedOrRunning = true
+			anyTriggered = true
+			specs[i].statuses = append(specs[i].statuses, nodeDocJobStatus{
+				JobType:   specs[i].jobType,
+				JobID:     job.ID.String(),
+				Status:    strings.TrimSpace(strings.ToLower(job.Status)),
+				Stage:     strings.TrimSpace(job.Stage),
+				Progress:  job.Progress,
+				Message:   strings.TrimSpace(job.Message),
+				Error:     strings.TrimSpace(job.Error),
+				Triggered: true,
+			})
+		}
+	}
+
+	for _, spec := range specs {
+		if len(spec.statuses) == 0 {
+			status.Jobs = append(status.Jobs, nodeDocJobStatus{JobType: spec.jobType})
+			continue
+		}
+		status.Jobs = append(status.Jobs, spec.statuses...)
+	}
+
+	switch {
+	case anyTriggered:
+		status.State = "pending"
+		status.Reason = "build_enqueued"
+	case queuedOrRunning:
+		status.State = "pending"
+		status.Reason = "build_in_progress"
+	case anyErr:
+		status.State = "error"
+		status.Reason = "enqueue_failed"
+	default:
+		status.State = "pending"
+		status.Reason = "retry_backoff"
+	}
+	return status
+}
+
+func resolvePathMaterialSetID(pathRow *types.Path, idx *types.UserLibraryIndex) uuid.UUID {
+	if pathRow != nil && pathRow.MaterialSetID != nil && *pathRow.MaterialSetID != uuid.Nil {
+		return *pathRow.MaterialSetID
+	}
+	if idx != nil && idx.MaterialSetID != uuid.Nil {
+		return idx.MaterialSetID
+	}
+	return uuid.Nil
+}
+
+func (h *PathHandler) materialSetHasChunks(ctx context.Context, materialSetID uuid.UUID) (bool, error) {
+	if h == nil || materialSetID == uuid.Nil {
+		return false, nil
+	}
+	if h.db != nil {
+		var count int64
+		err := h.db.WithContext(ctx).
+			Table("material_chunk AS mc").
+			Joins("JOIN material_file mf ON mf.id = mc.material_file_id").
+			Where("mf.material_set_id = ? AND mf.deleted_at IS NULL AND mc.deleted_at IS NULL", materialSetID).
+			Limit(1).
+			Count(&count).Error
+		if err == nil {
+			return count > 0, nil
+		}
+	}
+	if h.materialFiles == nil || h.chunks == nil {
+		return false, nil
+	}
+	files, err := h.materialFiles.GetByMaterialSetID(dbctx.Context{Ctx: ctx}, materialSetID)
+	if err != nil || len(files) == 0 {
+		return false, err
+	}
+	fileIDs := make([]uuid.UUID, 0, len(files))
+	for _, f := range files {
+		if f != nil && f.ID != uuid.Nil {
+			fileIDs = append(fileIDs, f.ID)
+		}
+	}
+	if len(fileIDs) == 0 {
+		return false, nil
+	}
+	chunks, err := h.chunks.GetByMaterialFileIDs(dbctx.Context{Ctx: ctx}, fileIDs)
+	if err != nil {
+		return false, err
+	}
+	return len(chunks) > 0, nil
+}
+
+func isRunnableJobStatus(status string) bool {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "queued", "running":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRecentTerminalJob(job *types.JobRun, cooldown time.Duration) bool {
+	if job == nil || cooldown <= 0 {
+		return false
+	}
+	status := strings.TrimSpace(strings.ToLower(job.Status))
+	if status != "failed" && status != "canceled" && status != "succeeded" {
+		return false
+	}
+	ref := job.UpdatedAt
+	if ref.IsZero() {
+		ref = job.CreatedAt
+	}
+	if ref.IsZero() {
+		return false
+	}
+	return time.Since(ref) < cooldown
+}
+
+func nodePathIDString(node *types.PathNode) string {
+	if node == nil || node.PathID == uuid.Nil {
+		return ""
+	}
+	return node.PathID.String()
+}
+
+func nodeIDString(node *types.PathNode) string {
+	if node == nil || node.ID == uuid.Nil {
+		return ""
+	}
+	return node.ID.String()
 }
 
 func (h *PathHandler) loadDocVariant(c *gin.Context, userID, nodeID uuid.UUID) (*types.LearningNodeDocVariant, content.NodeDocV1, string, bool) {
@@ -1126,6 +1593,7 @@ func (h *PathHandler) ListPathNodeDocMaterials(c *gin.Context) {
 		response.RespondError(c, http.StatusInternalServerError, "load_files_failed", err)
 		return
 	}
+	normalizeMaterialFileURLs(h.bucket, files)
 
 	response.RespondOK(c, gin.H{
 		"files":             files,

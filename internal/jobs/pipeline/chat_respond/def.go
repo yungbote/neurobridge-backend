@@ -4,6 +4,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	domainagg "github.com/yungbote/neurobridge-backend/internal/domain/aggregates"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
 	"github.com/yungbote/neurobridge-backend/internal/platform/pinecone"
@@ -21,6 +22,7 @@ type Pipeline struct {
 	messages  repos.ChatMessageRepo
 	state     repos.ChatThreadStateRepo
 	summaries repos.ChatSummaryNodeRepo
+	threadAgg domainagg.ThreadAggregate
 	docs      repos.ChatDocRepo
 	turns     repos.ChatTurnRepo
 	path      repos.PathRepo
@@ -47,6 +49,7 @@ func New(
 	messages repos.ChatMessageRepo,
 	state repos.ChatThreadStateRepo,
 	summaries repos.ChatSummaryNodeRepo,
+	threadAgg domainagg.ThreadAggregate,
 	docs repos.ChatDocRepo,
 	turns repos.ChatTurnRepo,
 	path repos.PathRepo,
@@ -71,6 +74,7 @@ func New(
 		messages:  messages,
 		state:     state,
 		summaries: summaries,
+		threadAgg: threadAgg,
 		docs:      docs,
 		turns:     turns,
 		path:      path,

@@ -43,11 +43,11 @@ type EmbedChunksInput struct {
 }
 
 type EmbedChunksOutput struct {
-	PathID          uuid.UUID `json:"path_id"`
-	ChunksTotal     int       `json:"chunks_total"`
-	ChunksEmbedded  int       `json:"chunks_embedded"`
-	PineconeUpserts int       `json:"pinecone_upserts"`
-	PineconeSkipped bool      `json:"pinecone_skipped"`
+	PathID          uuid.UUID      `json:"path_id"`
+	ChunksTotal     int            `json:"chunks_total"`
+	ChunksEmbedded  int            `json:"chunks_embedded"`
+	PineconeUpserts int            `json:"pinecone_upserts"`
+	PineconeSkipped bool           `json:"pinecone_skipped"`
 	Adaptive        map[string]any `json:"adaptive,omitempty"`
 }
 
@@ -288,7 +288,7 @@ func EmbedChunks(ctx context.Context, deps EmbedChunksDeps, in EmbedChunksInput)
 				}
 
 				if deps.Vec != nil && len(ids) > 0 {
-					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 						"namespace": ns,
 						"ids":       ids,
 					}); err != nil {

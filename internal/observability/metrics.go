@@ -69,6 +69,16 @@ type Metrics struct {
 	rollbackLatencyThreshold    float64
 	workerTotal                 *Counter
 	workerError                 *Counter
+	aggregateOps                *CounterVec
+	aggregateLatency            *HistogramVec
+	aggregateConflicts          *CounterVec
+	aggregateRetries            *CounterVec
+	objectStorageModeActive     *GaugeVec
+	objectStorageBootstrapTotal *CounterVec
+	vectorStoreProviderActive   *GaugeVec
+	vectorStoreBootstrapTotal   *CounterVec
+	vectorStoreOpsTotal         *CounterVec
+	vectorStoreOpsLatency       *HistogramVec
 
 	traceAttemptedTotal *Counter
 	traceWrittenTotal   *Counter
@@ -342,14 +352,66 @@ func Init(log *logger.Logger) *Metrics {
 			rollbackLatencyThreshold:   rollbackThreshold,
 			workerTotal:                NewCounter("nb_worker_activity_total", "Total worker activities."),
 			workerError:                NewCounter("nb_worker_activity_error_total", "Total worker activities with failure status."),
-			traceAttemptedTotal:        NewCounter("nb_trace_attempted_total", "Total trace writes attempted."),
-			traceWrittenTotal:          NewCounter("nb_trace_written_total", "Total trace writes written."),
-			traceFailedTotal:           NewCounter("nb_trace_failed_total", "Total trace writes failed."),
-			traceAttempted:             NewCounterVec("nb_trace_attempted_by_kind_total", "Trace writes attempted by kind.", []string{"kind"}),
-			traceWritten:               NewCounterVec("nb_trace_written_by_kind_total", "Trace writes written by kind.", []string{"kind"}),
-			traceFailed:                NewCounterVec("nb_trace_failed_by_kind_total", "Trace writes failed by kind.", []string{"kind"}),
-			structuralValidationTotal:  NewCounter("nb_structural_validation_total", "Structural invariant validations performed."),
-			structuralValidationSlow:   NewCounter("nb_structural_validation_slow_total", "Structural invariant validations over latency threshold."),
+			aggregateOps: NewCounterVec(
+				"nb_aggregate_operations_total",
+				"Aggregate operation count by operation/status.",
+				[]string{"operation", "status"},
+			),
+			aggregateLatency: NewHistogramVec(
+				"nb_aggregate_operation_duration_seconds",
+				"Aggregate operation duration in seconds by operation/status.",
+				[]string{"operation", "status"},
+				[]float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+			),
+			aggregateConflicts: NewCounterVec(
+				"nb_aggregate_conflicts_total",
+				"Aggregate conflict count by operation.",
+				[]string{"operation"},
+			),
+			aggregateRetries: NewCounterVec(
+				"nb_aggregate_retries_total",
+				"Aggregate retry count by operation.",
+				[]string{"operation"},
+			),
+			objectStorageModeActive: NewGaugeVec(
+				"nb_object_storage_mode_active",
+				"Active object storage mode (1=active).",
+				[]string{"mode"},
+			),
+			objectStorageBootstrapTotal: NewCounterVec(
+				"nb_object_storage_provider_bootstrap_total",
+				"Object storage provider bootstrap outcomes by mode/status/code.",
+				[]string{"mode", "status", "code"},
+			),
+			vectorStoreProviderActive: NewGaugeVec(
+				"nb_vector_store_provider_active",
+				"Active vector store provider (1=active).",
+				[]string{"provider"},
+			),
+			vectorStoreBootstrapTotal: NewCounterVec(
+				"nb_vector_store_provider_bootstrap_total",
+				"Vector store provider bootstrap outcomes by provider/status/code.",
+				[]string{"provider", "status", "code"},
+			),
+			vectorStoreOpsTotal: NewCounterVec(
+				"nb_vector_store_operation_total",
+				"Vector store operation outcomes by provider/operation/status.",
+				[]string{"provider", "operation", "status"},
+			),
+			vectorStoreOpsLatency: NewHistogramVec(
+				"nb_vector_store_operation_duration_seconds",
+				"Vector store operation latency by provider/operation/status.",
+				[]string{"provider", "operation", "status"},
+				[]float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+			),
+			traceAttemptedTotal:       NewCounter("nb_trace_attempted_total", "Total trace writes attempted."),
+			traceWrittenTotal:         NewCounter("nb_trace_written_total", "Total trace writes written."),
+			traceFailedTotal:          NewCounter("nb_trace_failed_total", "Total trace writes failed."),
+			traceAttempted:            NewCounterVec("nb_trace_attempted_by_kind_total", "Trace writes attempted by kind.", []string{"kind"}),
+			traceWritten:              NewCounterVec("nb_trace_written_by_kind_total", "Trace writes written by kind.", []string{"kind"}),
+			traceFailed:               NewCounterVec("nb_trace_failed_by_kind_total", "Trace writes failed by kind.", []string{"kind"}),
+			structuralValidationTotal: NewCounter("nb_structural_validation_total", "Structural invariant validations performed."),
+			structuralValidationSlow:  NewCounter("nb_structural_validation_slow_total", "Structural invariant validations over latency threshold."),
 			structuralValidationLatency: NewHistogramVec(
 				"nb_structural_validation_duration_seconds",
 				"Structural invariant validation duration in seconds.",
@@ -590,6 +652,36 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	if err := m.workerError.WritePrometheus(w); err != nil {
 		return err
 	}
+	if err := m.aggregateOps.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.aggregateLatency.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.aggregateConflicts.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.aggregateRetries.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.objectStorageModeActive.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.objectStorageBootstrapTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.vectorStoreProviderActive.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.vectorStoreBootstrapTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.vectorStoreOpsTotal.WritePrometheus(w); err != nil {
+		return err
+	}
+	if err := m.vectorStoreOpsLatency.WritePrometheus(w); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -671,6 +763,144 @@ func (m *Metrics) ObserveLearningBuildStage(pipeline, stage, status string, dur 
 	}
 	if dur > 0 {
 		m.buildStage.Observe(dur.Seconds(), pipeline, stage, status)
+	}
+}
+
+func (m *Metrics) ObserveAggregateOperation(operation, status string, dur time.Duration) {
+	if m == nil {
+		return
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "unknown"
+	}
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	m.aggregateOps.Inc(operation, status)
+	if dur > 0 {
+		m.aggregateLatency.Observe(dur.Seconds(), operation, status)
+	}
+}
+
+func (m *Metrics) IncAggregateConflict(operation string) {
+	if m == nil {
+		return
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "unknown"
+	}
+	m.aggregateConflicts.Inc(operation)
+}
+
+func (m *Metrics) IncAggregateRetry(operation string) {
+	if m == nil {
+		return
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "unknown"
+	}
+	m.aggregateRetries.Inc(operation)
+}
+
+func normalizeObjectStorageMode(mode string) string {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	switch mode {
+	case "gcs", "gcs_emulator":
+		return mode
+	case "":
+		return "unknown"
+	default:
+		return mode
+	}
+}
+
+func normalizeVectorStoreProvider(provider string) string {
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	switch provider {
+	case "pinecone", "qdrant", "disabled":
+		return provider
+	case "":
+		return "unknown"
+	default:
+		return provider
+	}
+}
+
+func (m *Metrics) SetObjectStorageModeActive(mode string) {
+	if m == nil {
+		return
+	}
+	normalized := normalizeObjectStorageMode(mode)
+	// Keep both known modes explicit so dashboards can graph them reliably.
+	m.objectStorageModeActive.Set(0, "gcs")
+	m.objectStorageModeActive.Set(0, "gcs_emulator")
+	m.objectStorageModeActive.Set(1, normalized)
+}
+
+func (m *Metrics) SetVectorStoreProviderActive(provider string) {
+	if m == nil {
+		return
+	}
+	normalized := normalizeVectorStoreProvider(provider)
+	// Keep known provider series explicit for stable dashboards.
+	m.vectorStoreProviderActive.Set(0, "pinecone")
+	m.vectorStoreProviderActive.Set(0, "qdrant")
+	m.vectorStoreProviderActive.Set(0, "disabled")
+	m.vectorStoreProviderActive.Set(1, normalized)
+}
+
+func (m *Metrics) ObserveObjectStorageProviderBootstrap(mode, status, code string) {
+	if m == nil {
+		return
+	}
+	mode = normalizeObjectStorageMode(mode)
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	code = strings.TrimSpace(strings.ToLower(code))
+	if code == "" {
+		code = "none"
+	}
+	m.objectStorageBootstrapTotal.Inc(mode, status, code)
+}
+
+func (m *Metrics) ObserveVectorStoreProviderBootstrap(provider, status, code string) {
+	if m == nil {
+		return
+	}
+	provider = normalizeVectorStoreProvider(provider)
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	code = strings.TrimSpace(strings.ToLower(code))
+	if code == "" {
+		code = "none"
+	}
+	m.vectorStoreBootstrapTotal.Inc(provider, status, code)
+}
+
+func (m *Metrics) ObserveVectorStoreOperation(provider, operation, status string, dur time.Duration) {
+	if m == nil {
+		return
+	}
+	provider = normalizeVectorStoreProvider(provider)
+	operation = strings.TrimSpace(strings.ToLower(operation))
+	if operation == "" {
+		operation = "unknown"
+	}
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		status = "unknown"
+	}
+	m.vectorStoreOpsTotal.Inc(provider, operation, status)
+	if dur > 0 {
+		m.vectorStoreOpsLatency.Observe(dur.Seconds(), provider, operation, status)
 	}
 }
 

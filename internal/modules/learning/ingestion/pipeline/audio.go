@@ -47,7 +47,13 @@ func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audio
 	}
 
 	var res *gcp.SpeechResult
-	if gcsURI != "" {
+	useGCS := gcsURI != "" && !s.ex.IsObjectStorageEmulatorMode()
+	if gcsURI != "" && s.ex.IsObjectStorageEmulatorMode() {
+		warnings = append(warnings, "speech gcs transcription disabled in gcs_emulator mode; using bytes fallback")
+		diag["speech_mode"] = "bytes_fallback_gcs_emulator"
+	}
+	if useGCS {
+		diag["speech_mode"] = "gcs_uri"
 		r, err := s.ex.Speech.TranscribeAudioGCS(ctx, gcsURI, cfg)
 		res = r
 		if err != nil {
@@ -55,6 +61,9 @@ func (s *service) handleAudio(ctx context.Context, mf *types.MaterialFile, audio
 			diag["speech_error"] = err.Error()
 		}
 	} else {
+		if _, ok := diag["speech_mode"]; !ok {
+			diag["speech_mode"] = "bytes"
+		}
 		b, readErr := os.ReadFile(audioPath)
 		if readErr != nil {
 			return nil, assets, append(warnings, "read audio bytes failed: "+readErr.Error()), diag, nil

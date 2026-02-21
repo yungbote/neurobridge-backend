@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
+	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/realtime"
 	"github.com/yungbote/neurobridge-backend/internal/services"
 )
@@ -17,12 +18,14 @@ import (
 type UserHandler struct {
 	userService services.UserService
 	hub         *realtime.SSEHub // API server broadcasts directly to connected clients
+	bucket      gcp.BucketService
 }
 
-func NewUserHandler(userService services.UserService, hub *realtime.SSEHub) *UserHandler {
+func NewUserHandler(userService services.UserService, hub *realtime.SSEHub, bucket gcp.BucketService) *UserHandler {
 	return &UserHandler{
 		userService: userService,
 		hub:         hub,
+		bucket:      bucket,
 	}
 }
 
@@ -33,6 +36,7 @@ func (uh *UserHandler) GetMe(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	normalizeUserAvatarURL(uh.bucket, me)
 	c.JSON(http.StatusOK, gin.H{"me": me})
 }
 
@@ -53,6 +57,7 @@ func (uh *UserHandler) ChangeName(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change_name_failed", "detail": err.Error()})
 		return
 	}
+	normalizeUserAvatarURL(uh.bucket, u)
 
 	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserNameChanged, gin.H{
 		"first_name":   u.FirstName,
@@ -115,6 +120,7 @@ func (uh *UserHandler) ChangeAvatarColor(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change_avatar_color_failed", "detail": err.Error()})
 		return
 	}
+	normalizeUserAvatarURL(uh.bucket, u)
 
 	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserAvatarUpdated, gin.H{
 		"avatar_url":   u.AvatarURL,
@@ -158,6 +164,7 @@ func (uh *UserHandler) UploadAvatar(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "upload_avatar_failed", "detail": err.Error()})
 		return
 	}
+	normalizeUserAvatarURL(uh.bucket, u)
 
 	uh.broadcastUser(u.ID.String(), realtime.SSEEventUserAvatarUpdated, gin.H{
 		"avatar_url":   u.AvatarURL,

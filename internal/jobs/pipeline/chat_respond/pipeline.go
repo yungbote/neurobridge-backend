@@ -44,6 +44,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		Messages:     p.messages,
 		State:        p.state,
 		Summaries:    p.summaries,
+		ThreadAgg:    p.threadAgg,
 		Docs:         p.docs,
 		Turns:        p.turns,
 		Path:         p.path,

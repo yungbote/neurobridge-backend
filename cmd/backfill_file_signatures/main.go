@@ -57,7 +57,7 @@ func main() {
 			fmt.Println("no valid material_set_id values provided")
 			return
 		}
-		rows, err = application.Repos.MaterialSet.GetByIDs(dbc, ids)
+		rows, err = application.Repos.Materials.MaterialSet.GetByIDs(dbc, ids)
 	} else {
 		err = application.DB.WithContext(ctx).Find(&rows).Error
 	}
@@ -74,11 +74,11 @@ func main() {
 		if set == nil || set.ID == uuid.Nil {
 			continue
 		}
-		files, _ := application.Repos.MaterialFile.GetByMaterialSetID(dbc, set.ID)
+		files, _ := application.Repos.Materials.MaterialFile.GetByMaterialSetID(dbc, set.ID)
 		if len(files) == 0 {
 			continue
 		}
-		sigs, _ := application.Repos.MaterialFileSignature.GetByMaterialSetID(dbc, set.ID)
+		sigs, _ := application.Repos.Materials.MaterialFileSignature.GetByMaterialSetID(dbc, set.ID)
 		if len(sigs) >= len(files) {
 			continue
 		}

@@ -763,9 +763,9 @@ func RealizeActivities(ctx context.Context, deps RealizeActivitiesDeps, in Reali
 					IsPrimary:  w.SlotIndex == 0,
 				})
 
-				// Pinecone compensation for variant vector (if configured).
+				// Vector-store compensation for variant vector (if configured).
 				if deps.Vec != nil {
-					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+					if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 						"namespace": actNS,
 						"ids":       []string{vectorID},
 					}); err != nil {

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	domainagg "github.com/yungbote/neurobridge-backend/internal/domain/aggregates"
+	"github.com/yungbote/neurobridge-backend/internal/observability"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/gcp"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
@@ -31,8 +32,10 @@ const (
 )
 
 const (
-	SagaActionKindGCSDeleteKey      = "gcs_delete_key"
-	SagaActionKindGCSDeletePrefix   = "gcs_delete_prefix"
+	SagaActionKindGCSDeleteKey    = "gcs_delete_key"
+	SagaActionKindGCSDeletePrefix = "gcs_delete_prefix"
+	SagaActionKindVectorDeleteIDs = "vector_delete_ids"
+	// Legacy action kind retained for backward compatibility with historical rows and dashboards.
 	SagaActionKindPineconeDeleteIDs = "pinecone_delete_ids"
 )
 
@@ -44,13 +47,16 @@ type SagaService interface {
 }
 
 type sagaService struct {
-	db      *gorm.DB
-	log     *logger.Logger
-	runs    repos.SagaRunRepo
-	actions repos.SagaActionRepo
+	db        *gorm.DB
+	log       *logger.Logger
+	runs      repos.SagaRunRepo
+	actions   repos.SagaActionRepo
+	aggregate domainagg.SagaAggregate
 
 	bucket gcp.BucketService
 	vec    pinecone.VectorStore
+
+	vectorProvider string
 }
 
 func NewSagaService(
@@ -58,16 +64,21 @@ func NewSagaService(
 	baseLog *logger.Logger,
 	runs repos.SagaRunRepo,
 	actions repos.SagaActionRepo,
+	aggregate domainagg.SagaAggregate,
 	bucket gcp.BucketService,
 	vec pinecone.VectorStore,
+	vectorProvider string,
 ) SagaService {
 	return &sagaService{
-		db:      db,
-		log:     baseLog.With("service", "SagaService"),
-		runs:    runs,
-		actions: actions,
-		bucket:  bucket,
-		vec:     vec,
+		db:        db,
+		log:       baseLog.With("service", "SagaService"),
+		runs:      runs,
+		actions:   actions,
+		aggregate: aggregate,
+		bucket:    bucket,
+		vec:       vec,
+
+		vectorProvider: strings.TrimSpace(strings.ToLower(vectorProvider)),
 	}
 }
 
@@ -114,14 +125,9 @@ func (s *sagaService) CreateOrGetSaga(ctx context.Context, ownerUserID uuid.UUID
 	return sagaID, nil
 }
 
-// AppendAction must be called with a non-nil tx so actions are committed atomically
-// with the canonical stage state.
 func (s *sagaService) AppendAction(dbc dbctx.Context, sagaID uuid.UUID, kind string, payload map[string]any) error {
-	if s == nil || s.runs == nil || s.actions == nil {
+	if s == nil || s.aggregate == nil {
 		return fmt.Errorf("saga service not configured")
-	}
-	if dbc.Tx == nil {
-		return fmt.Errorf("AppendAction requires a db transaction")
 	}
 	if sagaID == uuid.Nil {
 		return fmt.Errorf("missing saga_id")
@@ -130,40 +136,25 @@ func (s *sagaService) AppendAction(dbc dbctx.Context, sagaID uuid.UUID, kind str
 	if kind == "" {
 		return fmt.Errorf("missing saga action kind")
 	}
-
-	// Serialize seq assignment by locking saga_run.
-	sr, err := s.runs.LockByID(dbc, sagaID)
+	raw, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal saga payload: %w", err)
 	}
-	if sr == nil {
-		return fmt.Errorf("saga_run not found: %s", sagaID.String())
-	}
-
-	maxSeq, err := s.actions.GetMaxSeq(dbc, sagaID)
-	if err != nil {
-		return err
-	}
-
-	raw, _ := json.Marshal(payload)
-	now := time.Now().UTC()
-	row := &types.SagaAction{
-		ID:        uuid.New(),
-		SagaID:    sagaID,
-		Seq:       maxSeq + 1,
-		Kind:      kind,
-		Payload:   datatypes.JSON(raw),
-		Status:    SagaActionStatusPending,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	_, err = s.actions.Create(dbc, []*types.SagaAction{row})
+	_, err = s.aggregate.AppendAction(dbc.Ctx, domainagg.AppendSagaActionInput{
+		SagaID:     sagaID,
+		Kind:       kind,
+		Payload:    raw,
+		AppendedAt: time.Now().UTC(),
+	})
 	return err
 }
 
 func (s *sagaService) MarkSagaStatus(ctx context.Context, sagaID uuid.UUID, status string) error {
-	if s == nil || s.runs == nil {
+	if s == nil {
 		return fmt.Errorf("saga service not configured")
+	}
+	if s.aggregate == nil {
+		return fmt.Errorf("saga aggregate not configured")
 	}
 	if sagaID == uuid.Nil {
 		return fmt.Errorf("missing saga_id")
@@ -172,7 +163,12 @@ func (s *sagaService) MarkSagaStatus(ctx context.Context, sagaID uuid.UUID, stat
 	if status == "" {
 		return fmt.Errorf("missing saga status")
 	}
-	return s.runs.UpdateFields(dbctx.Context{Ctx: ctx}, sagaID, map[string]interface{}{"status": status})
+	_, err := s.aggregate.TransitionStatus(ctx, domainagg.TransitionSagaStatusInput{
+		SagaID:       sagaID,
+		ToStatus:     status,
+		TransitionAt: time.Now().UTC(),
+	})
+	return err
 }
 
 func (s *sagaService) Compensate(ctx context.Context, sagaID uuid.UUID) error {
@@ -203,10 +199,15 @@ func (s *sagaService) Compensate(ctx context.Context, sagaID uuid.UUID) error {
 		if execErr != nil {
 			nextStatus = SagaActionStatusFailed
 			if s.log != nil {
+				logKind, actionKind, legacyKind := sagaActionKindForLog(a.Kind)
 				s.log.Warn("saga action compensate failed",
 					"saga_id", sagaID.String(),
 					"action_id", a.ID.String(),
-					"kind", a.Kind,
+					"kind", logKind, // legacy field preserved for dashboard compatibility
+					"action_kind", actionKind,
+					"action_kind_raw", strings.TrimSpace(a.Kind),
+					"action_kind_legacy", legacyKind,
+					"vector_provider", s.vectorProvider,
 					"seq", a.Seq,
 					"err", execErr.Error(),
 				)
@@ -227,7 +228,7 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 	if kind == "" {
 		return nil
 	}
-	switch kind {
+	switch canonicalSagaActionKind(kind) {
 	case SagaActionKindGCSDeleteKey:
 		if s.bucket == nil {
 			return fmt.Errorf("bucket service unavailable")
@@ -270,9 +271,10 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 		}
 		return s.bucket.DeletePrefix(ctx, cat, prefix)
 
-	case SagaActionKindPineconeDeleteIDs:
+	case SagaActionKindVectorDeleteIDs:
 		if s.vec == nil {
-			return fmt.Errorf("pinecone vector store unavailable")
+			s.observeVectorStoreOperation("delete_ids", "error", 0)
+			return fmt.Errorf("vector store unavailable (provider=%s)", s.vectorProvider)
 		}
 		var p struct {
 			Namespace string   `json:"namespace"`
@@ -281,6 +283,7 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 		_ = json.Unmarshal(a.Payload, &p)
 		ns := strings.TrimSpace(p.Namespace)
 		if ns == "" || len(p.IDs) == 0 {
+			s.observeVectorStoreOperation("delete_ids", "skipped", 0)
 			return nil
 		}
 		return s.vec.DeleteIDs(ctx, ns, p.IDs)
@@ -288,6 +291,37 @@ func (s *sagaService) executeAction(ctx context.Context, a *types.SagaAction) er
 	default:
 		return fmt.Errorf("unknown saga action kind: %s", kind)
 	}
+}
+
+func canonicalSagaActionKind(kind string) string {
+	k := strings.TrimSpace(strings.ToLower(kind))
+	switch k {
+	case SagaActionKindPineconeDeleteIDs, SagaActionKindVectorDeleteIDs:
+		return SagaActionKindVectorDeleteIDs
+	default:
+		return k
+	}
+}
+
+func sagaActionKindForLog(rawKind string) (kind string, actionKind string, legacyKind string) {
+	raw := strings.TrimSpace(strings.ToLower(rawKind))
+	actionKind = canonicalSagaActionKind(raw)
+	if actionKind == SagaActionKindVectorDeleteIDs {
+		// Keep existing `kind` filterable by legacy pinecone label for existing dashboards.
+		return SagaActionKindPineconeDeleteIDs, actionKind, SagaActionKindPineconeDeleteIDs
+	}
+	if raw == "" {
+		return "unknown", actionKind, ""
+	}
+	return raw, actionKind, ""
+}
+
+func (s *sagaService) observeVectorStoreOperation(operation, status string, dur time.Duration) {
+	metrics := observability.Current()
+	if metrics == nil {
+		return
+	}
+	metrics.ObserveVectorStoreOperation(s.vectorProvider, operation, status, dur)
 }
 
 func parseBucketCategory(category string) (gcp.BucketCategory, error) {

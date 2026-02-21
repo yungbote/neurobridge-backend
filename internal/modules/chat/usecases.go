@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
+	domainagg "github.com/yungbote/neurobridge-backend/internal/domain/aggregates"
 	"github.com/yungbote/neurobridge-backend/internal/modules/chat/steps"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/neo4jdb"
@@ -26,6 +27,7 @@ type UsecasesDeps struct {
 	Messages  repos.ChatMessageRepo
 	State     repos.ChatThreadStateRepo
 	Summaries repos.ChatSummaryNodeRepo
+	ThreadAgg domainagg.ThreadAggregate
 
 	Docs     repos.ChatDocRepo
 	Turns    repos.ChatTurnRepo
@@ -94,6 +96,7 @@ func (u Usecases) Respond(ctx context.Context, in RespondInput) (RespondOutput, 
 		Summaries: u.deps.Summaries,
 		Docs:      u.deps.Docs,
 		Turns:     u.deps.Turns,
+		ThreadAgg: u.deps.ThreadAgg,
 		Path:      u.deps.Path,
 		PathNodes: u.deps.PathNodes,
 		NodeDocs:  u.deps.NodeDocs,

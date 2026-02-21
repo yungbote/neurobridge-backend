@@ -159,7 +159,7 @@ func UserProfileRefresh(ctx context.Context, deps UserProfileRefreshDeps, in Use
 			return err
 		}
 		if deps.Vec != nil {
-			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 				"namespace": ns,
 				"ids":       []string{vectorID},
 			}); err != nil {

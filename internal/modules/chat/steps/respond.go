@@ -13,6 +13,7 @@ import (
 
 	"github.com/yungbote/neurobridge-backend/internal/data/repos"
 	types "github.com/yungbote/neurobridge-backend/internal/domain"
+	domainagg "github.com/yungbote/neurobridge-backend/internal/domain/aggregates"
 	"github.com/yungbote/neurobridge-backend/internal/platform/dbctx"
 	"github.com/yungbote/neurobridge-backend/internal/platform/logger"
 	"github.com/yungbote/neurobridge-backend/internal/platform/openai"
@@ -33,6 +34,7 @@ type RespondDeps struct {
 	Summaries repos.ChatSummaryNodeRepo
 	Docs      repos.ChatDocRepo
 	Turns     repos.ChatTurnRepo
+	ThreadAgg domainagg.ThreadAggregate
 	Path      repos.PathRepo
 	PathNodes repos.PathNodeRepo
 	NodeDocs  repos.LearningNodeDocRepo
@@ -66,7 +68,7 @@ type RespondOutput struct {
 
 func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOutput, error) {
 	out := RespondOutput{}
-	if deps.DB == nil || deps.Log == nil || deps.AI == nil || deps.Threads == nil || deps.Messages == nil || deps.State == nil || deps.Summaries == nil || deps.Docs == nil || deps.Turns == nil {
+	if deps.DB == nil || deps.Log == nil || deps.AI == nil || deps.Threads == nil || deps.Messages == nil || deps.State == nil || deps.Summaries == nil || deps.Docs == nil || deps.Turns == nil || deps.ThreadAgg == nil {
 		return out, fmt.Errorf("chat respond: missing deps")
 	}
 	if in.UserID == uuid.Nil || in.ThreadID == uuid.Nil || in.UserMessageID == uuid.Nil || in.AssistantMessageID == uuid.Nil || in.TurnID == uuid.Nil {
@@ -442,9 +444,18 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 	}
 	if err != nil {
 		flushNotify()
-		_ = deps.Messages.UpdateFields(dbc, in.AssistantMessageID, map[string]interface{}{
-			"status":     MessageStatusError,
-			"updated_at": time.Now().UTC(),
+		_, _ = deps.ThreadAgg.MarkTurnFailed(ctx, domainagg.MarkTurnFailedInput{
+			UserID:       in.UserID,
+			ThreadID:     in.ThreadID,
+			TurnID:       in.TurnID,
+			JobID:        &in.JobID,
+			FailureCode:  "chat_respond_stream_failed",
+			FailureCause: err.Error(),
+			FailedAt:     time.Now().UTC(),
+			Metadata: map[string]any{
+				"attempt":              in.Attempt,
+				"assistant_message_id": in.AssistantMessageID.String(),
+			},
 		})
 		if deps.Notify != nil {
 			deps.Notify.MessageError(in.UserID, in.ThreadID, in.AssistantMessageID, err.Error(), map[string]any{
@@ -452,11 +463,6 @@ func Respond(ctx context.Context, deps RespondDeps, in RespondInput) (RespondOut
 				"attempt": in.Attempt,
 			})
 		}
-		doneAt := time.Now().UTC()
-		_ = deps.Turns.UpdateFields(dbc, in.UserID, in.TurnID, map[string]interface{}{
-			"status":       "error",
-			"completed_at": &doneAt,
-		})
 		return out, err
 	}
 	flushNotify()

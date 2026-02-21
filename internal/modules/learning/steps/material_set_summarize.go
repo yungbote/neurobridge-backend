@@ -327,7 +327,7 @@ func MaterialSetSummarize(ctx context.Context, deps MaterialSetSummarizeDeps, in
 		}
 
 		if deps.Vec != nil {
-			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+			if err := deps.Saga.AppendAction(dbc, in.SagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 				"namespace": ns,
 				"ids":       []string{vectorID},
 			}); err != nil {

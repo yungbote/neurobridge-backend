@@ -117,6 +117,7 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		"pinecone_batches": out.PineconeBatches,
 	}
 	userID := jc.Job.OwnerUserID
+	strictInvariants := getEnvBool("CONCEPT_GRAPH_PATCH_STRICT_INVARIANTS", true)
 	traceRes, err := structuraltrace.Record(jc.Ctx, structuraltrace.Deps{
 		DB:           p.db,
 		Log:          p.log,
@@ -138,20 +139,41 @@ func (p *Pipeline) Run(jc *jobrt.Context) error {
 		RequireTrace:      true,
 		WriteGraphVersion: true,
 	})
+	softInvariantFailure := false
 	if err != nil {
-		jc.Fail("invariant_validation", err)
-		return nil
+		if !strictInvariants && strings.Contains(strings.ToLower(err.Error()), "structural invariants failed") {
+			softInvariantFailure = true
+			if p.log != nil {
+				p.log.Warn("concept_graph_patch_build: structural invariants failed; continuing due non-strict policy", "path_id", out.PathID.String(), "error", err.Error())
+			}
+		} else {
+			jc.Fail("invariant_validation", err)
+			return nil
+		}
 	}
-	graphVersion := traceRes.GraphVersion
+	graphVersion := strings.TrimSpace(traceRes.GraphVersion)
+	if graphVersion == "" {
+		if payloadGraph, ok := jc.Payload()["graph_version"]; ok && payloadGraph != nil {
+			graphVersion = strings.TrimSpace(fmt.Sprint(payloadGraph))
+		}
+	}
+	validationStatus := strings.TrimSpace(traceRes.ValidationStatus)
+	if softInvariantFailure {
+		validationStatus = "soft_failed"
+	}
+	if validationStatus == "" {
+		validationStatus = "unknown"
+	}
 
 	jc.Succeed("done", map[string]any{
-		"material_set_id":  setID.String(),
-		"saga_id":          sagaID.String(),
-		"path_id":          out.PathID.String(),
-		"concepts_made":    out.ConceptsMade,
-		"edges_made":       out.EdgesMade,
-		"pinecone_batches": out.PineconeBatches,
-		"graph_version":    graphVersion,
+		"material_set_id":             setID.String(),
+		"saga_id":                     sagaID.String(),
+		"path_id":                     out.PathID.String(),
+		"concepts_made":               out.ConceptsMade,
+		"edges_made":                  out.EdgesMade,
+		"pinecone_batches":            out.PineconeBatches,
+		"graph_version":               graphVersion,
+		"invariant_validation_status": validationStatus,
 	})
 	return nil
 }
@@ -166,4 +188,19 @@ func getEnvInt(key string, def int) int {
 		return def
 	}
 	return i
+}
+
+func getEnvBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
 }

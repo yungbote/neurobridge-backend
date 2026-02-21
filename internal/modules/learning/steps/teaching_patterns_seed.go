@@ -197,7 +197,7 @@ func SeedTeachingPatternsFromDoc(ctx context.Context, deps TeachingPatternsSeedD
 				if end > len(vectorIDs) {
 					end = len(vectorIDs)
 				}
-				if err := deps.Saga.AppendAction(dbc, sagaID, services.SagaActionKindPineconeDeleteIDs, map[string]any{
+				if err := deps.Saga.AppendAction(dbc, sagaID, services.SagaActionKindVectorDeleteIDs, map[string]any{
 					"namespace": ns,
 					"ids":       vectorIDs[start:end],
 				}); err != nil {

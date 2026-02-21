@@ -64,6 +64,7 @@ func (h *PathHandler) attachJobSnapshot(ctx context.Context, userID uuid.UUID, p
 		if p == nil {
 			continue
 		}
+		normalizePathAvatarURLs(h.bucket, p)
 		dto := &pathWithJob{Path: p}
 
 		// Back-compat: older installs derived material_set_id from user_library_index.

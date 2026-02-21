@@ -175,6 +175,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 			protected.POST("/jobs/:id/cancel", cfg.JobHandler.CancelJob)
 			protected.POST("/jobs/:id/restart", cfg.JobHandler.RestartJob)
 		}
+
 	}
 
 	return r

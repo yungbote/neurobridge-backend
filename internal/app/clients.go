@@ -29,9 +29,9 @@ type Clients struct {
 	Neo4j *neo4jdb.Client
 
 	// OpenAI
-	OpenaiClient        openai.Client
-	OpenaiCaption       openai.Caption
-	StructureExtractAI  openai.Client
+	OpenaiClient       openai.Client
+	OpenaiCaption      openai.Caption
+	StructureExtractAI openai.Client
 
 	// Pinecone
 	PineconeClient      pinecone.Client
@@ -57,7 +57,7 @@ type Clients struct {
 	Temporal temporalsdkclient.Client
 }
 
-func wireClients(log *logger.Logger) (Clients, error) {
+func wireClients(log *logger.Logger, cfg Config) (Clients, error) {
 	log.Info("Wiring clients...")
 
 	var out Clients
@@ -83,10 +83,10 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	}
 
 	// ---------------- GCP Bucket ----------------
-	bucket, err := gcp.NewBucketService(log)
+	bucket, err := resolveBucketService(log, cfg)
 	if err != nil {
 		out.Close()
-		return Clients{}, fmt.Errorf("init gcp bucket client: %w", err)
+		return Clients{}, fmt.Errorf("init object storage provider: %w", err)
 	}
 	out.GcpBucket = bucket
 
@@ -117,29 +117,14 @@ func wireClients(log *logger.Logger) (Clients, error) {
 	}
 	out.OpenaiCaption = cap
 
-	// ---------------- Pinecone ---------------------
-	if strings.TrimSpace(os.Getenv("PINECONE_API_KEY")) != "" {
-		pc, err := pinecone.New(log, pinecone.Config{
-			APIKey:     strings.TrimSpace(os.Getenv("PINECONE_API_KEY")),
-			APIVersion: strings.TrimSpace(os.Getenv("PINECONE_API_VERSION")),
-			BaseURL:    strings.TrimSpace(os.Getenv("PINECONE_BASE_URL")),
-			Timeout:    30 * time.Second,
-		})
-		if err != nil {
-			out.Close()
-			return Clients{}, fmt.Errorf("init pinecone client: %w", err)
-		}
-		out.PineconeClient = pc
-
-		vs, err := pinecone.NewVectorStore(log, pc)
-		if err != nil {
-			out.Close()
-			return Clients{}, fmt.Errorf("init pinecone vector store: %w", err)
-		}
-		out.PineconeVectorStore = vs
-	} else {
-		log.Warn("PINECONE_API_KEY not set; vector search disabled")
+	// ---------------- Vector Store Provider ----------------
+	pineconeClient, vectorStore, err := resolveVectorStoreProvider(log, cfg)
+	if err != nil {
+		out.Close()
+		return Clients{}, fmt.Errorf("init vector store provider: %w", err)
 	}
+	out.PineconeClient = pineconeClient
+	out.PineconeVectorStore = vectorStore
 
 	// ---------------- GCP Providers ----------------
 	vision, err := gcp.NewVision(log)
